@@ -1,0 +1,5 @@
+// A `Match` is made by a `Regex`, not field by field.
+void main() {
+    var m = Match { start = 1, end = 2 }
+    print(m)
+}

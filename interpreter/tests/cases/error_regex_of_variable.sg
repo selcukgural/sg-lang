@@ -1,0 +1,6 @@
+// `Regex.of` takes only a pattern written in the program (choice 1469); a pattern made when the
+// program runs goes to `Regex.compile`, which gives a `Result`.
+void main(List<string> args) {
+    var re = Regex.of(read args[0])
+    print(re.isMatch("x"))
+}

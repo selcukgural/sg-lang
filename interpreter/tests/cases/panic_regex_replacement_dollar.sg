@@ -1,0 +1,6 @@
+// A `$` with no group after it is a panic (choice 1478); `$$` writes one.
+void main() {
+    var cost = Regex.of("""\d+""")
+    print(cost.replaceAll("costs 5", "$$$0"))
+    print(cost.replaceAll("costs 5", "$ $0"))
+}

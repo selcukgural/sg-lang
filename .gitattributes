@@ -5,3 +5,5 @@
 *.in -text
 # The cases of JSONTestSuite are kept byte for byte: some hold \r, a byte order mark or bytes that are not UTF-8.
 interpreter/tests/json-suite/test_parsing/** -text
+# RE2's search tests are kept byte for byte: two texts hold a raw control byte.
+interpreter/tests/regex-suite/re2-search.txt -text

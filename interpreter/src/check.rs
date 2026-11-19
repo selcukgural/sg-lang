@@ -251,6 +251,10 @@ fn std_makers(short: &str) -> &'static str {
         "Json" => "nothing is made: the function is called on the type, `Json.parse(text)`",
         "JsonObject" => "`JsonObject()`, then `o.add(\"name\", value)`",
         "JsonError" => "`Json.parse(text)` gives one for a text that is not JSON",
+        "Regex" => "`Regex.of(\"pattern\")` for a pattern written in the program, `Regex.compile(pattern)` for one made when it runs",
+        "Match" => "`regex.find(text)` gives one, and `regex.findAll(text)` a list of them",
+        "Captures" => "`regex.captures(text)` gives one",
+        "RegexError" => "`Regex.compile(pattern)` gives one for a pattern that is not a regular expression",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }
@@ -425,7 +429,7 @@ const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAs
 const CHAR_METHODS: &[&str] = &[
     "isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace",
     "toAsciiUpper", "toAsciiLower", "isWhitespace", "utf8Length", "toString", "equals", "compare",
-    "isLetter", "isNumeric", "isAlphanumeric", "isUpper", "isLower", "isControl", "toUpper", "toLower",
+    "isLetter", "isNumeric", "isAlphanumeric", "isUpper", "isLower", "isControl", "toUpper", "toLower", "category",
 ];
 /// The methods of `char` that need the Unicode tables.
 const UNICODE_TESTS: &[&str] = &["isLetter", "isNumeric", "isAlphanumeric", "isUpper", "isLower", "isControl"];
@@ -753,6 +757,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     LOCKED.with(|found| found.borrow_mut().clear());
     RAW.with(|found| found.borrow_mut().clear());
     CFUNCS.with(|found| found.borrow_mut().clear());
+    PATTERNS.with(|found| found.borrow_mut().clear());
     let mut names = Names { files: prog.files.clone(), ..Names::default() };
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
@@ -1636,6 +1641,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     prog.plain = plain_types(&structs);
     crate::waits::check(prog)?;
     statics_found(prog, src, &structs, &enums)?;
+    patterns_checked(prog, src)?;
     // A program without an operating system is held to the rule of its own.
     if prog.freestanding {
         // The types the program writes in its signatures and its fields.
@@ -1683,6 +1689,32 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // A static whose value was found here needs no function to find it.
     let found: HashSet<String> = prog.statics.iter().filter(|decl| decl.value.is_some()).map(|decl| decl.init.clone()).collect();
     prog.funcs.retain(|func| !found.contains(&func.name));
+    Ok(())
+}
+
+/// Each pattern written in the program for a `Regex`, read by the language's own module when the
+/// program is compiled (`Regex.problem`, as a const is found): a pattern that is not a regular
+/// expression is a compile error (choices 1463, 1469).
+fn patterns_checked(prog: &Program, src: &str) -> Res<()> {
+    let found = PATTERNS.with(|found| std::mem::take(&mut *found.borrow_mut()));
+    for (span, text) in found.into_values() {
+        let ty = Ty::Read(Box::new(Ty::Str));
+        let pattern = Expr { kind: ExprKind::Str(text), span, ty, moved: false };
+        let recv = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span, ty: Ty::Void, moved: false };
+        let callee = Callee::Static { owner: format!("{STD_MODULE}.Regex"), name: "problem".to_string() };
+        let call = ExprKind::Method { recv: Box::new(recv), name: "problem".to_string(), name_span: span, args: vec![pattern], callee };
+        let init = Expr { kind: call, span, ty: Ty::Str, moved: false };
+        let text_type = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "string".to_string(), args: Vec::new(), suffixes: Vec::new(), span };
+        let decl = ConstDecl { public: false, name: format!("pattern#{}", span.start), name_span: span, ty: text_type, init, local: None, visible: Vec::new(), assert: None };
+        match crate::interp::find_called(prog, src, &prog.const_values, &decl)? {
+            ConstVal::Str(problem) if problem.is_empty() => {}
+            ConstVal::Str(problem) => {
+                return Err(Diag::error(span, format!("this pattern is not a regular expression: {problem}"))
+                    .note("a pattern written in the program is checked when the program is compiled"));
+            }
+            _ => unreachable!("`Regex.problem` gives a text"),
+        }
+    }
     Ok(())
 }
 
@@ -3165,6 +3197,9 @@ thread_local! {
     /// The count each `[Name]` in a type stood for, by where the name is written, and the full
     /// name of the const.
     static SIZES: std::cell::RefCell<std::collections::BTreeMap<usize, (usize, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Each pattern written in the program and given to `Regex.compile` or `Regex.of`, and
+    /// where: checked once every body is (choices 1463, 1469).
+    static PATTERNS: std::cell::RefCell<std::collections::BTreeMap<usize, (Span, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
     /// A const, not found yet, whose value a body needed: the body is checked again once it is.
     static NEEDED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
@@ -10612,8 +10647,29 @@ impl<'a> Checker<'a> {
             true => diag.hint("`SecureRandom.nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
             false => diag,
         })?;
+        if owner == format!("{STD_MODULE}.Regex") && matches!(name, "compile" | "of") {
+            self.pattern_written(name, &args[0])?;
+        }
         *callee = Callee::Static { owner: owner.to_string(), name: name.to_string() };
         self.method_gives(name, sig, None, args, span, awaited)
+    }
+
+    /// The pattern of `Regex.compile(pattern)` or `Regex.of(pattern)`: a text written in the
+    /// program is kept to be checked once every body is; `Regex.of` takes nothing else.
+    fn pattern_written(&self, name: &str, arg: &Expr) -> Res<()> {
+        let mut inner = peel_widen(arg);
+        while let ExprKind::Borrow { expr, .. } = &inner.kind {
+            inner = peel_widen(expr);
+        }
+        match &inner.kind {
+            ExprKind::Str(text) => {
+                PATTERNS.with(|found| found.borrow_mut().insert(arg.span.start, (arg.span, text.clone())));
+                Ok(())
+            }
+            _ if name == "of" => Err(Diag::error(arg.span, "`Regex.of` takes a pattern written in the program, which is checked when the program is compiled")
+                .hint("a pattern made when the program runs goes to `Regex.compile(pattern)`, which gives a `Result<Regex, RegexError>`")),
+            _ => Ok(()),
+        }
     }
 
     /// `ulong.fromLittleEndian(bytes)`: the integer that exactly as many bytes as the type
@@ -11685,6 +11741,8 @@ impl<'a> Checker<'a> {
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
             "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
+            "charCategory" => (SystemCall::CharCategory, vec![Ty::Char], Ty::Int(IntTy::Int)),
+            "charFold" => (SystemCall::CharFold, vec![Ty::Char], Ty::Char),
             "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
             "run" => {
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
@@ -12005,6 +12063,24 @@ impl<'a> Checker<'a> {
         let (span, ty) = (stream.span, Ty::Read(Box::new(stream.ty.strip_borrow().clone())));
         args.push(Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(stream) }, span, ty, moved: false });
         *callee = Callee::Static { owner, name: inner.to_string() };
+        Ok(ret)
+    }
+
+    /// `c.category()`: the general category of a character, done by the language's own module
+    /// (`UnicodeCategory.of(c)`, choice 1476).
+    fn char_category(&mut self, recv: &mut Expr, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
+        if !args.is_empty() {
+            return Err(Diag::error(span, format!("`category` takes no arguments, {} given", args.len())));
+        }
+        let recv_ty = recv.ty.clone();
+        self.coerce(recv, recv_ty, &Ty::Char)?;
+        let owner = format!("{STD_MODULE}.UnicodeCategory");
+        let Some(sig) = self.methods_of(&owner).get("of") else { unreachable!("a program that names `category` gets the file of `UnicodeCategory`") };
+        let ret = sig.ret.clone();
+        let written = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span: recv.span, ty: Ty::Void, moved: false };
+        let c = std::mem::replace(recv, written);
+        args.push(c);
+        *callee = Callee::Static { owner, name: "of".to_string() };
         Ok(ret)
     }
 
@@ -12543,6 +12619,9 @@ impl<'a> Checker<'a> {
         }
         if *target == Ty::Socket && matches!(name, "remoteAddress" | "localAddress") {
             return self.stream_address(recv, name, args, callee, span);
+        }
+        if *target == Ty::Char && name == "category" {
+            return self.char_category(recv, args, callee, span);
         }
         if matches!(target, Ty::Listener | Ty::Socket) {
             let target = target.clone();

@@ -33,6 +33,8 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("command_line.sg", include_str!("std/command_line.sg"), &["CommandLine", "Arguments", "CommandLineError"]),
     ("json.sg", include_str!("std/json.sg"), &["Json", "JsonValue", "JsonObject", "JsonError", "JsonErrorKind"]),
     ("log.sg", include_str!("std/log.sg"), &["Log", "LogLevel"]),
+    ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory"]),
+    ("regex.sg", include_str!("std/regex.sg"), &["Regex", "RegexError", "RegexErrorKind", "Match", "Captures"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of
@@ -44,6 +46,10 @@ pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp"];
 /// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of
 /// `SocketAddress`.
 pub const STD_STREAM_CALLS: &[&str] = &["remoteAddress", "localAddress"];
+
+/// The method of `char` that the language's own module does the work of (`c.category()` gives a
+/// `UnicodeCategory`): a program that names it gets the file of `UnicodeCategory`.
+pub const STD_CHAR_CALLS: &[&str] = &["category"];
 
 /// Every type of the language's own module.
 pub fn std_types() -> impl Iterator<Item = &'static str> {
@@ -116,6 +122,9 @@ impl Sources {
         }
         if STD_STREAM_CALLS.iter().any(|name| named.contains(*name)) {
             named.insert("SocketAddress".to_string());
+        }
+        if STD_CHAR_CALLS.iter().any(|name| named.contains(*name)) {
+            named.insert("UnicodeCategory".to_string());
         }
         // A file of the module may name a type of another (a `FileInfo` holds a `DateTime`), so
         // the names of each file brought are looked at too, until nothing more is named.

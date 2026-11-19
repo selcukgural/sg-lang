@@ -310,6 +310,7 @@ A `char` is written `'a'`, `'é'`, `'\n'` or `'\u{e9}'`. It is not a number: `(i
 | `bool isLetter(read this)`, `isNumeric`, `isAlphanumeric`, `isUpper`, `isLower`, `isControl`, `isWhitespace` | Unicode 17.0's categories: L, N, L or N, Lu, Ll, Cc, and white space |
 | `char toUpper(read this)`, `char toLower(read this)` | One character for one: `'ß'.toUpper()` is `'ß'` |
 | `nint utf8Length(read this)` | How many bytes the character takes in UTF-8 |
+| `UnicodeCategory category(read this)` | Its general category in Unicode 17.0: `UppercaseLetter`, `DecimalNumber`, `CurrencySymbol`, ... `Unassigned`; `abbreviation()` gives the short name, `Lu` |
 
 ```sg
 void main() {
@@ -321,6 +322,7 @@ void main() {
     print('٣'.isNumeric())
     print('ß'.toUpper())
     print('Q'.isUpper() && 'q'.isLetter())
+    print($"{'€'.category()} {'€'.category().abbreviation()}")
     byte b = 'x'
     print(b.toAsciiUpper())
 }
@@ -336,6 +338,7 @@ true
 true
 ß
 true
+CurrencySymbol Sc
 88
 ```
 

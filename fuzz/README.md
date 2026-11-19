@@ -10,6 +10,7 @@ not part of `cargo test`.
 |---------|--------------------------------------------------------------------------------------------------|
 | `parse` | the lexer and the parser (`sg::parser::parse`), and the message of an error                      |
 | `check` | all `sg build` does before the C compiler runs (`sg::emit_c_sources`), and the message of an error |
+| `regex` | `Regex` of the language's own module (choice 1468): the input up to its first line break is a pattern compiled when the program runs, the rest a text it is matched against every way (`isMatch`, `find`, `findAll`, `captures`, `replaceAll`, `split`), in the interpreter |
 
 An input that is not UTF-8 is passed over: `sg` does not read such a file. An input of even
 length is built as a debug build, one of odd length as a release build. A program is given a path
@@ -19,7 +20,8 @@ the same on every run.
 What counts as a finding: a panic of Rust (the targets are built with debug assertions, so an
 overflow that a release build of `sg` would wrap is one), a stack run out, more than 2 GB of
 memory, or an input that takes more than 10 seconds. A message of `sg` about the program is the
-answer expected. While the targets are built (`cfg(fuzzing)`), a const may take 1 000 000 steps
+answer expected. For `regex` a panic of the SG program is a finding as well: a pattern and a text
+end with a match or a `RegexError`. While the targets are built (`cfg(fuzzing)`), a const may take 1 000 000 steps
 instead of 100 000 000 (choice 1352); `sg` itself is built as before.
 
 ## Running

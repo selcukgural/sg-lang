@@ -1,0 +1,213 @@
+// Runs the search tests of RE2 (`re2-search.txt`, as Go keeps them in `regexp/testdata`) with
+// `Regex` (choice 1468) and prints each case whose result is not the expected one, then a count.
+// Each pattern is tried on each text of its block two ways, as Go's `TestRE2Search` does: as it
+// is (the second result of a line, the leftmost match RE2 prefers) and held to the whole text,
+// `\A(?:pattern)\z` (the first). The groups are compared too, and `isMatch` against them. The
+// third and fourth results are the leftmost-longest match of POSIX, which `Regex` has not (1473).
+//
+// Left out, as Go leaves them out: `\C`, one byte of a character, which no `Regex` has; and
+// `\B` in a text whose characters are not all one byte, where RE2 looks between the bytes of a
+// character and SG, as Go, does not. Left out besides: a text that is not UTF-8, which is no
+// `string`, and `\p{Greek}`, a script of Unicode, which `\p` does not name yet (choice 1471).
+
+// The bytes of a text written as Go quotes it: `"a\x00é"`.
+List<byte> unquote(read string line) {
+    var out = List<byte>()
+    var bytes = line.asBytes()
+    nint i = 1
+    nint end = bytes.length() - 1
+    while i < end {
+        byte c = bytes[i]
+        if c != '\\' {
+            out.add(c)
+            i += 1
+            continue
+        }
+        byte e = bytes[i + 1]
+        i += 2
+        if e == 'x' {
+            out.add((byte)(hex(read line, i, 2)))
+            i += 2
+        } else if e == 'u' || e == 'U' {
+            nint digits = 4
+            if e == 'U' {
+                digits = 8
+            }
+            int code = hex(read line, i, digits)
+            i += digits
+            var piece = $"{(char)code}".toString()
+            out.addAll(piece.asBytes())
+        } else if e >= '0' && e <= '7' {
+            int value = (e - '0') * 64 + (bytes[i] - '0') * 8 + (bytes[i + 1] - '0')
+            out.add((byte)value)
+            i += 2
+        } else if e == 'n' {
+            out.add('\n')
+        } else if e == 't' {
+            out.add('\t')
+        } else if e == 'r' {
+            out.add('\r')
+        } else if e == 'a' {
+            out.add(7)
+        } else if e == 'b' {
+            out.add(8)
+        } else if e == 'f' {
+            out.add(12)
+        } else if e == 'v' {
+            out.add(11)
+        } else {
+            out.add(e)
+        }
+    }
+    return out
+}
+
+int hex(read string line, nint at, nint count) {
+    int value = 0
+    for k in 0..count {
+        byte b = line[at + k]
+        int digit = b - '0'
+        if b >= 'a' {
+            digit = b - 'a' + 10
+        } else if b >= 'A' {
+            digit = b - 'A' + 10
+        }
+        value = value * 16 + digit
+    }
+    return value
+}
+
+// What a search gave, as the file writes it: `-` for no match, else `start-end` for each group
+// with `-` for one that took no part, apart by spaces.
+string written(read Regex re, read string text) {
+    var caps = re.captures(text)
+    if caps is null {
+        if re.isMatch(text) {
+            return "isMatch says yes, captures says no"
+        }
+        return "-"
+    }
+    if !re.isMatch(text) {
+        return "isMatch says no, captures says yes"
+    }
+    var out = string.withCapacity(32)
+    for g in 0..caps.length() {
+        if g > 0 {
+            out.write(' ')
+        }
+        var found = caps.get(g)
+        if found is null {
+            out.write('-')
+        } else {
+            out.write($"{found.start}-{found.end}")
+        }
+    }
+    return out
+}
+
+bool allAscii(read string text) {
+    for b in text.asBytes() {
+        if b >= 0x80 {
+            return false
+        }
+    }
+    return true
+}
+
+void main(List<string> args) {
+    var file = File.readText(read args[0]) ?? panic("cannot read the file")
+    var texts = List<string>()
+    var usable = List<bool>()
+    bool inTexts = false
+    Regex? re = null
+    Regex? whole = null
+    string pattern = ""
+    nint next = 0
+    long cases = 0
+    long left = 0
+    long wrong = 0
+    long lineNumber = 0
+    for line in file.lines() {
+        lineNumber += 1
+        if line.length() == 0 || line[0] == '#' || (line[0] >= 'A' && line[0] <= 'Z') {
+            continue
+        }
+        if line == "strings" {
+            texts.clear()
+            usable.clear()
+            inTexts = true
+            continue
+        }
+        if line == "regexps" {
+            inTexts = false
+            continue
+        }
+        if line[0] == '"' {
+            var bytes = unquote(line)
+            match string.fromUtf8(read bytes) {
+                Ok(text) => {
+                    if inTexts {
+                        texts.add(text.clone())
+                        usable.add(true)
+                        continue
+                    }
+                    pattern = text.clone()
+                }
+                Error(_) => {
+                    if inTexts {
+                        texts.add("")
+                        usable.add(false)
+                        continue
+                    }
+                    pattern = ""
+                }
+            }
+            next = 0
+            re = null
+            whole = null
+            if pattern.contains("\\C") || pattern.contains("{Greek}") || pattern.contains("{^Greek}") {
+                continue
+            }
+            match Regex.compile(read pattern) {
+                Ok(compiled) => {
+                    var full = $"\\A(?:{pattern})\\z".toString()
+                    match Regex.compile(read full) {
+                        Ok(w) => whole = w
+                        Error(e) => print($"{lineNumber}: {full}: {e}")
+                    }
+                    re = compiled
+                }
+                Error(e) => print($"{lineNumber}: {pattern}: {e}")
+            }
+            continue
+        }
+        // A line of results, for the next text.
+        nint at = next
+        next += 1
+        cases += 1
+        if re is null || whole is null || !usable[at] {
+            left += 1
+            continue
+        }
+        var text = read texts[at]
+        if pattern.contains("\\B") && !allAscii(text) {
+            left += 1
+            continue
+        }
+        var results = List<string>()
+        for part in line.split(';') {
+            results.add(part.clone())
+        }
+        var partial = written(read re, text)
+        var full = written(read whole, text)
+        if partial != results[1] {
+            wrong += 1
+            print($"{lineNumber}: {pattern} in {text}: {partial}, expected {results[1]}")
+        }
+        if full != results[0] {
+            wrong += 1
+            print($"{lineNumber}: whole {pattern} in {text}: {full}, expected {results[0]}")
+        }
+    }
+    print($"{cases - left} of {cases} cases tried, {left} left out; {wrong} wrong")
+}

@@ -37,6 +37,18 @@ fn record(c: char) -> (u16, i32, i32, i32) {
     RECORDS[LEAF[leaf | (code as usize & ((1 << LEAF_BITS) - 1))] as usize]
 }
 
+/// The general category of the character: its place in the list of `tools/unicode_tables.py`,
+/// which is the order of the variants of `UnicodeCategory` (choice 1476).
+pub fn category(c: char) -> u8 {
+    (record(c).0 >> CATEGORY_SHIFT) as u8
+}
+
+/// The simple case folding: one character for one, from the C and S lines of CaseFolding.txt
+/// (choice 1477).
+pub fn simple_fold(c: char) -> char {
+    moved(c, record(c).3)
+}
+
 /// Whether the character has one of the `bits`.
 pub fn is(c: char, bits: u16) -> bool {
     record(c).0 & bits != 0
@@ -156,7 +168,7 @@ pub fn c_runtime() -> &'static str {
         }
         let _ = writeln!(
             out,
-            "#define SG_UNI_TOP_SHIFT {TOP_SHIFT}\n#define SG_UNI_MID_BITS {MID_BITS}\n#define SG_UNI_LEAF_BITS {LEAF_BITS}"
+            "#define SG_UNI_TOP_SHIFT {TOP_SHIFT}\n#define SG_UNI_MID_BITS {MID_BITS}\n#define SG_UNI_LEAF_BITS {LEAF_BITS}\n#define SG_UNI_CATEGORY_SHIFT {CATEGORY_SHIFT}"
         );
         out.push_str(C_FUNCTIONS);
         out
@@ -180,8 +192,10 @@ static inline const sg_uni_record* sg_uni(uint32_t c) {
     return &sg_uni_records[sg_uni_leaf[leaf | (c & ((1u << SG_UNI_LEAF_BITS) - 1))]];
 }
 static inline bool sg_uni_is(uint32_t c, int bits) { return (sg_uni(c)->bits & bits) != 0; }
+static inline int32_t sg_uni_category(uint32_t c) { return (int32_t)(sg_uni(c)->bits >> SG_UNI_CATEGORY_SHIFT); }
 static inline uint32_t sg_uni_upper1(uint32_t c) { return (uint32_t)((int32_t)c + sg_uni(c)->up); }
 static inline uint32_t sg_uni_lower1(uint32_t c) { return (uint32_t)((int32_t)c + sg_uni(c)->low); }
+static inline uint32_t sg_uni_fold1(uint32_t c) { return (uint32_t)((int32_t)c + sg_uni(c)->fold); }
 /* The full mapping of `c` (0 upper, 1 lower, 2 fold): one to three characters into `out`. */
 static int sg_uni_map(uint32_t c, int which, uint32_t out[3]) {
     const sg_uni_record* r = sg_uni(c);

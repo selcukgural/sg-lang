@@ -1,0 +1,66 @@
+U+0041 UppercaseLetter Lu
+U+0061 LowercaseLetter Ll
+U+01C5 TitlecaseLetter Lt
+U+02B0 ModifierLetter Lm
+U+05D0 OtherLetter Lo
+U+00C1 UppercaseLetter Lu
+U+0301 NonspacingMark Mn
+U+093E SpacingMark Mc
+U+20DD EnclosingMark Me
+U+0663 DecimalNumber Nd
+U+216B LetterNumber Nl
+U+00BD OtherNumber No
+U+005F ConnectorPunctuation Pc
+U+2014 DashPunctuation Pd
+U+0028 OpenPunctuation Ps
+U+005D ClosePunctuation Pe
+U+0029 ClosePunctuation Pe
+U+00AB InitialPunctuation Pi
+U+00BB FinalPunctuation Pf
+U+0021 OtherPunctuation Po
+U+002B MathSymbol Sm
+U+20AC CurrencySymbol Sc
+U+005E ModifierSymbol Sk
+U+00A9 OtherSymbol So
+U+00A0 SpaceSeparator Zs
+U+2028 LineSeparator Zl
+U+2029 ParagraphSeparator Zp
+U+000A Control Cc
+U+200D Format Cf
+U+E000 PrivateUse Co
+U+0378 Unassigned Cn
+a letter with case
+a digit
+a space
+something else
+true
+true
+Cc 65
+Cf 170
+Cn 814730
+Co 137468
+Ll 2283
+Lm 410
+Lo 141062
+Lt 31
+Lu 1886
+Mc 471
+Me 13
+Mn 2059
+Nd 770
+Nl 239
+No 915
+Pc 10
+Pd 27
+Pe 77
+Pf 10
+Pi 12
+Po 641
+Ps 79
+Sc 64
+Sk 125
+Sm 960
+So 7468
+Zl 1
+Zp 1
+Zs 17

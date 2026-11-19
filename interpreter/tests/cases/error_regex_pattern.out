@@ -1,0 +1,5 @@
+error: this pattern is not a regular expression: column 1: missing closing )
+  a pattern written in the program is checked when the program is compiled
+  --> error_regex_pattern.sg:3:33
+ 3 | static Regex Numbers = Regex.of("""(\d+""")
+   |                                 ^^^^^^^^^^

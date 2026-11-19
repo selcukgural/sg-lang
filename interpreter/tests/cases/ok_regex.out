@@ -1,0 +1,102 @@
+true
+3
+4
+2026-11-20
+11
+true
+true
+from 20.11.2026 to 05.01.2027
+from 20/11/2026 ($) to 05/01/2027 ($)
+(?<year>\d{4})-(?<month>\d\d)-(?<day>\d\d)
+(?<year>\d{4})-(?<month>\d\d)-(?<day>\d\d)
+a|ab in abab: [0..1, 2..3] ["a", "a"]
+ab|a in abab: [0..2, 2..4] ["ab", "ab"]
+a+ in caaab: [1..4] ["aaa"]
+a+? in caaab: [1..2, 2..3, 3..4] ["a", "a", "a"]
+a{2,3} in aaaaaaa: [0..3, 3..6] ["aaa", "aaa"]
+a{2,3}? in aaaaaaa: [0..2, 2..4, 4..6] ["aa", "aa", "aa"]
+a{2,} in a aa aaa: [2..4, 5..8] ["aa", "aaa"]
+colou?r in color colour: [0..5, 6..12] ["color", "colour"]
+(?:|a)* in aaa: [0..0, 1..1, 2..2, 3..3] ["", "", "", ""]
+(?:a|)* in aaa: [0..3] ["aaa"]
+x* in axxb: [0..0, 1..3, 4..4] ["", "xx", ""]
+ in ab: [0..0, 1..1, 2..2] ["", "", ""]
+^a in a
+a: [0..1] ["a"]
+(?m)^a in a
+a: [0..1, 2..3] ["a", "a"]
+a$ in a
+a: [2..3] ["a"]
+(?m)a$ in a
+a: [0..1, 2..3] ["a", "a"]
+\Aa|a\z in aba: [0..1, 2..3] ["a", "a"]
+\bis\b in this is his island: [5..7] ["is"]
+\Bis in this is his island: [2..4, 9..11] ["is", "is"]
+\d+ in a1 b22 ٣٣: [1..2, 4..6] ["1", "22"]
+\w+ in ab_1 é: [0..4] ["ab_1"]
+\s+ in a 	
+b: [1..4] [" \t\n"]
+[^\s,]+ in a, bc ,d: [0..1, 3..5, 7..8] ["a", "bc", "d"]
+[[:upper:]][[:lower:]]+ in Ada Lovelace: [0..3, 4..12] ["Ada", "Lovelace"]
+[[:^alpha:]]+ in ab12cd: [2..4] ["12"]
+\p{Lu}\p{Ll}+ in Çağ ŞEHİR Işık: [0..5, 14..20] ["Çağ", "Işık"]
+\pN+ in x٣½7: [1..6] ["٣½7"]
+\PL+ in ab12!cd: [2..5] ["12!"]
+\p{^L}+ in ab12!cd: [2..5] ["12!"]
+\p{Sc} in 5€ 3$ 2₺: [1..4, 6..7, 9..12] ["€", "$", "₺"]
+[a-cx-z]+ in abcxyzd: [0..6] ["abcxyz"]
+[]a]+ in a]b: [0..2] ["a]"]
+[a-]+ in a-b: [0..2] ["a-"]
+. in é
+: [0..2] ["é"]
+(?s). in é
+: [0..2, 2..3] ["é", "\n"]
+(?i)k+ in kKK: [0..5] ["kKK"]
+(?i)s+ in sSſ: [0..4] ["sSſ"]
+(?i)ß in ß ẞ ss: [0..2, 3..6] ["ß", "ẞ"]
+(?i)i in i I ı İ: [0..1, 2..3] ["i", "I"]
+(?i)[a-c]+ in ABCabc: [0..6] ["ABCabc"]
+(?i)\p{Lu}+ in aBı: [0..2] ["aB"]
+(?i)\P{Lu}+ in aBı-: [2..5] ["ı-"]
+(?i:a)a in AA Aa: [3..5] ["Aa"]
+(?i)a(?-i)a in AA Aa: [3..5] ["Aa"]
+(?U)a+ in aaa: [0..1, 1..2, 2..3] ["a", "a", "a"]
+(?U)a+? in aaa: [0..3] ["aaa"]
+\x41\x{1F600}\101 in A😀A: [0..6] ["A😀A"]
+\Q1+1=2\E in is 1+1=2?: [3..8] ["1+1=2"]
+\.\*\[ in a.*[b: [1..4] [".*["]
+a\tb\nc in a	b
+c: [0..5] ["a\tb\nc"]
+true
+b
+[a|][|b]
+ax
+["a", "b", "c", "d"]
+["", "a", "", "b", ""]
+["a", "b", "c"]
+[""]
+true
+(a: column 1: missing closing )
+a): column 2: unexpected )
+[a: column 1: missing closing ]
+[z-a]: column 2: invalid range in a class: its end comes before its start
+\q: column 1: invalid escape
+a\: column 2: trailing backslash at the end of the pattern
+*a: column 1: missing argument to repetition operator
+a**: column 3: invalid nested repetition operator
+a{1001}: column 2: invalid repeat count: at most 1000, and the second not below the first
+a{3,2}: column 2: invalid repeat count: at most 1000, and the second not below the first
+(?<>a): column 4: invalid group name: letters, digits and _
+(?<n>a)(?<n>b): column 11: duplicate group name 'n'
+(?x): column 1: invalid flags: i, m, s and U
+(?=a): column 1: look-around is not supported: a match never looks ahead or behind
+(?<!a): column 1: look-around is not supported: a match never looks ahead or behind
+\p{Xx}: column 1: unknown class 'Xx'
+[[:foo:]]: column 2: unknown class 'foo'
+\p{Greek}: column 1: unknown class 'Greek'
+((a{1000}){1000}){1000}: column 1: the pattern makes a program of more than 100000 steps
+250 deep: 250 groups
+251 deep: column 251: groups nested deeper than 250
+true
+false
+true

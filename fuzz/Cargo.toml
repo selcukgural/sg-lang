@@ -32,3 +32,10 @@ path = "fuzz_targets/check.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "regex"
+path = "fuzz_targets/regex.rs"
+test = false
+doc = false
+bench = false

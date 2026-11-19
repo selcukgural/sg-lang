@@ -1,0 +1,5 @@
+1xa
+panic: the replacement "$3" names group 3, which the pattern (\w+)=(\w+) does not have
+  --> panic_regex_replacement_group.sg:6:11
+ 6 |     print(pair.replaceAll("a=1", "$3"))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -6202,6 +6202,14 @@ impl<'a, 'e> Interp<'a, 'e> {
         if call == SystemCall::ColourTerminal {
             return Ok(Value::Bool(self.io.world.borrow().err_colour));
         }
+        if call == SystemCall::CharCategory {
+            let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
+            return Ok(Value::Int(IntTy::Int, i128::from(crate::unicode::category(c))));
+        }
+        if call == SystemCall::CharFold {
+            let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
+            return Ok(Value::Char(crate::unicode::simple_fold(c)));
+        }
         if call == SystemCall::Executable {
             return Ok(Value::Int(IntTy::Long, executable(&text(0))));
         }
@@ -6324,7 +6332,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalStop
             | SystemCall::SignalRaise
             | SystemCall::SignalNumber
-            | SystemCall::ColourTerminal => unreachable!("done above"),
+            | SystemCall::ColourTerminal
+            | SystemCall::CharCategory
+            | SystemCall::CharFold => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.

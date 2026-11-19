@@ -21,7 +21,8 @@ are built and tested on Linux, macOS and Windows; what is written here can still
 - **C**: calling C and being called by it, C's types laid out as C lays them out, and libraries of SG that C
   links. SQLite, libcurl and zlib are wrapped in modules whose users write no `unsafe`.
 - **A library**: files, folders and paths, other programs, the network (TCP and UDP), signals, time and time
-  zones, random numbers, Unicode, hex and Base64, CRC-32, SHA-256 and HMAC, the command line, JSON and a log.
+  zones, random numbers, Unicode, hex and Base64, CRC-32, SHA-256 and HMAC, the command line, JSON, a log and
+  regular expressions.
 - **A machine without a system**: a program built for one (`--freestanding`), and a small kernel for RISC-V.
 - **Tools**: `sg test`, a debug build that counts every block of memory and reports leaks, and `sg lsp` for
   editors.

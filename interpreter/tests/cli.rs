@@ -600,6 +600,24 @@ fn a_json_suite() {
     }
 }
 
+/// RE2's search tests (`tests/regex-suite`, choice 1468), run by `Regex` interpreted and
+/// compiled: the leftmost match and the match of the whole text, with the groups.
+#[test]
+fn a_regex_suite() {
+    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("regex-suite");
+    let cases = suite.join("re2-search.txt").to_string_lossy().into_owned();
+    let check = suite.join("check.sg").to_string_lossy().into_owned();
+    let dir = work("a_regex_suite");
+    let expected = (0, "1772 of 1888 cases tried, 116 left out; 0 wrong\n".to_string(), String::new());
+    assert_eq!(ran(&sg(&dir, &[&check, &cases])), expected, "interpreted");
+    if has_compiler() {
+        let out = program(&dir, "check").to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        assert_eq!(ran(&run), expected, "compiled");
+    }
+}
+
 const LOGS: &str = "void main() {\n    print(Log.level())\n    Log.debug(\"debug\")\n    Log.warn(\"warn\")\n}\n";
 
 /// The lines of standard error with the time of each left out: what follows `Z `.

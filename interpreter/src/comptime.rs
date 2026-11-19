@@ -232,6 +232,8 @@ fn barred_call(callee: &Callee) -> Option<&'static str> {
         Callee::System(call) => match call {
             SystemCall::Variable => "reads a variable of the environment",
             SystemCall::ColourTerminal => "looks at the terminal",
+            // The same tables when the program is compiled and when it runs.
+            SystemCall::CharCategory | SystemCall::CharFold => return None,
             SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup => "uses the network",
             SystemCall::Run | SystemCall::Wait => "runs another program",
             SystemCall::SignalNext => "waits for a signal",

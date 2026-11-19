@@ -1,0 +1,5 @@
+error: `Regex.of` takes a pattern written in the program, which is checked when the program is compiled
+  --> error_regex_of_variable.sg:4:23
+ 4 |     var re = Regex.of(read args[0])
+   |                       ^^^^^^^^^^^^
+  hint: a pattern made when the program runs goes to `Regex.compile(pattern)`, which gives a `Result<Regex, RegexError>`

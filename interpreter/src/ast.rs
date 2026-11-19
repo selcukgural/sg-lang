@@ -770,6 +770,12 @@ pub enum SystemCall {
     /// `System.colourTerminal()`: the standard error is a terminal that shows colours (on Windows,
     /// a console that takes the escape sequences, turned on if it was not), for `Log` (choice 1455).
     ColourTerminal,
+    /// `System.charCategory(c)`: the general category of a character, its place among the
+    /// variants of `UnicodeCategory` (choice 1476), from the Unicode tables.
+    CharCategory,
+    /// `System.charFold(c)`: the simple case folding of a character (the C and S lines of
+    /// CaseFolding.txt), by which `(?i)` of a `Regex` compares (choice 1477).
+    CharFold,
     /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0
     /// for no file.
     Executable,

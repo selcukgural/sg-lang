@@ -1,0 +1,51 @@
+// `c.category()`: the general category of Unicode (choice 1476), from the tables of the language.
+// One character of each category, then how many code points each holds, every `char` gone over
+// (Unicode 17.0; the surrogates are no `char`), by the short name. The counts are those of Python's
+// `unicodedata` 17.0.
+
+string kind(char c) {
+    match c.category() {
+        UppercaseLetter or LowercaseLetter or TitlecaseLetter => return "a letter with case"
+        DecimalNumber => return "a digit"
+        SpaceSeparator => return "a space"
+        _ => return "something else"
+    }
+}
+
+void main() {
+    var samples = "AaǅʰאÁ\u{301}\u{93E}\u{20DD}٣Ⅻ½_—(])«»!+€^©\u{A0}\u{2028}\u{2029}\n\u{200D}\u{E000}\u{378}"
+    for c in samples.chars() {
+        var k = c.category()
+        print($"U+{(int)c:X4} {k} {k.abbreviation()}")
+    }
+    print(kind('Ş'))
+    print(kind('7'))
+    print(kind(' '))
+    print(kind('€'))
+    print('x'.category() == UnicodeCategory.LowercaseLetter)
+    print('X'.category() != UnicodeCategory.LowercaseLetter)
+
+    var counts = HashMap<UnicodeCategory, long>()
+    var order = List<UnicodeCategory>()
+    for code in 0..0x110000 {
+        var c = code.tryToChar()
+        if c is null {
+            continue
+        }
+        var k = c.category()
+        if counts.get(k) is not null {
+            counts[k] += 1
+        } else {
+            counts.add(k, 1)
+            order.add(k)
+        }
+    }
+    var lines = List<string>()
+    for k in order {
+        lines.add($"{k.abbreviation()} {counts[k]}".toString())
+    }
+    lines.sort()
+    for line in lines {
+        print(line)
+    }
+}

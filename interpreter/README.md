@@ -31,7 +31,7 @@ macOS, whose own Clang knows only its own processor: `brew install llvm lld qemu
 `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`. On Linux the image
 of `tests/Containerfile` has them.
 
-## What runs today (19 November 2026)
+## What runs today (20 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -80,6 +80,7 @@ of `tests/Containerfile` has them.
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
+| Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -95,7 +96,7 @@ of `tests/Containerfile` has them.
 | Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
-| Unicode | On `char`, from the tables of Unicode 17.0: `isLetter()` (category L), `isNumeric()` (N: `'٣'`, `'½'`), `isAlphanumeric()`, `isUpper()` (Lu), `isLower()` (Ll), `isControl()` (Cc), and `toUpper()`, `toLower()`, one character for one (`'ß'.toUpper()` is `'ß'`). On a text: `toUpper()` and `toLower()` give a new text by the full mappings (`"straße".toUpper()` is `"STRASSE"`, `Σ` at the end of a word is `ς`), `foldCase()` the text as it is compared without case, `a.equalsIgnoreCase(b)` compares so without allocating. No language is taken into account: `"i".toUpper()` is `"I"` |
+| Unicode | On `char`, from the tables of Unicode 17.0: `isLetter()` (category L), `isNumeric()` (N: `'٣'`, `'½'`), `isAlphanumeric()`, `isUpper()` (Lu), `isLower()` (Ll), `isControl()` (Cc), and `toUpper()`, `toLower()`, one character for one (`'ß'.toUpper()` is `'ß'`). On a text: `toUpper()` and `toLower()` give a new text by the full mappings (`"straße".toUpper()` is `"STRASSE"`, `Σ` at the end of a word is `ς`), `foldCase()` the text as it is compared without case, `a.equalsIgnoreCase(b)` compares so without allocating. No language is taken into account: `"i".toUpper()` is `"I"`. `c.category()` gives the general category, a `UnicodeCategory` (`UppercaseLetter`, `DecimalNumber`, `CurrencySymbol`, ... `Unassigned`), and `k.abbreviation()` its short name (`Lu`) |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, `File.openAppend(path)` one that writes after what the file holds, and `File.openWrite(path)` one that writes from the start over what it holds (a missing file is made). A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. A reader and a writer of a file move with `seek(SeekFrom.Start(n))`, `SeekFrom.End(n)` or `SeekFrom.Current(n)`, which gives the new place as a `Result<long, IoError>`; a reader moves inside its block without the system, a writer writes what it holds first (`seekAsync` in an async function); a place before the start is `InvalidInput`, and a pipe, a writer of `openAppend` or `Stdin` lent on is `NotSeekable`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `NotSeekable` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
@@ -946,7 +947,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/ffi.rs` | For the interpreter: the library of wrappers for the functions of C a program calls, built with `cc` in a folder of its own and opened with `dlopen` |
 | `src/raw.rs` | For the interpreter: raw memory, real addresses from `calloc`, each checked against the block it came from |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
-| `src/unicode.rs`, `src/unicode_tables.rs` | What a character is and its case: the tables of Unicode 17.0, one record for each code point found in three steps, read by the interpreter and written into compiled code as C when a program calls a method that needs them. `tools/unicode_tables.py` makes the tables from the Unicode Character Database (each file checked against its SHA-256) and checks every code point against Python's tables of the same version |
+| `src/unicode.rs`, `src/unicode_tables.rs` | What a character is, its general category and its case: the tables of Unicode 17.0, one record for each code point found in three steps, read by the interpreter and written into compiled code as C when a program calls a method that needs them. `tools/unicode_tables.py` makes the tables from the Unicode Character Database (each file checked against its SHA-256) and checks every code point against Python's tables of the same version |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime`, `DateTimeOffset`, the calendar and the reading of RFC 3339. Only it calls the readings of the clock and of the time zone, `Clock.monotonic()`, `Clock.wall()` and `Clock.offsetAt(seconds)` |
@@ -955,6 +956,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
 | `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
 | `src/std/signals.sg` | The same module's signals (`Signal`, `Signals`, `SignalListener`). Only it calls `System.signalListen`, `System.signalNext` and the other calls of the signals |
+| `src/std/regex.sg`, `src/std/unicode.sg` | The same module's regular expressions (`Regex`, `Match`, `Captures`, `RegexError`: a tree, a program of Thompson's construction and Pike's machine) and the general category of a character (`UnicodeCategory`, the work of `c.category()`). Only they call `System.charCategory` and `System.charFold`, which read the Unicode tables; `Regex.problem` is run by the checker on each pattern written in the program (`patterns_checked` in `src/check.rs`) |
 | `src/signals.rs` | For the interpreter: the signals of the process, a handler that writes the kind into a pipe and a thread that hands each to its listeners, waking the fiber that waits through the scheduler |
 | `src/lsp.rs` | The language server (`sg lsp`): the messages of the Language Server Protocol on the input and output, the program each open file belongs to, a check 300 ms after the last change on a thread of its own, the first error as a diagnostic and its fix as a quick fix, positions in UTF-16 as the protocol counts them |
 | `src/json.rs` | JSON read and written for the language server, so that `sg` keeps no dependencies |
@@ -8915,6 +8917,120 @@ With 1412, 470 of the 1834 programs are compiled on macOS and on Linux (103 unde
 230 programs of the site run as they show; on the Windows Arm VM `ok_log` prints the same interpreted and
 compiled, and `log_colours` and `log_level_from_the_environment` pass.
 
+Choices made in the hundred-and-thirtieth slice (the library: regular expressions). 1457-1468 were approved on
+20 November 2026, before the slice was written; they take regular expressions and compression into `std`,
+which 1406 had left to C libraries, and put both before the real programs of 1418. 1469-1476 were approved
+the same day, also before:
+
+1457. **Regular expressions and compression come with the language**, written in SG, the same interpreted and
+     compiled; TLS and encryption stay with the libraries of C that are looked after for that (1406). Go keeps
+     both in its library (`regexp`, `compress/*`, `archive/zip`); Rust leaves them to crates.
+1458. **The order**: regular expressions (this slice), then compression and zip archives (1465-1467), then the
+     real programs of 1418, whose `grep` uses `Regex`, then XML (1413).
+1459. **The meaning is RE2's**: the time of a match grows with the length of the text and no more, so no
+     pattern can make a search take for ever (ReDoS); there are no back references and no look-around, which
+     would need it. Go's `regexp` and Rust's `regex` mean the same; PCRE and .NET do not.
+1460. **The engine**: the pattern is read into a tree, the tree compiled to a program of steps (Thompson's
+     construction), and the program run by Pike's machine, which follows every way the pattern could go at
+     once, one character at a time, with where each group began and ended. Plain text every match starts with
+     is looked for first, as text (`indexOf`), and a pattern that is plain text is only looked for. No lazy DFA:
+     the measurement of 1418 says whether one is needed. `x*` of an `x` that can match nothing is compiled as
+     `(x+)?`, so the empty way is taken in the order the pattern prefers (as Go since golang.org/issue/46123:
+     `(|a)*` matches nothing of `aaa`). A search makes its lists of threads itself, and `findAll` and
+     `replaceAll` make them once: a `Regex` is never written by a search, so one in a `static` is read by any
+     number of tasks without a lock (Go and Rust keep a pool of them inside, behind one).
+1461. **Go's syntax, less what needs more than a pattern**: `.` `[...]` `[^...]` `|` `*` `+` `?` `{n}` `{n,}`
+     `{n,m}` and the same with `?` to take as little as can be, `(...)`, `(?:...)`, `(?<name>...)` and
+     `(?P<name>...)`, `^` `$` `\A` `\z` `\b` `\B`, `\d \w \s` and `\D \W \S`, `\p` by the general category,
+     `[[:alpha:]]` and the other classes of POSIX with `[[:^alpha:]]`, `\Q...\E`, `\x41`, `\x{1F600}`, `\101`
+     (octal, as Go), the flags `(?i)` `(?m)` `(?s)` `(?U)` alone or around a group (`(?i:...)`), `-` taking one
+     off. The text is matched by character; the positions are in bytes, as in Go and Rust.
+1462. **Limits**: a count of a repetition is at most 1000 (as Go), and a program at most 100,000 steps
+     (`((a{1000}){1000}){1000}` is `TooLarge`), so no pattern takes the memory of the machine; a number of
+     the pattern past them is an error, never a slow program.
+1463. **A pattern written in the program is checked when the program is compiled**: the language's own module
+     reads it then, as a const is found, and one that is not a regular expression is a compile error that says
+     where (`column 1: missing closing )`). Rust has only a lint of clippy (`invalid_regex`), Go nothing.
+1464. **The calls**: `Regex.compile(pattern)` gives a `Result<Regex, RegexError>`; `isMatch`, `find` (a
+     `Match?`, its `start` and `end`), `findAll`, `captures` (by number and by name), `replaceAll` (`$1`,
+     `${1}`, `$name`, `${name}`, `$$`) and `split`. No replacement by a function: the language has no closures.
+1465. **Compression** (the next slice): DEFLATE (RFC 1951), zlib (RFC 1950) and gzip (RFC 1952), both ways,
+     zlib's levels 0 to 9 and its table; whole or as a stream (`StreamReader`, `StreamWriter`).
+1466. **Decompressing takes a limit**, always: `decompress(data, limit)`, `TooLarge` past it, and the reader of a
+     stream takes one too, so a bomb is refused by the signature. Go and Rust leave it to the program.
+1467. **Zip archives**, as Go's `archive/zip`: read and written, stored and deflated, zip64 both ways, no
+     encryption; a name with `..`, a root, a `\` or a drive of Windows is `InsecurePath` (as Go 1.20); no call
+     that unpacks a whole archive to the disk, each entry is read; a size that differs from the one written in
+     the archive is an error.
+1468. **Tests**: RE2's search tests and those of Rust's `regex` where they hold for this syntax; compression both
+     ways against zlib (`examples/zlib`); fuzz targets for the reader of a pattern and for inflate.
+1469. **`Regex.of(pattern)` takes only a pattern written in the program**, checked and compiled when the
+     program is, and gives a `Regex`, never an error when it runs; a pattern made when the program runs goes to
+     `Regex.compile`, which gives a `Result`, and one written there is checked when the program is compiled too
+     (1463). Go's `MustCompile` panics when the program runs; Rust writes `Regex::new(...).unwrap()`. Raw text
+     (`"""\d+"""`) keeps the backslashes from doubling.
+1470. **A `string` is matched, not bytes**: matching a `read byte[]` (Rust's `regex::bytes`, Go's `Match`) waits
+     for a program that needs it, `grep` of 1418 first.
+1471. **`\d \w \s \b` are ASCII**, as in Go and RE2 (in Rust they are Unicode); Unicode is asked for with `\p`.
+     `\p` names the general categories; a script (`\p{Greek}`) waits for its table.
+1472. **A `Match` is where**: `start` and `end`, in bytes, `Copyable`; `m.of(text)` gives the text and
+     `m.length()` its bytes. `findAll` gives a `List<Match>`; `captures` gives a `Captures`, whose `get(i)` and
+     `named(name)` give a `Match?`, `null` for a group that took no part. As Go's `FindStringIndex`.
+1473. **Only the leftmost match the pattern prefers** (Perl's, RE2's, Go's and Rust's); not POSIX's leftmost
+     longest (Go's `Longest()`).
+1474. **`static Regex Digits = Regex.of("""\d+""")`**, in place of the `const` 1469 named: a const holds only plain
+     data, and a `Regex` holds lists. The pattern is still checked when the program is compiled; it is
+     compiled the first time the static is read, once, as Rust's `LazyLock` and Go's variable of a package do.
+1475. **The tables of Unicode take the general category** of every code point, five bits of its record (228
+     records, 3,400 bytes more), so `\p` names every category and group of them.
+1476. **`c.category()`** gives a `UnicodeCategory`, whose 29 variants are Unicode's long names as SG writes a
+     name (`UppercaseLetter`, `NonspacingMark`, `DecimalNumber`, `CurrencySymbol`, `SpaceSeparator`,
+     `PrivateUse`, `Unassigned`, ...), and `k.abbreviation()` the short one (`Lu`); no `Surrogate`, which no
+     `char` is. `\p` takes the short names only: `\p{Lu}`, `\pL`, `\p{L}`, `\PL`, `\p{^L}`, and `\p{Any}`, as Go;
+     Rust takes the long ones too. C#'s `char.GetUnicodeCategory` gives the same; Rust's library has none.
+
+What writing it asked for, from 1477. Approved on 20 November 2026:
+
+1477. **`(?i)` compares by Unicode's simple case folding**, the C and S lines of CaseFolding.txt, as Go does:
+     `k`, `K` and the Kelvin sign are one, `s` and `ſ`, `ß` and `ẞ`; `ı` and `İ` are not `i`, since no language
+     is taken into account (640). A class is folded before it is turned around: `(?i)\P{Lu}` takes neither `a`
+     nor `A`, and takes `ı`, which has no upper case of its own. The record's folding now holds the S lines
+     too, which changes no full folding (`foldCase`): every character with an S line has an F line, and the
+     full folding reads its table for those.
+1478. **`$1x` in a replacement is group 1 and an `x`**: a name after `$` is digits or a name, not both; Go and
+     Rust take `1x` as one name and write nothing for it. A group the pattern does not have, and a `$` with
+     nothing after it, are a panic that names it, never a group taken as empty; a group that took no part
+     writes nothing.
+1479. **Two groups of one name are an error** (`DuplicateGroupName`), as in Rust; Go takes them.
+1480. **`split` of an empty text gives `[""]`**; Go gives `[]` when the pattern is written as nothing (`""`)
+     and `[""]` otherwise, which depends on how the pattern is written, not what it matches. Otherwise as Go's
+     `Split`.
+1481. **Groups are nested at most 250 deep** (Go: 1000): reading a pattern goes down a few calls for each, and
+     the stack of a task may be small.
+
+Tested by `ok_regex` (the calls, the syntax, the flags, folding, the errors of `compile`, a pattern nested
+250 and 251 deep, `(a*)*b` over 20,000 `a`s), `ok_char_category` (a character of each category, and how many
+code points each holds, which are Python's), `error_regex_pattern`, `error_regex_compile_constant`,
+`error_regex_of_variable`, `error_regex_match_fields`, `panic_regex_replacement_group`,
+`panic_regex_replacement_dollar`, and `a_regex_suite` in `tests/cli.rs`, which runs RE2's search tests
+(`tests/regex-suite`, from Go 1.27.4, BSD licence) interpreted and compiled: 1772 of the 1888 cases, each
+the leftmost match and the match of the whole text with their groups, none wrong; the cases left out are
+`\C`, `\B` in a text that is not ASCII (as Go leaves them), texts that are not UTF-8 and `\p{Greek}`. While
+it was written, 207,000 patterns and texts made at random from this syntax were run by Go's `regexp` and by
+`Regex` (`isMatch`, `findAll`, the groups, `replaceAll` and `split`), and every result was the same but the
+two cases chosen above (1479, 1480); that is how 1477 and the order of `(x+)?` were found. The fuzz target
+`regex` (`fuzz/`) runs any pattern and text through it in the interpreter; its first half hour, 126,000
+inputs, found nothing.
+
+Measured against Go's `regexp` (20 MB of text, `findAll`, best of three, Apple M3 Max): a plain word 0.020 s
+(Go 0.053), `\w+@\w+\.com` 0.544 s (0.477), `(?i)error` 0.315 s (0.362), `[0-9]{4}-[0-9]{2}` 0.359 s (0.341),
+`\bfox\b` 0.348 s (0.307), `ş\w+` 0.035 s (0.041). Against Rust's `regex` and C it is measured with the `grep`
+of 1418.
+
+With 1457-1481, 474 of the 1842 programs are compiled on macOS and on Linux (103 under the thread sanitizer), and the
+236 programs of the site run as they show; on the Windows Arm VM `ok_regex` and `ok_char_category` print the
+same interpreted and compiled, and RE2's search tests give the same count both ways.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9062,6 +9178,14 @@ check off.
 
 ## Not here yet
 
+- **Of regular expressions (1457-1481)**: matching bytes (`read byte[]`, 1470); the scripts of Unicode in
+  `\p` (`\p{Greek}`) and its long names (`\p{Letter}`); POSIX's leftmost-longest match (1473); a lazy DFA,
+  which the measurement of 1418 decides; the groups of every match at once (Go's `FindAllStringSubmatch`), a
+  replacement made by a function, and going over the matches without a list. The tests of Rust's `regex`,
+  which 1468 named, are not taken: RE2's are, and the comparison with Go's `regexp` was run while the slice
+  was written, not kept as a test. `(?i)` with `\p` goes over every code point up to U+1E943 once in a
+  program (the table of each category's foldings), which takes 3 ms compiled and a quarter of a second in
+  the interpreter.
 - **Of fuzzing for differences (1361-1368)**: the generator writes stages 1 and 2; borrows and moves (stage 3) and
   tasks with channels, compared in any order (stage 4), are still to come. The reducer takes statements and blocks
   away, not parts of an expression.
@@ -9545,7 +9669,10 @@ naming `xs.get(i)` (1398-1402). The library grows before the reference (1406): h
 (`Hex`, `Base64`, read strictly, 1407), CRC-32 (`Crc32`, sixteen bytes in a step, 1408, 1414, 1415) and
 SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409) and the command line (`CommandLine`,
 GNU's way of writing, 1410, 1423-1433) and JSON (`Json`, `JsonValue`, read strictly and tested with
-JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building nothing, 1412, 1447-1456). Then real programs written in SG, Rust and Go and measured against each other, each
-difference a choice (1418), and after them XML without a DTD (1413), the reference of the language on the site
+JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building nothing, 1412, 1447-1456), and regular expressions (`Regex`, RE2's
+meaning, a pattern of the program checked when it is compiled, and the general category of Unicode with
+`c.category()`, 1457-1481). Compression and zip archives come next (1465-1467), then real programs written in
+SG, Rust and Go and measured against each other, each difference a choice (1418), and after them XML without
+a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

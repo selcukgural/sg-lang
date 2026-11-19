@@ -1,0 +1,5 @@
+error: a `Match` is made by its functions, not field by field
+  --> error_regex_match_fields.sg:3:13
+ 3 |     var m = Match { start = 1, end = 2 }
+   |             ^^^^^
+  hint: `regex.find(text)` gives one, and `regex.findAll(text)` a list of them

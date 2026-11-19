@@ -1,0 +1,5 @@
+costs $5
+panic: the replacement "$ $0" has a $ with no group after it: $$ writes one
+  --> panic_regex_replacement_dollar.sg:5:11
+ 5 |     print(cost.replaceAll("costs 5", "$ $0"))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

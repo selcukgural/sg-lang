@@ -1,0 +1,7 @@
+// A replacement that names a group the pattern does not have is a panic (choice 1478), not a
+// group taken as empty; `$1x` is group 1 and an `x`.
+void main() {
+    var pair = Regex.of("""(\w+)=(\w+)""")
+    print(pair.replaceAll("a=1", "$2x$1"))
+    print(pair.replaceAll("a=1", "$3"))
+}

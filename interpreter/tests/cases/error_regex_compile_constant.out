@@ -1,0 +1,5 @@
+error: this pattern is not a regular expression: column 3: invalid nested repetition operator
+  a pattern written in the program is checked when the program is compiled
+  --> error_regex_compile_constant.sg:4:25
+ 4 |     match Regex.compile("a**") {
+   |                         ^^^^^

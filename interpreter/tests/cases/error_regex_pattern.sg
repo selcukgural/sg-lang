@@ -1,0 +1,7 @@
+// A pattern written in the program is checked when the program is compiled (choice 1469): one
+// that is not a regular expression is a compile error, not a panic when the program runs.
+static Regex Numbers = Regex.of("""(\d+""")
+
+void main() {
+    print(Numbers.isMatch("12"))
+}

@@ -1,0 +1,8 @@
+// `Regex.compile` of a pattern written in the program is checked when the program is compiled
+// too (choice 1463), so its `Result` is never an error made of a mistake in the program.
+void main() {
+    match Regex.compile("a**") {
+        Ok(re) => print(re)
+        Error(e) => print(e)
+    }
+}

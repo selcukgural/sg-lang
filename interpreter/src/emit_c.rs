@@ -16929,6 +16929,14 @@ impl<'a> Emitter<'a> {
                 self.made.insert("io".to_string());
                 ("sg_system_colour", Vec::new(), "return sg_sys_colour();".to_string())
             }
+            SystemCall::CharCategory => {
+                self.made.insert("unicode".to_string());
+                ("sg_system_char_category", vec![Ty::Char], "return sg_uni_category(a0);".to_string())
+            }
+            SystemCall::CharFold => {
+                self.made.insert("unicode".to_string());
+                ("sg_system_char_fold", vec![Ty::Char], "return sg_uni_fold1(a0);".to_string())
+            }
             SystemCall::Variable => (
                 "sg_system_variable",
                 vec![text(), bytes()],

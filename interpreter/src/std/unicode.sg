@@ -1,0 +1,137 @@
+// The general category of a character, from the Unicode tables of the language (choice 1476):
+// `c.category()` gives one. Written in SG and brought along by the language; only the lookup in
+// the tables (`System.charCategory`) is the compiler's own.
+
+// What Unicode says a character is. The names are Unicode's long names (`Uppercase_Letter`)
+// written as SG writes a name; `abbreviation()` gives the short one (`Lu`), which `\p{Lu}` of a
+// `Regex` takes. Surrogates have no variant: no `char` is one.
+public enum UnicodeCategory : Copyable, Equatable, Hashable, Formattable {
+    // Lu: `A`, `Ä`, `Σ`.
+    UppercaseLetter
+    // Ll: `a`, `ä`, `σ`.
+    LowercaseLetter
+    // Lt: a letter of two that begins a word in title case, `ǅ`.
+    TitlecaseLetter
+    // Lm: a letter that changes the one before it, `ʰ`.
+    ModifierLetter
+    // Lo: a letter with no case, `א`, `中`.
+    OtherLetter
+    // Mn: a mark that takes no room of its own, the combining acute accent U+0301.
+    NonspacingMark
+    // Mc: a mark that takes room, as the vowel signs of Devanagari.
+    SpacingMark
+    // Me: a mark around the character before it, U+20DD COMBINING ENCLOSING CIRCLE.
+    EnclosingMark
+    // Nd: a digit, `7`, `٣`.
+    DecimalNumber
+    // Nl: a number written as a letter, `Ⅻ`.
+    LetterNumber
+    // No: another number, `½`, `²`.
+    OtherNumber
+    // Pc: a mark that joins words, `_`.
+    ConnectorPunctuation
+    // Pd: a dash, `-`, `—`.
+    DashPunctuation
+    // Ps: an opening bracket, `(`, `[`, `{`.
+    OpenPunctuation
+    // Pe: a closing bracket, `)`, `]`, `}`.
+    ClosePunctuation
+    // Pi: an opening quotation mark, `«`, `“`.
+    InitialPunctuation
+    // Pf: a closing quotation mark, `»`, `”`.
+    FinalPunctuation
+    // Po: other punctuation, `!`, `,`, `.`.
+    OtherPunctuation
+    // Sm: a sign of mathematics, `+`, `=`, `∑`.
+    MathSymbol
+    // Sc: a currency sign, `$`, `€`, `₺`.
+    CurrencySymbol
+    // Sk: a sign that changes another, written alone, `^`, `` ` ``.
+    ModifierSymbol
+    // So: another symbol, `©`, `°`, an emoji.
+    OtherSymbol
+    // Zs: a space, ` `, U+00A0 NO-BREAK SPACE.
+    SpaceSeparator
+    // Zl: U+2028 LINE SEPARATOR.
+    LineSeparator
+    // Zp: U+2029 PARAGRAPH SEPARATOR.
+    ParagraphSeparator
+    // Cc: a control character, `\n`, `\t`.
+    Control
+    // Cf: a character that shapes text without being seen, U+200D ZERO WIDTH JOINER.
+    Format
+    // Co: a character of the private use areas, U+E000.
+    PrivateUse
+    // Cn: a code point Unicode has not given a character yet.
+    Unassigned
+
+    // The short name Unicode gives the category: `Lu` for `UppercaseLetter`.
+    public read string abbreviation(this) {
+        match this {
+            UppercaseLetter => return "Lu"
+            LowercaseLetter => return "Ll"
+            TitlecaseLetter => return "Lt"
+            ModifierLetter => return "Lm"
+            OtherLetter => return "Lo"
+            NonspacingMark => return "Mn"
+            SpacingMark => return "Mc"
+            EnclosingMark => return "Me"
+            DecimalNumber => return "Nd"
+            LetterNumber => return "Nl"
+            OtherNumber => return "No"
+            ConnectorPunctuation => return "Pc"
+            DashPunctuation => return "Pd"
+            OpenPunctuation => return "Ps"
+            ClosePunctuation => return "Pe"
+            InitialPunctuation => return "Pi"
+            FinalPunctuation => return "Pf"
+            OtherPunctuation => return "Po"
+            MathSymbol => return "Sm"
+            CurrencySymbol => return "Sc"
+            ModifierSymbol => return "Sk"
+            OtherSymbol => return "So"
+            SpaceSeparator => return "Zs"
+            LineSeparator => return "Zl"
+            ParagraphSeparator => return "Zp"
+            Control => return "Cc"
+            Format => return "Cf"
+            PrivateUse => return "Co"
+            Unassigned => return "Cn"
+        }
+    }
+
+    // `c.category()` of a `char`.
+    UnicodeCategory of(char c) {
+        match System.charCategory(c) {
+            0 => return UnicodeCategory.UppercaseLetter
+            1 => return UnicodeCategory.LowercaseLetter
+            2 => return UnicodeCategory.TitlecaseLetter
+            3 => return UnicodeCategory.ModifierLetter
+            4 => return UnicodeCategory.OtherLetter
+            5 => return UnicodeCategory.NonspacingMark
+            6 => return UnicodeCategory.SpacingMark
+            7 => return UnicodeCategory.EnclosingMark
+            8 => return UnicodeCategory.DecimalNumber
+            9 => return UnicodeCategory.LetterNumber
+            10 => return UnicodeCategory.OtherNumber
+            11 => return UnicodeCategory.ConnectorPunctuation
+            12 => return UnicodeCategory.DashPunctuation
+            13 => return UnicodeCategory.OpenPunctuation
+            14 => return UnicodeCategory.ClosePunctuation
+            15 => return UnicodeCategory.InitialPunctuation
+            16 => return UnicodeCategory.FinalPunctuation
+            17 => return UnicodeCategory.OtherPunctuation
+            18 => return UnicodeCategory.MathSymbol
+            19 => return UnicodeCategory.CurrencySymbol
+            20 => return UnicodeCategory.ModifierSymbol
+            21 => return UnicodeCategory.OtherSymbol
+            22 => return UnicodeCategory.SpaceSeparator
+            23 => return UnicodeCategory.LineSeparator
+            24 => return UnicodeCategory.ParagraphSeparator
+            25 => return UnicodeCategory.Control
+            26 => return UnicodeCategory.Format
+            27 => return UnicodeCategory.PrivateUse
+            _ => return UnicodeCategory.Unassigned
+        }
+    }
+}

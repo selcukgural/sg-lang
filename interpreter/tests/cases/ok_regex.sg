@@ -1,0 +1,137 @@
+// `Regex` (choices 1457-1481): a pattern written in the program (`Regex.of`, checked when the
+// program is compiled) and one made when it runs (`Regex.compile`, a `Result`); `isMatch`, `find`,
+// `findAll`, `captures` by number and by name, `replaceAll` and `split`; the syntax, the flags,
+// the classes of Unicode, and case folded as Go folds it.
+
+static Regex Date = Regex.of("""(?<year>\d{4})-(?<month>\d\d)-(?<day>\d\d)""")
+
+void found(read string pattern, read string text) {
+    match Regex.compile(pattern) {
+        Ok(re) => {
+            var all = re.findAll(text)
+            var texts = List<string>()
+            for m in read all {
+                texts.add(m.of(text).clone())
+            }
+            print($"{pattern} in {text}: {all} {texts}")
+        }
+        Error(e) => print($"{pattern}: {e}")
+    }
+}
+
+void main() {
+    // A pattern of the program, kept in a static and found once.
+    var text = "from 2026-11-20 to 2027-01-05"
+    print(Date.isMatch(read text))
+    print(Date.groupCount())
+    var caps = Date.captures(read text) ?? panic("a date")
+    print(caps.length())
+    print(caps.get(0)?.of(read text) ?? "-")
+    print(caps.named("month")?.of(read text) ?? "-")
+    print(caps.get(9) is null)
+    print(caps.named("week") is null)
+    print(Date.replaceAll(read text, "$day.$month.$year"))
+    print(Date.replaceAll(read text, "${day}/${2}/$1 ($$)"))
+    print(Date)
+    print(Date.pattern())
+
+    // The first match is the leftmost, and of those the one the pattern prefers.
+    found("a|ab", "abab")
+    found("ab|a", "abab")
+    found("a+", "caaab")
+    found("a+?", "caaab")
+    found("a{2,3}", "aaaaaaa")
+    found("a{2,3}?", "aaaaaaa")
+    found("a{2,}", "a aa aaa")
+    found("colou?r", "color colour")
+    found("(?:|a)*", "aaa")
+    found("(?:a|)*", "aaa")
+    // Empty matches: none right after another match (as Go).
+    found("x*", "axxb")
+    found("", "ab")
+    // Anchors, lines and words.
+    found("^a", "a\na")
+    found("(?m)^a", "a\na")
+    found("a$", "a\na")
+    found("(?m)a$", "a\na")
+    found("""\Aa|a\z""", "aba")
+    found("""\bis\b""", "this is his island")
+    found("""\Bis""", "this is his island")
+    // Classes: ASCII escapes, POSIX, ranges, negation, Unicode categories.
+    found("""\d+""", "a1 b22 ٣٣")
+    found("""\w+""", "ab_1 é")
+    found("""\s+""", "a \t\nb")
+    found("""[^\s,]+""", "a, bc ,d")
+    found("[[:upper:]][[:lower:]]+", "Ada Lovelace")
+    found("[[:^alpha:]]+", "ab12cd")
+    found("""\p{Lu}\p{Ll}+""", "Çağ ŞEHİR Işık")
+    found("""\pN+""", "x٣½7")
+    found("""\PL+""", "ab12!cd")
+    found("""\p{^L}+""", "ab12!cd")
+    found("""\p{Sc}""", "5€ 3$ 2₺")
+    found("[a-cx-z]+", "abcxyzd")
+    found("[]a]+", "a]b")
+    found("[a-]+", "a-b")
+    found(".", "é\n")
+    found("(?s).", "é\n")
+    // Case folded by Unicode's simple folding (1477): Kelvin sign and `k`, `ſ` and `s`, `ß` and
+    // `ẞ`; `ı` and `İ` are not `i`.
+    found("(?i)k+", "kK\u{212A}")
+    found("(?i)s+", "sSſ")
+    found("(?i)ß", "ß ẞ ss")
+    found("(?i)i", "i I ı İ")
+    found("(?i)[a-c]+", "ABCabc")
+    found("""(?i)\p{Lu}+""", "aBı")
+    found("""(?i)\P{Lu}+""", "aBı-")
+    found("(?i:a)a", "AA Aa")
+    found("(?i)a(?-i)a", "AA Aa")
+    found("(?U)a+", "aaa")
+    found("(?U)a+?", "aaa")
+    // Escapes and plain text.
+    found("""\x41\x{1F600}\101""", "A😀A")
+    found("""\Q1+1=2\E""", "is 1+1=2?")
+    found("""\.\*\[""", "a.*[b")
+    found("""a\tb\nc""", "a\tb\nc")
+    // Groups that take no part give nothing.
+    var maybe = Regex.of("(a)|(b)")
+    var second = maybe.captures("b") ?? panic("a match")
+    print(second.get(1) is null)
+    print(second.get(2)?.of("b") ?? "-")
+    print(maybe.replaceAll("ab", "[$1|$2]"))
+    // `$1x` is group 1 and an `x` (1478).
+    print(Regex.of("(a)").replaceAll("a", "$1x"))
+    // `split` as Go's (1480).
+    print(Regex.of("""\s*,\s*""").split("a , b,c ,d"))
+    print(Regex.of(",").split(",a,,b,"))
+    print(Regex.of("x*").split("axbxxc"))
+    print(Regex.of("a").split(""))
+    print(Regex.of("a").find("") is null)
+    // A pattern made when the program runs, and why one is not a regular expression.
+    var bad = List<string> {
+        "(a", "a)", "[a", "[z-a]", """\q""", "a\\", "*a", "a**", "a{1001}", "a{3,2}", "(?<>a)",
+        "(?<n>a)(?<n>b)", "(?x)", "(?=a)", "(?<!a)", """\p{Xx}""", "[[:foo:]]", """\p{Greek}""",
+        "((a{1000}){1000}){1000}"
+    }
+    for pattern in bad {
+        match Regex.compile(read pattern) {
+            Ok(_) => print($"{pattern}: compiled")
+            Error(e) => {
+                print($"{pattern}: {e}")
+            }
+        }
+    }
+    // Groups nested 250 deep, and 251.
+    for depth in 250..252 {
+        var nested = $"{"(".repeat(depth)}a{")".repeat(depth)}".toString()
+        match Regex.compile(read nested) {
+            Ok(re) => print($"{depth} deep: {re.groupCount()} groups")
+            Error(e) => print($"{depth} deep: {e}")
+        }
+    }
+    var made = $"{"ab"}+".toString()
+    print(Regex.compile(read made) is Ok(_))
+    // The time grows with the text only: `(a*)*b` over 20,000 `a`s with no `b`.
+    var many = "a".repeat(20000)
+    print(Regex.of("(a*)*b").isMatch(read many))
+    print(Regex.of("(x+x+)+y").find(read many) is null)
+}

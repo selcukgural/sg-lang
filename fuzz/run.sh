@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Runs one fuzz target in the container, without the network (choices 1350-1355):
-#   fuzz/run.sh check 10800      # the target and how many seconds
+#   fuzz/run.sh check 10800      # the target (parse, check or regex) and how many seconds
 # The repository is given read-only and copied in. The corpus and what is found stay in the
 # volume `sg-fuzz-data`: the corpus of each target in /data/corpus/<target>, the inputs that
 # fail in /data/artifacts/<target>. The first run starts the corpus from the programs of
-# `interpreter/tests/cases` and `interpreter/examples`. JOBS sets how many run at once (6).
+# `interpreter/tests/cases` and `interpreter/examples`, or, for `regex`, from the patterns of
+# RE2's search tests, each with a line break after it. JOBS sets how many run at once (6).
 set -euo pipefail
-target=${1:?the target: parse or check}
+target=${1:?the target: parse, check or regex}
 seconds=${2:-3600}
 jobs=${JOBS:-6}
-case $target in parse|check) ;; *) echo "the target is parse or check" >&2; exit 2 ;; esac
+case $target in parse|check|regex) ;; *) echo "the target is parse, check or regex" >&2; exit 2 ;; esac
 cd "$(dirname "$0")/.."
 podman volume exists sg-fuzz-data || podman volume create sg-fuzz-data >/dev/null
 exec podman run --rm --network none -v "$PWD":/src:ro -v sg-fuzz-data:/data \
@@ -19,7 +20,11 @@ mkdir /work && cd /src
 tar --exclude=./interpreter/target --exclude=./fuzz/target --exclude=./graphify-out -cf - . | tar -xf - -C /work
 corpus=/data/corpus/$TARGET
 mkdir -p "$corpus" /data/artifacts/$TARGET
-if [ -z "$(ls -A "$corpus")" ]; then
+if [ -z "$(ls -A "$corpus")" ] && [ "$TARGET" = regex ]; then
+  i=0
+  while IFS= read -r line; do i=$((i + 1)); printf "%s\nabc 123 aaa\n" "${line:1:${#line}-2}" > "$corpus/seed-$i"; done \
+    < <(grep "^\"" /work/interpreter/tests/regex-suite/re2-search.txt)
+elif [ -z "$(ls -A "$corpus")" ]; then
   i=0
   while IFS= read -r -d "" file; do i=$((i + 1)); cp "$file" "$corpus/seed-$i.sg"; done \
     < <(find /work/interpreter/tests/cases /work/interpreter/examples -name "*.sg" -print0)

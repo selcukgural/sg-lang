@@ -1,0 +1,1926 @@
+// Regular expressions (choices 1457-1481), written in SG and brought along by the language. The
+// meaning is RE2's, as in Go and Rust: the time of a match grows with the length of the text and
+// never more, so no pattern can make a search take for ever; there are no back references and no
+// look-around, which would need it. A pattern is read into a tree, the tree is made a program of
+// a few kinds of steps (Thompson's construction), and the program is run over the text by Pike's
+// machine, which follows every way the pattern could go at once, one character at a time, and
+// keeps where the groups began and ended for each. A pattern that starts with plain text is
+// first looked for as that text.
+//
+// The syntax is Go's: `.` `[...]` `[^...]` `|` `*` `+` `?` `{n}` `{n,}` `{n,m}` and the same
+// followed by `?` to take as little as can be, `(...)`, `(?:...)`, `(?<name>...)` and
+// `(?P<name>...)`, `^` `$` `\A` `\z` `\b` `\B`, `\d` `\w` `\s` and their opposites `\D` `\W` `\S`
+// (ASCII only, 1471), `\p{L}` `\pL` `\p{Lu}` `\PL` `\p{^L}` by the general category of Unicode
+// (1475, 1476), `[[:alpha:]]` and the other classes of POSIX, `\Q...\E`, and the flags `(?i)`
+// `(?m)` `(?s)` `(?U)`, alone or around a group (`(?i:...)`), `-` taking one off. Positions are
+// in bytes; the text is matched character by character.
+
+// The most a counted repetition may count: `a{1000}` (as Go).
+const int RegexRepeatLimit = 1000
+// How deep groups may be nested.
+const int RegexDepthLimit = 250
+// The most steps a compiled pattern may have, so that `((a{1000}){1000}){1000}` is an error and
+// not a gigabyte.
+const nint RegexSizeLimit = 100000
+
+// The kinds of a node of the tree.
+const int RegexEmpty = 0
+const int RegexLiteral = 1
+const int RegexClassNode = 2
+const int RegexAnyNode = 3
+const int RegexAssertNode = 4
+const int RegexConcat = 5
+const int RegexAlternate = 6
+const int RegexRepeat = 7
+const int RegexCapture = 8
+
+// The kinds of a step of the program.
+const int RegexOpChar = 0
+const int RegexOpFoldChar = 1
+const int RegexOpClass = 2
+const int RegexOpAnyNotNewline = 3
+const int RegexOpAny = 4
+const int RegexOpSplit = 5
+const int RegexOpJump = 6
+const int RegexOpSave = 7
+const int RegexOpAssert = 8
+const int RegexOpMatch = 9
+
+// What an assertion looks at.
+const int RegexBeginText = 0
+const int RegexEndText = 1
+const int RegexBeginLine = 2
+const int RegexEndLine = 3
+const int RegexWordBoundary = 4
+const int RegexNotWordBoundary = 5
+
+// The flags.
+const int RegexFold = 1
+const int RegexMultiLine = 2
+const int RegexDotAll = 4
+const int RegexUngreedy = 8
+
+// Every general category: bit `i` is the variant `i` of `UnicodeCategory`, the surrogates last.
+const int RegexAllCategories = 0x3FFFFFFF
+// The last code point a simple case folding changes or gives.
+const int RegexLastFolded = 0x1E943
+
+// Why a pattern is not a regular expression.
+public enum RegexErrorKind : Equatable, Formattable {
+    // A `(` that is never closed.
+    MissingParenthesis
+    // A `)` with no `(` before it.
+    UnexpectedParenthesis
+    // A `[` that is never closed.
+    MissingBracket
+    // A range of a class whose end comes before its start: `[z-a]`.
+    InvalidRange
+    // A `\` before a character that has no escape: `\q`, `\1`.
+    InvalidEscape
+    // A `\` at the end of the pattern.
+    TrailingBackslash
+    // `*`, `+`, `?` or `{n}` with nothing before it to repeat.
+    MissingRepeatArgument
+    // A repetition of a repetition: `a**`, `a+*`.
+    NestedRepeat
+    // A count above 1000, or `{n,m}` with `m` below `n`.
+    InvalidRepeatCount
+    // A name of a group that is empty or not made of letters, digits and `_`.
+    InvalidGroupName
+    // A name given to two groups.
+    DuplicateGroupName(string name)
+    // `(?` followed by flags that do not exist: `(?x)`.
+    InvalidFlags
+    // `(?=`, `(?!`, `(?<=`, `(?<!`: a look ahead or behind, which no pattern here has.
+    LookAround
+    // `\p{Xx}` or `[[:xxx:]]` with a name that is no class.
+    UnknownClass(string name)
+    // Groups nested deeper than 250.
+    TooDeep
+    // A pattern whose program would have more than 100,000 steps.
+    TooLarge
+
+    public void format(read this, ref Formatter f) {
+        match this {
+            MissingParenthesis => f.write("missing closing )")
+            UnexpectedParenthesis => f.write("unexpected )")
+            MissingBracket => f.write("missing closing ]")
+            InvalidRange => f.write("invalid range in a class: its end comes before its start")
+            InvalidEscape => f.write("invalid escape")
+            TrailingBackslash => f.write("trailing backslash at the end of the pattern")
+            MissingRepeatArgument => f.write("missing argument to repetition operator")
+            NestedRepeat => f.write("invalid nested repetition operator")
+            InvalidRepeatCount => f.write($"invalid repeat count: at most {RegexRepeatLimit}, and the second not below the first")
+            InvalidGroupName => f.write("invalid group name: letters, digits and _")
+            DuplicateGroupName(name) => f.write($"duplicate group name '{name}'")
+            InvalidFlags => f.write("invalid flags: i, m, s and U")
+            LookAround => f.write("look-around is not supported: a match never looks ahead or behind")
+            UnknownClass(name) => f.write($"unknown class '{name}'")
+            TooDeep => f.write($"groups nested deeper than {RegexDepthLimit}")
+            TooLarge => f.write($"the pattern makes a program of more than {RegexSizeLimit} steps")
+        }
+    }
+}
+
+// Where a pattern stops being a regular expression, and why: `column 3: missing closing )`. The
+// column counts characters from 1.
+public struct RegexError : Equatable, Formattable {
+    public readonly nint column
+    public readonly RegexErrorKind kind
+
+    public void format(read this, ref Formatter f) {
+        f.write($"column {this.column}: {this.kind}")
+    }
+}
+
+// Where a pattern matched: the bytes from `start` up to `end`.
+public struct Match : Copyable, Equatable, Formattable {
+    public readonly nint start
+    public readonly nint end
+
+    // The text that matched, of the text that was searched.
+    public read string of(read this, read string text) from text {
+        return text[this.start..this.end]
+    }
+
+    // How many bytes matched.
+    public nint length(read this) {
+        return this.end - this.start
+    }
+
+    public void format(read this, ref Formatter f) {
+        f.write($"{this.start}..{this.end}")
+    }
+}
+
+// Where each group of a pattern matched, group 0 being the whole match.
+public struct Captures {
+    // Two for each group, -1 for a group that took no part.
+    List<nint> slots
+    // The name of each group, empty for one without.
+    List<string> names
+
+    // Where group `group` matched; `null` for a group that took no part, or that the pattern does
+    // not have.
+    public Match? get(read this, nint group) {
+        if group < 0 || 2 * group + 1 >= this.slots.length() {
+            return null
+        }
+        nint start = this.slots[2 * group]
+        if start < 0 {
+            return null
+        }
+        return Match { start = start, end = this.slots[2 * group + 1] }
+    }
+
+    // Where the group named `name` matched; `null` when it took no part, or no group has that name.
+    public Match? named(read this, read string name) {
+        for i in 1..this.names.length() {
+            if this.names[i] == name {
+                return this.get(i)
+            }
+        }
+        return null
+    }
+
+    // How many groups: the whole match and each `(...)`.
+    public nint length(read this) {
+        return this.slots.length() / 2
+    }
+}
+
+// A node of the tree of a pattern. A concatenation or an alternation has `count` children whose
+// numbers are in the list of children from `first`; a repetition or a group has one, `first`.
+struct RegexNode : Copyable {
+    int kind
+    int a
+    int b
+    int c
+    nint first
+    nint count
+}
+
+// A class of characters: the ranges it holds (a start and an end each, sorted, apart), the
+// general categories it holds (bit `i` for the variant `i` of `UnicodeCategory`), and whether it
+// is the opposite of them. With `(?i)` (`fold`), a character up to the last one a folding
+// touches is looked for by its folding in `keys`, the foldings of every character the class
+// holds there, the opposite already taken; past it, a folding changes nothing and the ranges and
+// the categories say. So `(?i)\P{Lu}` is every character whose folding is no upper case
+// letter's, as Go has it: not `a`, since `A` folds to it, but `ı`, which has no upper case of
+// its own.
+struct RegexClass {
+    List<int> ranges
+    int categories
+    bool negated
+    bool fold
+    List<int> keys
+}
+
+// A step of the program.
+struct RegexInst : Copyable {
+    int op
+    nint a
+    nint b
+}
+
+struct RegexParser {
+    // Only the syntax is looked at: no class is folded (`Regex.problem`, when the program is compiled).
+    bool checking
+    List<RegexNode> nodes
+    List<nint> kids
+    List<RegexClass> classes
+    List<string> names
+}
+
+struct RegexCount : Copyable {
+    int min
+    int max
+}
+
+// A frame of the machine's own stack: a step to follow, or a slot to give back its value.
+struct RegexFrame : Copyable {
+    nint pc
+    nint slot
+    nint value
+}
+
+// The two lists of threads of Pike's machine, each a sparse set of steps with the slots of each
+// thread, and what the search needs as it goes.
+struct RegexMachine {
+    nint size
+    nint slotCount
+    List<nint> dense
+    List<nint> sparse
+    List<nint> caps
+    List<nint> counts
+    List<RegexFrame> stack
+    List<nint> scratch
+    List<nint> found
+}
+
+public struct Regex : Formattable {
+    string source
+    List<RegexInst> code
+    List<RegexClass> classes
+    List<string> names
+    // Plain text every match starts with, looked for first; empty when there is none.
+    string prefix
+    // The whole pattern is `prefix`.
+    bool literal
+    // Every match starts at the start of the text.
+    bool anchored
+
+    // The pattern read and compiled, or where and why it is not a regular expression. A pattern
+    // written in the program is checked when the program is compiled (1463).
+    public Result<Regex, RegexError> compile(read string pattern) {
+        var parser = RegexParser { checking = false, nodes = List<RegexNode>(), kids = List<nint>(), classes = List<RegexClass>(), names = List<string>() }
+        parser.names.add("")
+        var root = try regexParse(ref parser, pattern)
+        if regexSize(read parser, root) > RegexSizeLimit - 3 {
+            return Error(RegexError { column = 1, kind = RegexErrorKind.TooLarge })
+        }
+        var code = List<RegexInst>()
+        _ = regexEmit(ref code, RegexOpSave, 0, 0)
+        regexCompile(ref code, read parser, root)
+        _ = regexEmit(ref code, RegexOpSave, 1, 0)
+        _ = regexEmit(ref code, RegexOpMatch, 0, 0)
+        for i in 0..parser.classes.length() {
+            regexFinishClass(ref parser.classes[i])
+        }
+        var prefix = string.withCapacity(16)
+        bool literal = regexPrefix(read parser, root, ref prefix) && parser.names.length() <= 1
+        bool anchored = regexAnchored(read parser, root)
+        return Ok(Regex {
+            source = pattern.clone(),
+            code = code,
+            classes = parser.classes.replace(List<RegexClass>()),
+            names = parser.names.replace(List<string>()),
+            prefix = prefix,
+            literal = literal,
+            anchored = anchored
+        })
+    }
+
+    // A pattern written in the program, `Regex.of("""\d+""")`: it is checked and its errors are
+    // compile errors (1469), so it gives a `Regex` and never fails when the program runs. A
+    // pattern made when the program runs goes to `compile`.
+    public Regex of(read string pattern) {
+        match Regex.compile(pattern) {
+            Ok(regex) => return regex
+            Error(error) => panic($"invalid pattern {pattern}: {error}")
+        }
+    }
+
+    // `Regex.of` and `Regex.compile` of a pattern written in the program, when it is compiled:
+    // why the pattern is not a regular expression, or nothing.
+    string problem(read string pattern) {
+        var parser = RegexParser { checking = true, nodes = List<RegexNode>(), kids = List<nint>(), classes = List<RegexClass>(), names = List<string>() }
+        parser.names.add("")
+        match regexParse(ref parser, pattern) {
+            Ok(root) => {
+                if regexSize(read parser, root) > RegexSizeLimit - 3 {
+                    var error = RegexError { column = 1, kind = RegexErrorKind.TooLarge }
+                    return $"{error}".toString()
+                }
+                return ""
+            }
+            Error(error) => return $"{error}".toString()
+        }
+    }
+
+    // The pattern as it was written.
+    public read string pattern(read this) from this {
+        return read this.source
+    }
+
+    // How many groups the pattern has, each `(...)` that is not `(?:...)`.
+    public nint groupCount(read this) {
+        return this.names.length() - 1
+    }
+
+    // Whether the pattern matches anywhere in `text`.
+    public bool isMatch(read this, read string text) {
+        if this.literal {
+            return text.contains(read this.prefix)
+        }
+        var found = List<nint>()
+        return regexRun(this, text, 0, true, 0, ref found)
+    }
+
+    // The first match, leftmost, and of those the one the pattern prefers (`a|ab` takes `a`, `a+`
+    // takes as many as there are, `a+?` one).
+    public Match? find(read this, read string text) {
+        var m = regexMachine(this, 2)
+        return regexFindAt(this, text, 0, ref m)
+    }
+
+    // Every match, one after the other, none overlapping; an empty match right after another
+    // match is left out, as Go does.
+    public List<Match> findAll(read this, read string text) {
+        var all = List<Match>()
+        var m = regexMachine(this, 2)
+        nint position = 0
+        nint previousEnd = -1
+        while position <= text.length() {
+            var found = regexFindAt(this, text, position, ref m)
+            if found is null {
+                break
+            }
+            bool keep = true
+            if found.end == position {
+                if found.start == previousEnd {
+                    keep = false
+                }
+                position += regexWidthAt(text, position)
+            } else {
+                position = found.end
+            }
+            previousEnd = found.end
+            if keep {
+                all.add(found)
+            }
+        }
+        return all
+    }
+
+    // Where each group matched in the first match; `null` when there is no match.
+    public Captures? captures(read this, read string text) {
+        var slots = List<nint>()
+        if !regexRun(this, text, 0, false, 2 * this.names.length(), ref slots) {
+            return null
+        }
+        var names = List<string>()
+        for name in read this.names {
+            names.add(name.clone())
+        }
+        return Captures { slots = slots, names = names }
+    }
+
+    // `text` with each match replaced. In `replacement`, `$1` or `${1}` is what group 1 matched,
+    // `$name` or `${name}` what the group of that name matched, and `$$` a `$`; a group that took
+    // no part gives nothing, and one the pattern does not have is a panic (1478).
+    public string replaceAll(read this, read string text, read string replacement) {
+        var out = string.withCapacity(text.length())
+        var slots = List<nint>()
+        var m = regexMachine(this, 2 * this.names.length())
+        nint lastEnd = 0
+        nint position = 0
+        while position <= text.length() {
+            slots.clear()
+            if !regexSearch(this, text, position, false, ref m, ref slots) {
+                break
+            }
+            nint start = slots[0]
+            nint end = slots[1]
+            out.write(text[lastEnd..start])
+            if end > lastEnd || start == 0 {
+                regexExpand(this, ref out, text, read slots, replacement)
+            }
+            lastEnd = end
+            nint width = regexWidthAt(text, position)
+            if position + width > end {
+                position += width
+            } else if position + 1 > end {
+                position += 1
+            } else {
+                position = end
+            }
+        }
+        out.write(text[lastEnd..])
+        return out
+    }
+
+    // The parts of `text` between the matches, as Go's `Split`: an empty match at the very start
+    // makes no empty part, and nothing is added after a match that ends the text.
+    public List<string> split(read this, read string text) {
+        var parts = List<string>()
+        if text.length() == 0 {
+            parts.add("")
+            return parts
+        }
+        nint begin = 0
+        nint end = 0
+        for found in this.findAll(text) {
+            end = found.start
+            if found.end != 0 {
+                parts.add(text[begin..end].clone())
+            }
+            begin = found.end
+        }
+        if end != text.length() {
+            parts.add(text[begin..].clone())
+        }
+        return parts
+    }
+
+    // `$"{regex}"` writes the pattern.
+    public void format(read this, ref Formatter f) {
+        f.write(this.source)
+    }
+}
+
+// The bytes of the character that starts at `position`; 1 past the end.
+nint regexWidthAt(read string text, nint position) {
+    if position >= text.length() {
+        return 1
+    }
+    return regexWidth(text[position])
+}
+
+nint regexWidth(byte first) {
+    if first < 0x80 {
+        return 1
+    }
+    if first >= 0xF0 {
+        return 4
+    }
+    if first >= 0xE0 {
+        return 3
+    }
+    return 2
+}
+
+// The code of the character that starts at `position`, which is where one starts: the text is UTF-8.
+int regexCodeAt(read byte[] bytes, nint position) {
+    int first = bytes[position]
+    if first < 0x80 {
+        return first
+    }
+    nint count = 1
+    int code = first & 0x1F
+    if first >= 0xF0 {
+        count = 3
+        code = first & 0x07
+    } else if first >= 0xE0 {
+        count = 2
+        code = first & 0x0F
+    }
+    for k in 1..count + 1 {
+        code = code << 6 | (bytes[position + k] & 0x3F)
+    }
+    return code
+}
+
+// ---- Reading a pattern into a tree ----
+
+RegexError regexErrorAt(read string pattern, nint position, RegexErrorKind kind) {
+    var bytes = pattern.asBytes()
+    nint column = 1
+    for i in 0..position {
+        if bytes[i] & 0xC0 != 0x80 {
+            column += 1
+        }
+    }
+    return RegexError { column = column, kind = kind }
+}
+
+nint regexAdd(ref RegexParser p, int kind, int a, int b, int c, nint first, nint count) {
+    p.nodes.add(RegexNode { kind = kind, a = a, b = b, c = c, first = first, count = count })
+    return p.nodes.length() - 1
+}
+
+// A concatenation or an alternation of the nodes `items`, or the one node when there is one.
+nint regexJoin(ref RegexParser p, int kind, read List<nint> items) {
+    if items.length() == 0 {
+        return regexAdd(ref p, RegexEmpty, 0, 0, 0, 0, 0)
+    }
+    if items.length() == 1 {
+        return items[0]
+    }
+    nint first = p.kids.length()
+    for item in items {
+        p.kids.add(item)
+    }
+    return regexAdd(ref p, kind, 0, 0, 0, first, items.length())
+}
+
+Result<nint, RegexError> regexParse(ref RegexParser p, read string pattern) {
+    nint at = 0
+    int flags = 0
+    var root = try regexAlternation(ref p, pattern, ref at, ref flags, 0)
+    if at < pattern.length() {
+        return Error(regexErrorAt(pattern, at, RegexErrorKind.UnexpectedParenthesis))
+    }
+    return Ok(root)
+}
+
+Result<nint, RegexError> regexAlternation(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
+    var branches = List<nint>()
+    var first = try regexConcatenation(ref p, pattern, ref at, ref flags, depth)
+    branches.add(first)
+    while at < pattern.length() && pattern[at] == '|' {
+        at += 1
+        var next = try regexConcatenation(ref p, pattern, ref at, ref flags, depth)
+        branches.add(next)
+    }
+    return Ok(regexJoin(ref p, RegexAlternate, read branches))
+}
+
+Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
+    var items = List<nint>()
+    while at < pattern.length() && pattern[at] != '|' && pattern[at] != ')' {
+        var item = try regexRepetition(ref p, pattern, ref at, ref flags, depth)
+        if item is not null {
+            items.add(item)
+        }
+    }
+    return Ok(regexJoin(ref p, RegexConcat, read items))
+}
+
+// An atom and the repetitions after it; `null` for a group of flags alone, `(?i)`.
+Result<nint?, RegexError> regexRepetition(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
+    var atom = try regexAtom(ref p, pattern, ref at, ref flags, depth)
+    if atom is null {
+        return Ok(null)
+    }
+    nint node = atom
+    bool repeated = false
+    while at < pattern.length() {
+        nint opAt = at
+        byte c = pattern[at]
+        int min = 0
+        int max = -1
+        if c == '*' {
+            at += 1
+        } else if c == '+' {
+            min = 1
+            at += 1
+        } else if c == '?' {
+            max = 1
+            at += 1
+        } else if c == '{' {
+            var counted = try regexCounted(pattern, ref at)
+            if counted is null {
+                break
+            }
+            min = counted.min
+            max = counted.max
+        } else {
+            break
+        }
+        if repeated {
+            return Error(regexErrorAt(pattern, opAt, RegexErrorKind.NestedRepeat))
+        }
+        repeated = true
+        bool greedy = true
+        if at < pattern.length() && pattern[at] == '?' {
+            greedy = false
+            at += 1
+        }
+        if flags & RegexUngreedy != 0 {
+            greedy = !greedy
+        }
+        node = regexAdd(ref p, RegexRepeat, min, max, regexBit(greedy), node, 1)
+    }
+    return Ok(node)
+}
+
+// `{n}`, `{n,}` or `{n,m}` at `at`, read; `null`, with `at` where it was, when the `{` starts no
+// count, and is then a `{` of the text (as Go).
+Result<RegexCount?, RegexError> regexCounted(read string pattern, ref nint at) {
+    nint start = at
+    nint i = at + 1
+    int min = regexNumber(pattern, ref i)
+    if min < 0 {
+        return Ok(null)
+    }
+    int max = min
+    if i < pattern.length() && pattern[i] == ',' {
+        i += 1
+        if i < pattern.length() && pattern[i] == '}' {
+            max = -1
+        } else {
+            max = regexNumber(pattern, ref i)
+            if max < 0 {
+                return Ok(null)
+            }
+        }
+    }
+    if i >= pattern.length() || pattern[i] != '}' {
+        return Ok(null)
+    }
+    at = i + 1
+    if min > RegexRepeatLimit || max > RegexRepeatLimit || (max >= 0 && max < min) {
+        return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidRepeatCount))
+    }
+    return Ok(RegexCount { min = min, max = max })
+}
+
+// The digits at `i`, read; -1 when there are none. A number past the limit stays just past it.
+int regexNumber(read string pattern, ref nint i) {
+    nint start = i
+    int value = 0
+    while i < pattern.length() && pattern[i] >= '0' && pattern[i] <= '9' {
+        if value <= RegexRepeatLimit {
+            value = value * 10 + (pattern[i] - '0')
+        }
+        i += 1
+    }
+    if i == start {
+        return -1
+    }
+    return value
+}
+
+Result<nint?, RegexError> regexAtom(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
+    var bytes = pattern.asBytes()
+    byte c = bytes[at]
+    if c == '(' {
+        return regexGroup(ref p, pattern, ref at, ref flags, depth)
+    }
+    if c == '[' {
+        var set = try regexBracket(ref p, pattern, ref at, flags)
+        return Ok(set)
+    }
+    if c == '.' {
+        at += 1
+        return Ok(regexAdd(ref p, RegexAnyNode, regexBit(flags & RegexDotAll != 0), 0, 0, 0, 0))
+    }
+    if c == '^' {
+        at += 1
+        int kind = RegexBeginText
+        if flags & RegexMultiLine != 0 {
+            kind = RegexBeginLine
+        }
+        return Ok(regexAdd(ref p, RegexAssertNode, kind, 0, 0, 0, 0))
+    }
+    if c == '$' {
+        at += 1
+        int kind = RegexEndText
+        if flags & RegexMultiLine != 0 {
+            kind = RegexEndLine
+        }
+        return Ok(regexAdd(ref p, RegexAssertNode, kind, 0, 0, 0, 0))
+    }
+    if c == '*' || c == '+' || c == '?' {
+        return Error(regexErrorAt(pattern, at, RegexErrorKind.MissingRepeatArgument))
+    }
+    if c == '{' {
+        nint probe = at
+        var counted = try regexCounted(pattern, ref probe)
+        if counted is not null {
+            return Error(regexErrorAt(pattern, at, RegexErrorKind.MissingRepeatArgument))
+        }
+    }
+    if c == '\\' {
+        var escaped = try regexEscape(ref p, pattern, ref at, flags)
+        return Ok(escaped)
+    }
+    int code = regexCodeAt(bytes, at)
+    at += regexWidth(c)
+    return Ok(regexLiteral(ref p, code, flags))
+}
+
+nint regexLiteral(ref RegexParser p, int code, int flags) {
+    return regexAdd(ref p, RegexLiteral, code, regexBit(flags & RegexFold != 0), 0, 0, 0)
+}
+
+int regexBit(bool value) {
+    if value {
+        return 1
+    }
+    return 0
+}
+
+// A group at `at`, its `(` there: `(...)`, `(?:...)`, `(?<name>...)`, `(?P<name>...)`, `(?i)` or
+// `(?i:...)`.
+Result<nint?, RegexError> regexGroup(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
+    nint open = at
+    if depth >= RegexDepthLimit {
+        return Error(regexErrorAt(pattern, at, RegexErrorKind.TooDeep))
+    }
+    at += 1
+    int inner = flags
+    int index = -1
+    if at < pattern.length() && pattern[at] == '?' {
+        at += 1
+        if at >= pattern.length() {
+            return Error(regexErrorAt(pattern, open, RegexErrorKind.MissingParenthesis))
+        }
+        byte kind = pattern[at]
+        if kind == '=' || kind == '!' || (kind == '<' && at + 1 < pattern.length() && (pattern[at + 1] == '=' || pattern[at + 1] == '!')) {
+            return Error(regexErrorAt(pattern, open, RegexErrorKind.LookAround))
+        }
+        if kind == '<' || (kind == 'P' && at + 1 < pattern.length() && pattern[at + 1] == '<') {
+            at += 1
+            if kind == 'P' {
+                at += 1
+            }
+            nint nameStart = at
+            while at < pattern.length() && pattern[at] != '>' {
+                byte n = pattern[at]
+                if !(n.isAsciiAlphanumeric() || n == '_') {
+                    return Error(regexErrorAt(pattern, nameStart, RegexErrorKind.InvalidGroupName))
+                }
+                at += 1
+            }
+            if at >= pattern.length() || at == nameStart {
+                return Error(regexErrorAt(pattern, nameStart, RegexErrorKind.InvalidGroupName))
+            }
+            var name = pattern[nameStart..at]
+            for each in read p.names {
+                if each == name {
+                    return Error(regexErrorAt(pattern, nameStart, RegexErrorKind.DuplicateGroupName(name.clone())))
+                }
+            }
+            at += 1
+            index = (int)p.names.length()
+            p.names.add(name.clone())
+        } else {
+            // Flags: `(?i)`, `(?i-s:...)`, `(?:...)`; `-` takes the letters after it off.
+            bool off = false
+            bool letters = false
+            bool lettersOff = false
+            while true {
+                if at >= pattern.length() {
+                    return Error(regexErrorAt(pattern, open, RegexErrorKind.MissingParenthesis))
+                }
+                byte f = pattern[at]
+                at += 1
+                int bit = 0
+                if f == 'i' {
+                    bit = RegexFold
+                } else if f == 'm' {
+                    bit = RegexMultiLine
+                } else if f == 's' {
+                    bit = RegexDotAll
+                } else if f == 'U' {
+                    bit = RegexUngreedy
+                }
+                if bit != 0 {
+                    letters = true
+                    if off {
+                        lettersOff = true
+                        inner = inner & ~bit
+                    } else {
+                        inner = inner | bit
+                    }
+                } else if f == '-' && !off {
+                    off = true
+                } else if f == ':' && (!off || lettersOff) {
+                    break
+                } else if f == ')' && letters && (!off || lettersOff) {
+                    flags = inner
+                    return Ok(null)
+                } else {
+                    return Error(regexErrorAt(pattern, open, RegexErrorKind.InvalidFlags))
+                }
+            }
+        }
+    } else {
+        index = (int)p.names.length()
+        p.names.add("")
+    }
+    var body = try regexAlternation(ref p, pattern, ref at, ref inner, depth + 1)
+    if at >= pattern.length() || pattern[at] != ')' {
+        return Error(regexErrorAt(pattern, open, RegexErrorKind.MissingParenthesis))
+    }
+    at += 1
+    if index < 0 {
+        return Ok(body)
+    }
+    return Ok(regexAdd(ref p, RegexCapture, index, 0, 0, body, 1))
+}
+
+// A `\` at `at` outside a class.
+Result<nint, RegexError> regexEscape(ref RegexParser p, read string pattern, ref nint at, int flags) {
+    if at + 1 >= pattern.length() {
+        return Error(regexErrorAt(pattern, at, RegexErrorKind.TrailingBackslash))
+    }
+    byte e = pattern[at + 1]
+    if e == 'b' || e == 'B' || e == 'A' || e == 'z' {
+        at += 2
+        int kind = RegexBeginText
+        if e == 'b' {
+            kind = RegexWordBoundary
+        } else if e == 'B' {
+            kind = RegexNotWordBoundary
+        } else if e == 'z' {
+            kind = RegexEndText
+        }
+        return Ok(regexAdd(ref p, RegexAssertNode, kind, 0, 0, 0, 0))
+    }
+    if e == 'Q' {
+        // Plain text up to `\E` or the end.
+        at += 2
+        var items = List<nint>()
+        var bytes = pattern.asBytes()
+        while at < pattern.length() {
+            if pattern[at] == '\\' && at + 1 < pattern.length() && pattern[at + 1] == 'E' {
+                at += 2
+                break
+            }
+            int code = regexCodeAt(bytes, at)
+            at += regexWidth(pattern[at])
+            items.add(regexLiteral(ref p, code, flags))
+        }
+        return Ok(regexJoin(ref p, RegexConcat, read items))
+    }
+    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>() }
+    if try regexClassEscape(pattern, ref at, ref set) {
+        p.classes.add(set)
+        return Ok(regexAdd(ref p, RegexClassNode, (int)(p.classes.length() - 1), 0, 0, 0, 0))
+    }
+    int code = try regexCharEscape(pattern, ref at)
+    return Ok(regexLiteral(ref p, code, flags))
+}
+
+// `\d \D \w \W \s \S \p \P` at `at`, added to `set`; `false`, with `at` where it was, for any
+// other escape.
+Result<bool, RegexError> regexClassEscape(read string pattern, ref nint at, ref RegexClass set) {
+    byte e = pattern[at + 1]
+    byte lower = e.toAsciiLower()
+    if lower == 'd' || lower == 'w' || lower == 's' {
+        at += 2
+        var ranges = List<int>()
+        if lower == 'd' {
+            regexAddRange(ref ranges, '0', '9')
+        } else if lower == 'w' {
+            regexAddRange(ref ranges, '0', '9')
+            regexAddRange(ref ranges, 'A', 'Z')
+            regexAddRange(ref ranges, '_', '_')
+            regexAddRange(ref ranges, 'a', 'z')
+        } else {
+            regexAddRange(ref ranges, '\t', '\n')
+            regexAddRange(ref ranges, 12, '\r')
+            regexAddRange(ref ranges, ' ', ' ')
+        }
+        regexAddItem(ref set, read ranges, 0, e != lower)
+        return Ok(true)
+    }
+    if e == 'p' || e == 'P' {
+        nint start = at
+        at += 2
+        if at >= pattern.length() {
+            return Error(regexErrorAt(pattern, start, RegexErrorKind.UnknownClass("")))
+        }
+        bool negated = e == 'P'
+        nint nameStart = at
+        nint nameEnd = at + 1
+        if pattern[at] == '{' {
+            nameStart = at + 1
+            nint close = nameStart
+            while close < pattern.length() && pattern[close] != '}' {
+                close += 1
+            }
+            if close >= pattern.length() {
+                return Error(regexErrorAt(pattern, start, RegexErrorKind.UnknownClass(pattern[nameStart..].clone())))
+            }
+            nameEnd = close
+            at = close + 1
+        } else {
+            nameEnd = at + regexWidth(pattern[at])
+            at = nameEnd
+        }
+        var name = pattern[nameStart..nameEnd]
+        if name.startsWith('^') {
+            negated = !negated
+            name = name[1..]
+        }
+        int mask = regexCategories(name)
+        if mask == 0 {
+            return Error(regexErrorAt(pattern, start, RegexErrorKind.UnknownClass(name.clone())))
+        }
+        var none = List<int>()
+        regexAddItem(ref set, read none, mask, negated)
+        return Ok(true)
+    }
+    return Ok(false)
+}
+
+// The categories of a short name of Unicode: one letter for its group (`L`), two for one (`Lu`);
+// 0 for a name that is none.
+int regexCategories(read string name) {
+    const byte[30] codes = { 'L', 'L', 'L', 'L', 'L', 'M', 'M', 'M', 'N', 'N', 'N', 'P', 'P', 'P', 'P', 'P', 'P', 'P', 'S', 'S', 'S', 'S', 'Z', 'Z', 'Z', 'C', 'C', 'C', 'C', 'C' }
+    const byte[30] seconds = { 'u', 'l', 't', 'm', 'o', 'n', 'c', 'e', 'd', 'l', 'o', 'c', 'd', 's', 'e', 'i', 'f', 'o', 'm', 'c', 'k', 'o', 's', 'l', 'p', 'c', 'f', 'o', 'n', 's' }
+    if name == "Any" {
+        return RegexAllCategories
+    }
+    if name.length() == 0 || name.length() > 2 {
+        return 0
+    }
+    int mask = 0
+    for i in 0..30 {
+        if name[0] == codes[i] && (name.length() == 1 || name[1] == seconds[i]) {
+            mask = mask | (1 << i)
+        }
+    }
+    return mask
+}
+
+// A `\` at `at` that stands for one character: `\n`, `\x41`, `\x{1F600}`, `\.`.
+Result<int, RegexError> regexCharEscape(read string pattern, ref nint at) {
+    nint start = at
+    if at + 1 >= pattern.length() {
+        return Error(regexErrorAt(pattern, at, RegexErrorKind.TrailingBackslash))
+    }
+    byte e = pattern[at + 1]
+    at += 2
+    if e == 'a' {
+        return Ok(7)
+    }
+    if e == 'f' {
+        return Ok(12)
+    }
+    if e == 't' {
+        return Ok(9)
+    }
+    if e == 'n' {
+        return Ok(10)
+    }
+    if e == 'r' {
+        return Ok(13)
+    }
+    if e == 'v' {
+        return Ok(11)
+    }
+    if e == 'x' {
+        int code = 0
+        if at < pattern.length() && pattern[at] == '{' {
+            at += 1
+            nint digits = 0
+            while at < pattern.length() && pattern[at] != '}' {
+                int value = regexHexValue(pattern[at])
+                if value < 0 {
+                    return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))
+                }
+                // Past U+10FFFF the value only stays too large.
+                if code <= 0x10FFFF {
+                    code = code * 16 + value
+                }
+                digits += 1
+                at += 1
+            }
+            if at >= pattern.length() || digits == 0 {
+                return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))
+            }
+            at += 1
+        } else {
+            for _ in 0..2 {
+                int value = -1
+                if at < pattern.length() {
+                    value = regexHexValue(pattern[at])
+                }
+                if value < 0 {
+                    return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))
+                }
+                code = code * 16 + value
+                at += 1
+            }
+        }
+        if code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) {
+            return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))
+        }
+        return Ok(code)
+    }
+    // Octal, as Go: `\0` and up to two more digits, or `\1` to `\7` followed by at least one
+    // more (`\1` alone would be a back reference, which no pattern here has).
+    if e >= '0' && e <= '7' && (e == '0' || (at < pattern.length() && pattern[at] >= '0' && pattern[at] <= '7')) {
+        int code = e - '0'
+        for _ in 0..2 {
+            if at < pattern.length() && pattern[at] >= '0' && pattern[at] <= '7' {
+                code = code * 8 + (pattern[at] - '0')
+                at += 1
+            }
+        }
+        return Ok(code)
+    }
+    // Any punctuation of ASCII stands for itself.
+    if e < 0x80 && !e.isAsciiAlphanumeric() && !e.isAsciiWhitespace() && e >= 0x21 && e != 0x7F {
+        return Ok(e)
+    }
+    return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))
+}
+
+int regexHexValue(byte b) {
+    if b >= '0' && b <= '9' {
+        return b - '0'
+    }
+    if b >= 'a' && b <= 'f' {
+        return b - 'a' + 10
+    }
+    if b >= 'A' && b <= 'F' {
+        return b - 'A' + 10
+    }
+    return -1
+}
+
+// A class `[...]` at `at`.
+Result<nint, RegexError> regexBracket(ref RegexParser p, read string pattern, ref nint at, int flags) {
+    nint open = at
+    var bytes = pattern.asBytes()
+    at += 1
+    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>() }
+    if at < pattern.length() && pattern[at] == '^' {
+        set.negated = true
+        at += 1
+    }
+    bool first = true
+    while true {
+        if at >= pattern.length() {
+            return Error(regexErrorAt(pattern, open, RegexErrorKind.MissingBracket))
+        }
+        byte c = pattern[at]
+        if c == ']' && !first {
+            at += 1
+            break
+        }
+        first = false
+        if c == '[' && at + 1 < pattern.length() && pattern[at + 1] == ':' {
+            if try regexPosixClass(pattern, ref at, ref set) {
+                continue
+            }
+        }
+        if c == '\\' {
+            if at + 1 >= pattern.length() {
+                return Error(regexErrorAt(pattern, at, RegexErrorKind.TrailingBackslash))
+            }
+            if try regexClassEscape(pattern, ref at, ref set) {
+                continue
+            }
+        }
+        nint itemAt = at
+        int low = try regexClassChar(pattern, bytes, ref at)
+        int high = low
+        if at + 1 < pattern.length() && pattern[at] == '-' && pattern[at + 1] != ']' {
+            at += 1
+            if pattern[at] == '\\' && at + 1 < pattern.length() {
+                nint probe = at
+                var probeSet = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = false, keys = List<int>() }
+                if try regexClassEscape(pattern, ref probe, ref probeSet) {
+                    return Error(regexErrorAt(pattern, itemAt, RegexErrorKind.InvalidRange))
+                }
+            }
+            high = try regexClassChar(pattern, bytes, ref at)
+            if high < low {
+                return Error(regexErrorAt(pattern, itemAt, RegexErrorKind.InvalidRange))
+            }
+        }
+        var one = List<int> { low, high }
+        regexAddItem(ref set, read one, 0, false)
+    }
+    p.classes.add(set)
+    return Ok(regexAdd(ref p, RegexClassNode, (int)(p.classes.length() - 1), 0, 0, 0, 0))
+}
+
+// One character of a class at `at`, plain or escaped.
+Result<int, RegexError> regexClassChar(read string pattern, read byte[] bytes, ref nint at) {
+    if bytes[at] == '\\' {
+        return regexCharEscape(pattern, ref at)
+    }
+    int code = regexCodeAt(bytes, at)
+    at += regexWidth(bytes[at])
+    return Ok(code)
+}
+
+// `[:alpha:]` and the other classes of POSIX at `at`, inside a class, added to `set`; `false`, with
+// `at` where it was, when `[:` starts none (it is then a `[` of the class).
+Result<bool, RegexError> regexPosixClass(read string pattern, ref nint at, ref RegexClass set) {
+    nint start = at
+    nint close = at + 2
+    while close + 1 < pattern.length() && !(pattern[close] == ':' && pattern[close + 1] == ']') {
+        if pattern[close] == ']' {
+            return Ok(false)
+        }
+        close += 1
+    }
+    if close + 1 >= pattern.length() {
+        return Ok(false)
+    }
+    var name = pattern[at + 2..close]
+    bool negated = name.startsWith('^')
+    if negated {
+        name = name[1..]
+    }
+    var ranges = List<int>()
+    if name == "alnum" {
+        regexAddRange(ref ranges, '0', '9')
+        regexAddRange(ref ranges, 'A', 'Z')
+        regexAddRange(ref ranges, 'a', 'z')
+    } else if name == "alpha" {
+        regexAddRange(ref ranges, 'A', 'Z')
+        regexAddRange(ref ranges, 'a', 'z')
+    } else if name == "ascii" {
+        regexAddRange(ref ranges, 0, 0x7F)
+    } else if name == "blank" {
+        regexAddRange(ref ranges, '\t', '\t')
+        regexAddRange(ref ranges, ' ', ' ')
+    } else if name == "cntrl" {
+        regexAddRange(ref ranges, 0, 0x1F)
+        regexAddRange(ref ranges, 0x7F, 0x7F)
+    } else if name == "digit" {
+        regexAddRange(ref ranges, '0', '9')
+    } else if name == "graph" {
+        regexAddRange(ref ranges, '!', '~')
+    } else if name == "lower" {
+        regexAddRange(ref ranges, 'a', 'z')
+    } else if name == "print" {
+        regexAddRange(ref ranges, ' ', '~')
+    } else if name == "punct" {
+        regexAddRange(ref ranges, '!', '/')
+        regexAddRange(ref ranges, ':', '@')
+        regexAddRange(ref ranges, '[', '`')
+        regexAddRange(ref ranges, '{', '~')
+    } else if name == "space" {
+        regexAddRange(ref ranges, '\t', '\r')
+        regexAddRange(ref ranges, ' ', ' ')
+    } else if name == "upper" {
+        regexAddRange(ref ranges, 'A', 'Z')
+    } else if name == "word" {
+        regexAddRange(ref ranges, '0', '9')
+        regexAddRange(ref ranges, 'A', 'Z')
+        regexAddRange(ref ranges, '_', '_')
+        regexAddRange(ref ranges, 'a', 'z')
+    } else if name == "xdigit" {
+        regexAddRange(ref ranges, '0', '9')
+        regexAddRange(ref ranges, 'A', 'F')
+        regexAddRange(ref ranges, 'a', 'f')
+    } else {
+        return Error(regexErrorAt(pattern, start, RegexErrorKind.UnknownClass(name.clone())))
+    }
+    regexAddItem(ref set, read ranges, 0, negated)
+    at = close + 2
+    return Ok(true)
+}
+
+void regexAddRange(ref List<int> ranges, int low, int high) {
+    ranges.add(low)
+    ranges.add(high)
+}
+
+// The ranges sorted and joined where they touch.
+List<int> regexNormal(read List<int> ranges) {
+    var keys = List<long>()
+    for i in 0..ranges.length() / 2 {
+        keys.add(((long)ranges[2 * i] << 21) | (long)ranges[2 * i + 1])
+    }
+    keys.sort()
+    var out = List<int>()
+    for key in keys {
+        int low = (int)(key >> 21)
+        int high = (int)(key & 0x1FFFFF)
+        nint last = out.length()
+        if last > 0 && low <= out[last - 1] + 1 {
+            if high > out[last - 1] {
+                out[last - 1] = high
+            }
+        } else {
+            out.add(low)
+            out.add(high)
+        }
+    }
+    return out
+}
+
+// Every code point that is in none of the ranges.
+List<int> regexComplement(read List<int> ranges) {
+    var sorted = regexNormal(ranges)
+    var out = List<int>()
+    int next = 0
+    for i in 0..sorted.length() / 2 {
+        if sorted[2 * i] > next {
+            regexAddRange(ref out, next, sorted[2 * i] - 1)
+        }
+        next = sorted[2 * i + 1] + 1
+    }
+    if next <= 0x10FFFF {
+        regexAddRange(ref out, next, 0x10FFFF)
+    }
+    return out
+}
+
+// An item of a class: the characters of `ranges`, or of the categories of `mask`, or (`negated`)
+// every other one. With `(?i)` the item is folded before it is turned around (as Go).
+void regexAddItem(ref RegexClass set, read List<int> ranges, int mask, bool negated) {
+    if set.fold {
+        var keys = regexFoldKeys(ranges, mask)
+        if negated {
+            keys = regexComplementBelow(read keys, RegexLastFolded)
+        }
+        set.keys.addAll(read keys)
+    }
+    if mask != 0 {
+        if negated {
+            set.categories = set.categories | (RegexAllCategories & ~mask)
+        } else {
+            set.categories = set.categories | mask
+        }
+    } else if negated {
+        var other = regexComplement(ranges)
+        set.ranges.addAll(read other)
+    } else {
+        set.ranges.addAll(ranges)
+    }
+}
+
+// The foldings of the characters of `ranges` and of the categories of `mask`, up to the last
+// character a folding touches, sorted and joined.
+List<int> regexFoldKeys(read List<int> ranges, int mask) {
+    var keys = List<int>()
+    for i in 0..ranges.length() / 2 {
+        int high = ranges[2 * i + 1]
+        if high > RegexLastFolded {
+            high = RegexLastFolded
+        }
+        for code in ranges[2 * i]..high + 1 {
+            regexAddKey(ref keys, code)
+        }
+    }
+    for i in 0..30 {
+        if mask & (1 << i) != 0 {
+            keys.addAll(read RegexCategoryKeys[i])
+        }
+    }
+    return regexNormal(read keys)
+}
+
+// The foldings of the characters of each general category, up to the last character a folding
+// touches: found once, the first time a pattern with `(?i)` names a category.
+static List<List<int>> RegexCategoryKeys = regexCategoryKeys()
+
+List<List<int>> regexCategoryKeys() {
+    var all = List<List<int>>()
+    for _ in 0..30 {
+        all.add(List<int>())
+    }
+    for code in 0..RegexLastFolded + 1 {
+        if code < 0xD800 || code > 0xDFFF {
+            regexAddKey(ref all[(nint)System.charCategory((char)code)], code)
+        }
+    }
+    for i in 0..30 {
+        all[i] = regexNormal(read all[i])
+    }
+    return all
+}
+
+// The folding of `code` added to `keys`, joined with the last range when it follows it (most
+// characters fold to themselves, so most of a range stays one).
+void regexAddKey(ref List<int> keys, int code) {
+    if code >= 0xD800 && code <= 0xDFFF {
+        return
+    }
+    int folded = (int)System.charFold((char)code)
+    nint last = keys.length()
+    if last > 0 && folded >= keys[last - 2] && folded <= keys[last - 1] + 1 {
+        if folded > keys[last - 1] {
+            keys[last - 1] = folded
+        }
+        return
+    }
+    regexAddRange(ref keys, folded, folded)
+}
+
+// Every code point up to `top` that is in none of the ranges, which are sorted and joined.
+List<int> regexComplementBelow(read List<int> sorted, int top) {
+    var out = List<int>()
+    int next = 0
+    for i in 0..sorted.length() / 2 {
+        if sorted[2 * i] > top {
+            break
+        }
+        if sorted[2 * i] > next {
+            regexAddRange(ref out, next, sorted[2 * i] - 1)
+        }
+        next = sorted[2 * i + 1] + 1
+    }
+    if next <= top {
+        regexAddRange(ref out, next, top)
+    }
+    return out
+}
+
+// The ranges of a class sorted and joined; with `(?i)`, the keys too, turned around for `[^...]`.
+void regexFinishClass(ref RegexClass set) {
+    set.ranges = regexNormal(read set.ranges)
+    if set.fold {
+        set.keys = regexNormal(read set.keys)
+        if set.negated {
+            set.keys = regexComplementBelow(read set.keys, RegexLastFolded)
+        }
+    }
+}
+
+// ---- The program ----
+
+nint regexEmit(ref List<RegexInst> code, int op, nint a, nint b) {
+    code.add(RegexInst { op = op, a = a, b = b })
+    return code.length() - 1
+}
+
+// How many steps the node makes, past the limit at most a little.
+nint regexSize(read RegexParser p, nint node) {
+    var n = p.nodes[node]
+    if n.kind == RegexEmpty {
+        return 0
+    }
+    if n.kind == RegexConcat || n.kind == RegexAlternate {
+        nint total = 0
+        for i in 0..n.count {
+            total += regexSize(p, p.kids[n.first + i])
+            if total > RegexSizeLimit {
+                return RegexSizeLimit + 1
+            }
+        }
+        if n.kind == RegexAlternate {
+            total += 2 * (n.count - 1)
+        }
+        return total
+    }
+    if n.kind == RegexCapture {
+        return regexSize(p, n.first) + 2
+    }
+    if n.kind == RegexRepeat {
+        nint one = regexSize(p, n.first)
+        nint min = n.a
+        nint max = n.b
+        nint copies = min
+        nint extra = 2
+        if max >= 0 {
+            copies = max
+            extra = max - min
+        }
+        if one > 0 && copies > RegexSizeLimit / one {
+            return RegexSizeLimit + 1
+        }
+        return copies * one + extra + 2
+    }
+    return 1
+}
+
+void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
+    var n = p.nodes[node]
+    int kind = n.kind
+    if kind == RegexEmpty {
+        return
+    }
+    if kind == RegexLiteral {
+        if n.b != 0 {
+            _ = regexEmit(ref code, RegexOpFoldChar, (int)System.charFold((char)n.a), 0)
+        } else {
+            _ = regexEmit(ref code, RegexOpChar, n.a, 0)
+        }
+        return
+    }
+    if kind == RegexClassNode {
+        _ = regexEmit(ref code, RegexOpClass, n.a, 0)
+        return
+    }
+    if kind == RegexAnyNode {
+        int op = RegexOpAnyNotNewline
+        if n.a != 0 {
+            op = RegexOpAny
+        }
+        _ = regexEmit(ref code, op, 0, 0)
+        return
+    }
+    if kind == RegexAssertNode {
+        _ = regexEmit(ref code, RegexOpAssert, n.a, 0)
+        return
+    }
+    if kind == RegexConcat {
+        for i in 0..n.count {
+            regexCompile(ref code, p, p.kids[n.first + i])
+        }
+        return
+    }
+    if kind == RegexAlternate {
+        var jumps = List<nint>()
+        for i in 0..n.count {
+            if i + 1 < n.count {
+                nint split = regexEmit(ref code, RegexOpSplit, 0, 0)
+                regexCompile(ref code, p, p.kids[n.first + i])
+                jumps.add(regexEmit(ref code, RegexOpJump, 0, 0))
+                code[split] = RegexInst { op = RegexOpSplit, a = split + 1, b = code.length() }
+            } else {
+                regexCompile(ref code, p, p.kids[n.first + i])
+            }
+        }
+        for jump in jumps {
+            code[jump] = RegexInst { op = RegexOpJump, a = code.length(), b = 0 }
+        }
+        return
+    }
+    if kind == RegexCapture {
+        _ = regexEmit(ref code, RegexOpSave, 2 * n.a, 0)
+        regexCompile(ref code, p, n.first)
+        _ = regexEmit(ref code, RegexOpSave, 2 * n.a + 1, 0)
+        return
+    }
+    // A repetition.
+    int min = n.a
+    int max = n.b
+    bool greedy = n.c != 0
+    if max < 0 {
+        // `min - 1` copies, then one that repeats: `x{2,}` is `x x+`, `x*` a loop around `x`.
+        for _ in 1..min {
+            regexCompile(ref code, p, n.first)
+        }
+        if min == 0 && regexNullable(p, n.first) {
+            // `x*` of an `x` that can match nothing is `(x+)?`, so that the empty way is taken
+            // in the order the pattern prefers (as Go, golang.org/issue/46123): `(|a)*` matches
+            // nothing of `aaa`, as `(|a)+` does.
+            nint skip = regexEmit(ref code, RegexOpSplit, 0, 0)
+            nint start = code.length()
+            regexCompile(ref code, p, n.first)
+            nint split = regexEmit(ref code, RegexOpSplit, 0, 0)
+            code[split] = regexFork(start, split + 1, greedy)
+            code[skip] = regexFork(start, code.length(), greedy)
+        } else if min == 0 {
+            nint loop = regexEmit(ref code, RegexOpSplit, 0, 0)
+            regexCompile(ref code, p, n.first)
+            _ = regexEmit(ref code, RegexOpJump, loop, 0)
+            code[loop] = regexFork(loop + 1, code.length(), greedy)
+        } else {
+            nint start = code.length()
+            regexCompile(ref code, p, n.first)
+            _ = regexEmit(ref code, RegexOpSplit, 0, 0)
+            nint split = code.length() - 1
+            code[split] = regexFork(start, split + 1, greedy)
+        }
+        return
+    }
+    for _ in 0..min {
+        regexCompile(ref code, p, n.first)
+    }
+    var splits = List<nint>()
+    for _ in min..max {
+        splits.add(regexEmit(ref code, RegexOpSplit, 0, 0))
+        regexCompile(ref code, p, n.first)
+    }
+    nint end = code.length()
+    for split in splits {
+        code[split] = regexFork(split + 1, end, greedy)
+    }
+}
+
+// Whether the node can match nothing.
+bool regexNullable(read RegexParser p, nint node) {
+    var n = p.nodes[node]
+    int kind = n.kind
+    if kind == RegexEmpty || kind == RegexAssertNode {
+        return true
+    }
+    if kind == RegexConcat {
+        for i in 0..n.count {
+            if !regexNullable(p, p.kids[n.first + i]) {
+                return false
+            }
+        }
+        return true
+    }
+    if kind == RegexAlternate {
+        for i in 0..n.count {
+            if regexNullable(p, p.kids[n.first + i]) {
+                return true
+            }
+        }
+        return false
+    }
+    if kind == RegexRepeat {
+        return n.a == 0 || regexNullable(p, n.first)
+    }
+    if kind == RegexCapture {
+        return regexNullable(p, n.first)
+    }
+    return false
+}
+
+// A split that tries `taken` first when greedy, `skipped` first when not.
+RegexInst regexFork(nint taken, nint skipped, bool greedy) {
+    if greedy {
+        return RegexInst { op = RegexOpSplit, a = taken, b = skipped }
+    }
+    return RegexInst { op = RegexOpSplit, a = skipped, b = taken }
+}
+
+// The plain text every match starts with, written to `prefix`; whether that is the whole pattern.
+bool regexPrefix(read RegexParser p, nint node, ref string prefix) {
+    var n = p.nodes[node]
+    if n.kind == RegexLiteral {
+        if n.b != 0 {
+            return false
+        }
+        prefix.write((char)n.a)
+        return true
+    }
+    if n.kind == RegexConcat {
+        for i in 0..n.count {
+            if !regexPrefix(p, p.kids[n.first + i], ref prefix) {
+                return false
+            }
+        }
+        return true
+    }
+    if n.kind == RegexCapture {
+        return regexPrefix(p, n.first, ref prefix)
+    }
+    if n.kind == RegexEmpty {
+        return true
+    }
+    return false
+}
+
+// Whether every match must start at the start of the text: `\A` or `^` without `(?m)` first.
+bool regexAnchored(read RegexParser p, nint node) {
+    var n = p.nodes[node]
+    if n.kind == RegexAssertNode {
+        return n.a == RegexBeginText
+    }
+    if n.kind == RegexConcat {
+        return n.count > 0 && regexAnchored(p, p.kids[n.first])
+    }
+    if n.kind == RegexCapture {
+        return regexAnchored(p, n.first)
+    }
+    return false
+}
+
+// ---- Running the program: Pike's machine ----
+
+// The machine is made for this one search.
+bool regexRun(read Regex re, read string text, nint start, bool any, nint slotCount, ref List<nint> found) {
+    var m = regexMachine(re, slotCount)
+    return regexSearch(re, text, start, any, ref m, ref found)
+}
+
+Match? regexFindAt(read Regex re, read string text, nint start, ref RegexMachine m) {
+    if re.literal {
+        if start > text.length() {
+            return null
+        }
+        var at = text[start..].indexOf(read re.prefix)
+        if at is null {
+            return null
+        }
+        return Match { start = start + at, end = start + at + re.prefix.length() }
+    }
+    var slots = List<nint>()
+    if !regexSearch(re, text, start, false, ref m, ref slots) {
+        return null
+    }
+    return Match { start = slots[0], end = slots[1] }
+}
+
+bool regexWordByte(byte b) {
+    return b.isAsciiAlphanumeric() || b == '_'
+}
+
+bool regexAssert(nint kind, read byte[] bytes, nint position) {
+    nint length = bytes.length()
+    if kind == RegexBeginText {
+        return position == 0
+    }
+    if kind == RegexEndText {
+        return position == length
+    }
+    if kind == RegexBeginLine {
+        return position == 0 || bytes[position - 1] == '\n'
+    }
+    if kind == RegexEndLine {
+        return position == length || bytes[position] == '\n'
+    }
+    bool before = position > 0 && regexWordByte(bytes[position - 1])
+    bool after = position < length && regexWordByte(bytes[position])
+    if kind == RegexWordBoundary {
+        return before != after
+    }
+    return before == after
+}
+
+bool regexInClass(read RegexClass set, int code) {
+    if set.fold && code <= RegexLastFolded {
+        return regexInRanges(read set.keys, (int)System.charFold((char)code))
+    }
+    bool found = regexInRanges(read set.ranges, code)
+    if !found && set.categories != 0 {
+        found = set.categories & (1 << System.charCategory((char)code)) != 0
+    }
+    return found != set.negated
+}
+
+// Whether `c` is in one of the ranges, which are sorted: a look at each while they are few,
+// halving past sixteen.
+bool regexInRanges(read List<int> ranges, int c) {
+    nint count = ranges.length() / 2
+    if count <= 16 {
+        for i in 0..count {
+            if c < ranges[2 * i] {
+                return false
+            }
+            if c <= ranges[2 * i + 1] {
+                return true
+            }
+        }
+        return false
+    }
+    nint low = 0
+    nint high = count
+    while low < high {
+        nint mid = (low + high) / 2
+        if c > ranges[2 * mid + 1] {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+    return low < count && c >= ranges[2 * low]
+}
+
+// Adds the thread at `pc0` to the list `side`, following splits, jumps, saves and assertions
+// with the machine's own stack, in the order of preference.
+void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint position, read byte[] bytes) {
+    m.stack.add(RegexFrame { pc = pc0, slot = -1, value = 0 })
+    nint base = side * m.size
+    while true {
+        var top = m.stack.removeLast()
+        if top is null {
+            break
+        }
+        if top.slot >= 0 {
+            m.scratch[top.slot] = top.value
+            continue
+        }
+        nint pc = top.pc
+        while true {
+            nint count = m.counts[side]
+            nint place = m.sparse[base + pc]
+            if place < count && m.dense[base + place] == pc {
+                break
+            }
+            m.sparse[base + pc] = count
+            m.dense[base + count] = pc
+            m.counts[side] = count + 1
+            var inst = re.code[pc]
+            if inst.op == RegexOpJump {
+                pc = inst.a
+            } else if inst.op == RegexOpSplit {
+                m.stack.add(RegexFrame { pc = inst.b, slot = -1, value = 0 })
+                pc = inst.a
+            } else if inst.op == RegexOpSave {
+                if inst.a < m.slotCount {
+                    m.stack.add(RegexFrame { pc = 0, slot = inst.a, value = m.scratch[inst.a] })
+                    m.scratch[inst.a] = position
+                }
+                pc += 1
+            } else if inst.op == RegexOpAssert {
+                if !regexAssert(inst.a, bytes, position) {
+                    break
+                }
+                pc += 1
+            } else {
+                nint at = (base + count) * m.slotCount
+                for k in 0..m.slotCount {
+                    m.caps[at + k] = m.scratch[k]
+                }
+                break
+            }
+        }
+    }
+}
+
+// A machine for the program of `re` that keeps `slotCount` slots, made once for every search of
+// a `findAll` or a `replaceAll`.
+RegexMachine regexMachine(read Regex re, nint slotCount) {
+    nint size = re.code.length()
+    var m = RegexMachine {
+        size = size,
+        slotCount = slotCount,
+        dense = List<nint>(),
+        sparse = List<nint>(),
+        caps = List<nint>(),
+        counts = List<nint> { 0, 0 },
+        stack = List<RegexFrame>(),
+        scratch = List<nint>(),
+        found = List<nint>()
+    }
+    for _ in 0..2 * size {
+        m.dense.add(0)
+        m.sparse.add(0)
+    }
+    for _ in 0..2 * size * slotCount {
+        m.caps.add(-1)
+    }
+    for _ in 0..slotCount {
+        m.scratch.add(-1)
+        m.found.add(-1)
+    }
+    return m
+}
+
+// Searches `text` from `start` for the leftmost match the pattern prefers; the slots of `m`
+// are added to `found`. With `any`, stops at the first match of any kind.
+bool regexSearch(read Regex re, read string text, nint start, bool any, ref RegexMachine m, ref List<nint> found) {
+    var bytes = text.asBytes()
+    nint length = bytes.length()
+    nint size = m.size
+    nint slotCount = m.slotCount
+    m.counts[0] = 0
+    m.counts[1] = 0
+    bool matched = false
+    nint side = 0
+    nint position = start
+    while true {
+        if !matched && (!re.anchored || position == 0) {
+            if m.counts[side] == 0 && re.prefix.length() > 0 {
+                // No thread is alive: the next match starts where the prefix is next.
+                if position > length {
+                    break
+                }
+                var next = text[position..].indexOf(read re.prefix)
+                if next is null {
+                    break
+                }
+                position += next
+            }
+            for k in 0..slotCount {
+                m.scratch[k] = -1
+            }
+            regexAddThread(re, ref m, side, 0, position, bytes)
+        }
+        if m.counts[side] == 0 {
+            break
+        }
+        int c = -1
+        nint width = 1
+        if position < length {
+            c = regexCodeAt(bytes, position)
+            width = regexWidth(bytes[position])
+        }
+        nint other = 1 - side
+        m.counts[other] = 0
+        nint base = side * size
+        nint count = m.counts[side]
+        for i in 0..count {
+            nint pc = m.dense[base + i]
+            var inst = re.code[pc]
+            int op = inst.op
+            if op == RegexOpMatch {
+                nint at = (base + i) * slotCount
+                for k in 0..slotCount {
+                    m.found[k] = m.caps[at + k]
+                }
+                matched = true
+                if any {
+                    return true
+                }
+                // The threads after this one are less preferred: they are left.
+                break
+            }
+            bool ok = false
+            if c >= 0 {
+                if op == RegexOpChar {
+                    ok = c == inst.a
+                } else if op == RegexOpFoldChar {
+                    ok = (int)System.charFold((char)c) == inst.a
+                } else if op == RegexOpClass {
+                    ok = regexInClass(read re.classes[inst.a], c)
+                } else if op == RegexOpAnyNotNewline {
+                    ok = c != '\n'
+                } else if op == RegexOpAny {
+                    ok = true
+                }
+            }
+            if ok {
+                nint at = (base + i) * slotCount
+                for k in 0..slotCount {
+                    m.scratch[k] = m.caps[at + k]
+                }
+                regexAddThread(re, ref m, other, pc + 1, position + width, bytes)
+            }
+        }
+        if position >= length {
+            break
+        }
+        position += width
+        side = other
+    }
+    if matched {
+        found.addAll(read m.found)
+    }
+    return matched
+}
+
+// The replacement of one match written to `out`: `$1`, `${1}`, `$name`, `${name}`, `$$`.
+void regexExpand(read Regex re, ref string out, read string text, read List<nint> slots, read string replacement) {
+    var bytes = replacement.asBytes()
+    nint i = 0
+    nint run = 0
+    while i < bytes.length() {
+        if bytes[i] != '$' {
+            i += 1
+            continue
+        }
+        out.write(replacement[run..i])
+        i += 1
+        if i < bytes.length() && bytes[i] == '$' {
+            out.write('$')
+            i += 1
+            run = i
+            continue
+        }
+        nint nameStart = i
+        nint nameEnd = i
+        if i < bytes.length() && bytes[i] == '{' {
+            nameStart = i + 1
+            nameEnd = nameStart
+            while nameEnd < bytes.length() && bytes[nameEnd] != '}' {
+                nameEnd += 1
+            }
+            if nameEnd >= bytes.length() {
+                panic($"the replacement \"{replacement}\" has a ${{ that is not closed")
+            }
+            i = nameEnd + 1
+        } else if i < bytes.length() && bytes[i] >= '0' && bytes[i] <= '9' {
+            while nameEnd < bytes.length() && bytes[nameEnd] >= '0' && bytes[nameEnd] <= '9' {
+                nameEnd += 1
+            }
+            i = nameEnd
+        } else {
+            while nameEnd < bytes.length() && (regexWordByte(bytes[nameEnd])) {
+                nameEnd += 1
+            }
+            i = nameEnd
+        }
+        var name = replacement[nameStart..nameEnd]
+        nint group = regexGroupOf(re, name)
+        if group < 0 {
+            if name.length() == 0 {
+                panic($"the replacement \"{replacement}\" has a $ with no group after it: $$ writes one")
+            }
+            panic($"the replacement \"{replacement}\" names group {name}, which the pattern {re.source} does not have")
+        }
+        nint start = slots[2 * group]
+        if start >= 0 {
+            out.write(text[start..slots[2 * group + 1]])
+        }
+        run = i
+    }
+    out.write(replacement[run..])
+}
+
+// The number of the group a replacement names, by its number or its name; -1 for none.
+nint regexGroupOf(read Regex re, read string name) {
+    if name.length() == 0 {
+        return -1
+    }
+    if name[0] >= '0' && name[0] <= '9' {
+        nint value = 0
+        for i in 0..name.length() {
+            if name[i] < '0' || name[i] > '9' || value > re.names.length() {
+                return -1
+            }
+            value = value * 10 + (name[i] - '0')
+        }
+        if value >= re.names.length() {
+            return -1
+        }
+        return value
+    }
+    for i in 1..re.names.length() {
+        if re.names[i] == name {
+            return i
+        }
+    }
+    return -1
+}

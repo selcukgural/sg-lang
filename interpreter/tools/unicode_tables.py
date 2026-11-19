@@ -33,6 +33,10 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "uni
 # The bits of a record (see src/unicode.rs).
 LETTER, NUMERIC, UPPER, LOWER, CONTROL, CASED, IGNORABLE = 1, 2, 4, 8, 16, 32, 64
 SPECIAL_UPPER, SPECIAL_LOWER, SPECIAL_FOLD = 128, 256, 512
+# The general category, five bits from bit 10: its place in this list, which is the order of the
+# variants of `UnicodeCategory` (std/unicode.sg), with the surrogates, which no `char` is, last.
+CATEGORIES = "Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pc Pd Ps Pe Pi Pf Po Sm Sc Sk So Zs Zl Zp Cc Cf Co Cn Cs".split()
+CATEGORY_SHIFT = 10
 
 # The three levels of the lookup: TOP by the code >> 9, MID by the next five bits, LEAF by the
 # last four.
@@ -152,13 +156,20 @@ def read(folder):
             full_lower[code] = to_lower
 
     # Case folding: C and F, not S (F is used in its place) and not T (Turkic, left out).
-    fold, full_fold = {}, {}
+    # The delta of the record is the simple folding, C and S, which `(?i)` of a `Regex` compares
+    # by (choice 1477); the full folding takes the table for every character with an F line, and
+    # each S line has one, so S changes no full folding.
+    fold, full_fold, simple_only = {}, {}, {}
     for fields in lines(folder, "CaseFolding.txt"):
         code, status, to = int(fields[0], 16), fields[1], codes(fields[2])
         if status == "C":
             fold[code] = to[0]
+        elif status == "S":
+            simple_only[code] = to[0]
         elif status == "F":
             full_fold[code] = to
+    assert all(code in full_fold for code in simple_only), "an S line goes with an F line"
+    fold.update(simple_only)
     return category, upper, lower, cased, ignorable, full_upper, full_lower, fold, full_fold
 
 
@@ -178,6 +189,7 @@ def build(data):
             | (SPECIAL_UPPER if code in full_upper else 0)
             | (SPECIAL_LOWER if code in full_lower else 0)
             | (SPECIAL_FOLD if code in full_fold else 0)
+            | (CATEGORIES.index(kind) << CATEGORY_SHIFT)
         )
         record = (bits, upper.get(code, code) - code, lower.get(code, code) - code, fold.get(code, code) - code)
         if record not in record_of:
@@ -247,6 +259,9 @@ def check(tables):
         if bits & 31 != expected:
             wrong += 1
             print(f"U+{code:04X}: category bits {bits & 31}, Python {expected}", file=sys.stderr)
+        if CATEGORIES[bits >> CATEGORY_SHIFT] != kind:
+            wrong += 1
+            print(f"U+{code:04X}: category {CATEGORIES[bits >> CATEGORY_SHIFT]}, Python {kind}", file=sys.stderr)
         for name, delta, bit, python in (("upper", 1, SPECIAL_UPPER, char.upper()), ("lower", 2, SPECIAL_LOWER, char.lower()),
                                          ("fold", 3, SPECIAL_FOLD, char.casefold())):
             ours = full(code, name, delta, bit)
@@ -281,9 +296,11 @@ def write(tables):
         f"pub const TOP_SHIFT: u32 = {TOP_SHIFT};",
         f"pub const MID_BITS: u32 = {MID_BITS};",
         f"pub const LEAF_BITS: u32 = {LEAF_BITS};",
+        f"pub const CATEGORY_SHIFT: u32 = {CATEGORY_SHIFT};",
         "",
-        "/// The bits of what a character is, then what its upper case, its lower case and its folded",
-        "/// case add to its code (the simple mappings).",
+        "/// The bits of what a character is (its general category from bit `CATEGORY_SHIFT`), then",
+        "/// what its upper case, its lower case and its folded case add to its code (the simple",
+        "/// mappings; the folding of the C and S lines of CaseFolding.txt).",
         f"pub const RECORDS: [(u16, i32, i32, i32); {len(records)}] = [",
         rows([f"({bits}, {up}, {low}, {fold})" for bits, up, low, fold in records], 0, 6),
         "];",

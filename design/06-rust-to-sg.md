@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-ninth slice (a log in `std`, 1412, 1447-1455; the types of a module named with `use` before those of `std`, 1456).
+Last brought up to date: 20 November 2026, the hundred-and-thirtieth slice (regular expressions in `std`, 1457-1481; the general category of a character, 1475, 1476).
 
 ## Functions and variables
 
@@ -127,6 +127,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-ninth slice (a
 | `c.is_alphabetic()`, `c.is_numeric()`, `c.is_alphanumeric()` | `c.isLetter()`, `c.isNumeric()`, `c.isAlphanumeric()` | built | `isLetter` is the category L, narrower than Alphabetic |
 | `c.is_uppercase()`, `c.is_lowercase()`, `c.is_control()` | `c.isUpper()`, `c.isLower()`, `c.isControl()` | built | The categories Lu and Ll, narrower than Rust's derived properties |
 | none (the `caseless` or `unicase` crates) | `s.equalsIgnoreCase(t)`, `s.foldCase()` | built | Full case folding, without the Turkic lines |
+| none (the `unicode-general-category` crate) | `c.category()`, a `UnicodeCategory` | built | `UppercaseLetter` ... `Unassigned`; `abbreviation()` gives `Lu` |
 | the `unicode-normalization` and `unicode-segmentation` crates | none | not planned yet | |
 
 ## Collections
@@ -576,6 +577,24 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-ninth slice (a
 | `RUST_LOG=my_crate=debug`, targets | none | | One level for the whole program |
 | `env_logger`'s colours, `RUST_LOG_STYLE` | colours on a terminal, `NO_COLOR` | built | Only the level is coloured; no way to force colours on |
 | `log::info!(target: ..., key = value; ...)`, `tracing` spans | none yet | | No structured fields, files or rotation |
+
+## Regular expressions
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `Regex::new(r"\d+").unwrap()` | `Regex.of("""\d+""")` | built | Only a pattern written in the program, checked when it is compiled; never fails when it runs |
+| `static RE: LazyLock<Regex> = LazyLock::new(\|\| Regex::new(...).unwrap())` | `static Regex Re = Regex.of("...")` | built | Compiled the first time it is read; any task reads it |
+| `Regex::new(&pattern)` | `Regex.compile(read pattern)` | built | A `Result<Regex, RegexError>`; the error has the column |
+| `re.is_match(text)`, `re.find(text)` | `re.isMatch(text)`, `re.find(text)` | built | A `Match?`: `start`, `end`, `m.of(text)` |
+| `re.find_iter(text).collect()` | `re.findAll(text)` | built | A `List<Match>`; no iterator |
+| `re.captures(text)`, `caps.get(1)`, `caps.name("y")` | `re.captures(text)`, `caps.get(1)`, `caps.named("y")` | built | |
+| `re.replace_all(text, "$2-$1")` | `re.replaceAll(text, "$2-$1")` | built | `$1x` is group 1 and `x`; a group the pattern lacks is a panic |
+| `re.split(text)` | `re.split(text)` | built | As Go's `Split`: a `List<string>` |
+| `\d`, `\w`, `\s` (Unicode) | `\d`, `\w`, `\s` (ASCII) | built | `\p{Nd}`, `\pL` for Unicode |
+| `\p{Greek}`, `\p{Letter}` | none yet | | `\p` names the general categories by their short names |
+| `regex::bytes::Regex` | none yet | | A `string` is matched |
+| `replace_all(text, \|caps\| ...)` | none | | No closures |
+| `fancy-regex` (back references, look-around) | none | not planned | A match grows with the text and no more |
 
 ## Tests and the tools
 
