@@ -1,4 +1,4 @@
-error: `Job` cannot be `Copyable`: `token` is a `CancellationToken`, which is not
+error: `Job` cannot be `Copyable`: its field `token` is a `CancellationToken`, and a `CancellationToken` is not `Copyable`
   --> error_cancel_token_copyable.sg:2:5
  2 |     CancellationToken token
    |     ^^^^^^^^^^^^^^^^^

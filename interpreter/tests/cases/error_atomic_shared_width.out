@@ -1,0 +1,5 @@
+error: expected `shared atomic long`, found `shared atomic int`
+  --> error_atomic_shared_width.sg:9:9
+ 9 |     add(total)
+   |         ^^^^^
+  hint: `new shared atomic 0` takes the type of an integer from where it goes; give `total` its type where it is made: `shared atomic long total = new shared atomic ...`

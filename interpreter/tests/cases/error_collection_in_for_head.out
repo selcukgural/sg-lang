@@ -1,0 +1,5 @@
+error: a collection with its items needs parentheses here, where `{` starts the block
+  --> error_collection_in_for_head.sg:3:14
+ 3 |     for x in List<int> { 1, 2 } {
+   |              ^^^^
+  hint: `(List<int> { ... })`

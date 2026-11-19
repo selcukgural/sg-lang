@@ -1,4 +1,4 @@
-error: `Task.run` starts a function, and this is a `int`
+error: `Task.run` starts a function, and this is an `int`
   --> error_task_not_function.sg:2:22
  2 |     var t = Task.run(3, 1)
    |                      ^

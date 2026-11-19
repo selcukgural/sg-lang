@@ -1,0 +1,5 @@
+error: `ushort.fromLittleEndian` reads 2 bytes, and this window has 1
+  --> error_from_bytes_window_number.sg:4:35
+ 4 |     print(ushort.fromLittleEndian(data[3..4]))
+   |                                   ^^^^^^^^^^
+  hint: a window of 2 bytes: `data[3..5]`

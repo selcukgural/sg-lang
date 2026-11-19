@@ -268,6 +268,7 @@ panic: index 3 is out of range: the length is 3
   --> example.sg:3:11
  3 |     print(scores[3])
    |           ^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 ```
 
 A compiled program panics with the same message, in a debug build and in a release build. You can panic on

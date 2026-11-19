@@ -1,0 +1,5 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> error_null_field_of_checked.sg:9:11
+ 9 |     print(p.nick.length())
+   |           ^^^^^^
+  hint: a field is not narrowed: open `p` for a block and lend the field there: `read p as value { var nick = read value.nick ... }`, then `if nick is not null { ... }`

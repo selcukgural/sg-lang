@@ -16,11 +16,13 @@ panic: index 6 is out of range: the length is 3
   --> tests_index_sum.sg:52:11
  52 |     print(xs[at + 5])
     |           ^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 FAIL  a negative sum that fits
 panic: index -7 is out of range: the length is 3
   --> tests_index_sum.sg:58:11
  58 |     print(xs[at + 2])
     |           ^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 FAIL  an int index of an array
 panic: overflow: 2147483647 + 1 does not fit in int
   --> tests_index_sum.sg:64:13

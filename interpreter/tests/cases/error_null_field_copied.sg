@@ -1,0 +1,9 @@
+// A `Copyable` `T?` field is copied to a variable, which is tested (choice 1401).
+struct Box {
+    int? n
+}
+
+void main() {
+    var b = Box { n = 3 }
+    print(b.n.toString())
+}

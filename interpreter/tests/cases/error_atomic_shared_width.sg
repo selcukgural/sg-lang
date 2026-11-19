@@ -1,0 +1,10 @@
+// `new shared atomic 0` takes its integer type from where it goes; a variable made with `var`
+// is an `int` (choice 1401).
+void add(shared atomic long total) {
+    _ = total.fetchAdd(1)
+}
+
+void main() {
+    var total = new shared atomic 0
+    add(total)
+}

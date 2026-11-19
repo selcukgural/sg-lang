@@ -1,4 +1,4 @@
-error: `v` is a `int` in the first pattern of this `or` and a `string` here
+error: `v` is an `int` in the first pattern of this `or` and a `string` here
   a name of an `or` has one type, whichever pattern took the value
   --> error_pattern_choice_name_type.sg:8:27
  8 |         Number(v) or Name(v) => 1

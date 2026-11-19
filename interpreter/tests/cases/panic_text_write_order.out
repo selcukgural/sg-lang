@@ -8,3 +8,4 @@ panic: index 5 is out of range: the length is 2
   --> panic_text_write_order.sg:16:5
  16 |     xs[at(5)].write($"{word("y")}")
     |     ^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

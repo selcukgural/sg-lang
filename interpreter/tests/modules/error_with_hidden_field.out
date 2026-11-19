@@ -1,4 +1,4 @@
-error: `balance` is not public, so a `Account` cannot be copied with `with` outside the `defaults` module
+error: `balance` is not public, so an `Account` cannot be copied with `with` outside the `defaults` module
   --> error_with_hidden_field.sg:4:19
  4 |     var account = Account("ann") with { owner = "bob" }
    |                   ^^^^^^^^^^^^^^

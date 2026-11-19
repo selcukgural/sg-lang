@@ -1,4 +1,6 @@
 error: operator `+` is not defined for `int?` and `int`
+  `a` may be `null`
   --> error_narrowing_chain_else.sg:7:15
  7 |         print(a + 1)
    |               ^^^^^
+  hint: test it first: `if a is not null { ... }`; or give a fallback with `??`

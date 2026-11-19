@@ -1,0 +1,5 @@
+error: the left side of an assignment must be a variable, a field or an item
+  --> error_assign_to_call.sg:5:5
+ 5 |     counts.getOrAdd("a", 0) += 1
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a call is not a place to write to; if it gives a `ref`, write through a variable: `var slot = counts.getOrAdd("a", 0)`, then `slot += ...`

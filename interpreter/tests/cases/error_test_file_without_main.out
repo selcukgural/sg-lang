@@ -1,5 +1,5 @@
 error: there is no `main` function
-  --> error_test_file_without_main.sg:4:1
- 4 | 
-   | ^
+  --> error_test_file_without_main.sg:3:2
+ 3 | }
+   |  ^
   hint: this file holds tests; they are run by the test command: `sg test <file>`

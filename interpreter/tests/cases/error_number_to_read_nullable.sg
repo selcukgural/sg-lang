@@ -1,0 +1,8 @@
+// A number where a `read int?` goes is lent with `read` (choice 1401).
+void show(read int? n) {
+    print(n ?? 0)
+}
+
+void main() {
+    show(5)
+}

@@ -1955,6 +1955,17 @@ SG_COLD static _Noreturn void sg_index_sum_fail(long long at, long long len, con
     sg_sum_told(at, s);
     sg_index_fail(at, len, loc);
 }
+/* An item past the end of a list, an array or a slice: the hint names the way that does not
+   panic (choice 1401). */
+SG_COLD static _Noreturn void sg_item_fail(long long at, long long len, const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: index %lld is out of range: the length is %lld\n", at, len);
+    sg_die_hint(loc, "`.get(i)` reads with `null` instead; before a write, compare the index with `.length()`");
+}
+SG_COLD static _Noreturn void sg_item_sum_fail(long long at, long long len, const sg_sum* s, const char* loc) {
+    sg_sum_told(at, s);
+    sg_item_fail(at, len, loc);
+}
 SG_COLD static _Noreturn void sg_span_sum_fail(long long from, long long to, long long len, const sg_sum* sf, const sg_sum* st, const char* loc) {
     sg_sum_told(from, sf);
     sg_sum_told(to, st);
@@ -3145,7 +3156,7 @@ typedef struct sg_guard { struct sg_guard* next; void* held; const char* at; con
 typedef struct { sg_guard* reads; sg_guard* write; } __attribute__((aligned(16))) sg_lock;
 /* What the leak report says of a value: the name of its type and, for a struct, the first of
    its fields that owns a `shared` value (`through`), with that field's name and the hint. */
-typedef struct { const char* name; int (*through)(const void* value); const char* const* fields; const char* const* hints; } sg_kind;
+typedef struct { const char* name; int (*through)(const void* value); const char* const* fields; const char* const* hints; int singles; } sg_kind;
 typedef struct sg_live { struct sg_live* prev; struct sg_live* next; const char* made; const sg_kind* kind; void* value; } __attribute__((aligned(16))) sg_live;
 static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
 #if SG_THREADS
@@ -3480,14 +3491,18 @@ static bool sg_leaks(const char* ended) {
     int64_t groups = 0;
     const char* field = NULL;
     const char* hint = NULL;
+    int rank = 2;
     for (sg_live* live = sg_alive.next; live != &sg_alive; live = live->next) {
         int64_t at = 0;
         while (at < groups && !(first[at]->kind->name == live->kind->name && strcmp(first[at]->made, live->made) == 0)) at++;
         if (at == groups) { first[at] = live; many[at] = 0; groups++; }
         many[at]++;
-        if (!field && live->kind->through) {
+        /* A field that holds one value (a child's `parent`) before one that holds many (the
+           parent's `children`): the one that holds one is the side that usually does not own. */
+        if (rank > 0 && live->kind->through) {
             int found = live->kind->through(live->value);
-            if (found >= 0) { field = live->kind->fields[found]; hint = live->kind->hints[found]; }
+            int at_rank = found < live->kind->singles ? 0 : 1;
+            if (found >= 0 && at_rank < rank) { field = live->kind->fields[found]; hint = live->kind->hints[found]; rank = at_rank; }
         }
     }
     /* The most first; of two as many, the one made first. */
@@ -11609,7 +11624,7 @@ impl<'a> Emitter<'a> {
                         self.null_given();
                     }
                     let loc = self.loc(func.name_span);
-                    let _ = write!(checks, "if (!a{position}) sg_null_given({}, \"read CString\", false, {loc}); sg_cstring c{position} = (sg_cstring)a{position}; ", c_string(c_name));
+                    let _ = write!(checks, "if (!a{position}) sg_null_given({}, \"a `read CString`\", \"read CString\", false, {loc}); sg_cstring c{position} = (sg_cstring)a{position}; ", c_string(c_name));
                     self.ctype(inner, func.name_span)?;
                 }
                 Ty::Ptr(_) | Ty::Nullable(_) | Ty::Read(_) | Ty::Ref(_) => {
@@ -11622,7 +11637,7 @@ impl<'a> Emitter<'a> {
                         }
                         let loc = self.loc(func.name_span);
                         let owned = matches!(param, Ty::Ptr(_));
-                        let _ = write!(checks, "if (!a{position}) sg_null_given({}, {}, {owned}, {loc}); ", c_string(c_name), c_string(&param.to_string()));
+                        let _ = write!(checks, "if (!a{position}) sg_null_given({}, {}, {}, {owned}, {loc}); ", c_string(c_name), c_string(&crate::diag::worded(&format!("a `{param}`"))), c_string(&param.to_string()));
                     }
                 }
                 _ => {
@@ -11644,13 +11659,14 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// Writes the panic of an `export` function that C gave `null` where it takes none.
+    /// Writes the panic of an `export` function that C gave `null` where it takes none. `takes`
+    /// is the type with its article, as the interpreter writes it (`an `Item*``).
     fn null_given(&mut self) {
-        let _ = writeln!(self.glue_protos, "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* ty, bool owned, const char* loc);");
+        let _ = writeln!(self.glue_protos, "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* takes, const char* ty, bool owned, const char* loc);");
         let _ = writeln!(
             self.glue,
-            "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* ty, bool owned, const char* loc) {{\n    SG_PANIC_START();\n    \
-             fprintf(stderr, \"panic: C gave `null` to `%s`, which takes a `%s`\\n\", func, ty);\n    \
+            "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* takes, const char* ty, bool owned, const char* loc) {{\n    SG_PANIC_START();\n    \
+             fprintf(stderr, \"panic: C gave `null` to `%s`, which takes %s\\n\", func, takes);\n    \
              if (!owned) sg_die(loc);\n    char hint[256];\n    \
              snprintf(hint, sizeof hint, \"a parameter C may give `null` is written `%s?`\", ty);\n    \
              sg_die_hint(loc, hint);\n}}"
@@ -12218,12 +12234,12 @@ impl<'a> Emitter<'a> {
                 // An item, as the place it is in. The index is checked in every build.
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_at_{name}(const {list}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_index_fail(at, v->len, loc); return &v->ptr[at]; }}"
+                    "static inline {held}* sg_at_{name}(const {list}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_item_fail(at, v->len, loc); return &v->ptr[at]; }}"
                 );
                 // The same where the index is `a + c` (see `sg_sum`).
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_ats_{name}(const {list}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_index_sum_fail(at, v->len, sum, loc); return &v->ptr[at]; }}"
+                    "static inline {held}* sg_ats_{name}(const {list}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_item_sum_fail(at, v->len, sum, loc); return &v->ptr[at]; }}"
                 );
                 let _ = writeln!(
                     self.glue,
@@ -12245,11 +12261,11 @@ impl<'a> Emitter<'a> {
                 // it is a constant, the C compiler sees that the check never fails.
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_at_{name}({array}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_index_fail(at, {length}, loc); return &v->items[at]; }}"
+                    "static inline {held}* sg_at_{name}({array}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_item_fail(at, {length}, loc); return &v->items[at]; }}"
                 );
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_ats_{name}({array}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_index_sum_fail(at, {length}, sum, loc); return &v->items[at]; }}"
+                    "static inline {held}* sg_ats_{name}({array}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_item_sum_fail(at, {length}, sum, loc); return &v->items[at]; }}"
                 );
                 if self.droppable(item) {
                     let (drop, forget) = (self.drop_of(item, "v->items[i]"), self.move_of(item, "v->items[i]"));
@@ -12273,7 +12289,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.types, "typedef struct {{ {held}* ptr; int64_t len; }} {window};");
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_at_{name}({window} v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_index_fail(at, v.len, loc); return &v.ptr[at]; }}"
+                    "static inline {held}* sg_at_{name}({window} v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_item_fail(at, v.len, loc); return &v.ptr[at]; }}"
                 );
                 // A part of the window. An empty list has no block, and nothing is added to
                 // a pointer that points nowhere.
@@ -12286,7 +12302,7 @@ impl<'a> Emitter<'a> {
                 // The same where an index or an end is `a + c` (see `sg_sum`).
                 let _ = writeln!(
                     self.glue,
-                    "static inline {held}* sg_ats_{name}({window} v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_index_sum_fail(at, v.len, sum, loc); return &v.ptr[at]; }}"
+                    "static inline {held}* sg_ats_{name}({window} v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_item_sum_fail(at, v.len, sum, loc); return &v.ptr[at]; }}"
                 );
                 let _ = writeln!(
                     self.glue,
@@ -12347,13 +12363,24 @@ impl<'a> Emitter<'a> {
         };
         // A struct: the first of its fields that owns a `shared` value, the name of that field
         // and the hint, which writes the field's type with `weak` (and its aliases spelled out).
-        let mut through = ("NULL".to_string(), "NULL".to_string(), "NULL".to_string());
+        // The fields that hold one value come first, those that hold many (a collection) after
+        // them; `singles` counts the first (choice 1401).
+        let mut through = ("NULL".to_string(), "NULL".to_string(), "NULL".to_string(), 0);
         if let Ty::Struct(owner) = ty {
             let decl: &'a StructDecl = self.structs[owner.as_str()];
             let (mut tests, mut fields, mut hints) = (String::new(), Vec::new(), Vec::new());
+            let mut ordered = Vec::new();
             for field in &decl.fields {
                 let field_ty = self.written(&field.ty)?;
+                ordered.push((holds_many(&field_ty), field, field_ty));
+            }
+            ordered.sort_by_key(|(many, _, _)| *many);
+            let mut singles = 0;
+            for (many, field, field_ty) in ordered {
                 let Some(holds) = self.holds(&field_ty, span)? else { continue };
+                if !many {
+                    singles += 1;
+                }
                 let _ = write!(tests, " if ({holds}(&v->m_{})) return {};", field.name, fields.len());
                 fields.push(c_string(&format!("{}.{}", short_name(owner), field.name)));
                 let mut text = self.text(field.ty.span).to_string();
@@ -12372,11 +12399,11 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.glue, "static int sg_through_{base}(const void* value) {{ const {ctype}* v = value;{tests} return -1; }}");
                 let _ = writeln!(self.glue, "static const char* const sg_fields_{base}[] = {{ {} }};", fields.join(", "));
                 let _ = writeln!(self.glue, "static const char* const sg_hints_{base}[] = {{ {} }};", hints.join(", "));
-                through = (format!("sg_through_{base}"), format!("sg_fields_{base}"), format!("sg_hints_{base}"));
+                through = (format!("sg_through_{base}"), format!("sg_fields_{base}"), format!("sg_hints_{base}"), singles);
             }
         }
         let _ = writeln!(self.glue_protos, "static const sg_kind {name};");
-        let _ = writeln!(self.glue, "static const sg_kind {name} = {{ {}, {}, {}, {} }};", c_string(&shown), through.0, through.1, through.2);
+        let _ = writeln!(self.glue, "static const sg_kind {name} = {{ {}, {}, {}, {}, {} }};", c_string(&shown), through.0, through.1, through.2, through.3);
         Ok(format!("&{name}"))
     }
 
@@ -20630,4 +20657,13 @@ fn chan_end(ty: &Ty) -> Ty {
         behind = inner;
     }
     behind.clone()
+}
+
+/// Whether a field of this type holds many values (a collection or an array): the leak report
+/// names a field that holds one first (see `sg_kind`).
+pub(crate) fn holds_many(ty: &Ty) -> bool {
+    match ty {
+        Ty::Nullable(inner) => holds_many(inner),
+        _ => matches!(ty, Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Array(..)),
+    }
 }

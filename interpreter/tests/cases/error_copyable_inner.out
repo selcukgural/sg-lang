@@ -1,4 +1,4 @@
-error: `Shape` cannot be `Copyable`: `at` is a `Point`, which is not
+error: `Shape` cannot be `Copyable`: its field `at` is a `Point`, and a `Point` is not `Copyable`
   --> error_copyable_inner.sg:6:9
  6 |     Dot(Point at)
    |         ^^^^^

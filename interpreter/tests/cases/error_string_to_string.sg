@@ -1,0 +1,6 @@
+// `toString` of C# and Java on a `string`: it is one already, and a copy is `.clone()` (choice
+// 1401).
+void main() {
+    var s = "text".toString()
+    print(s)
+}

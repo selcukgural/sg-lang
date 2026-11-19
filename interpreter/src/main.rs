@@ -87,10 +87,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             return ExitCode::FAILURE;
         }
     };
-    let Some(out) = out else {
-        print!("{code}");
-        return ExitCode::SUCCESS;
-    };
+    let Some(out) = out else { return say(&code) };
     let work = match sg::cc::Work::new() {
         Ok(work) => work,
         Err(error) => {
@@ -215,8 +212,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 true => String::new(),
                 false => format!(", with {}", with_folders.join(" ")),
             };
-            println!("built {out} for a machine without an operating system; link it with the code that starts the machine{links}; it takes nothing of C's library, and of the C compiler's own only what that compiler calls on its own (GCC's atomics on 64-bit Arm, `-lgcc`)");
-            ExitCode::SUCCESS
+            say(&format!("built {out} for a machine without an operating system; link it with the code that starts the machine{links}; it takes nothing of C's library, and of the C compiler's own only what that compiler calls on its own (GCC's atomics on 64-bit Arm, `-lgcc`)\n"))
         }
         Ok(status) if status.success() => {
             // Windows has no `rpath`: the DLLs of the libraries of `-L` go beside the program.
@@ -243,10 +239,9 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             };
             match made {
                 // A program finds a DLL in its own folder or in the system's.
-                Made::Shared if cfg!(windows) => println!("built {out}, {out}.lib and {}; a program links it with `{linked}`, and finds {out} beside itself", header_path.display()),
-                _ => println!("built {out} and {}; a program links it with `{linked}`", header_path.display()),
+                Made::Shared if cfg!(windows) => say(&format!("built {out}, {out}.lib and {}; a program links it with `{linked}`, and finds {out} beside itself\n", header_path.display())),
+                _ => say(&format!("built {out} and {}; a program links it with `{linked}`\n", header_path.display())),
             }
-            ExitCode::SUCCESS
         }
         Ok(_) if !libs.is_empty() => {
             if let Some(diag) = sg::missing_library(&sources, made == Made::Tests, matches!(made, Made::Static | Made::Shared)) {
@@ -273,6 +268,24 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
 }
 
 /// The name of a library: that of its folder, or of its file without `.sg`.
+/// What the tool itself writes to the output: the C of `emit-c`, the line `built ...`. An output
+/// closed before the end ends the tool quietly, as it ends a program (choice 1399).
+fn say(text: &str) -> ExitCode {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+            sg::signals::end_by_closed_output();
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: cannot write output: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn library_name(path: &str) -> String {
     let path = std::path::Path::new(path);
     let path = if path.is_dir() { std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) } else { path.to_path_buf() };
@@ -479,13 +492,27 @@ fn main() -> ExitCode {
                 Made::Freestanding => Some(format!("{name}.o")),
                 _ => std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()),
             };
+            let named = out.is_some();
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
             // An output into a folder that is not there is told before anything is compiled, as
-            // a program that cannot be read is (1329).
+            // a program that cannot be read is (1329); so is an output that is a folder, as the
+            // program of a folder is named by default when it is built from the folder above it
+            // (1398, as Go tells it).
             if let Some(out) = &out {
                 let folder = std::path::Path::new(out).parent().filter(|folder| !folder.as_os_str().is_empty());
                 if let Some(folder) = folder.filter(|folder| !folder.is_dir()) {
                     eprintln!("error: cannot write {out}: there is no folder {}", folder.display());
+                    return ExitCode::from(2);
+                }
+                let file = match made {
+                    Made::Program | Made::Tests => sg::cc::program_file(out),
+                    _ => out.clone(),
+                };
+                if std::path::Path::new(&file).is_dir() {
+                    match named {
+                        true => eprintln!("error: cannot write {file}: it is a folder"),
+                        false => eprintln!("error: `{file}` is a folder; name the program with -o"),
+                    }
                     return ExitCode::from(2);
                 }
             }

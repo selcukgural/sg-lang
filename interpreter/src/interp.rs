@@ -4074,6 +4074,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let out_of_range = |at: i128, length: usize| {
                     Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")))
                 };
+                // An item of a list, an array or a slice has a way that does not panic (1401).
+                let no_item = |at: i128, length: usize| {
+                    Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")).hint("`.get(i)` reads with `null` instead; before a write, compare the index with `.length()`"))
+                };
                 match (holder, &at) {
                     (Value::Str(text), Value::Int(_, at)) => match usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at)) {
                         Some(byte) => Ok(cell(Value::Int(IntTy::Byte, *byte as i128))),
@@ -4083,12 +4087,12 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let items = items.borrow();
                         match usize::try_from(*at).ok().and_then(|at| items.get(at)) {
                             Some(item) => Ok(item.clone()),
-                            None => Err(out_of_range(*at, items.len())),
+                            None => Err(no_item(*at, items.len())),
                         }
                     }
                     (Value::Array(items) | Value::Slice(items), Value::Int(_, at)) => match usize::try_from(*at).ok().and_then(|at| items.get(at)) {
                         Some(item) => Ok(item.clone()),
-                        None => Err(out_of_range(*at, items.len())),
+                        None => Err(no_item(*at, items.len())),
                     },
                     (Value::Map(entries), key) => match entries.borrow().get(&key_of(key)) {
                         Some((_, value)) => Ok(value.clone()),
@@ -5177,13 +5181,22 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         groups.sort_by_key(|group| std::cmp::Reverse(group.2));
-        // The first field found that owns one of the others.
-        let through = alive.iter().find_map(|(_, held, _)| {
-            let Value::Struct(name, fields) = &*held.value.borrow() else { return None };
-            let decl = self.structs.get(name.as_ref())?;
-            let at = fields.iter().position(|field| owns_any(&field.borrow(), &ids))?;
-            Some((format!("{}.{}", short_name(name), decl.fields[at].name), &decl.fields[at].ty))
-        });
+        // The first field found that owns one of the others; a field that holds one value (a
+        // child's `parent`) before one that holds many (the parent's `children`), as compiled
+        // code finds it (`sg_kind`, choice 1401).
+        let many = |value: &Value| matches!(value, Value::List(_) | Value::Map(_) | Value::Set(_) | Value::Array(_));
+        let mut through = None;
+        for rank in [false, true] {
+            through = alive.iter().find_map(|(_, held, _)| {
+                let Value::Struct(name, fields) = &*held.value.borrow() else { return None };
+                let decl = self.structs.get(name.as_ref())?;
+                let at = fields.iter().position(|field| many(&field.borrow()) == rank && owns_any(&field.borrow(), &ids))?;
+                Some((format!("{}.{}", short_name(name), decl.fields[at].name), &decl.fields[at].ty))
+            });
+            if through.is_some() {
+                break;
+            }
+        }
         let count = alive.len();
         let plural = if count == 1 { "value" } else { "values" };
         let msg = match &through {

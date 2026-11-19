@@ -1,0 +1,5 @@
+// A type of the language's own module named only in the code of a `$"..."` is found (choice 1400).
+void main() {
+    print($"{Path.extension("notes.txt")}")
+    print($"{Duration.fromSeconds(2).milliseconds()} ms")
+}

@@ -1,0 +1,5 @@
+// A type of the language's own module named only in a `$"..."` inside another is found too
+// (choice 1400).
+void main() {
+    print($"{$"{Duration.fromSeconds(2).milliseconds()}"} ms")
+}

@@ -383,6 +383,7 @@ panic: index 3 is out of range: the length is 3
   --> example.sg:4:11
  4 |     print(scores[at])
    |           ^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 ```
 
 These panic:

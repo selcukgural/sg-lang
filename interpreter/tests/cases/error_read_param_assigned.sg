@@ -1,0 +1,10 @@
+// A `read` parameter given a value with no name: `read 1` would borrow what is gone when the
+// line ends, so the hint is a copy of one's own (choice 1401).
+void bump(read int count) {
+    count = 1
+    print(count)
+}
+
+void main() {
+    bump(2)
+}

@@ -237,7 +237,7 @@ fn waits_after_a_panic() {
     let written = std::fs::read_to_string(&out).unwrap().replace("\r\n", "\n");
     assert_eq!(
         written,
-        "before\nafter panic: index 3 is out of range: the length is 3\n  --> waits_after_panic.sg:13:12\n 13 |     return items[3]\n    |            ^^^^^^^^\nonPanic ends\n"
+        "before\nafter panic: index 3 is out of range: the length is 3\n  --> waits_after_panic.sg:13:12\n 13 |     return items[3]\n    |            ^^^^^^^^\n  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`\nonPanic ends\n"
     );
 }
 

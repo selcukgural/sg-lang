@@ -1,0 +1,5 @@
+error: expected `read int?`, found `int`
+  --> error_number_to_read_nullable.sg:7:10
+ 7 |     show(5)
+   |          ^
+  hint: lend it with `read`: `read 5`

@@ -963,9 +963,9 @@ The command's exit codes, tested from outside in `tests/cli.rs` (1322):
 | 0 | All went well: the program ended, every test passed, the build was made |
 | what `exit` gives | The program called `exit(code)`, a `byte` |
 | 1 | An error the checker or the C compiler finds, a panic, a failed test, a program that leaks or races |
-| 2 | A command line that is not one of the usages (a second program, a flag given twice, `-o` or `--target` with nothing after it, `-o` with `emit-c`), a folder of `-L` that is not there, a program that cannot be read (no such file, not UTF-8, a folder with no `.sg` file), an output into a folder that is not there |
+| 2 | A command line that is not one of the usages (a second program, a flag given twice, `-o` or `--target` with nothing after it, `-o` with `emit-c`), a folder of `-L` that is not there, a program that cannot be read (no such file, not UTF-8, a folder with no `.sg` file), an output into a folder that is not there, an output that is a folder (1398) |
 | 0 or 1, `sg lsp` | The language server ends with 0 when the editor asked it to (`shutdown`, then `exit`), and with 1 when its input ends or it is told `exit` without `shutdown`, as the protocol has it |
-| `SIGPIPE` | On Linux and macOS, an output closed before the program was through (`sg x.sg \| head`), interpreted and compiled, as C's and Go's programs end (1330); on Windows that is 0 |
+| `SIGPIPE` | On Linux and macOS, an output closed before the program was through (`sg x.sg \| head`), interpreted and compiled, as C's and Go's programs end (1330), and before the tool was through with what it writes itself (`sg emit-c x.sg \| head`, 1399); on Windows that is 0 |
 
 Tests are golden files: every `.sg` file in `examples/` and `tests/cases/` is run and its output (what it
 printed, then the error or panic message) is compared with the `.out` file next to it. After an intended change,
@@ -1220,7 +1220,8 @@ approved on 12 November 2026; each has a test in `tests/cases/` or `examples/`.
    in the hint.
 3. **Two tests with the same name are an error.**
 4. **`try` on a `T?` in a test is an error** (there is no caller to give `null` to); the hint is
-   `assert(x is not null)`.
+   `... ?? panic("...")`, which fails the test without a value and gives the value otherwise (`assert` does not
+   narrow; changed in the hundred-and-twenty-third slice, 1401).
 5. **`test "..."` inside a function is an error** that says where a test goes; `test` stays an ordinary name
    everywhere else (`var test = 5`).
 6. **Here the tests run one after the other in the same process**, each with variables of its own; the design
@@ -1488,7 +1489,8 @@ visibility) are in the decision table and are built as written there; these are 
 61. **A module is read when a file names it**, with `use` or with a full name (`billing.Line`), and then
     what that module names, and so on. A folder nobody names is not read, so a mistake in it does not
     stop the program. The test command with a folder (`sg test shop`) reads every folder under it and
-    runs the tests of all of them; with a file it runs the tests of that file only.
+    runs the tests of all of them; with a file it runs the tests of that file and of the modules it reads
+    (written so in the hundred-and-twenty-third slice, 1402: it had said "of that file only").
 62. **A module is named by its whole path from the root of the program**: `use shop.stock`, also from
     inside `shop`. There is no short form from a neighbour. The root has no name, so no module can `use`
     it, and `public` says nothing there: the rule "a `public` name does not show a type that is not
@@ -8485,6 +8487,84 @@ quietly when what reads them closes, as programs do (1399); a type of `std` name
 with a test, among them the safe way in the panic of an index, `xs.get(i)` (1401); and the documents put right
 where they said otherwise than `sg` does (1402).
 
+Choices made in the hundred-and-twenty-third slice (what writing the site found in `sg`). Approved on 19 November
+2026; each change has a test that failed before it:
+
+1398. **An output that is a folder is told before anything is compiled**: `sg build shop` from the folder above
+     `shop` would name the program `shop`, the folder itself, and the linker failed with "a mistake in sg". Now
+     it is `` error: `shop` is a folder; name the program with -o ``, and `-o` naming a folder is `cannot write X:
+     it is a folder`, both with code 2, as Go's `go build` tells it. On Windows the program is `shop.exe`, which
+     does not clash. Tested in `tests/cli.rs` (`refuses_an_output_that_is_a_folder`).
+1399. **What the tool writes itself ends quietly when what reads it closes**: the C of `sg emit-c`, and the
+     `built ...` line of `sg build --library`, `--shared` and `--freestanding`, went through Rust's `print!`, which
+     panics on a closed pipe (`sg emit-c x.sg | head`). They end now as a program does (1330): by `SIGPIPE` on Linux
+     and macOS, with 0 on Windows (`emits_c_into_an_output_closed_early`).
+1400. **A type of `std` named only inside `$"..."` is found**: the files of the language's own module are read
+     for the names a program writes, and the code inside a `$"..."` was not looked at, so
+     `print($"{Path.extension(name)}")` was "no variable or type named `Path`". `source.rs` now reads the code of
+     every `$"..."`, one inside another too (`ok_std_type_named_in_text`, `ok_std_type_named_in_inner_text`).
+1401. **Hints and messages**, each with an `error_`, `panic_` or `leak_` test:
+     - `try` on a `T?` in a test: the hint was `assert(x is not null)`, which does not narrow, so the code after
+       it did not compile; it is `find() ?? panic("...")` now (`tests_error_try_nullable`).
+     - `count = 1` on a `read int`: the hint `read 1` borrowed a value gone at the end of the line; it is "change a
+       copy of your own: `var own = count`; or take `ref int`" (`error_read_param_assigned`).
+     - A `T?` field used without a test: "copy it to a variable" moved a field that is not `Copyable`. The hint
+       now follows the field: a copy (`var n = b.n`), one more owner of a `shared` or `weak` one (`var next = share
+       a.next`), a field of a `shared checked` value lent inside a block that opens it (`read p as value { var nick
+       = read value.nick ... }`), or else lent (`var nick = read p.nick`) (`error_null_field_*`).
+     - A constant where a `read string?` or a `read int?` goes: `lend it with read: read ""`
+       (`error_literal_to_read_nullable`, `error_number_to_read_nullable`).
+     - An operator on a `T?` (`n + 1`): it says the value may be `null`, and how to test it
+       (`error_nullable_operand`).
+     - `"text".toString()` (and `to_string`, `toOwned`, `copy`): it is a `string` already; a copy is `.clone()`
+       (`error_string_to_string`).
+     - `for x in List<int> { 1, 2 } {`: "a collection with its items needs parentheses here, where `{` starts the
+       block", with `(List<int> { ... })`, as `with` already had (`error_collection_in_for_head`).
+     - `a` or `an`: a message is written with `a `{ty}`` and the name is known only then, so "a `Inner`" and "an
+       `long`" were shown. The article before code is chosen where the message is written out (`diag::worded`, in
+       `sg` and in `sg lsp`), and in the one panic of compiled code that writes a type after an article (C gave `null` to
+       an `export` function), by how the name starts: an `int`, an `Inner`, an `unsafe`, but a `uint`, a `union`, a
+       `UdpSocket` (unit test in `diag.rs`).
+     - `: Copyable` refused: "`name` is a `string`, which is not" reads unfinished; it is "its field `name` is a
+       `string`, and a `string` is not `Copyable`" (`error_copyable_field_article`).
+     - `use units` in a file of `stock/`, where `stock/units/` is: a `use` names a module by its whole path (62),
+       and the hint is now `use stock.units`; the loader reads `stock.units` too in that case so that the checker
+       can name it (`tests/modules/innermodule`).
+     - `var total = new shared atomic 0` handed to a `shared atomic long`: the hint gives the type where it is made,
+       `shared atomic long total = new shared atomic ...` (`error_atomic_shared_width`).
+     - The panic of an index past the end of a list, an array or a slice names the way that does not panic, as 04
+       wants of a panic: `` `.get(i)` reads with `null` instead; before a write, compare the index with
+       `.length()` ``, the same in the interpreter and in compiled code (`sg_item_fail`; `panic_list_index_hint`).
+       A text has no `get`, so its index panic has no hint.
+     - A leak through a parent and its children named `children` as the field to make `weak`; the usual answer, as
+       Rust's book has it, is the child's `parent`. A field that holds one value is now named before one that holds
+       many (a list, a map, a set, an array), in the interpreter and in compiled code (`sg_kind.singles`;
+       `leak_parent_children`).
+     - `sg main.sg` named the files of its modules `./stock/product.sg`; they are named as the main file is,
+       `stock/product.sg` (`names_module_files_as_the_main_file_is` in `tests/cli.rs`).
+     - `mine.addFrom(read mine)` on a `shared checked` value: the message of a plain `ref`; it is now that the line
+       would stop the program every time, with the note of a checked value (`error_checked_lent_twice_in_call`).
+     - What is missing from a program (`main`, an `export`, `onPanic`) was shown on the empty line after the end
+       of the file; it is shown at the end of the last line that has something on it.
+     - `ushort.fromLittleEndian(data[3..4])`: the hint was `data[3..3 + 2]`; a start written as a number is added
+       up, `data[3..5]` (`error_from_bytes_window_number`).
+     - `counts.getOrAdd(w, 0) += 1` is refused, as the left side of an assignment is a variable, a field or an
+       item (a design limit, 1402); the hint now writes it through a name: `var slot = counts.getOrAdd(w, 0)`, then
+       `slot += ...` (`error_assign_to_call`).
+     Every hint above was tried: the code it gives compiles.
+1402. **The documents put right**: the `test` blocks are checked only by the test command (`sg file.sg` and
+     `sg build` leave them out, as `cargo build` leaves out `#[cfg(test)]`; `sg lsp` checks them), now said in 04
+     and on the site; 61 said a test command on a file runs "the tests of that file only", and it runs those of
+     the modules the file reads too; the line on the type of a text constant in "Not here yet" says what is so;
+     three things `sg build` refuses are in "Not here yet"; a library's header writes `nuint` as `uint64_t`, which
+     is its size on every machine SG builds for, and stays so until a 32-bit target comes (then `uintptr_t`).
+
+On macOS and on Linux 447 of the 1806 programs of the tests are compiled and give the same output, clean under
+the sanitizers (102 under the thread sanitizer), and the 213 programs of the site run as they show.
+
+One choice is left for later: a constant where a `read string?` goes could be lent as it is, as one where a
+`read string` goes is, instead of asking for `read`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8739,8 +8819,15 @@ check off.
   `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
   carries a borrow works); a `match` used as a value that gives a borrow is not followed.
 - `swap(ref a, ref b)`.
-- A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
-  allocating.
+- A text constant has the type `string` here, not the design's `read string` (04, "String constant"). What the
+  design wants of it is here all the same: it is not allocated or freed, has no capacity, and its first write or
+  growth copies it, so a constant goes where a `string` or a `read string` goes with no `.clone()`. What differs:
+  `var s = "x"` is a `string`, and a constant where a `read string?` goes is lent with `read` (`greet(read "")`,
+  1401).
+- **Found writing the site (1402), in compiled code**: three things the interpreter runs and `sg build`
+  refuses with "not in the C back end yet" and a hint to name the value first: `try` inside a larger
+  expression (`print((try command.output()).trim())`), a text and then a value that lends with `ref` in one
+  `$"..."` (`$"{pause} {path} {random.nextInt(1, 7)}"`), and a `$"..."` inside another.
 - The names of an `is` inside a `!` around a whole chain (`if !(r is Ok(v) && v > 0) { return }` and then
   `v`, 295), and a note that names the `break` which keeps a variable a `T?` after a `while` (289). An `is`
   with names on a value that owns memory, made by a call after the first `&&` or `||`, in compiled code
@@ -9077,3 +9164,9 @@ not compile, a `ref` of a `shared checked` value and an index that changes its t
 into reads of freed memory, and the loops whose overflow check is left out untested (1377-1382). An editor shows the first error as a
 program is written and applies four hints with one click (`sg lsp`, `editors/vscode`, 1369-1376); the type
 under the pointer, going to a definition and completion come after it.
+The web site teaches the language in a book and pages of its library, every program on them run (1383-1397),
+and what writing it found is fixed, each after a test that shows it: a build whose program would take the name
+of its folder asks for `-o`, the tool's own output ends quietly when closed, a type of `std` named only in
+`$"..."` is found, and a score of hints and messages lead to code that compiles, the index panic among them
+naming `xs.get(i)` (1398-1402). Next: the reference of the language on the site (1394), then the third stage of
+the generator of programs, which borrows and moves, and the preview (942) with `sg doc` (1392).

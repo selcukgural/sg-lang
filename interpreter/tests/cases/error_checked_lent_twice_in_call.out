@@ -1,0 +1,10 @@
+error: `mine` is lent twice in one call, and one of them changes it: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_lent_twice_in_call.sg:13:23
+ 13 |     mine.addFrom(read mine)
+    |                       ^^^^
+  the other borrow is here:
+  --> error_checked_lent_twice_in_call.sg:13:5
+ 13 |     mine.addFrom(read mine)
+    |     ^^^^
+  hint: copy what is needed into a variable before the call

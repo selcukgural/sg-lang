@@ -1,4 +1,4 @@
-error: this value is a `int`, and `"x"` is a text
+error: this value is an `int`, and `"x"` is a text
   --> error_pattern_inside_kind.sg:15:16
  15 |         Number("x") => 1
     |                ^^^

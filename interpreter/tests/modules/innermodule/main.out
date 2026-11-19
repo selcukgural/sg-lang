@@ -1,0 +1,6 @@
+error: there is no module named `units`
+  `use` names a module by its path from the folder of the program
+  --> innermodule/inventory/count.sg:1:5
+ 1 | use units
+   |     ^^^^^
+  hint: `use inventory.units`

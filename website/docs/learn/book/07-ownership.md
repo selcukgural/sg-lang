@@ -89,8 +89,11 @@ void main() {
 ```
 
 ```text
-error: `Label` cannot be `Copyable`: `text` is a `string`, which is not
+error: `Label` cannot be `Copyable`: its field `text` is a `string`, and a `string` is not `Copyable`
   a `string` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`
+  --> example.sg:2:5
+ 2 |     string text
+   |     ^^^^^^
 ```
 
 ## Borrowing: `read` and `ref`

@@ -750,6 +750,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 continue;
             }
             let diag = Diag::error(*span, format!("there is no module named `{module}`"));
+            if let Some(inside) = crate::source::inner_modules(&file.module, module).into_iter().find(|inside| names.modules.contains(inside)) {
+                return Err(diag.note("`use` names a module by its path from the folder of the program").hint(format!("`use {inside}`")));
+            }
             return Err(match nearest(module, names.modules.iter().map(String::as_str)) {
                 Some(close) => diag.hint(format!("`use {close}`")),
                 None => diag.note(format!("a module is a folder with source files, next to the files of the program: `{}/`", module.replace('.', "/"))),
@@ -1258,7 +1261,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // A library has no `main`: C starts it, through its `export` functions, which the header
     // names together with the types they take, each under the name it has in SG.
     if prog.library {
-        let root_end = prog.files.first().map_or(src.len(), |file| file.end);
+        let root_end = end_of_root(prog, src);
         if let Some(main) = prog.funcs.iter().find(|func| func.name == "main") {
             return Err(Diag::error(main.name_span, "a library has no `main`: C calls its `export` functions")
                 .hint("a program that starts at `main` is built without `--library` and `--shared`"));
@@ -1311,7 +1314,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
-    let root_end = prog.files.first().map_or(src.len(), |file| file.end);
+    let root_end = end_of_root(prog, src);
     match prog.funcs.iter().find(|func| func.name == "main") {
         None if tests || prog.library || prog.freestanding => {}
         // A program with an `onPanic` is one for a machine without an operating system.
@@ -2192,12 +2195,29 @@ fn called_consts(prog: &Program) -> HashSet<String> {
     }
 }
 
+/// Whether a value is reached through a `shared checked` one, which the checker unboxes or opens.
+fn through_checked(expr: &Expr) -> bool {
+    match &expr.kind {
+        _ if matches!(expr.ty.strip_borrow(), Ty::Shared(_, true)) => true,
+        ExprKind::Unbox(inner) | ExprKind::Load(inner) | ExprKind::Open { inner, .. } => through_checked(inner),
+        _ => false,
+    }
+}
+
+/// Where what is missing from a program (`main`, an `export`, `onPanic`) is told: the end of the
+/// last line of the root file that has something on it, not the empty line after it (choice
+/// 1401).
+fn end_of_root(prog: &Program, src: &str) -> usize {
+    let Some(file) = prog.files.first() else { return src.len() };
+    src[..file.end].trim_end().len().max(file.start)
+}
+
 /// What a program built without an operating system has: no `main`, since the code that starts
 /// the machine calls its `export` functions, of which it has one at least; an `onPanic`, which
 /// a panic goes to; and, to allocate, an `allocate` with its `release`. All three are written in
 /// the root module, with these signatures.
 fn freestanding_rules(prog: &Program, sigs: &HashMap<String, FuncSig>, no_exports: bool, src: &str) -> Res<()> {
-    let root_end = prog.files.first().map_or(src.len(), |file| file.end);
+    let root_end = end_of_root(prog, src);
     let find = |name: &str| prog.funcs.iter().find(|func| func.name == name && func.foreign.is_none());
     if let Some(main) = find("main") {
         return Err(Diag::error(main.name_span, "a program without an operating system has no `main`: the code that starts the machine calls its `export` functions")
@@ -3694,8 +3714,7 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         if ty.is_copyable(copyable) {
             continue;
         }
-        let article = if matches!(ty, Ty::Atomic(_)) { "an" } else { "a" };
-        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is {article} `{ty}`, which is not", field.name));
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: its field `{}` is a `{ty}`, and a `{ty}` is not `Copyable`", field.name));
         return Err(match ty {
             Ty::Atomic(_) => diag.note("a copy of an atomic value would be a second value, which the tasks that change the first never change"),
             Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
@@ -5537,16 +5556,21 @@ impl<'a> Checker<'a> {
         let mut lent: Vec<(usize, String, bool, Span)> = Vec::new();
         for (place, mutable) in places {
             let Some((name, path)) = store_path(place) else { continue };
-            let Some(root) = self.find(name).map(|var| var.id) else { continue };
+            let Some((root, declared)) = self.find(name).map(|var| (var.id, var.declared.clone())) else { continue };
             let clash = lent.iter().find(|(other, other_path, other_mutable, _)| {
                 let overlaps = path.is_empty() || other_path.is_empty() || within(&path, other_path) || within(other_path, &path);
                 *other == root && overlaps && (mutable || *other_mutable)
             });
             if let Some((_, _, _, first)) = clash {
                 let text = &self.src[place.span.start..place.span.end];
-                return Err(Diag::error(place.span, format!("`{text}` is lent twice in one call, and a `ref` borrow must be the only one"))
-                    .related(*first, "the other borrow is here")
-                    .hint("copy what is needed into a variable before the call"));
+                // A `shared checked` value lent to change and to read stops the program when it
+                // runs, as `opening.rs` says of one lent through two owners (choice 1401).
+                let diag = match (path.is_empty(), declared.strip_borrow()) {
+                    (true, Ty::Shared(_, true)) => Diag::error(place.span, format!("`{text}` is lent twice in one call, and one of them changes it: this line would stop the program every time it ran"))
+                        .note("a `shared checked` value is lent to one that changes it or to any number that read it, not both at once"),
+                    _ => Diag::error(place.span, format!("`{text}` is lent twice in one call, and a `ref` borrow must be the only one")),
+                };
+                return Err(diag.related(*first, "the other borrow is here").hint("copy what is needed into a variable before the call"));
             }
             lent.push((root, path, mutable, place.span));
         }
@@ -6008,6 +6032,20 @@ impl<'a> Checker<'a> {
                                 Diag::error(value.span, format!("an `{target_ty}` is written with `store`, and this is `{found}`")).hint(format!("`{text}.store({value_text})`"))
                             }
                             _ => diag,
+                        })?;
+                    }
+                    // `count = 1` on a `read int`: `read 1` would borrow a value that is gone
+                    // when the line ends, so the hint is the copy that can be changed.
+                    (None, Ty::Read(inner)) if rebinds => {
+                        let inner = (**inner).clone();
+                        self.typed(value, &target_ty).map_err(|diag| {
+                            let named = matches!(value.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. });
+                            match (&target.kind, value.ty == inner && !named) {
+                                (ExprKind::Var(name), true) => Diag::error(target.span, format!("`{name}` is a `read` borrow and cannot be written through"))
+                                    .note(format!("`{name} = ...` only points it at another value it borrows"))
+                                    .hint(format!("change a copy of your own: `var own = {name}`; or take `ref {inner}` to change the caller's")),
+                                _ => diag,
+                            }
                         })?;
                     }
                     _ => {
@@ -7007,6 +7045,28 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// How a `T?` that is not narrowed is tested before it is used: a variable in place; anything
+    /// else in a variable first: a copy if `T` is `Copyable`, one more owner of a `shared` or
+    /// `weak` value (`share`), or else lent with `read`, which leaves the value where it is (`var
+    /// nick = read person.nick`); a field of a `shared checked` value is lent within a block that
+    /// opens it, since a borrow of it ends with its line.
+    fn test_first(&self, recv: &Expr, ty: &Ty) -> String {
+        let text = self.src[recv.span.start..recv.span.end].trim();
+        let owned = matches!(peel(ty), Ty::Nullable(inner) if matches!(**inner, Ty::Shared(..) | Ty::Weak(..)));
+        match &recv.kind {
+            ExprKind::Var(var) => format!("test it first: `if {var} is not null {{ ... }}`"),
+            ExprKind::Field { name, .. } if ty.is_copyable(self.copyable) => format!("a field is not narrowed: copy it and test the copy: `var {name} = {text}`, then `if {name} is not null {{ ... }}`"),
+            ExprKind::Field { name, .. } if owned => format!("a field is not narrowed: take one more owner of it and test that: `var {name} = share {text}`, then `if {name} is not null {{ ... }}`"),
+            ExprKind::Field { recv: holder, name, .. } if through_checked(holder) => {
+                let holder = self.src[holder.span.start..holder.span.end].trim();
+                format!("a field is not narrowed: open `{holder}` for a block and lend the field there: `read {holder} as value {{ var {name} = read value.{name} ... }}`, then `if {name} is not null {{ ... }}`")
+            }
+            ExprKind::Field { name, .. } => format!("a field is not narrowed: lend it to a variable and test that: `var {name} = read {text}`, then `if {name} is not null {{ ... }}`"),
+            ExprKind::Index { .. } if !ty.is_copyable(self.copyable) => format!("an item is not narrowed: lend it to a variable and test that: `var item = read {text}`, then `if item is not null {{ ... }}`"),
+            _ => format!("keep it in a variable and test that: `var value = {text}`, then `if value is not null {{ ... }}`"),
+        }
+    }
+
     fn coerce(&mut self, expr: &mut Expr, found: Ty, expected: &Ty) -> Res<()> {
         if found == *expected || found == Ty::Never {
             return Ok(());
@@ -7214,6 +7274,15 @@ impl<'a> Checker<'a> {
             }
             (_, Ty::Read(to)) if found == **to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (_, Ty::Ref(to)) if found == **to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
+            // `var total = new shared atomic 0` is an `int`; its type is given where it is made.
+            (Ty::Shared(from, _), Ty::Shared(to, _)) if matches!((&**from, &**to), (Ty::Atomic(a), Ty::Atomic(b)) if matches!((&**a, &**b), (Ty::Int(_), Ty::Int(_)))) => {
+                mismatch(Some(match &expr.kind {
+                    ExprKind::Var(name) => format!("`new shared atomic 0` takes the type of an integer from where it goes; give `{name}` its type where it is made: `{expected} {name} = new shared atomic ...`"),
+                    _ => format!("a number takes its type from where it goes: `{expected} value = new shared atomic ...`"),
+                }))
+            }
+            // `greet("")` where a `read string?` goes: lent as a value that is there.
+            (_, Ty::Read(to)) if **to == Ty::Nullable(Box::new(found.clone())) => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (Ty::Nullable(inner), _) if **inner == *expected => {
                 mismatch(Some(format!("it may be `null`: give a fallback with `{text} ?? ...`, or test it with `is null`")))
             }
@@ -7341,10 +7410,7 @@ impl<'a> Checker<'a> {
                         }
                         Ty::Nullable(_) => {
                             let diag = Diag::error(recv.span, format!("this is `{ty}` and may be `null`; `.{name}` needs a value"));
-                            return Err(match &recv.kind {
-                                ExprKind::Var(var) => diag.hint(format!("test it first: `if {var} is not null {{ ... }}`")),
-                                _ => diag.hint("copy it to a variable and test that with `is not null`; fields are not narrowed"),
-                            });
+                            return Err(diag.hint(self.test_first(recv, &ty)));
                         }
                         Ty::Enum(_) => {
                             return Err(Diag::error(*name_span, format!("`{ty}` is an enum; what it carries depends on the variant"))
@@ -8909,9 +8975,12 @@ impl<'a> Checker<'a> {
                 *kind = TryKind::Result(convert);
                 Ok(*ok)
             }
+            // `assert` does not narrow: `?? panic(...)` is what fails the test and gives the value.
             Ty::Nullable(value) if self.in_test => {
+                let text = self.src[inner.span.start..inner.span.end].trim();
+                let text = if text.contains('\n') { "..." } else { text };
                 Err(Diag::error(span, format!("`try` on `{value}?` returns `null` to the caller, and a test has no caller"))
-                    .hint("say what is expected: `assert(x is not null)`, or give a fallback with `??`"))
+                    .hint(format!("say what is expected, which fails the test without it: `{text} ?? panic(\"...\")`; or give a fallback with `??`")))
             }
             Ty::Nullable(value) => {
                 if !matches!(self.ret, Ty::Nullable(_)) {
@@ -9688,6 +9757,15 @@ impl<'a> Checker<'a> {
             let diag = Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
             return Err(diag.hint(format!("read it first: `{text}.load()`")).note("an atomic value is read once with `load`, so that another task cannot change it in the middle of the computation"));
         }
+        // `n + 1` on an `int?`: the value may be missing, so it is tested first.
+        if !matches!(op, BinOp::Eq | BinOp::Ne) {
+            if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(peel(&side.ty), Ty::Nullable(_))) {
+                let text = self.src[side.span.start..side.span.end].trim();
+                return Err(Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
+                    .note(format!("`{text}` may be `null`"))
+                    .hint(format!("{}; or give a fallback with `??`", self.test_first(side, &side.ty))));
+            }
+        }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -10454,9 +10532,16 @@ impl<'a> Checker<'a> {
             if given != size {
                 let diag = Diag::error(args[0].span, format!("`{ty}.{name}` reads {size} bytes, and this window has {given}"));
                 let window = match &unwidened(&args[0]).kind {
+                    // A start written as a number is added up: `data[4..8]`, not `data[4..4 + 4]`.
                     ExprKind::Slice { recv, from: Some(from), .. } => {
-                        let (recv, from) = (&self.src[recv.span.start..recv.span.end], &self.src[from.span.start..from.span.end]);
-                        Some(format!("`{recv}[{from}..{from} + {size}]`"))
+                        let recv_text = &self.src[recv.span.start..recv.span.end];
+                        match &from.kind {
+                            ExprKind::Int(at, _) => Some(format!("`{recv_text}[{at}..{}]`", at + size)),
+                            _ => {
+                                let from = &self.src[from.span.start..from.span.end];
+                                Some(format!("`{recv_text}[{from}..{from} + {size}]`"))
+                            }
+                        }
                     }
                     ExprKind::Slice { recv, from: None, .. } => Some(format!("`{}[..{size}]`", &self.src[recv.span.start..recv.span.end])),
                     _ => None,
@@ -12817,10 +12902,7 @@ impl<'a> Checker<'a> {
             }
             (Ty::Nullable(_), _) => {
                 let diag = Diag::error(recv.span, format!("this is `{recv_ty}` and may be `null`; `.{name}()` needs a value"));
-                Err(match &recv.kind {
-                    ExprKind::Var(var) => diag.hint(format!("test it first: `if {var} is not null {{ ... }}`")),
-                    _ => diag.hint("copy it to a variable and test that with `is not null`; fields are not narrowed"),
-                })
+                Err(diag.hint(self.test_first(recv, &recv_ty)))
             }
             _ => {
                 let diag = Diag::error(name_span, format!("type `{target}` has no method `{name}`"));
@@ -12891,6 +12973,11 @@ impl<'a> Checker<'a> {
                 }
                 if let (Ty::Int(_), "fromLittleEndian" | "fromBigEndian") = (target, name) {
                     return Err(diag.hint(format!("`{name}` is a function of the type: `{target}.{name}(bytes)`")));
+                }
+                // C#'s and Java's `ToString()`, Rust's `to_string()`, `to_owned()`.
+                if *target == Ty::Str && matches!(name, "toString" | "ToString" | "to_string" | "toOwned" | "to_owned" | "copy") {
+                    let text = &self.src[recv.span.start..recv.span.end];
+                    return Err(diag.hint(format!("it is a `string` already; a copy of one is `{text}.clone()`")));
                 }
                 if let (Ty::Int(_), Some(method)) = (target, endian_hint(name, false)) {
                     return Err(diag.hint(format!("`{method}()` gives the bytes of the number")));

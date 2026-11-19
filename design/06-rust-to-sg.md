@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-second slice (what the web site teaches).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-third slice (what writing the site found in `sg`).
 
 ## Functions and variables
 
@@ -136,7 +136,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-second slice (
 | `Vec<T>` | `List<T>` | built | |
 | `Vec::new()`, `vec![1, 2]` | `List<int>()`, `List<int> { 1, 2 }` | built | |
 | `v.push(x)`, `v.pop()`, `v.len()` | `xs.add(x)`, `xs.removeLast()`, `xs.length()` | built | `removeLast` gives a `T?` |
-| `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?` |
+| `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?`; the panic of `xs[i]` names it, where Rust's names nothing |
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
 | `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable; a `compare` that gives no single order leaves the items in some order and does not panic, where Rust's `sort_by` may |
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
@@ -235,7 +235,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-second slice (
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |
 | `Rc::new(x)`, `Rc::clone(&a)` | `new shared x`, `share a` (or `a.clone()`) | built | |
-| `Weak<T>`, `Rc::downgrade(&a)`, `w.upgrade()` | `weak T`, `weak a`, `share w` | built | `share w` gives a `shared T?` |
+| `Weak<T>`, `Rc::downgrade(&a)`, `w.upgrade()` | `weak T`, `weak a`, `share w` | built | `share w` gives a `shared T?`. A leak names the field to make `weak`, one that holds one value (a child's `parent`, as Rust's book has it) before a collection |
 | `Rc::ptr_eq(&a, &b)` | `same(a, b)` | built | `==` compares what they point to |
 | `Rc<RefCell<T>>` | `shared checked T` | built | Each access checked; a certain conflict is a compile error, another a panic with both lines |
 | `a.borrow()`, `a.borrow_mut()` | nothing (each access), or `read a as n { }`, `ref a as n { }` | built | |
@@ -511,7 +511,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-second slice (
 | `#[test] fn name()` | `test "name" { }` | built | At the top level of the file, next to the code |
 | `cargo test` | `sg test file.sg` | built | `sg test --compiled` runs them compiled, each test in a process of its own (the program starts itself again with `--only N`), where Rust's harness runs them on threads of one process |
 | `cargo run` | `sg file.sg` | built | The interpreter |
-| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/` |
+| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/`. `sg build shop` from the folder above `shop` asks for `-o`, as `go build` does, where Cargo names the program after the package in `target/` |
 | a test that leaks `Rc` passes | the test fails with the leak report | built | |
 | a leak is seen only under a tool (LSan, Valgrind, Miri) | a debug build counts the blocks of its values and reports those not given back | built | On every system, Windows too, where there is no LSan; raw memory is not counted |
 | `cargo fuzz` | `fuzz/` (libFuzzer on the front end) and `fuzz/difference` (generated programs, interpreter against compiled code) | built | A crate apart, so `sg` keeps no dependencies; the second has a generator of its own, as Csmith is for C and rustlantis for Rust |

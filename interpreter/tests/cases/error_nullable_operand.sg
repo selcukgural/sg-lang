@@ -1,0 +1,5 @@
+// An operator on a `T?` says it may be `null` (choice 1401).
+void main() {
+    int? n = 4
+    print(n + 1)
+}

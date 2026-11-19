@@ -217,8 +217,11 @@ void main() {
 ```
 
 ```text
-error: `User` cannot be `Copyable`: `name` is a `string`, which is not
+error: `User` cannot be `Copyable`: its field `name` is a `string`, and a `string` is not `Copyable`
   a `string` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`
+  --> example.sg:3:5
+ 3 |     string name
+   |     ^^^^^^
 ```
 
 Here is one type with four of them, writing its own `format` and `compare`, and taking `==` and the hash from

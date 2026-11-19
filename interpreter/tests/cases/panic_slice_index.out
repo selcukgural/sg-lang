@@ -3,3 +3,4 @@ panic: index 2 is out of range: the length is 2
   --> panic_slice_index.sg:2:12
  2 |     return values[2]
    |            ^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

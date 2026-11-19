@@ -1,5 +1,5 @@
 error: there is no `main` function
-  --> error_no_main.sg:4:1
- 4 | 
-   | ^
+  --> error_no_main.sg:3:2
+ 3 | }
+   |  ^
   hint: a program starts at `void main() { ... }`

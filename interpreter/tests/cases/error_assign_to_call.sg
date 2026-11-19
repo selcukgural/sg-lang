@@ -1,0 +1,7 @@
+// What a call lends is written through a variable (choice 1402): an assignment's left side is a
+// variable, a field or an item.
+void main() {
+    var counts = HashMap<string, int>()
+    counts.getOrAdd("a", 0) += 1
+    print(counts)
+}

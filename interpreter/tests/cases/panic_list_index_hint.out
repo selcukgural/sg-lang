@@ -1,0 +1,5 @@
+panic: index 7 is out of range: the length is 2
+  --> panic_list_index_hint.sg:7:11
+ 7 |     print(view[i])
+   |           ^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

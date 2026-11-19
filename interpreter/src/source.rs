@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::diag::{snippet, Span};
-use crate::lexer::{lex, Tok};
+use crate::lexer::{lex, Part, Tok};
 
 /// The module of the types the language writes in SG and brings along (`Duration`, `Instant`,
 /// `DateTime`): seen from every module with nothing written. No folder of a program has this name.
@@ -44,12 +44,26 @@ pub fn std_types() -> impl Iterator<Item = &'static str> {
     STD_FILES.iter().flat_map(|(_, _, types)| types.iter().copied())
 }
 
-/// The names written in `text` from `start` on.
+/// The names written in `text` from `start` on, those in the code of a `$"..."` too (choice 1400).
 fn names_in(text: &str, start: usize, named: &mut HashSet<String>) {
-    let Ok(toks) = lex(text, Span::new(start, text.len()), false) else { return };
+    names_within(text, Span::new(start, text.len()), false, named);
+}
+
+fn names_within(text: &str, span: Span, nested: bool, named: &mut HashSet<String>) {
+    let Ok(toks) = lex(text, span, nested) else { return };
     for tok in toks {
-        if let Tok::Ident(name) = tok.tok {
-            named.insert(name);
+        match tok.tok {
+            Tok::Ident(name) => {
+                named.insert(name);
+            }
+            Tok::Interp(parts) => {
+                for part in parts {
+                    if let Part::Code(code, _) = part {
+                        names_within(text, code, true, named);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -152,8 +166,10 @@ impl Sources {
         }
         let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), ..*file }).collect();
         let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone() };
+        // Named as `load` names them: without `./` in front.
+        let base = if root == Path::new(".") { PathBuf::new() } else { root.clone() };
         for module in modules {
-            let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+            let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
             for file in sg_files(&folder) {
                 let text = std::fs::read_to_string(&file).ok()?;
                 all.add(file.to_string_lossy().into_owned(), &module, &text, false);
@@ -191,6 +207,18 @@ fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
         }
         modules_under(&folder, &module, found);
     }
+}
+
+/// The modules `name` could be meant as in a file of `module`: under it, then under each module
+/// it is inside, the closest first (`stock.units` for `units` in `stock`).
+pub fn inner_modules(module: &str, name: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut prefix = module;
+    while !prefix.is_empty() {
+        found.push(format!("{prefix}.{name}"));
+        prefix = prefix.rfind('.').map_or("", |at| &prefix[..at]);
+    }
+    found
 }
 
 /// A folder is a module only if its name can be written in the language.
@@ -268,6 +296,9 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         sources.add(shown(path), "", &read(path)?, true);
         path.parent().map(Path::to_path_buf).unwrap_or_default()
     };
+    // `sg main.sg`: the modules are looked for in the current folder, and their files are named
+    // as the main file is, `stock/product.sg` and not `./stock/product.sg` (choice 1401).
+    let base = root.clone();
     let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root };
     sources.root = Some(root.clone());
 
@@ -282,13 +313,21 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         // What the files read so far name.
         while scanned < sources.files.len() {
             let file = &sources.files[scanned];
-            for module in named_paths(&sources.text, Span::new(file.start, file.end)) {
-                let exists = *asked.entry(module.clone()).or_insert_with(|| {
-                    let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+            let mut exists = |module: &str| {
+                *asked.entry(module.to_string()).or_insert_with(|| {
+                    let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
                     module.split('.').all(is_module_name) && !sg_files(&folder).is_empty()
-                });
-                if exists {
+                })
+            };
+            for module in named_paths(&sources.text, Span::new(file.start, file.end)) {
+                if exists(&module) {
                     wanted.push(module);
+                    continue;
+                }
+                // `use units` in `stock/` where `stock/units/` is: that module is read too, so
+                // that the checker can say it is `use stock.units` (choice 1401).
+                if let Some(inside) = inner_modules(&file.module, &module).into_iter().find(|inside| exists(inside)) {
+                    wanted.push(inside);
                 }
             }
             scanned += 1;
@@ -300,7 +339,7 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         if !loaded.insert(module.clone()) {
             continue;
         }
-        let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+        let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
         for file in sg_files(&folder) {
             sources.add(shown(&file), &module, &read(&file)?, every_module);
         }

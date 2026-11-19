@@ -92,20 +92,78 @@ impl Diag {
             Kind::Panic => "panic",
             Kind::Leak => "leak",
         };
-        let mut text = format!("{label}: {}\n", unprefixed(&self.msg));
+        let mut text = format!("{label}: {}\n", worded(&self.msg));
         for note in &self.notes {
-            text.push_str(&format!("  {}\n", unprefixed(note)));
+            text.push_str(&format!("  {}\n", worded(note)));
         }
         text.push_str(&sources.snippet(self.span));
         if let Some((span, note)) = self.related.as_deref() {
-            text.push_str(&format!("  {}:\n", unprefixed(note)));
+            text.push_str(&format!("  {}:\n", worded(note)));
             text.push_str(&sources.snippet(*span));
         }
         if let Some(hint) = &self.hint {
-            text.push_str(&format!("  hint: {}\n", unprefixed(hint)));
+            text.push_str(&format!("  hint: {}\n", worded(hint)));
         }
         text
     }
+}
+
+/// A message, a note or a hint as it is shown: the types of the language's own module without
+/// their prefix, and `a` or `an` before code as the code is said (choice 1401).
+pub fn worded(text: &str) -> String {
+    articled(&unprefixed(text))
+}
+
+/// `a` or `an` before a name in backticks, by how the name starts: `an `IoError``, `a `List<int>``,
+/// `a `uint`` (said "you-int"), `an `unsafe``. A message is written with either and fixed here,
+/// since the name is often only known when the message is made (`a `{ty}``). Only an article
+/// outside code is looked at, and only before a name that starts with a letter.
+fn articled(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut in_code = false;
+    let mut rest = text;
+    while let Some(at) = rest.find('`') {
+        let (before, after) = (&rest[..at], &rest[at + 1..]);
+        if in_code {
+            out.push_str(before);
+        } else {
+            out.push_str(&with_article(before, after));
+        }
+        out.push('`');
+        in_code = !in_code;
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `before` with its last word, if it is an article followed by one space, set for the code that
+/// starts `code`.
+fn with_article(before: &str, code: &str) -> String {
+    let Some(head) = before.strip_suffix(' ') else { return before.to_string() };
+    let word_start = head.rfind(|c: char| !c.is_ascii_alphabetic()).map_or(0, |at| at + 1);
+    let word = &head[word_start..];
+    if !matches!(word, "a" | "an" | "A" | "An") {
+        return before.to_string();
+    }
+    let mut letters = code.chars();
+    let Some(first) = letters.next().filter(|c| c.is_ascii_alphabetic()) else { return before.to_string() };
+    let second = letters.next().unwrap_or(' ').to_ascii_lowercase();
+    let third = letters.next().unwrap_or(' ').to_ascii_lowercase();
+    let vowel = match first.to_ascii_lowercase() {
+        'a' | 'e' | 'i' | 'o' => true,
+        // `unsafe`, `unchecked`, but `union`, `uint`, `ulong`, `Utf8`, `UdpSocket`.
+        'u' => second == 'n' && third != 'i',
+        _ => false,
+    };
+    let capital = word.starts_with('A');
+    let article = match (vowel, capital) {
+        (true, true) => "An",
+        (true, false) => "an",
+        (false, true) => "A",
+        (false, false) => "a",
+    };
+    format!("{}{article} ", &head[..word_start])
 }
 
 /// A message names the types of the language's own module as a program writes them: `Duration`,
@@ -177,4 +235,22 @@ fn distance(a: &str, b: &str) -> usize {
         }
     }
     row[b.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worded;
+
+    #[test]
+    fn an_article_follows_the_code() {
+        assert_eq!(worded("a `Address?` field"), "an `Address?` field");
+        assert_eq!(worded("this is an `long` already"), "this is a `long` already");
+        assert_eq!(worded("An `List<int>` is"), "A `List<int>` is");
+        assert_eq!(worded("a `int`, a `uint`, a `unsafe` block, a `union`, a `UdpSocket`"), "an `int`, a `uint`, an `unsafe` block, a `union`, a `UdpSocket`");
+        assert_eq!(worded("a `std.IoError`"), "an `IoError`");
+        // Inside code, and before what does not start with a letter, nothing changes.
+        assert_eq!(worded("`var a `x`` and a `[` and a `8`"), "`var a `x`` and a `[` and a `8`");
+        assert_eq!(worded("a `Inner`; data `a `"), "an `Inner`; data `a `");
+        assert_eq!(worded("(a `Inner`)"), "(an `Inner`)");
+    }
 }

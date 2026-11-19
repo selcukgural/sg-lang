@@ -15,3 +15,4 @@ panic: index 7 is out of range: the length is 7
   --> bare/main.sg:78:12
  78 |     return readings[index]
     |            ^^^^^^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

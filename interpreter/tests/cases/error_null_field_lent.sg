@@ -1,0 +1,13 @@
+// A `T?` field is not narrowed; one that is not `Copyable` is lent to a variable, which is
+// tested (choice 1401).
+struct Person {
+    string? nick
+}
+
+void main() {
+    var p = Person { nick = "al" }
+    if p.nick is not null {
+        print(p.nick.length())
+    }
+    print(p.nick ?? "")
+}

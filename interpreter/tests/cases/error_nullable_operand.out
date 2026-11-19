@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `int?` and `int`
+  `n` may be `null`
+  --> error_nullable_operand.sg:4:11
+ 4 |     print(n + 1)
+   |           ^^^^^
+  hint: test it first: `if n is not null { ... }`; or give a fallback with `??`

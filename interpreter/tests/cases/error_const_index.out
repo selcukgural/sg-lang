@@ -1,5 +1,5 @@
 error: index 2 is out of range: the length is 2
-  the items of a `int[2]` are at 0 to 1
+  the items of an `int[2]` are at 0 to 1
   --> error_const_index.sg:2:19
  2 | const int Third = Masks[2]
    |                   ^^^^^^^^

@@ -1,0 +1,13 @@
+// A child's `parent` is named before the parent's `children`: the field that holds one value is
+// the side that usually does not own (choice 1401).
+struct Folder {
+    string name
+    shared checked Folder? parent
+    List<shared checked Folder> children
+}
+
+void main() {
+    var root = new shared checked Folder { name = "root", parent = null, children = List<shared checked Folder>() }
+    var docs = new shared checked Folder { name = "docs", parent = share root, children = List<shared checked Folder>() }
+    root.children.add(share docs)
+}

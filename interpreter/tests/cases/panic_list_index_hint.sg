@@ -1,0 +1,8 @@
+// An item past the end of a list, an array or a slice names the way that does not panic
+// (choice 1401).
+void main() {
+    var xs = List<int> { 1, 2 }
+    var view = xs[0..2]
+    var i = 7
+    print(view[i])
+}

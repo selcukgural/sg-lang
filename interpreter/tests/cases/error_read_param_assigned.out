@@ -1,0 +1,6 @@
+error: `count` is a `read` borrow and cannot be written through
+  `count = ...` only points it at another value it borrows
+  --> error_read_param_assigned.sg:4:5
+ 4 |     count = 1
+   |     ^^^^^
+  hint: change a copy of your own: `var own = count`; or take `ref int` to change the caller's

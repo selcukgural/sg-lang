@@ -1,0 +1,6 @@
+// A collection with its items in the head of `for`, where `{` starts the block (choice 1401).
+void main() {
+    for x in List<int> { 1, 2 } {
+        print(x)
+    }
+}

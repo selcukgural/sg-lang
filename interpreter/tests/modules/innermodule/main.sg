@@ -1,0 +1,7 @@
+// A module inside another is named by its path from the folder of the program: `use
+// inventory.units` in `inventory/`, not `use units` (choice 1401).
+use inventory
+
+void main() {
+    print(inventory.count())
+}

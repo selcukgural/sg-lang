@@ -1,0 +1,5 @@
+error: `Outer` cannot be `Copyable`: its field `inner` is an `Inner`, and an `Inner` is not `Copyable`
+  --> error_copyable_field_article.sg:7:5
+ 7 |     Inner inner
+   |     ^^^^^
+  hint: make `Inner` `Copyable` too, or take `Copyable` off `Outer`

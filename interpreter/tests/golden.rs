@@ -2121,7 +2121,7 @@ static void misuse(int32_t how) {
         ("0", "no panic\n"),
         ("1", "panic: C gave `tally_add` an address that holds no `Tally`\n"),
         ("2", "panic: C gave `tally_add` an address that holds no `Tally`\n"),
-        ("3", "panic: C gave `tally_add` a `Other` where it takes a `Tally`\n"),
+        ("3", "panic: C gave `tally_add` an `Other` where it takes a `Tally`\n"),
         ("4", "panic: C gave `tally_count` a `Tally` that a call of `tally_each` in progress changes\n"),
         ("5", "panic: C gave `tally_free` a `Tally` that a call of `tally_each` in progress changes\n"),
         ("6", "panic: C gave `null` to `tally_free`, which takes a `Tally*`\n"),

@@ -2,4 +2,4 @@ error: this is `shared checked DNode?` and may be `null`; `.value` needs a value
   --> error_checked_dlist_null.sg:9:11
  9 |     print(a.next.value)
    |           ^^^^^^
-  hint: copy it to a variable and test that with `is not null`; fields are not narrowed
+  hint: a field is not narrowed: take one more owner of it and test that: `var next = share a.next`, then `if next is not null { ... }`

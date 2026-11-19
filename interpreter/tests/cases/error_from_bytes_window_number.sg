@@ -1,0 +1,5 @@
+// The window a hint gives is added up when its start is a number: `data[3..5]` (choice 1401).
+void main() {
+    var data = byte[8](1)
+    print(ushort.fromLittleEndian(data[3..4]))
+}

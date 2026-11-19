@@ -1,4 +1,6 @@
 error: operator `+` is not defined for `int?` and `int`
+  `got` may be `null`
   --> error_narrowing_while_break.sg:18:11
  18 |     print(got + 1)
     |           ^^^^^^^
+  hint: test it first: `if got is not null { ... }`; or give a fallback with `??`

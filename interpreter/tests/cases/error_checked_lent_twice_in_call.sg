@@ -1,0 +1,14 @@
+// A `shared checked` value lent to one call to change and to read: the message of a checked
+// value, which would stop the program every time (choice 1401).
+struct Account {
+    long balance
+
+    void addFrom(ref this, read shared checked Account other) {
+        this.balance += other.balance
+    }
+}
+
+void main() {
+    var mine = new shared checked Account { balance = 10 }
+    mine.addFrom(read mine)
+}

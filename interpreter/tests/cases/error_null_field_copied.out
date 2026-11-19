@@ -1,0 +1,5 @@
+error: this is `int?` and may be `null`; `.toString()` needs a value
+  --> error_null_field_copied.sg:8:11
+ 8 |     print(b.n.toString())
+   |           ^^^
+  hint: a field is not narrowed: copy it and test the copy: `var n = b.n`, then `if n is not null { ... }`

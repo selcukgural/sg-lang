@@ -56,3 +56,4 @@ panic: index 4 is out of range: the length is 4
   --> ok_list_owned.sg:173:11
  173 |     print(numbers[4])
      |           ^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

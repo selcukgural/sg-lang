@@ -2,4 +2,4 @@ error: this is `Node*?` and may be `null`; `.value` needs a value
   --> error_null_access.sg:8:11
  8 |     print(a.next.value)
    |           ^^^^^^
-  hint: copy it to a variable and test that with `is not null`; fields are not narrowed
+  hint: a field is not narrowed: lend it to a variable and test that: `var next = read a.next`, then `if next is not null { ... }`

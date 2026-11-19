@@ -1460,7 +1460,15 @@ impl<'a> Parser<'a> {
                             .hint(format!("write it inside a block: `unsafe {{ {text} = ... }}`")));
                     }
                     if !expr.is_place() {
-                        return Err(Diag::error(expr.span, "the left side of an assignment must be a variable, a field or an item"));
+                        let diag = Diag::error(expr.span, "the left side of an assignment must be a variable, a field or an item");
+                        // `counts.getOrAdd(word, 0) += 1`: what a call lends is written through a name.
+                        return Err(match &expr.kind {
+                            ExprKind::Method { .. } | ExprKind::Call { .. } => {
+                                let text = &self.src[expr.span.start..expr.span.end];
+                                diag.hint(format!("a call is not a place to write to; if it gives a `ref`, write through a variable: `var slot = {text}`, then `slot {}= ...`", op.map_or("", |op| op.symbol())))
+                            }
+                            _ => diag,
+                        });
                     }
                     self.bump();
                     let value = self.expr()?;
@@ -2282,6 +2290,13 @@ impl<'a> Parser<'a> {
                 self.expect(Tok::RParen, "`)`")?;
                 return Ok(Expr { ty: Ty::Void, moved: false, kind: inner.kind, span: Span::new(start.start, self.prev_end()) });
             }
+            // `for x in List<int> { 1, 2 } {`: the `{` starts the block, so the items are not read.
+            Tok::Ident(_) if !self.struct_literals && self.at_braced_collection() => {
+                let n = self.type_len(0).expect("a type is written here");
+                let ty = &self.src[self.toks[self.i].span.start..self.toks[self.i + n - 1].span.end];
+                return Err(Diag::error(self.span(), "a collection with its items needs parentheses here, where `{` starts the block")
+                    .hint(format!("`({ty} {{ ... }})`")));
+            }
             Tok::Ident(_) if self.at_collection() => {
                 let ty = self.type_expr()?;
                 let args = if *self.peek() == Tok::LParen { self.args()? } else { Vec::new() };
@@ -2379,6 +2394,15 @@ impl<'a> Parser<'a> {
         let Some(n) = self.type_len(0) else { return false };
         *self.peek_at(n - 1) == Tok::Gt
             && (*self.peek_at(n) == Tok::LParen || (*self.peek_at(n) == Tok::LBrace && self.struct_literals))
+    }
+
+    /// Whether a type with `<...>` and then `{` is written here: `List<int> { 1, 2 }`.
+    fn at_braced_collection(&self) -> bool {
+        if *self.peek_at(1) != Tok::Lt {
+            return false;
+        }
+        let Some(n) = self.type_len(0) else { return false };
+        *self.peek_at(n - 1) == Tok::Gt && *self.peek_at(n) == Tok::LBrace
     }
 
     /// Whether an array is built here: `int[3] { 1, 2, 3 }`, `byte[16](255)`, `int?[4]`. A

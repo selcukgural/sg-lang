@@ -1,0 +1,5 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> error_null_field_lent.sg:10:15
+ 10 |         print(p.nick.length())
+    |               ^^^^^^
+  hint: a field is not narrowed: lend it to a variable and test that: `var nick = read p.nick`, then `if nick is not null { ... }`

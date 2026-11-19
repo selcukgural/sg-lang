@@ -1,0 +1,10 @@
+leak: the program ended with 2 `shared` values still alive, which hold each other through `Folder.parent`
+  1 x `Folder`, made here:
+  --> leak_parent_children.sg:10:16
+ 10 |     var root = new shared checked Folder { name = "root", parent = null, children = List<shared checked Folder>() }
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  1 x `Folder`, made here:
+  --> leak_parent_children.sg:11:16
+ 11 |     var docs = new shared checked Folder { name = "docs", parent = share root, children = List<shared checked Folder>() }
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `weak checked Folder?`

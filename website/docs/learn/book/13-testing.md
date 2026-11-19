@@ -114,6 +114,7 @@ panic: index 0 is out of range: the length is 0
   --> example.sg:31:11
  31 |     print(ages[0])
     |           ^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 ok    the tests after it still run
 3 of 5 test(s) failed
 ```
@@ -191,7 +192,7 @@ error: `try` on `int?` returns `null` to the caller, and a test has no caller
   --> example.sg:11:14
  11 |     var at = try find(read List<int> { 1, 2 }, 2)
     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  hint: say what is expected: `assert(x is not null)`, or give a fallback with `??`
+  hint: say what is expected, which fails the test without it: `find(read List<int> { 1, 2 }, 2) ?? panic("...")`; or give a fallback with `??`
 ```
 
 Write what you expect instead: `var at = find(read xs, 2) ?? panic("2 is in the list")` gives an `int`, or the

@@ -4,9 +4,10 @@
 //!
 //! The exit codes: 0 when all went well; what `exit` gives; 1 for an error the checker or the C
 //! compiler finds, a panic, or a failed test; 2 for a command line that is not one of the usages, a
-//! folder of `-L` that is not there, a program that cannot be read, and an output into a folder
-//! that is not there. An output closed before the end (`sg x.sg | head`) ends the program by
-//! `SIGPIPE` on Linux and macOS, with 0 on Windows.
+//! folder of `-L` that is not there, a program that cannot be read, an output into a folder that
+//! is not there, and an output that is a folder. An output closed before the end (`sg x.sg | head`,
+//! `sg emit-c x.sg | head`) ends the program or the tool by `SIGPIPE` on Linux and macOS, with 0 on
+//! Windows.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -330,6 +331,67 @@ fn refuses_an_output_folder_that_is_not_there() {
     let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
     left.sort();
     assert_eq!(left, ["calc.sg", "file", "hello.sg"]);
+}
+
+/// An output that is a folder is told before anything is compiled too: the program of a folder
+/// built from the folder above it is named as the folder by default (1398, as Go tells it).
+#[test]
+fn refuses_an_output_that_is_a_folder() {
+    let dir = work("refuses_an_output_that_is_a_folder");
+    write(&dir, "hello.sg", HELLO);
+    let shop = dir.join("shop");
+    std::fs::create_dir_all(&shop).unwrap();
+    write(&shop, "main.sg", HELLO);
+    // On Windows the program is `shop.exe`, which is not the folder.
+    if !cfg!(windows) {
+        assert_eq!(ran(&sg(&dir, &["build", "shop"])), (2, String::new(), "error: `shop` is a folder; name the program with -o\n".into()));
+        assert_eq!(ran(&sg(&dir, &["build", "shop", "--test"])), (2, String::new(), "error: `shop` is a folder; name the program with -o\n".into()));
+    }
+    let folder = sg::cc::program_file("out");
+    std::fs::create_dir_all(dir.join(&folder)).unwrap();
+    assert_eq!(ran(&sg(&dir, &["build", "hello.sg", "-o", "out"])), (2, String::new(), format!("error: cannot write {folder}: it is a folder\n")));
+    assert_eq!(std::fs::read_dir(dir.join(&folder)).unwrap().count(), 0);
+}
+
+/// A program given as a file in the current folder names the files of its modules as it is
+/// named, `stock/product.sg` and not `./stock/product.sg` (1401).
+#[test]
+fn names_module_files_as_the_main_file_is() {
+    let dir = work("names_module_files_as_the_main_file_is");
+    write(&dir, "main.sg", "use stock\n\nvoid main() {\n    print(stock.count())\n}\n");
+    let stock = dir.join("stock");
+    std::fs::create_dir_all(&stock).unwrap();
+    write(&stock, "product.sg", "public int count() {\n    return nope\n}\n");
+    let place = Path::new("stock").join("product.sg").display().to_string();
+    for main in ["main.sg", "./main.sg"] {
+        let (code, _, err) = ran(&sg(&dir, &[main]));
+        let shown = if main.starts_with("./") { Path::new(".").join(&place).display().to_string() } else { place.clone() };
+        assert_eq!(code, 1);
+        assert!(err.contains(&format!("--> {shown}:2:12\n")), "{main}: {err}");
+    }
+}
+
+/// The C of `emit-c` into an output closed before the end ends the tool as it ends a program
+/// (1399, 1330): no message.
+#[test]
+fn emits_c_into_an_output_closed_early() {
+    use std::io::BufRead;
+    let dir = work("emits_c_into_an_output_closed_early");
+    write(&dir, "hello.sg", HELLO);
+    // The C is larger than what a pipe holds, so that its writing meets the closed end.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sg")).args(["emit-c", "hello.sg"]).current_dir(&dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+    assert!(first.starts_with('#'), "{first}");
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(text(&out.stderr), "");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!((out.status.code(), out.status.signal()), (None, Some(13)));
+    }
+    #[cfg(windows)]
+    assert_eq!(out.status.code(), Some(0));
 }
 
 #[test]

@@ -1,4 +1,4 @@
-error: `with` makes a new value of a struct from another, and this is a `int`
+error: `with` makes a new value of a struct from another, and this is an `int`
   a struct is copied with its fields changed: `p with { x = 3 }`
   --> error_with_not_struct.sg:4:17
  4 |     var other = count with { value = 4 }

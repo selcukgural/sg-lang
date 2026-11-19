@@ -1,4 +1,4 @@
-error: `Slot` cannot be `Copyable`: `value` is an `atomic int`, which is not
+error: `Slot` cannot be `Copyable`: its field `value` is an `atomic int`, and an `atomic int` is not `Copyable`
   a copy of an atomic value would be a second value, which the tasks that change the first never change
   --> error_atomic_copyable.sg:2:5
  2 |     atomic int value

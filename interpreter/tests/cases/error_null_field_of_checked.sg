@@ -1,0 +1,10 @@
+// A `T?` field of a `shared checked` value is lent within a block that opens it: a borrow of
+// it ends with its line (choice 1401).
+struct Person {
+    string? nick
+}
+
+void main() {
+    var p = new shared checked Person { nick = "al" }
+    print(p.nick.length())
+}

@@ -1,4 +1,4 @@
-error: `await` waits for a task, and this is a `int`
+error: `await` waits for a task, and this is an `int`
   --> error_await_not_task.sg:6:17
  6 |     print(await square(3))
    |                 ^^^^^^^^^

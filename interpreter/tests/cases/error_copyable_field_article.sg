@@ -1,0 +1,11 @@
+// The article before a name follows how the name is said: "an `Inner`" (choice 1401).
+struct Inner {
+    string name
+}
+
+struct Outer : Copyable {
+    Inner inner
+}
+
+void main() {
+}

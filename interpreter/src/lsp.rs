@@ -302,27 +302,27 @@ pub fn position(text: &str, offset: usize) -> (u64, u64) {
 
 fn diagnostic_of(diag: &Diag, sources: Option<&Sources>, fallback: &str, uri_of: &dyn Fn(&Path) -> String) -> (String, Json, Option<Fixable>) {
     let (uri, range) = place_of(diag.span, sources, fallback, uri_of);
-    let mut message = diag.msg.clone();
+    let mut message = crate::diag::worded(&diag.msg);
     for note in &diag.notes {
         message.push('\n');
-        message.push_str(note);
+        message.push_str(&crate::diag::worded(note));
     }
     if let Some(hint) = &diag.hint {
         message.push_str("\nhint: ");
-        message.push_str(hint);
+        message.push_str(&crate::diag::worded(hint));
     }
     let mut members = vec![("range", range_json(range)), ("severity", Json::num(1)), ("source", Json::str("sg")), ("message", Json::str(message))];
     if let Some(related) = &diag.related {
         let (related_uri, related_range) = place_of(related.0, sources, fallback, uri_of);
         let location = Json::obj(vec![("uri", Json::str(related_uri)), ("range", range_json(related_range))]);
-        members.push(("relatedInformation", Json::Arr(vec![Json::obj(vec![("location", location), ("message", Json::str(related.1.clone()))])])));
+        members.push(("relatedInformation", Json::Arr(vec![Json::obj(vec![("location", location), ("message", Json::str(crate::diag::worded(&related.1)))])])));
     }
     let diagnostic = Json::obj(members);
     let fix = diag.fix.as_ref().map(|fix| {
         let (edit_uri, edit_range) = place_of(fix.span, sources, fallback, uri_of);
         let edit = Json::obj(vec![("range", range_json(edit_range)), ("newText", Json::str(fix.text.clone()))]);
         let title = match &diag.hint {
-            Some(hint) => format!("sg: {hint}"),
+            Some(hint) => format!("sg: {}", crate::diag::worded(hint)),
             None => "sg: apply the fix".to_string(),
         };
         Fixable { range, diagnostic: diagnostic.clone(), title, edit: Json::obj(vec![("changes", Json::obj(vec![(edit_uri.as_str(), Json::Arr(vec![edit]))]))]) }

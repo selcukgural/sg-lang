@@ -13,5 +13,6 @@ panic: index 0 is out of range: the length is 0
   --> tests_failing.sg:29:11
  29 |     print(xs[0])
     |           ^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
 ok    each test starts fresh
 3 of 5 test(s) failed

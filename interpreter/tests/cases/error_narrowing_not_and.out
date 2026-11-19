@@ -1,4 +1,6 @@
 error: operator `+` is not defined for `int?` and `int`
+  `a` may be `null`
   --> error_narrowing_not_and.sg:5:15
  5 |         print(a + 1)
    |               ^^^^^
+  hint: test it first: `if a is not null { ... }`; or give a fallback with `??`
