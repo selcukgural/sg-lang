@@ -78,6 +78,7 @@ of `tests/Containerfile` has them.
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of zlib, gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
+| JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -517,6 +518,7 @@ hand with no checks):
 | `library`: a program of C calls a static library built from SG fifty million times through a handle (`ref Stats`), then hashes 256 MB of its own bytes with it through `Memory.view` (the C is the same program linked against the same library written in C) | 0.506 s | 0.507 s | 0.503 s | 1.01 |
 | `checksum`: four gigabytes through `Crc32` of `std`, written in SG, 64 KB of an array at a time (the C calls zlib's `crc32`, which on macOS uses the processor's CRC instructions; the same sixteen tables written in C take 1.10 s) | 1.095 s | 1.085 s | 0.113 s | 9.67 |
 | `sha256`: a gigabyte through `Sha256` of `std`, written in SG, 64 KB of an array at a time (the C calls OpenSSL 3.5's SHA-256, which uses the processor's SHA instructions; the same algorithm written in plain C takes 2.90 s) | 3.138 s | 3.198 s | 0.351 s | 8.93 |
+| `json`: a JSON document of 100,000 records (34 MB) read five times by `Json.parse` of `std`, written in SG, and walked once (the C reads it with cJSON 1.7.19) | 0.773 s | 0.789 s | 0.675 s | 1.15 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
 virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
@@ -8754,6 +8756,81 @@ and looks at what goes to the output, what to the standard error, and the codes 
 sanitizer), and the 222 programs of the site run as they show; on the Windows Arm VM `ok_command_line` and the
 panics print the same interpreted and compiled, and `a_command_line_read_or_exit` passes.
 
+Choices made in the hundred-and-twenty-eighth slice (the library: JSON). 1411 was approved on 19 November 2026,
+with 1406; 1434-1442 the same day, before the slice was written:
+
+1411. **JSON** (`std/json.sg`): `JsonValue` is `Null`, `Bool(bool)`, `Integer(long)`, `Number(double)`,
+     `String(string)`, `Array(List<JsonValue>)` or `Object(JsonObject)`; `Json.parse(read string text)` gives a
+     `Result<JsonValue, JsonError>`, `value.toJson()` and `value.toJsonIndented(spaces)` write it. A whole
+     number that fits a `long` is an `Integer`, every other a `Number`, so an id above 2^53 survives. A
+     `JsonObject` keeps its members in order and finds one by name; a name twice is an error. Strict RFC
+     8259, nesting to 128, and a `JsonError` with the line, the column and the kind. Numbers are written in the
+     fewest digits that read back the same, and writing NaN or an infinity is a panic. Nothing maps a struct of
+     the program: it writes `toJson` and `fromJson` by hand. No reading of a stream yet.
+1434. **The names**: `Json.parse`, `JsonValue`, `JsonObject`, `JsonError` and `JsonErrorKind` (serde_json's
+     `from_str`, `Value`, `Map` and `Error`).
+1435. **An object built and changed**: `JsonObject()`; `o.add(name, value)` panics on a name that is there, as
+     `HashMap.add` does (choice 4 of the eighth slice); `o.set(name, value)` puts the value in place of the
+     member, where it is, or adds it at the end (serde_json's `insert` with `preserve_order`); `o.remove(name)`
+     takes it out and keeps the order of the others; `o.get`, `o.contains`, `o.length()` and `o.names()`, the
+     names in order. Without `set` and `remove` a program could not read a file of settings, change one value
+     and write it back.
+1436. **Looking into a value never panics**, since the data comes from outside and a missing member is an
+     ordinary thing: `v.get(name)` is `null` when `v` is not an object or has no such member, `v.at(i)` when it
+     is not an array or has no such item; `asString()` (a `read string?`), `asLong()` (an `Integer` only),
+     `asDouble()` (an `Integer` or a `Number`), `asBool()`, `asArray()`, `asObject()` and `isNull()`. With `?.`
+     a path is one line: `doc.get("user")?.get("name")?.asString() ?? "-"`. serde_json's `get` and `as_*` are
+     the same.
+1437. **Numbers**: one written with a `.` or an exponent is a `Number` (`1.0`, `1e2`), `-0` too, as `-0.0`,
+     which keeps its sign; a whole one beyond a `long` is a `Number`; one beyond a `double` (`1e400`) is
+     `NumberOutOfRange`, one below what a `double` holds (`1e-400`) is 0, as serde_json and Go read them. A
+     `Number` is always written with a `.` or an exponent (`2.0`), so that reading what was written gives the
+     same kind (serde_json does the same; Go writes `2`).
+1438. **Writing**: `toJson()` with no spaces, `{"a":1,"b":[true,null]}`; `toJsonIndented(n)` as serde_json's
+     `to_string_pretty` writes (`"a": 1`, an empty array or object as `[]` and `{}`), a negative `n` a panic.
+     Only what JSON needs is escaped: the quote, the backslash and the control characters (`\n \r \t \b \f`,
+     the others as `\u001b`); other characters stay as they are, in UTF-8, and `/` is not escaped; Go's
+     escaping of `<`, `>` and `&` for HTML is left out. `JsonValue` is `Formattable`: `$"{v}"` is `toJson()`.
+1439. **`JsonError`**: `e.line` and `e.column` from 1, the column counted in characters, as the compiler's own
+     messages count it, and `e.kind`: `UnexpectedEnd`, `UnexpectedCharacter(char)`, `InvalidNumber`,
+     `NumberOutOfRange`, `InvalidEscape`, `LoneSurrogate`, `ControlCharacter` (in a string, not escaped),
+     `DuplicateKey(name)`, `TooDeep`, `TrailingText`. `{e}` is `line 3, column 14: duplicate key "id"`, and the
+     errors compare as values.
+1440. **The same value**: `JsonValue` is `Equatable`; arrays are compared item by item in order, objects member
+     by member in any order, since the RFC gives an object no order (serde_json compares them so too).
+     `Integer(1)` is not `Number(1.0)`. `clone()` copies everything in the value.
+1441. **Strict in the small things**: a byte order mark before the value is an error (Go and serde_json refuse
+     it too); the spaces are the space, the tab, `\n` and `\r`; arrays and objects count together toward the
+     128 levels; `\u0000` is read, since a `string` holds a zero byte. The writer has no limit of depth: the
+     program built the value.
+1442. **Tested with JSONTestSuite**: its 318 parsing cases are kept in `tests/json-suite` with their licence
+     (MIT); each `y_` file must be read, each `n_` refused, each `i_` as these rules decide, and a file that is
+     not UTF-8 is refused when it is made a `string`. Measured against cJSON.
+
+What writing it found, from 1443. Approved on 19 November 2026:
+
+1443. **A `bool` reached through a borrow was compared by its address** in compiled code: in `match x { On(a)
+     => match y { On(b) => a == b } }` on two `read` values, `a == b`, `a == true` and `a != false` compared the
+     pointers C holds for `a` and `b`, so two equal flags were not equal (and the C compiler only warned). The
+     checker now makes both sides of `==` and `!=` on `bool`s a value, as it does for `char`; the interpreter
+     was right. `ok_compare_lent_bool` was red before.
+1444. **An object finds a name by looking at each while it has 16 members or fewer**, and through a table past
+     that: most objects are small, and a table for each of them cost the most time of the reading (cJSON
+     always looks at each). With that and a string with no escape copied once, reading went from 1.73 times
+     cJSON's time to 1.15.
+1445. **A character that cannot be seen is named by its code** in `UnexpectedCharacter`: a control character, a
+     byte order mark and the marks of direction (U+200B-U+200F, U+2028-U+202E, U+2060-U+2069) are written
+     `unexpected character U+FEFF`, so a message about a text from outside cannot hide what is wrong or turn a
+     terminal's line around.
+
+`ok_json` reads, looks into, builds, changes, compares and writes values, and 34 texts that are not JSON, each
+with its line, column and kind; `panic_json_add_twice`, `panic_json_nan` and `panic_json_indent` show the three
+panics, `error_json_error_fields` is told how a `JsonError` is made, and `a_json_suite` (in `tests/cli.rs`)
+reads the 318 files of JSONTestSuite interpreted and compiled. Two `y_` files, a name twice in one object, are
+refused on purpose (1411). With 1411, 466 of the 1829 programs are compiled on macOS and on Linux (102 under
+the thread sanitizer), and the 226 programs of the site run as they show; on the Windows Arm VM `ok_json` and
+`ok_compare_lent_bool` print the same interpreted and compiled, and `a_json_suite` passes.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8771,6 +8848,11 @@ check off.
   algorithm written in C (1.08 times it), while OpenSSL uses the SHA instructions of the processor (ARMv8's
   SHA-2 extension, x86's SHA-NI). Candidate: the same kind of built-in as for CRC-32; until then a program
   that hashes gigabytes calls OpenSSL.
+- **JSON read one allocation at a time** (`json`, 1.15 times cJSON on macOS, choice 1444): every string,
+  list and object of a `JsonValue` is a block of its own from `malloc`, and each value is moved through a
+  `Result` on its way up, where cJSON allocates one node for each value and links them. Candidate: the
+  strings of a document kept in one block, or the lists made at their size once the closing bracket is
+  found (simdjson's way of counting first); a `Result` that is filled where the value goes.
 
 - **The interpreter keeps every item in a cell of its own** (measured on 19 November 2026): a `List<T>` or
   a `T[N]` holds each item as a value on the heap of its own (`Rc<RefCell<Value>>`, about a hundred
@@ -9107,6 +9189,9 @@ check off.
 - **Of values that are never read**: a value written over before it is read (`x = 1` then `x = 2`), or given
   after the last read, passes; Rust warns on both, with a look at every path. A list only added to is read by
   `add`, a method called on it, and passes too.
+- **Of JSON**: a reader of a stream (a value read while the text comes, `serde_json::StreamDeserializer`),
+  turning a struct into JSON and back on its own (no reflection or macros: the program writes both by hand),
+  JSON Pointer (`/a/0/b`) and JSON Lines (1411).
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 
@@ -9372,7 +9457,8 @@ of its folder asks for `-o`, the tool's own output ends quietly when closed, a t
 naming `xs.get(i)` (1398-1402). The library grows before the reference (1406): hex and Base64 are written
 (`Hex`, `Base64`, read strictly, 1407), CRC-32 (`Crc32`, sixteen bytes in a step, 1408, 1414, 1415) and
 SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409) and the command line (`CommandLine`,
-GNU's way of writing, 1410, 1423-1433); JSON and a log come next (1411, 1412). Then real programs written in SG, Rust and Go and measured against each other, each
+GNU's way of writing, 1410, 1423-1433) and JSON (`Json`, `JsonValue`, read strictly and tested with
+JSONTestSuite, 1411, 1434-1445); a log comes next (1412). Then real programs written in SG, Rust and Go and measured against each other, each
 difference a choice (1418), and after them XML without a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

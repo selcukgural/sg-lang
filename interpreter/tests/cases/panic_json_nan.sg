@@ -1,0 +1,8 @@
+// JSON has no NaN or infinity: writing one is a panic, not a text no reader takes.
+void main() {
+    double zero = 0.0
+    var values = List<JsonValue> { JsonValue.Number(1.5), JsonValue.Number(zero / zero) }
+    var array = JsonValue.Array(values)
+    print(array.at(0)?.toJson() ?? "-")
+    print(array.toJson())
+}

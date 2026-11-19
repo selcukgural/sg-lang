@@ -581,3 +581,21 @@ fn a_command_line_read_or_exit() {
         assert_eq!(run(&["in.gif", "more.gif"]), (2, String::new(), format!("gifcrop: unexpected argument 'more.gif'\n{tried}")), "{way}");
     }
 }
+
+/// Every parsing case of JSONTestSuite (`tests/json-suite`, choice 1442), read by `Json.parse`
+/// interpreted and compiled: each `y_` read, each `n_` refused, each `i_` as SG's rules decide.
+#[test]
+fn a_json_suite() {
+    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("json-suite");
+    let cases = suite.join("test_parsing").to_string_lossy().into_owned();
+    let check = suite.join("check.sg").to_string_lossy().into_owned();
+    let dir = work("a_json_suite");
+    let expected = (0, "318 of 318 files as expected\n".to_string(), String::new());
+    assert_eq!(ran(&sg(&dir, &[&check, &cases])), expected, "interpreted");
+    if has_compiler() {
+        let out = program(&dir, "check").to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        assert_eq!(ran(&run), expected, "compiled");
+    }
+}

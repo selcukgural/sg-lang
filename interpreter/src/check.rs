@@ -245,6 +245,9 @@ fn std_makers(short: &str) -> &'static str {
         "Bytes" => "nothing is made: the function is called on the type, `Bytes.equalInConstantTime(read a, read b)`",
         "CommandLine" => "`CommandLine(\"name\", \"what it does\")`, then `cl.flag(...)`, `cl.option(...)`, `cl.positional(...)`",
         "Arguments" => "`cl.parse(read args)` or `cl.parseOrExit(read args)` of a `CommandLine` gives one",
+        "Json" => "nothing is made: the function is called on the type, `Json.parse(text)`",
+        "JsonObject" => "`JsonObject()`, then `o.add(\"name\", value)`",
+        "JsonError" => "`Json.parse(text)` gives one for a text that is not JSON",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }
@@ -9849,7 +9852,13 @@ impl<'a> Checker<'a> {
             (Ty::Char, _) | (_, Ty::Char) if !op.is_comparison() => {
                 Err(undefined().note("a `char` is not a number: `(int)c` is its code, and `(char)n` the character of a code"))
             }
-            (Ty::Bool, Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => Ok(Ty::Bool),
+            // A side may be a borrow of a `bool` (`B(a)` in a `match` on a borrowed value): the
+            // values are compared, not where they are.
+            (Ty::Bool, Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => {
+                self.coerce(left, left_ty.clone(), &Ty::Bool)?;
+                self.coerce(right, right_ty.clone(), &Ty::Bool)?;
+                Ok(Ty::Bool)
+            }
             // The bit operators are for integers; two `bool`s have their own.
             (Ty::Bool, Ty::Bool) if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) => {
                 let own = match op {

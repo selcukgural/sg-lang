@@ -1,0 +1,193 @@
+// JSON (choices 1411, 1434-1442): read strictly, looked into without a panic, built and changed
+// by hand, written back on one line or indented, compared and copied. The same interpreted and
+// compiled.
+
+struct Point : Copyable {
+    double x
+    double y
+}
+
+// What a program writes for a struct of its own: no mapping is made for it.
+JsonValue pointToJson(Point p) {
+    var o = JsonObject()
+    o.add("x", JsonValue.Number(p.x))
+    o.add("y", JsonValue.Number(p.y))
+    return JsonValue.Object(o)
+}
+
+Point? pointFromJson(read JsonValue value) {
+    var x = value.get("x")?.asDouble()
+    var y = value.get("y")?.asDouble()
+    if x is null || y is null {
+        return null
+    }
+    return Point { x = x, y = y }
+}
+
+void show(read string text) {
+    match Json.parse(text) {
+        Ok(value) => print($"{value}")
+        Error(e) => print($"error: {e}")
+    }
+}
+
+void main() {
+    // Reading: every kind of value, spaces around it.
+    var text = """
+        {
+          "name": "Ada",
+          "id": 9007199254740993,
+          "huge": 123456789012345678901234567890,
+          "ratio": 0.1,
+          "two": 2.0,
+          "exp": 1e3,
+          "negativeZero": -0,
+          "tags": ["math", "a\"quote\"\\", "tab\there", "\u00e9\ud83d\ude00", "\u0000"],
+          "active": true,
+          "manager": null,
+          "address": {"city": "London", "zip": ""},
+          "empty": [],
+          "nothing": {}
+        }
+        """
+    var doc = Json.parse(read text) ?? panic("not JSON")
+    print(doc)
+    print(doc.toJsonIndented(2))
+    print(doc.toJsonIndented(0))
+
+    // Looking into it: `null` for what is not there, or not of the kind asked.
+    print($"{doc.get("name")?.asString() ?? "-"} {doc.get("id")?.asLong() ?? 0} {doc.get("ratio")?.asDouble() ?? 0.0}")
+    print($"{doc.get("address")?.get("city")?.asString() ?? "-"} {doc.get("tags")?.at(3)?.asString() ?? "-"}")
+    print($"{doc.get("missing") is null} {doc.get("name")?.asLong() is null} {doc.get("tags")?.at(9) is null} {doc.get("tags")?.at(-1) is null}")
+    print($"{doc.get("huge")?.asLong() is null} {doc.get("huge")?.asDouble() ?? 0.0} {doc.get("id")?.asDouble() ?? 0.0}")
+    print($"{doc.get("active")?.asBool() ?? false} {doc.get("manager")?.isNull() ?? false} {doc.isNull()} {doc.at(0) is null}")
+    var tags = doc.get("tags")?.asArray()
+    if tags is not null {
+        for tag in tags {
+            print($"tag {tag}")
+        }
+    }
+    var members = doc.asObject()
+    if members is not null {
+        print($"{members.length()} members: {string.join(", ", members.names())}")
+        print($"{members.contains("id")} {members.contains("ID")}")
+    }
+    match doc.get("exp") {
+        null => print("no exp")
+        var exp => {
+            match exp {
+                Number(n) => print($"exp is a Number: {n}")
+                _ => print("exp is not a Number")
+            }
+        }
+    }
+
+    // Numbers: a whole number fitting a `long` is an `Integer`; a `Number` keeps its kind when
+    // written and read back.
+    show("[0, -1, 9223372036854775807, -9223372036854775808, 9223372036854775808, 1.5, -2.5e-3, 1E2, 1e-400, 5e-324]")
+    show("[1.0, 100.0, 1e21, 1e300, 0.30000000000000004]")
+
+    // Building a value and changing it.
+    var o = JsonObject()
+    o.add("b", JsonValue.Integer(1))
+    o.add("a", JsonValue.Array(List<JsonValue> { JsonValue.Bool(false), JsonValue.Null }))
+    o.add("c", JsonValue.String("line\nbreak and \u{1b}[31m"))
+    o.set("b", JsonValue.Integer(2))
+    o.set("d", JsonValue.Number(0.5))
+    var gone = o.remove("a")
+    print($"{gone ?? JsonValue.Null} {o.remove("zzz") is null}")
+    var built = JsonValue.Object(o)
+    print(built)
+    print(built.toJson().length())
+
+    // A struct of the program, written and read back by hand.
+    var p = pointToJson(Point { x = 1.5, y = -2.0 })
+    print(p)
+    var back = pointFromJson(read p)
+    if back is not null {
+        print($"{back.x} {back.y}")
+    }
+    print(pointFromJson(read JsonValue.Integer(3)) is null)
+
+    // Equality: arrays in order, objects in any order, `Integer(1)` is not `Number(1.0)`.
+    var x = Json.parse("{\"a\": 1, \"b\": [1, 2]}") ?? panic("x")
+    var y = Json.parse("{\"b\": [1, 2], \"a\": 1}") ?? panic("y")
+    var z = Json.parse("{\"b\": [2, 1], \"a\": 1}") ?? panic("z")
+    print($"{x == y} {x == z} {x != z}")
+    print($"{JsonValue.Integer(1) == JsonValue.Number(1.0)} {JsonValue.Null == JsonValue.Null} {JsonValue.String("a") == JsonValue.String("a")}")
+    var copy = doc.clone()
+    print($"{copy == doc} {copy.toJson() == doc.toJson()}")
+
+    // Reading what was written gives the same value.
+    var written = doc.toJson()
+    var again = Json.parse(read written) ?? panic("again")
+    print($"{again == doc}")
+    var indented = doc.toJsonIndented(4)
+    var againIndented = Json.parse(read indented) ?? panic("again indented")
+    print($"{againIndented == doc}")
+
+    // Errors: where, counted from 1, the column in characters, and why.
+    var bad = List<string> {
+        "",
+        "   ",
+        "[1, 2,]",
+        "{\"a\": 1,}",
+        "[01]",
+        "[1.]",
+        "[.5]",
+        "[1e]",
+        "[-]",
+        "[- 1]",
+        "[+1]",
+        "[1e400]",
+        "[-1e400]",
+        "[NaN]",
+        "[Infinity]",
+        "{\"a\" 1}",
+        "{a: 1}",
+        "{\"id\": 1,\n  \"é\": 2,\n  \"id\": 3}",
+        "[\"\\x\"]",
+        "[\"\\u12G4\"]",
+        "[\"\\ud800\"]",
+        "[\"\\udc00\"]",
+        "[\"\\ud800\\u0041\"]",
+        "[\"a\tb\"]",
+        "[\"abc",
+        "[1] 2",
+        "[1] // comment",
+        "tru",
+        "nul",
+        "[truE]",
+        "\u{feff}{}",
+        "[\"é\", x]",
+        "{\"key\": [1, {\"deep\": é}]}",
+        "\u{1}"
+    }
+    for b in read bad {
+        match Json.parse(b) {
+            Ok(value) => print($"read: {value}")
+            Error(e) => print(e)
+        }
+    }
+    // The kind of the error, compared as a value.
+    match Json.parse("{\"a\":1,\"a\":2}") {
+        Ok(_) => print("read")
+        Error(e) => print($"{e.line} {e.column} {e.kind == JsonErrorKind.DuplicateKey("a")} {e.kind == JsonErrorKind.TooDeep}")
+    }
+
+    // Nesting: 128 levels are read, 129 are not.
+    var deep = string.withCapacity(300)
+    for _ in 0..128 {
+        deep.write('[')
+    }
+    for _ in 0..128 {
+        deep.write(']')
+    }
+    var parsedDeep = Json.parse(read deep) ?? JsonValue.Null
+    print(parsedDeep.toJson().length())
+    var deeper = $"[{deep}]".toString()
+    match Json.parse(read deeper) {
+        Ok(_) => print("read")
+        Error(e) => print(e)
+    }
+}

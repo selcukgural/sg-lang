@@ -15,7 +15,7 @@ and cancellation; `Memory` and the types of C. Their methods are checked by the 
 it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
-`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 (`Crc32`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), folders and paths (`Directory`, `Path`,
+`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 (`Crc32`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), folders and paths (`Directory`, `Path`,
 `FileInfo`), other programs (`Command`, `Process`), `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can
@@ -70,5 +70,6 @@ from each item to its source.
 - [CRC-32](./checksum.md): `Crc32`, the checksum of zlib, gzip, PNG and ZIP.
 - [SHA-256 and HMAC](./hash.md): `Sha256`, `Hmac.sha256` and `Bytes.equalInConstantTime`.
 - [The command line](./command-line.md): `CommandLine` and `Arguments`, flags, options and words read the GNU way.
+- [JSON](./json.md): `Json`, `JsonValue` and `JsonObject`, JSON read strictly, looked into, built and written back.
 
 The network (`TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`) does not have a page yet.

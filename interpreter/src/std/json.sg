@@ -1,0 +1,941 @@
+// JSON (RFC 8259) read into values and written back (choices 1411, 1434-1442). Written in SG and
+// brought along by the language. Reading is strict, as the RFC writes it: no comments, no trailing
+// commas, no NaN, no byte order mark, a key twice in one object is an error, a `\u` surrogate must
+// have its other half, and nesting stops at 128. A whole number that fits a `long` is an `Integer`,
+// so that an id above 2^53 survives; every other number is a `Number`. Nothing maps a struct of the
+// program on its own: the program writes its `toJson` and `fromJson` by hand.
+
+const char[16] JsonHexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
+
+// How deep arrays and objects may be nested in a text that is read.
+const int JsonDepthLimit = 128
+
+// An object finds a name by looking at each while it has this many members or fewer, and through
+// a table past them.
+const nint JsonIndexAfter = 16
+
+// A value of JSON.
+public enum JsonValue : Equatable, Formattable {
+    Null
+    Bool(bool value)
+    // A number written without a fraction or an exponent that fits a `long`.
+    Integer(long value)
+    // Every other number: `1.5`, `1e3`, `1.0`, `-0`, and whole numbers beyond a `long`.
+    Number(double value)
+    String(string value)
+    Array(List<JsonValue> items)
+    Object(JsonObject members)
+
+    // The member named `name` of an object; `null` when there is none or this is not an object.
+    public read JsonValue? get(read this, read string name) from this {
+        match this {
+            Object(members) => return members.get(name)
+            _ => return null
+        }
+    }
+
+    // The item at `index` of an array; `null` when there is none or this is not an array.
+    public read JsonValue? at(read this, nint index) from this {
+        match this {
+            Array(items) => {
+                if index < 0 || index >= items.length() {
+                    return null
+                }
+                return items[index]
+            }
+            _ => return null
+        }
+    }
+
+    // The text of a string; `null` for anything else.
+    public read string? asString(read this) from this {
+        match this {
+            String(value) => return value
+            _ => return null
+        }
+    }
+
+    // The number of an `Integer`; `null` for anything else, a `Number` too.
+    public long? asLong(read this) {
+        match this {
+            Integer(value) => return value
+            _ => return null
+        }
+    }
+
+    // The number of a `Number`, or of an `Integer` made a `double`; `null` for anything else.
+    public double? asDouble(read this) {
+        match this {
+            Integer(value) => return (double)value
+            Number(value) => return value
+            _ => return null
+        }
+    }
+
+    // The value of `true` or `false`; `null` for anything else.
+    public bool? asBool(read this) {
+        match this {
+            Bool(value) => return value
+            _ => return null
+        }
+    }
+
+    // The items of an array; `null` for anything else.
+    public read List<JsonValue>? asArray(read this) from this {
+        match this {
+            Array(items) => return items
+            _ => return null
+        }
+    }
+
+    // The members of an object; `null` for anything else.
+    public read JsonObject? asObject(read this) from this {
+        match this {
+            Object(members) => return members
+            _ => return null
+        }
+    }
+
+    public bool isNull(read this) {
+        match this {
+            Null => return true
+            _ => return false
+        }
+    }
+
+    // The value as JSON with no spaces: `{"name":"Ada","tags":[1,2]}`.
+    public string toJson(read this) {
+        var text = string.withCapacity(64)
+        writeJsonValue(ref text, this, -1, 0)
+        return text
+    }
+
+    // The value as JSON on lines, each level `spaces` further in, `"name": value` in an object;
+    // an empty array or object stays `[]` or `{}`.
+    public string toJsonIndented(read this, int spaces) {
+        if spaces < 0 {
+            panic($"JSON cannot be indented by {spaces} spaces")
+        }
+        var text = string.withCapacity(64)
+        writeJsonValue(ref text, this, spaces, 0)
+        return text
+    }
+
+    // `$"{value}"` writes what `toJson` gives.
+    public void format(read this, ref Formatter f) {
+        f.write(this.toJson())
+    }
+
+    // The same value: an array item by item in order, an object member by member in any order,
+    // as the RFC says an object has none. `Integer(1)` and `Number(1.0)` are not the same.
+    public bool equals(read this, read JsonValue other) {
+        match this {
+            Null => return other.isNull()
+            Bool(a) => {
+                match other {
+                    Bool(b) => return a == b
+                    _ => return false
+                }
+            }
+            Integer(a) => {
+                match other {
+                    Integer(b) => return a == b
+                    _ => return false
+                }
+            }
+            Number(a) => {
+                match other {
+                    Number(b) => return a == b
+                    _ => return false
+                }
+            }
+            String(a) => {
+                match other {
+                    String(b) => return a == b
+                    _ => return false
+                }
+            }
+            Array(a) => {
+                match other {
+                    Array(b) => {
+                        if a.length() != b.length() {
+                            return false
+                        }
+                        for i in 0..a.length() {
+                            if !a[i].equals(b[i]) {
+                                return false
+                            }
+                        }
+                        return true
+                    }
+                    _ => return false
+                }
+            }
+            Object(a) => {
+                match other {
+                    Object(b) => return a.equals(b)
+                    _ => return false
+                }
+            }
+        }
+    }
+
+    // A copy of the value and of everything in it.
+    public JsonValue clone(read this) {
+        match this {
+            Null => return JsonValue.Null
+            Bool(value) => return JsonValue.Bool(value)
+            Integer(value) => return JsonValue.Integer(value)
+            Number(value) => return JsonValue.Number(value)
+            String(value) => return JsonValue.String(value.clone())
+            Array(items) => {
+                var copy = List<JsonValue>()
+                for item in items {
+                    copy.add(item.clone())
+                }
+                return JsonValue.Array(copy)
+            }
+            Object(members) => return JsonValue.Object(members.clone())
+        }
+    }
+}
+
+// The members of a JSON object, in the order they were read or added, found by name: by looking
+// at each name while there are few, through a table once there are more than 16.
+// `var o = JsonObject()`, `o.add("name", JsonValue.String("Ada"))`.
+public struct JsonObject : Equatable {
+    List<string> keys
+    List<JsonValue> values
+    // The place of each name in `keys`, made once the object has more than `JsonIndexAfter`
+    // members; empty before.
+    HashMap<string, nint> places
+
+    public JsonObject create() {
+        return JsonObject { keys = List<string>(), values = List<JsonValue>(), places = HashMap<string, nint>() }
+    }
+
+    // Adds a member at the end; a panic when the object has one of that name already, as
+    // `HashMap.add`.
+    public void add(ref this, read string name, JsonValue value) {
+        if this.find(name) is not null {
+            panic($"the JSON object has a member named {jsonQuoted(name)} already")
+        }
+        this.append(name.clone(), value)
+    }
+
+    // Puts `value` in place of the member named `name`, where it is, or adds it at the end.
+    public void set(ref this, read string name, JsonValue value) {
+        var place = this.find(name)
+        if place is not null {
+            this.values[place] = value
+        } else {
+            this.append(name.clone(), value)
+        }
+    }
+
+    // Takes the member named `name` out and gives its value, `null` when there is none; the
+    // others keep their order.
+    public JsonValue? remove(ref this, read string name) {
+        var place = this.find(name)
+        if place is null {
+            return null
+        }
+        nint gone = place
+        var oldKeys = this.keys.replace(List<string>())
+        var oldValues = this.values.replace(List<JsonValue>())
+        this.places.clear()
+        JsonValue? taken = null
+        nint i = 0
+        for value in oldValues {
+            if i == gone {
+                taken = value
+            } else {
+                this.append(oldKeys[i].clone(), value)
+            }
+            i += 1
+        }
+        return taken
+    }
+
+    // The place of the member named `name`.
+    nint? find(read this, read string name) {
+        if this.places.length() > 0 {
+            var place = this.places.get(name)
+            if place is null {
+                return null
+            }
+            return place
+        }
+        for i in 0..this.keys.length() {
+            if this.keys[i] == name {
+                return i
+            }
+        }
+        return null
+    }
+
+    // A member whose name the object does not have yet, at the end.
+    void append(ref this, string name, JsonValue value) {
+        nint place = this.keys.length()
+        if place >= JsonIndexAfter {
+            if this.places.length() == 0 {
+                for i in 0..place {
+                    this.places.add(this.keys[i].clone(), i)
+                }
+            }
+            this.places.add(name.clone(), place)
+        }
+        this.keys.add(name)
+        this.values.add(value)
+    }
+
+    // The value of the member named `name`, `null` when there is none.
+    public read JsonValue? get(read this, read string name) from this {
+        var place = this.find(name)
+        if place is null {
+            return null
+        }
+        return this.values[place]
+    }
+
+    public bool contains(read this, read string name) {
+        return this.find(name) is not null
+    }
+
+    // How many members the object has.
+    public nint length(read this) {
+        return this.keys.length()
+    }
+
+    // The names of the members, in order.
+    public read List<string> names(read this) from this {
+        return read this.keys
+    }
+
+    // The same members with the same values, in any order.
+    public bool equals(read this, read JsonObject other) {
+        if this.keys.length() != other.keys.length() {
+            return false
+        }
+        for i in 0..this.keys.length() {
+            var theirs = other.get(this.keys[i])
+            if theirs is null || !this.values[i].equals(theirs) {
+                return false
+            }
+        }
+        return true
+    }
+
+    // A copy of the object and of everything in it.
+    public JsonObject clone(read this) {
+        var copy = JsonObject()
+        for i in 0..this.keys.length() {
+            copy.add(this.keys[i], this.values[i].clone())
+        }
+        return copy
+    }
+}
+
+// Why a text is not JSON.
+public enum JsonErrorKind : Equatable, Formattable {
+    // The text ends before the value does.
+    UnexpectedEnd
+    // A character where JSON has none of its kind.
+    UnexpectedCharacter(char found)
+    // A number not written as JSON writes one: `01`, `1.`, `.5`, `1e`, `-`.
+    InvalidNumber
+    // A number beyond what a `double` holds: `1e400`.
+    NumberOutOfRange
+    // A `\` in a string followed by something other than `" \ / b f n r t` or `u` and four hex digits.
+    InvalidEscape
+    // A `\u` escape of one half of a surrogate pair without the other.
+    LoneSurrogate
+    // A control character (below U+0020) in a string, which JSON writes only escaped.
+    ControlCharacter
+    // A name given twice in one object.
+    DuplicateKey(string name)
+    // Arrays and objects nested deeper than 128.
+    TooDeep
+    // Something other than spaces after the value.
+    TrailingText
+
+    public void format(read this, ref Formatter f) {
+        match this {
+            UnexpectedEnd => f.write("the text ends before the value")
+            UnexpectedCharacter(found) => {
+                // A character that cannot be seen, or that turns the text around it (a byte
+                // order mark, the marks of direction), is named by its code.
+                if jsonHidden((int)found) {
+                    f.write($"unexpected character U+{jsonHex4((int)found)}")
+                } else {
+                    f.write($"unexpected character '{found}'")
+                }
+            }
+            InvalidNumber => f.write("invalid number")
+            NumberOutOfRange => f.write("number out of range")
+            InvalidEscape => f.write("invalid escape")
+            LoneSurrogate => f.write("half of a surrogate pair without the other")
+            ControlCharacter => f.write("control character in a string, which is written escaped")
+            DuplicateKey(name) => f.write($"duplicate key {jsonQuoted(name)}")
+            TooDeep => f.write($"nested deeper than {JsonDepthLimit}")
+            TrailingText => f.write("text after the value")
+        }
+    }
+}
+
+// Where a text stops being JSON, and why: `line 3, column 14: duplicate key "id"`. The line and the
+// column count from 1, the column in characters.
+public struct JsonError : Equatable, Formattable {
+    public readonly long line
+    public readonly long column
+    public readonly JsonErrorKind kind
+
+    public void format(read this, ref Formatter f) {
+        f.write($"line {this.line}, column {this.column}: {this.kind}")
+    }
+}
+
+public struct Json {
+    // The value a JSON text holds, spaces allowed around it.
+    public Result<JsonValue, JsonError> parse(read string text) {
+        var bytes = text.asBytes()
+        nint position = 0
+        var parsed = jsonValue(text, bytes, ref position, 0)
+        match parsed {
+            Ok(value) => {
+                jsonSkipSpaces(bytes, ref position)
+                if position < bytes.length() {
+                    return Error(jsonErrorAt(text, position, JsonErrorKind.TrailingText))
+                }
+                return Ok(value)
+            }
+            Error(fault) => return Error(jsonErrorAt(text, fault.position, fault.kind))
+        }
+    }
+}
+
+// What went wrong, at a byte of the text; made a `JsonError` with its line and column at the end.
+struct JsonFault {
+    nint position
+    JsonErrorKind kind
+}
+
+JsonError jsonErrorAt(read string text, nint position, JsonErrorKind kind) {
+    var bytes = text.asBytes()
+    long line = 1
+    nint lineStart = 0
+    for i in 0..position {
+        if bytes[i] == '\n' {
+            line += 1
+            lineStart = i + 1
+        }
+    }
+    // A character is each byte that does not continue one.
+    long column = 1
+    for i in lineStart..position {
+        if bytes[i] & 0xC0 != 0x80 {
+            column += 1
+        }
+    }
+    return JsonError { line = line, column = column, kind = kind }
+}
+
+JsonFault jsonFault(nint position, JsonErrorKind kind) {
+    return JsonFault { position = position, kind = kind }
+}
+
+// The character that starts at `position`, which is where one starts: the text is UTF-8.
+char jsonCharAt(read byte[] bytes, nint position) {
+    int first = bytes[position]
+    if first < 0x80 {
+        return (char)first
+    }
+    int count = 1
+    int code = first & 0x1F
+    if first >= 0xF0 {
+        count = 3
+        code = first & 0x07
+    } else if first >= 0xE0 {
+        count = 2
+        code = first & 0x0F
+    }
+    for k in 1..count + 1 {
+        code = code << 6 | (bytes[position + k] & 0x3F)
+    }
+    return (char)code
+}
+
+// An unexpected character at `position`, or the end of the text there.
+JsonFault jsonUnexpected(read byte[] bytes, nint position) {
+    if position >= bytes.length() {
+        return jsonFault(position, JsonErrorKind.UnexpectedEnd)
+    }
+    return jsonFault(position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position)))
+}
+
+void jsonSkipSpaces(read byte[] bytes, ref nint position) {
+    while position < bytes.length() {
+        byte c = bytes[position]
+        if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
+            return
+        }
+        position += 1
+    }
+}
+
+Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref nint position, int depth) {
+    jsonSkipSpaces(bytes, ref position)
+    if position >= bytes.length() {
+        return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
+    }
+    byte c = bytes[position]
+    if c == '"' {
+        var value = try jsonString(text, bytes, ref position)
+        return Ok(JsonValue.String(value))
+    }
+    if c == '-' || (c >= '0' && c <= '9') {
+        return jsonNumber(text, bytes, ref position)
+    }
+    if c == '{' {
+        if depth >= JsonDepthLimit {
+            return Error(jsonFault(position, JsonErrorKind.TooDeep))
+        }
+        return jsonObject(text, bytes, ref position, depth + 1)
+    }
+    if c == '[' {
+        if depth >= JsonDepthLimit {
+            return Error(jsonFault(position, JsonErrorKind.TooDeep))
+        }
+        return jsonArray(text, bytes, ref position, depth + 1)
+    }
+    if c == 't' {
+        try jsonWord(bytes, ref position, "true")
+        return Ok(JsonValue.Bool(true))
+    }
+    if c == 'f' {
+        try jsonWord(bytes, ref position, "false")
+        return Ok(JsonValue.Bool(false))
+    }
+    if c == 'n' {
+        try jsonWord(bytes, ref position, "null")
+        return Ok(JsonValue.Null)
+    }
+    return Error(jsonUnexpected(bytes, position))
+}
+
+// `true`, `false` or `null`, byte for byte.
+Result<void, JsonFault> jsonWord(read byte[] bytes, ref nint position, read string word) {
+    var expected = word.asBytes()
+    for k in 0..expected.length() {
+        if position + k >= bytes.length() || bytes[position + k] != expected[k] {
+            return Error(jsonUnexpected(bytes, position + k))
+        }
+    }
+    position += expected.length()
+    return Ok()
+}
+
+Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref nint position, int depth) {
+    position += 1
+    var items = List<JsonValue>()
+    jsonSkipSpaces(bytes, ref position)
+    if position < bytes.length() && bytes[position] == ']' {
+        position += 1
+        return Ok(JsonValue.Array(items))
+    }
+    while true {
+        var item = try jsonValue(text, bytes, ref position, depth)
+        items.add(item)
+        jsonSkipSpaces(bytes, ref position)
+        if position < bytes.length() {
+            byte c = bytes[position]
+            if c == ',' {
+                position += 1
+                continue
+            }
+            if c == ']' {
+                position += 1
+                return Ok(JsonValue.Array(items))
+            }
+        }
+        return Error(jsonUnexpected(bytes, position))
+    }
+    return Error(jsonUnexpected(bytes, position))
+}
+
+Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref nint position, int depth) {
+    position += 1
+    var members = JsonObject()
+    jsonSkipSpaces(bytes, ref position)
+    if position < bytes.length() && bytes[position] == '}' {
+        position += 1
+        return Ok(JsonValue.Object(members))
+    }
+    while true {
+        jsonSkipSpaces(bytes, ref position)
+        if position >= bytes.length() || bytes[position] != '"' {
+            return Error(jsonUnexpected(bytes, position))
+        }
+        nint keyPosition = position
+        var name = try jsonString(text, bytes, ref position)
+        jsonSkipSpaces(bytes, ref position)
+        if position >= bytes.length() || bytes[position] != ':' {
+            return Error(jsonUnexpected(bytes, position))
+        }
+        position += 1
+        var value = try jsonValue(text, bytes, ref position, depth)
+        if members.find(read name) is not null {
+            return Error(jsonFault(keyPosition, JsonErrorKind.DuplicateKey(name)))
+        }
+        members.append(name, value)
+        jsonSkipSpaces(bytes, ref position)
+        if position < bytes.length() {
+            byte c = bytes[position]
+            if c == ',' {
+                position += 1
+                continue
+            }
+            if c == '}' {
+                position += 1
+                return Ok(JsonValue.Object(members))
+            }
+        }
+        return Error(jsonUnexpected(bytes, position))
+    }
+    return Error(jsonUnexpected(bytes, position))
+}
+
+// The value of four hex digits at `position`, or -1.
+int jsonHexValue(read byte[] bytes, nint position) {
+    if position + 4 > bytes.length() {
+        return -1
+    }
+    int value = 0
+    for k in 0..4 {
+        byte c = bytes[position + k]
+        int digit = -1
+        if c >= '0' && c <= '9' {
+            digit = c - '0'
+        } else if c >= 'a' && c <= 'f' {
+            digit = c - 'a' + 10
+        } else if c >= 'A' && c <= 'F' {
+            digit = c - 'A' + 10
+        }
+        if digit < 0 {
+            return -1
+        }
+        value = value * 16 + digit
+    }
+    return value
+}
+
+// A string from its opening quote to past its closing one, its escapes read. The runs between
+// escapes are copied as they are: the text is UTF-8 already.
+Result<string, JsonFault> jsonString(read string text, read byte[] bytes, ref nint position) {
+    position += 1
+    nint run = position
+    // A string with no escape, as most are, is copied once, when its end is found.
+    bool escaped = false
+    var value = string.withCapacity(0)
+    while true {
+        if position >= bytes.length() {
+            return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
+        }
+        byte c = bytes[position]
+        if c == '"' {
+            if !escaped {
+                position += 1
+                return Ok(text[run..position - 1].clone())
+            }
+            value.write(text[run..position])
+            position += 1
+            return Ok(value)
+        }
+        if c < 32 {
+            return Error(jsonFault(position, JsonErrorKind.ControlCharacter))
+        }
+        if c != '\\' {
+            position += 1
+            continue
+        }
+        escaped = true
+        value.write(text[run..position])
+        nint escape = position
+        position += 1
+        if position >= bytes.length() {
+            return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
+        }
+        byte e = bytes[position]
+        position += 1
+        if e == '"' {
+            value.write('"')
+        } else if e == '\\' {
+            value.write('\\')
+        } else if e == '/' {
+            value.write('/')
+        } else if e == 'b' {
+            value.write('\u{8}')
+        } else if e == 'f' {
+            value.write('\u{c}')
+        } else if e == 'n' {
+            value.write('\n')
+        } else if e == 'r' {
+            value.write('\r')
+        } else if e == 't' {
+            value.write('\t')
+        } else if e == 'u' {
+            int code = jsonHexValue(bytes, position)
+            if code < 0 {
+                return Error(jsonFault(escape, JsonErrorKind.InvalidEscape))
+            }
+            position += 4
+            if code >= 0xDC00 && code <= 0xDFFF {
+                return Error(jsonFault(escape, JsonErrorKind.LoneSurrogate))
+            }
+            if code >= 0xD800 && code <= 0xDBFF {
+                // The low half must follow at once, as a `\u` escape of its own.
+                if position + 2 > bytes.length() || bytes[position] != '\\' || bytes[position + 1] != 'u' {
+                    return Error(jsonFault(escape, JsonErrorKind.LoneSurrogate))
+                }
+                int low = jsonHexValue(bytes, position + 2)
+                if low < 0 {
+                    return Error(jsonFault(position, JsonErrorKind.InvalidEscape))
+                }
+                if low < 0xDC00 || low > 0xDFFF {
+                    return Error(jsonFault(escape, JsonErrorKind.LoneSurrogate))
+                }
+                position += 6
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+            }
+            value.write((char)code)
+        } else {
+            return Error(jsonFault(escape, JsonErrorKind.InvalidEscape))
+        }
+        run = position
+    }
+    return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
+}
+
+bool jsonIsDigit(read byte[] bytes, nint position) {
+    return position < bytes.length() && bytes[position] >= '0' && bytes[position] <= '9'
+}
+
+// A number: `-`, then `0` or digits that do not start with `0`, a fraction, an exponent.
+Result<JsonValue, JsonFault> jsonNumber(read string text, read byte[] bytes, ref nint position) {
+    nint start = position
+    bool negative = bytes[position] == '-'
+    if negative {
+        position += 1
+    }
+    if !jsonIsDigit(bytes, position) {
+        return Error(jsonBadNumber(bytes, position))
+    }
+    nint digitsStart = position
+    if bytes[position] == '0' {
+        position += 1
+        if jsonIsDigit(bytes, position) {
+            return Error(jsonFault(position, JsonErrorKind.InvalidNumber))
+        }
+    } else {
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    nint digitsEnd = position
+    bool whole = true
+    if position < bytes.length() && bytes[position] == '.' {
+        whole = false
+        position += 1
+        if !jsonIsDigit(bytes, position) {
+            return Error(jsonBadNumber(bytes, position))
+        }
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    if position < bytes.length() && (bytes[position] == 'e' || bytes[position] == 'E') {
+        whole = false
+        position += 1
+        if position < bytes.length() && (bytes[position] == '+' || bytes[position] == '-') {
+            position += 1
+        }
+        if !jsonIsDigit(bytes, position) {
+            return Error(jsonBadNumber(bytes, position))
+        }
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    // Up to 18 digits always fit a `long`; `-0` is a `Number`, so that its sign is kept.
+    if whole && digitsEnd - digitsStart <= 18 && !(negative && bytes[digitsStart] == '0') {
+        long value = 0
+        for i in digitsStart..digitsEnd {
+            value = value * 10 + (bytes[i] - '0')
+        }
+        if negative {
+            value = -value
+        }
+        return Ok(JsonValue.Integer(value))
+    }
+    if whole && !(negative && bytes[digitsStart] == '0') {
+        match long.parse(text[start..position]) {
+            Ok(value) => return Ok(JsonValue.Integer(value))
+            Error(_) => {}
+        }
+    }
+    match double.parse(text[start..position]) {
+        Ok(value) => {
+            if value.isInfinite() {
+                return Error(jsonFault(start, JsonErrorKind.NumberOutOfRange))
+            }
+            return Ok(JsonValue.Number(value))
+        }
+        Error(_) => return Error(jsonFault(start, JsonErrorKind.InvalidNumber))
+    }
+}
+
+// A number that stops where a digit must come: the end of the text, or an invalid number.
+JsonFault jsonBadNumber(read byte[] bytes, nint position) {
+    if position >= bytes.length() {
+        return jsonFault(position, JsonErrorKind.UnexpectedEnd)
+    }
+    return jsonFault(position, JsonErrorKind.InvalidNumber)
+}
+
+// Four hex digits of a code, upper case as Unicode writes them: `FEFF`.
+string jsonHex4(int code) {
+    var text = string.withCapacity(4)
+    for k in 0..4 {
+        text.write(JsonHexDigits[(nint)(code >> (12 - 4 * k) & 15)].toAsciiUpper())
+    }
+    return text
+}
+
+// A character that cannot be seen or that turns the text around it: a control character, a mark
+// of direction, a byte order mark.
+bool jsonHidden(int code) {
+    if code < 32 || (code >= 127 && code < 160) || code == 0xFEFF {
+        return true
+    }
+    return (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069)
+}
+
+// `text` as a JSON string, in quotes.
+string jsonQuoted(read string text) {
+    var quoted = string.withCapacity(text.length() + 2)
+    writeJsonString(ref quoted, text)
+    return quoted
+}
+
+// Only what JSON must have escaped is: the quote, the backslash and the control characters.
+void writeJsonString(ref string target, read string text) {
+    var bytes = text.asBytes()
+    target.write('"')
+    nint run = 0
+    for i in 0..bytes.length() {
+        byte c = bytes[i]
+        if c >= 32 && c != '"' && c != '\\' {
+            continue
+        }
+        target.write(text[run..i])
+        run = i + 1
+        if c == '"' {
+            target.write("\\\"")
+        } else if c == '\\' {
+            target.write("\\\\")
+        } else if c == '\n' {
+            target.write("\\n")
+        } else if c == '\r' {
+            target.write("\\r")
+        } else if c == '\t' {
+            target.write("\\t")
+        } else if c == 8 {
+            target.write("\\b")
+        } else if c == 12 {
+            target.write("\\f")
+        } else {
+            target.write("\\u00")
+            target.write(JsonHexDigits[(nint)(c >> 4)])
+            target.write(JsonHexDigits[(nint)(c & 15)])
+        }
+    }
+    target.write(text[run..])
+    target.write('"')
+}
+
+// A `Number` always has a `.` or an exponent, so that it is read back as a `Number`: `2.0`.
+void writeJsonNumber(ref string target, double value) {
+    if !value.isFinite() {
+        panic($"JSON has no {value}: only finite numbers can be written")
+    }
+    nint start = target.length()
+    target.write(value)
+    var bytes = target.asBytes()
+    for i in start..bytes.length() {
+        if bytes[i] == '.' || bytes[i] == 'e' {
+            return
+        }
+    }
+    target.write(".0")
+}
+
+// A new line and the spaces of `level`, when the text is indented.
+void writeJsonBreak(ref string target, int spaces, int level) {
+    if spaces < 0 {
+        return
+    }
+    target.write('\n')
+    for _ in 0..spaces * level {
+        target.write(' ')
+    }
+}
+
+// `spaces` is -1 for one line with no spaces.
+void writeJsonValue(ref string target, read JsonValue value, int spaces, int level) {
+    match value {
+        Null => target.write("null")
+        Bool(b) => {
+            if b {
+                target.write("true")
+            } else {
+                target.write("false")
+            }
+        }
+        Integer(n) => target.write(n)
+        Number(d) => writeJsonNumber(ref target, d)
+        String(s) => writeJsonString(ref target, s)
+        Array(items) => {
+            target.write('[')
+            for i in 0..items.length() {
+                if i > 0 {
+                    target.write(',')
+                }
+                writeJsonBreak(ref target, spaces, level + 1)
+                writeJsonValue(ref target, items[i], spaces, level + 1)
+            }
+            if items.length() > 0 {
+                writeJsonBreak(ref target, spaces, level)
+            }
+            target.write(']')
+        }
+        Object(members) => {
+            target.write('{')
+            for i in 0..members.keys.length() {
+                if i > 0 {
+                    target.write(',')
+                }
+                writeJsonBreak(ref target, spaces, level + 1)
+                writeJsonString(ref target, members.keys[i])
+                target.write(':')
+                if spaces >= 0 {
+                    target.write(' ')
+                }
+                writeJsonValue(ref target, members.values[i], spaces, level + 1)
+            }
+            if members.keys.length() > 0 {
+                writeJsonBreak(ref target, spaces, level)
+            }
+            target.write('}')
+        }
+    }
+}

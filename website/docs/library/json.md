@@ -1,0 +1,226 @@
+---
+title: JSON
+description: Json, JsonValue and JsonObject, JSON read strictly into values, looked into, built, changed and written back.
+sidebar_position: 13
+---
+
+# JSON
+
+`Json.parse` reads a JSON text (RFC 8259) into a `JsonValue`, and `toJson` writes one back. It is written in
+SG in the module `std`. Reading is strict: what the RFC does not allow is an error with its line and column,
+and so is a name given twice in one object, which the RFC leaves to the reader. Two programs that read one
+text never get two different values.
+
+```sg nocheck
+enum JsonValue {
+    Null
+    Bool(bool value)
+    Integer(long value)    // a whole number that fits a long
+    Number(double value)   // every other number
+    String(string value)
+    Array(List<JsonValue> items)
+    Object(JsonObject members)
+}
+```
+
+A whole number that fits a `long` is an `Integer`, so an id above 2^53, which a `double` cannot hold exactly,
+comes through as it was written. A number written with a fraction or an exponent (`1.0`, `1e3`, `-0`) is a
+`Number`, and is written back with a `.` or an exponent (`2.0`), so that reading what was written gives the
+same kind.
+
+| Signature | What it does |
+|---|---|
+| `Result<JsonValue, JsonError> Json.parse(read string text)` | The value the text holds, spaces allowed around it |
+| `string v.toJson()` | The value on one line, with no spaces; `$"{v}"` writes the same |
+| `string v.toJsonIndented(int spaces)` | The value on lines, each level `spaces` further in; negative is a panic |
+| `read JsonValue? v.get(read string name)` | The member of an object, `null` when there is none or `v` is not an object |
+| `read JsonValue? v.at(nint index)` | The item of an array, `null` when there is none or `v` is not an array |
+| `read string? v.asString()` | The text of a string, `null` for anything else |
+| `long? v.asLong()` | The number of an `Integer`, `null` for anything else, a `Number` too |
+| `double? v.asDouble()` | The number of a `Number` or an `Integer`, `null` for anything else |
+| `bool? v.asBool()` | `true` or `false`, `null` for anything else |
+| `read List<JsonValue>? v.asArray()` | The items of an array |
+| `read JsonObject? v.asObject()` | The members of an object |
+| `bool v.isNull()` | Whether it is `null` |
+| `JsonValue v.clone()` | A copy of the value and of everything in it |
+
+Nothing that looks into a value panics: the data comes from outside, and a missing member is an ordinary
+thing. `?.` goes down a path and stops at the first `null`, and `??` gives what to use instead:
+
+```sg
+void main() {
+    var text = """
+        {"user": {"name": "Ada", "id": 9007199254740993, "langs": ["en", "fr"]}, "score": 7.5}
+        """
+    match Json.parse(read text) {
+        Ok(doc) => {
+            print(doc.get("user")?.get("name")?.asString() ?? "anonymous")
+            print(doc.get("user")?.get("id")?.asLong() ?? 0)
+            print(doc.get("user")?.get("langs")?.at(1)?.asString() ?? "-")
+            print(doc.get("score")?.asDouble() ?? 0.0)
+            print(doc.get("user")?.get("email") is null)
+            print(doc.get("score")?.asLong() is null)
+            print(doc.toJsonIndented(2))
+        }
+        Error(e) => print(e)
+    }
+}
+```
+
+It prints:
+
+```text
+Ada
+9007199254740993
+fr
+7.5
+true
+true
+{
+  "user": {
+    "name": "Ada",
+    "id": 9007199254740993,
+    "langs": [
+      "en",
+      "fr"
+    ]
+  },
+  "score": 7.5
+}
+```
+
+## Objects
+
+A `JsonObject` keeps its members in the order they were read or added, and finds one by name: by looking at
+each name while there are 16 or fewer, through a table past that.
+
+| Signature | What it does |
+|---|---|
+| `JsonObject JsonObject()` | An empty object |
+| `void o.add(read string name, JsonValue value)` | Adds a member at the end; a panic when there is one of that name, as `HashMap.add` |
+| `void o.set(read string name, JsonValue value)` | Puts the value in place of the member of that name, where it is, or adds it at the end |
+| `JsonValue? o.remove(read string name)` | Takes the member out and gives its value, `null` when there is none; the others keep their order |
+| `read JsonValue? o.get(read string name)` | The value of the member, `null` when there is none |
+| `bool o.contains(read string name)` | Whether there is a member of that name |
+| `nint o.length()` | How many members there are |
+| `read List<string> o.names()` | The names, in order |
+
+Two values are `==` when they are the same JSON: arrays item by item in order, objects member by member in
+any order, since the RFC gives an object no order. `Integer(1)` and `Number(1.0)` are not the same.
+
+## Structs of the program
+
+Nothing turns a struct into JSON on its own: SG has no reflection and no macros. A program writes the two
+functions it needs, and decides there what a missing or wrong member means:
+
+```sg
+struct Point : Copyable {
+    double x
+    double y
+}
+
+JsonValue toJson(Point p) {
+    var o = JsonObject()
+    o.add("x", JsonValue.Number(p.x))
+    o.add("y", JsonValue.Number(p.y))
+    return JsonValue.Object(o)
+}
+
+Point? fromJson(read JsonValue value) {
+    var x = value.get("x")?.asDouble()
+    var y = value.get("y")?.asDouble()
+    if x is null || y is null {
+        return null
+    }
+    return Point { x = x, y = y }
+}
+
+void main() {
+    var points = List<JsonValue>()
+    points.add(toJson(Point { x = 1.5, y = -2.0 }))
+    points.add(toJson(Point { x = 0.0, y = 3.0 }))
+    var text = JsonValue.Array(points).toJson()
+    print(text)
+
+    match Json.parse(read text) {
+        Ok(doc) => {
+            var items = doc.asArray()
+            if items is not null {
+                for item in items {
+                    var p = fromJson(item)
+                    if p is not null {
+                        print($"({p.x}, {p.y})")
+                    }
+                }
+            }
+        }
+        Error(e) => print(e)
+    }
+}
+```
+
+It prints:
+
+```text
+[{"x":1.5,"y":-2.0},{"x":0.0,"y":3.0}]
+(1.5, -2)
+(0, 3)
+```
+
+## When the text is not JSON
+
+`Json.parse` gives a `JsonError`: `e.line` and `e.column`, counted from 1, the column in characters, and
+`e.kind`, a `JsonErrorKind`: `UnexpectedEnd`, `UnexpectedCharacter(found)`, `InvalidNumber`,
+`NumberOutOfRange`, `InvalidEscape`, `LoneSurrogate`, `ControlCharacter`, `DuplicateKey(name)`, `TooDeep` or
+`TrailingText`. `{e}` writes them on one line.
+
+```sg
+void main() {
+    var texts = List<string> {
+        "[1, 2,]",
+        "{\"id\": 1,\n \"id\": 2}",
+        "{\"note\": 'single'}",
+        "[01]",
+        "[1e400]",
+        "[\"\\ud800\"]",
+        "[1] [2]"
+    }
+    for text in read texts {
+        match Json.parse(text) {
+            Ok(value) => print(value)
+            Error(e) => print(e)
+        }
+    }
+}
+```
+
+It prints:
+
+```text
+line 1, column 7: unexpected character ']'
+line 2, column 2: duplicate key "id"
+line 1, column 10: unexpected character '''
+line 1, column 3: invalid number
+line 1, column 2: number out of range
+line 1, column 3: half of a surrogate pair without the other
+line 1, column 5: text after the value
+```
+
+What is refused:
+
+- comments, a comma before `]` or `}`, single quotes, names without quotes, `NaN` and `Infinity`;
+- a byte order mark before the value, and spaces other than the space, tab, `\n` and `\r`;
+- a number with a leading zero (`01`), a lone `.` (`1.`, `.5`), or beyond a `double` (`1e400`); one below
+  what a `double` holds (`1e-400`) is 0;
+- a control character in a string that is not escaped, an escape JSON does not have, and half of a surrogate
+  pair (`\ud800` alone);
+- a name twice in one object;
+- arrays and objects nested deeper than 128, so that a text cannot exhaust the stack.
+
+Writing escapes only what JSON needs: the quote, the backslash and the control characters (`\n`, `\t`, others
+as `\u001b`). Other characters stay as they are, in UTF-8. Writing a `Number` that is NaN or infinite is a
+panic, since no JSON reader would take it.
+
+The reader is tested with every parsing case of [JSONTestSuite](https://github.com/nst/JSONTestSuite). It is
+about 1.15 times as slow as cJSON on a document of 34 MB. There is no reader of a stream yet: the whole text
+is read first.

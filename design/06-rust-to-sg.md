@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-seventh slice (the command line in `std`, 1410).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (JSON in `std`, 1411).
 
 ## Functions and variables
 
@@ -543,6 +543,24 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-seventh slice 
 | `m.get_one::<String>("output")` | `a.option("output")` | built | A `read string?`; no typed values: `int.parse` |
 | `m.get_many::<String>("files")` | `a.rest()`, `a.options(name)` | built | |
 | `#[derive(Parser)]` | none | | No reflection or macros: the command line is declared with calls |
+
+## JSON
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `serde_json::from_str::<Value>(text)` | `Json.parse(read text)` | built | A `Result<JsonValue, JsonError>`; strict, a name twice is an error |
+| `Value::Null`, `Bool`, `Number`, `String`, `Array`, `Object` | `JsonValue.Null`, `Bool`, `Integer`, `Number`, `String`, `Array`, `Object` | built | A whole number that fits a `long` is an `Integer`, every other a `Number` |
+| `serde_json::Map` (with `preserve_order`) | `JsonObject` | built | Members in order; `add` panics on a name that is there, `set` replaces |
+| `v.get("name")`, `v.get(0)` | `v.get("name")`, `v.at(0)` | built | `null` when not there, never a panic |
+| `v["user"]["name"]` | `v.get("user")?.get("name")` | built | No indexing that gives `Null` for what is missing |
+| `v.as_str()`, `as_i64()`, `as_f64()`, `as_bool()`, `as_array()`, `as_object()`, `is_null()` | `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()`, `isNull()` | built | |
+| `map.insert(k, v)` | `o.set(k, v)`; `o.add(k, v)` for a new name | built | |
+| `map.shift_remove(k)` | `o.remove(k)` | built | The others keep their order |
+| `serde_json::to_string(&v)` | `v.toJson()`, `$"{v}"` | built | |
+| `serde_json::to_string_pretty(&v)` | `v.toJsonIndented(2)` | built | |
+| `json!({"a": 1})` | `var o = JsonObject()`, `o.add("a", JsonValue.Integer(1))` | built | No macros |
+| `#[derive(Serialize, Deserialize)]` | `toJson` and `fromJson` written by hand | | No reflection or macros |
+| `serde_json::Deserializer::from_reader(...).into_iter()` | none yet | | The whole text is read first |
 
 ## Tests and the tools
 

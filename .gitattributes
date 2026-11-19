@@ -3,3 +3,5 @@
 * text=auto eol=lf
 # The input files of the tests are kept byte for byte: some lines end in \r\n on purpose.
 *.in -text
+# The cases of JSONTestSuite are kept byte for byte: some hold \r, a byte order mark or bytes that are not UTF-8.
+interpreter/tests/json-suite/test_parsing/** -text

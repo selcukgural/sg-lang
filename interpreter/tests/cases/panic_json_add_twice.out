@@ -1,0 +1,5 @@
+{"id":2}
+panic: the JSON object has a member named "id" already
+  --> panic_json_add_twice.sg:7:5
+ 7 |     o.add("id", JsonValue.Integer(3))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

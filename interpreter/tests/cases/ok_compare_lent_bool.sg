@@ -1,0 +1,58 @@
+// A `bool` reached through a borrow (`B(a)` in a `match` on a `read` value, a `bool` field of a
+// lent struct) is compared by its value with `==` and `!=`, in compiled code as in the
+// interpreter; compiled code once compared where the two values were.
+enum Flag {
+    On(bool value)
+    Count(long value)
+}
+
+struct Switch {
+    bool lit
+}
+
+bool alike(read Flag x, read Flag y) {
+    match x {
+        On(a) => {
+            match y {
+                On(b) => return a == b
+                _ => return false
+            }
+        }
+        Count(a) => {
+            match y {
+                Count(b) => return a == b
+                _ => return false
+            }
+        }
+    }
+}
+
+bool differ(read Flag x, read Flag y) {
+    match x {
+        On(a) => {
+            match y {
+                On(b) => {
+                    bool copy = a
+                    print($"{a == true} {true == b} {copy == b} {a != false}")
+                    return a != b
+                }
+                _ => return true
+            }
+        }
+        _ => return true
+    }
+}
+
+bool lit(read Switch s, read Switch t) {
+    return s.lit == t.lit
+}
+
+void main() {
+    var on = Flag.On(true)
+    var alsoOn = Flag.On(true)
+    var off = Flag.On(false)
+    print($"{alike(read on, read alsoOn)} {alike(read on, read off)} {alike(read off, read Flag.On(false))}")
+    print($"{differ(read on, read alsoOn)} {differ(read on, read off)}")
+    print($"{alike(read Flag.Count(3), read Flag.Count(3))}")
+    print($"{lit(read Switch { lit = true }, read Switch { lit = true })} {lit(read Switch { lit = true }, read Switch { lit = false })}")
+}

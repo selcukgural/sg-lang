@@ -1,0 +1,62 @@
+// A JSON document of 100,000 records (`json.in`, about 26 MB, made by `run.py`) read five times
+// with `Json.parse` of `std`, written in SG, then walked once: the values, the strings and their
+// bytes, the numbers and the sum of the whole ones are counted. The C reads it with cJSON.
+
+struct Counts {
+    long values
+    long strings
+    long bytes
+    long numbers
+    long wholeSum
+}
+
+void walk(read JsonValue value, ref Counts counts) {
+    counts.values += 1
+    match value {
+        String(text) => {
+            counts.strings += 1
+            counts.bytes += text.length()
+        }
+        Integer(n) => {
+            counts.numbers += 1
+            counts.wholeSum += n
+        }
+        Number(_) => counts.numbers += 1
+        Array(items) => {
+            for item in items {
+                walk(item, ref counts)
+            }
+        }
+        Object(members) => {
+            for name in members.names() {
+                counts.strings += 1
+                counts.bytes += name.length()
+                var member = members.get(name)
+                if member is not null {
+                    walk(member, ref counts)
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+Result<void, IoError> main() {
+    var text = try Stdin.readText()
+    var counts = Counts { values = 0, strings = 0, bytes = 0, numbers = 0, wholeSum = 0 }
+    for round in 0..5 {
+        match Json.parse(read text) {
+            Ok(value) => {
+                if round == 4 {
+                    walk(read value, ref counts)
+                }
+            }
+            Error(e) => {
+                print(e)
+                return Ok()
+            }
+        }
+    }
+    print($"{counts.values} values, {counts.strings} strings of {counts.bytes} bytes, {counts.numbers} numbers, whole ones add up to {counts.wholeSum}")
+    return Ok()
+}

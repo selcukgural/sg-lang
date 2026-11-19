@@ -1,0 +1,5 @@
+error: a `JsonError` is made by its functions, not field by field
+  --> error_json_error_fields.sg:3:13
+ 3 |     var e = JsonError { line = 1, column = 2, kind = JsonErrorKind.TooDeep }
+   |             ^^^^^^^^^
+  hint: `Json.parse(text)` gives one for a text that is not JSON

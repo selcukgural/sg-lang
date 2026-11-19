@@ -1,0 +1,64 @@
+// Reads every file of JSONTestSuite's `test_parsing` with `Json.parse` (choice 1442) and prints
+// the files whose result is not the expected one, then a count. `y_`: must be read; `n_`: must be
+// refused; `i_`: the RFC leaves it to the reader, and SG's rules (1437, 1441) decide below. Two `y_`
+// files have a name twice in one object, which SG refuses.
+
+// The `i_` files SG reads: a whole number beyond a `long` is a `Number`, and an exponent below
+// what a `double` holds rounds to 0. Every other `i_` file is refused: an exponent beyond a
+// `double`, half of a surrogate pair, text that is not UTF-8, a byte order mark, nesting past 128.
+bool readable(read string name) {
+    var accepted = List<string> {
+        "i_number_double_huge_neg_exp.json",
+        "i_number_real_underflow.json",
+        "i_number_too_big_neg_int.json",
+        "i_number_too_big_pos_int.json",
+        "i_number_very_big_negative_int.json"
+    }
+    // The RFC says the names of an object SHOULD be unique and leaves a name given twice to the
+    // reader; SG refuses it (1411), so that two programs cannot read one text as two values.
+    if name == "y_object_duplicated_key.json" || name == "y_object_duplicated_key_and_value.json" {
+        return false
+    }
+    if name.startsWith("y_") {
+        return true
+    }
+    if name.startsWith("n_") {
+        return false
+    }
+    return accepted.contains(name)
+}
+
+void main(List<string> args) {
+    var folder = args[0].clone()
+    var entries = Directory.list(read folder) ?? panic("cannot list the folder")
+    long count = 0
+    long wrong = 0
+    for entry in read entries {
+        if !entry.name.endsWith(".json") {
+            continue
+        }
+        count += 1
+        var path = Path.join(read folder, read entry.name)
+        var bytes = File.readBytes(read path) ?? panic($"cannot read {entry.name}")
+        bool parsed = false
+        string why = ""
+        match string.fromUtf8(read bytes) {
+            Ok(text) => {
+                match Json.parse(text) {
+                    Ok(_) => parsed = true
+                    Error(e) => why = $"{e}".toString()
+                }
+            }
+            Error(_) => why = "not UTF-8"
+        }
+        if parsed != readable(read entry.name) {
+            wrong += 1
+            if parsed {
+                print($"{entry.name}: read, and should be refused")
+            } else {
+                print($"{entry.name}: refused ({why}), and should be read")
+            }
+        }
+    }
+    print($"{count - wrong} of {count} files as expected")
+}

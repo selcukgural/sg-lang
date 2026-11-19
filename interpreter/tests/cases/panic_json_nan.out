@@ -1,0 +1,5 @@
+1.5
+panic: JSON has no NaN: only finite numbers can be written
+  --> panic_json_nan.sg:7:11
+ 7 |     print(array.toJson())
+   |           ^^^^^^^^^^^^^^

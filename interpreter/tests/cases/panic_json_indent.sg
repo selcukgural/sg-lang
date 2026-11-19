@@ -1,0 +1,6 @@
+// A negative indentation is a panic.
+void main() {
+    var value = JsonValue.Array(List<JsonValue> { JsonValue.Integer(1) })
+    print(value.toJsonIndented(1))
+    print(value.toJsonIndented(-2))
+}

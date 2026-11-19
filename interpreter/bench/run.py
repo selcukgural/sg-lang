@@ -11,7 +11,7 @@ the three systems:
                                           program that takes long (starting 5,000 programs on
                                           Windows)
     python3 bench/run.py -L folder ...    the libraries of `crc`, `checksum`, `sha256`, `deflate`,
-                                          `sqlite` and `curl` are also looked for there (on Windows, vcpkg's `lib`
+                                          `sqlite`, `curl` and `json` (cJSON) are also looked for there (on Windows, vcpkg's `lib`
                                           and `bin`; their headers through `CPATH`)
 
 A program whose C needs a library writes it on its first line, `/* link: -lz */`, and where the
@@ -39,7 +39,7 @@ PROGRAMS = """fib primes collatz words list expr parse vector counts show lookup
 numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async
 asynclines tasklist asynccopy echo echosync echowork netlines ring crc deflate clock dates rng
 secure listing status spawn capture pipelines pipesasync spawnasync case letters udpecho
-udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256""".split()
+udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256 json""".split()
 
 
 def compiler():
@@ -136,6 +136,27 @@ def make_inputs():
             for i in range(2000000):
                 text = " ".join(r.choice(words) for _ in range(r.randint(3, 14)))
                 out.write(f"{r.choice(levels)} {r.randint(1, 5000)} {text}{chr(13) if i % 5 == 0 else ''}\n")
+    document = OUT / "json.in"
+    if not document.exists():
+        r = random.Random(11)
+        cities = ["London", "İstanbul", "São Paulo", "Zürich", "Kraków", "東京", "New York"]
+        # Words as JSON writes them, escapes and all.
+        words = ["quiet", r'\"quoted\"', r"tab\there", r"line\nbreak", "café", "naïve", r"back\\slash", r"\u00e9t\u00e9", "plain"]
+        with open(document, "w", encoding="utf-8", newline="") as out:
+            out.write("[")
+            for i in range(100000):
+                if i > 0:
+                    out.write(",\n")
+                bio = " ".join(r.choice(words) for _ in range(r.randint(2, 12)))
+                tags = ", ".join(f'"tag{r.randint(1, 50)}"' for _ in range(r.randint(0, 5)))
+                out.write(
+                    f'{{"id": {r.randint(1, 2**40)}, "name": "user_{i}", "email": "user{i}@example.com", '
+                    f'"score": {r.randint(0, 9999)}.{r.randint(1, 99):02d}{r.randint(1, 9)}, "ratio": {r.randint(1, 99999)}.{r.randint(1, 9)}e-{r.randint(1, 30)}, '
+                    f'"active": {"true" if r.random() < 0.5 else "false"}, "manager": null, "tags": [{tags}], '
+                    f'"address": {{"city": "{r.choice(cities)}", "zip": "{r.randint(10000, 99999)}", "lines": ["{r.randint(1, 999)} Main St", ""]}}, '
+                    f'"bio": "{bio}"}}'
+                )
+            out.write("]\n")
     for name in ["asynclines", "netlines"]:
         shutil.copyfile(lines, OUT / f"{name}.in")
     listing = OUT / "listing"

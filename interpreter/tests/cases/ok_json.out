@@ -1,0 +1,112 @@
+{"name":"Ada","id":9007199254740993,"huge":1.2345678901234568e+29,"ratio":0.1,"two":2.0,"exp":1000.0,"negativeZero":-0.0,"tags":["math","a\"quote\"\\","tab\there","é😀","\u0000"],"active":true,"manager":null,"address":{"city":"London","zip":""},"empty":[],"nothing":{}}
+{
+  "name": "Ada",
+  "id": 9007199254740993,
+  "huge": 1.2345678901234568e+29,
+  "ratio": 0.1,
+  "two": 2.0,
+  "exp": 1000.0,
+  "negativeZero": -0.0,
+  "tags": [
+    "math",
+    "a\"quote\"\\",
+    "tab\there",
+    "é😀",
+    "\u0000"
+  ],
+  "active": true,
+  "manager": null,
+  "address": {
+    "city": "London",
+    "zip": ""
+  },
+  "empty": [],
+  "nothing": {}
+}
+{
+"name": "Ada",
+"id": 9007199254740993,
+"huge": 1.2345678901234568e+29,
+"ratio": 0.1,
+"two": 2.0,
+"exp": 1000.0,
+"negativeZero": -0.0,
+"tags": [
+"math",
+"a\"quote\"\\",
+"tab\there",
+"é😀",
+"\u0000"
+],
+"active": true,
+"manager": null,
+"address": {
+"city": "London",
+"zip": ""
+},
+"empty": [],
+"nothing": {}
+}
+Ada 9007199254740993 0.1
+London é😀
+true true true true
+true 1.2345678901234568e+29 9007199254740992
+true true false true
+tag "math"
+tag "a\"quote\"\\"
+tag "tab\there"
+tag "é😀"
+tag "\u0000"
+13 members: name, id, huge, ratio, two, exp, negativeZero, tags, active, manager, address, empty, nothing
+true false
+exp is a Number: 1000
+[0,-1,9223372036854775807,-9223372036854775808,9223372036854776000.0,1.5,-0.0025,100.0,0.0,5e-324]
+[1.0,100.0,1e+21,1e+300,0.30000000000000004]
+[false,null] true
+{"b":2,"c":"line\nbreak and \u001b[31m","d":0.5}
+48
+{"x":1.5,"y":-2.0}
+1.5 -2
+true
+true false true
+false true true
+true true
+true
+true
+line 1, column 1: the text ends before the value
+line 1, column 4: the text ends before the value
+line 1, column 7: unexpected character ']'
+line 1, column 9: unexpected character '}'
+line 1, column 3: invalid number
+line 1, column 4: invalid number
+line 1, column 2: unexpected character '.'
+line 1, column 4: invalid number
+line 1, column 3: invalid number
+line 1, column 3: invalid number
+line 1, column 2: unexpected character '+'
+line 1, column 2: number out of range
+line 1, column 2: number out of range
+line 1, column 2: unexpected character 'N'
+line 1, column 2: unexpected character 'I'
+line 1, column 6: unexpected character '1'
+line 1, column 2: unexpected character 'a'
+line 3, column 3: duplicate key "id"
+line 1, column 3: invalid escape
+line 1, column 3: invalid escape
+line 1, column 3: half of a surrogate pair without the other
+line 1, column 3: half of a surrogate pair without the other
+line 1, column 3: half of a surrogate pair without the other
+line 1, column 4: control character in a string, which is written escaped
+line 1, column 6: the text ends before the value
+line 1, column 5: text after the value
+line 1, column 5: text after the value
+line 1, column 4: the text ends before the value
+line 1, column 4: the text ends before the value
+line 1, column 5: unexpected character 'E'
+line 1, column 1: unexpected character U+FEFF
+line 1, column 7: unexpected character 'x'
+line 1, column 22: unexpected character 'é'
+line 1, column 1: unexpected character U+0001
+1 8 true false
+256
+line 1, column 129: nested deeper than 128

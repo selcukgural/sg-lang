@@ -1,0 +1,8 @@
+// `add` on a name the object has already is a panic, as `HashMap.add`; `set` replaces it.
+void main() {
+    var o = JsonObject()
+    o.add("id", JsonValue.Integer(1))
+    o.set("id", JsonValue.Integer(2))
+    print(JsonValue.Object(o.clone()))
+    o.add("id", JsonValue.Integer(3))
+}
