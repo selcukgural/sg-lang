@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-third slice (what writing the site found in `sg`).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-third slice (what writing the site found in `sg`, and 1403).
 
 ## Functions and variables
 

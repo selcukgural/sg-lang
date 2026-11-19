@@ -1,8 +1,0 @@
-// A text written in the program where a `read string?` goes is lent with `read` (choice 1401).
-void greet(read string? name) {
-    print(name ?? "you")
-}
-
-void main() {
-    greet("")
-}

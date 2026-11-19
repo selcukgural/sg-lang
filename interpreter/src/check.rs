@@ -7266,10 +7266,11 @@ impl<'a> Checker<'a> {
             }
             (Ty::Ref(from), Ty::Read(to)) if from == to => Ok(()),
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if **to == Ty::Nullable(from.clone()) => Ok(()),
-            // A text constant where a `read string` goes: lent as it is.
-            (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => {
+            // A text constant where a `read string` or a `read string?` goes: lent as it is, as
+            // `read "..."` would lend it (choice 1403).
+            (Ty::Str, Ty::Read(to)) if matches!(expr.kind, ExprKind::Str(_)) && (**to == Ty::Str || **to == Ty::Nullable(Box::new(Ty::Str))) => {
                 wrap(expr, |inner| ExprKind::Borrow { mutable: false, expr: inner });
-                expr.ty = expected.clone();
+                expr.ty = Ty::Read(Box::new(Ty::Str));
                 Ok(())
             }
             (_, Ty::Read(to)) if found == **to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
@@ -7281,7 +7282,7 @@ impl<'a> Checker<'a> {
                     _ => format!("a number takes its type from where it goes: `{expected} value = new shared atomic ...`"),
                 }))
             }
-            // `greet("")` where a `read string?` goes: lent as a value that is there.
+            // A value where a `read string?` goes: lent with `read`, as a value that is there.
             (_, Ty::Read(to)) if **to == Ty::Nullable(Box::new(found.clone())) => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (Ty::Nullable(inner), _) if **inner == *expected => {
                 mismatch(Some(format!("it may be `null`: give a fallback with `{text} ?? ...`, or test it with `is null`")))

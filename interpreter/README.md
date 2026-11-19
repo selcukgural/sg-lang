@@ -8513,7 +8513,7 @@ Choices made in the hundred-and-twenty-third slice (what writing the site found 
        a.next`), a field of a `shared checked` value lent inside a block that opens it (`read p as value { var nick
        = read value.nick ... }`), or else lent (`var nick = read p.nick`) (`error_null_field_*`).
      - A constant where a `read string?` or a `read int?` goes: `lend it with read: read ""`
-       (`error_literal_to_read_nullable`, `error_number_to_read_nullable`).
+       (`error_number_to_read_nullable`; a text constant is lent as it is since 1403).
      - An operator on a `T?` (`n + 1`): it says the value may be `null`, and how to test it
        (`error_nullable_operand`).
      - `"text".toString()` (and `to_string`, `toOwned`, `copy`): it is a `string` already; a copy is `.clone()`
@@ -8562,8 +8562,15 @@ Choices made in the hundred-and-twenty-third slice (what writing the site found 
 On macOS and on Linux 447 of the 1806 programs of the tests are compiled and give the same output, clean under
 the sanitizers (102 under the thread sanitizer), and the 213 programs of the site run as they show.
 
-One choice is left for later: a constant where a `read string?` goes could be lent as it is, as one where a
-`read string` goes is, instead of asking for `read`.
+Approved on 19 November 2026, after the slice was written:
+
+1403. **A text constant where a `read string?` goes is lent as it is**, as one where a `read string` goes is:
+     `greet("")` no longer asks for `read ""`, in the interpreter and in compiled code
+     (`ok_literal_to_read_nullable`, which was `error_literal_to_read_nullable`). A number where a `read int` or a
+     `read int?` goes is still lent with `read` (`error_number_to_read_nullable`).
+
+With 1403, 448 of the 1806 programs are compiled on macOS and on Linux (102 under the thread sanitizer), and the
+213 programs of the site run as they show.
 
 ## Slower than C, and could be better
 
@@ -8822,8 +8829,8 @@ check off.
 - A text constant has the type `string` here, not the design's `read string` (04, "String constant"). What the
   design wants of it is here all the same: it is not allocated or freed, has no capacity, and its first write or
   growth copies it, so a constant goes where a `string` or a `read string` goes with no `.clone()`. What differs:
-  `var s = "x"` is a `string`, and a constant where a `read string?` goes is lent with `read` (`greet(read "")`,
-  1401).
+  `var s = "x"` is a `string`, and nothing else: a constant goes where a `read string?` goes as it is too
+  (`greet("")`, 1403).
 - **Found writing the site (1402), in compiled code**: three things the interpreter runs and `sg build`
   refuses with "not in the C back end yet" and a hint to name the value first: `try` inside a larger
   expression (`print((try command.output()).trim())`), a text and then a value that lends with `ref` in one

@@ -1,0 +1,19 @@
+// A text written in the program where a `read string?` goes is lent as it is, as one where a
+// `read string` goes is (choice 1403). A number still asks for `read` (`error_number_to_read_nullable`).
+void greet(read string? name) {
+    print(name ?? "you")
+}
+
+void hello(read string name) {
+    print(name)
+}
+
+void main() {
+    greet("")
+    greet("Ada")
+    greet(null)
+    greet(read "Grace")
+    hello("there")
+    string? kept = null
+    greet(read kept)
+}

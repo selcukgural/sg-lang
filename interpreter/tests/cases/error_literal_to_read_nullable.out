@@ -1,5 +1,0 @@
-error: expected `read string?`, found `string`
-  --> error_literal_to_read_nullable.sg:7:11
- 7 |     greet("")
-   |           ^^
-  hint: lend it with `read`: `read ""`
