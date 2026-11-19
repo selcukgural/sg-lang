@@ -9,6 +9,9 @@
 SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
 written in a notation that reads like C#.
 
+Its web site is [sg-lang.org](https://sg-lang.org): a tour of the language, how to install it, SG for Rust
+programmers, and where it stands.
+
 It is still being designed. There is a checker, an interpreter and a back end that compiles
 through C, all of them a few days old. Nothing is released and everything can change. This
 repository is the design, the code and the background reading behind both, kept in the open.
