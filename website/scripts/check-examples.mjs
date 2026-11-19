@@ -1,9 +1,11 @@
 // Runs every program of SG on the pages of the site, so a page never shows code that the language no
 // longer takes (the rule of keeping everything in step). A block ```sg is a whole program: it must
 // run and end with code 0, and a ```text block after it, before the next code, is what it prints.
-// ```sg error must be refused, and the ```text after it is how the message starts. ```sg test runs
-// its tests (`sg test`). The program is written as `tour.sg` in a folder of its own, so the messages
-// name that file. `SG` names the sg program (../interpreter/target/release/sg by default).
+// ```sg error must be refused by the checker, and ```sg panic must stop when it runs (a panic, or a
+// `main` that ends with an error); for both the ```text after it is how the output starts. ```sg test runs
+// its tests (`sg test`). ```sg nocheck is not run: a part of a program, or one that needs files beside it
+// (modules, a C file); keep those few. The program is written as `example.sg` in a folder of its own,
+// so the messages name that file. `SG` names the sg program (../interpreter/target/release/sg by default).
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,13 +39,21 @@ for (const page of pages(join(site, 'docs'))) {
   blocks.forEach((block, at) => {
     if (block.lang !== 'sg') return;
     programs += 1;
-    writeFileSync(join(work, 'tour.sg'), block.body);
+    writeFileSync(join(work, 'example.sg'), block.body);
     const kind = block.meta.split(/\s+/)[0];
-    const result = run(kind === 'test' ? ['test', 'tour.sg'] : ['tour.sg']);
+    if (kind === 'nocheck') return;
+    const result = run(kind === 'test' ? ['test', 'example.sg'] : ['example.sg']);
     const next = blocks[at + 1];
     const shown = next && next.lang === 'text' ? next.body.trimEnd() : null;
     const name = `${page.slice(site.length + 1)}, program ${programs}`;
-    if (kind === 'error') {
+    // An error is refused before the program runs; a panic is a program the checker takes.
+    if (kind === 'error' || kind === 'panic') {
+      const checked = run(['emit-c', 'example.sg']).code === 0;
+      if (checked !== (kind === 'panic')) {
+        failures += 1;
+        console.error(`${name}: marked \`${kind}\`, but the checker ${checked ? 'takes' : 'refuses'} it`);
+        return;
+      }
       if (result.code === 0) {
         failures += 1;
         console.error(`${name}: should be refused, and ran:\n${result.text}`);
@@ -64,8 +74,8 @@ for (const page of pages(join(site, 'docs'))) {
 const front = readFileSync(join(site, 'src', 'pages', 'index.js'), 'utf8').match(/const sample = `([\s\S]*?)`;/);
 if (front) {
   programs += 1;
-  writeFileSync(join(work, 'tour.sg'), front[1].replaceAll('\\`', '`').replaceAll('\\$', '$'));
-  const result = run(['tour.sg']);
+  writeFileSync(join(work, 'example.sg'), front[1].replaceAll('\\`', '`').replaceAll('\\$', '$'));
+  const result = run(['example.sg']);
   if (result.code !== 0) {
     failures += 1;
     console.error(`src/pages/index.js: the program ended with code ${result.code}:\n${result.text}`);

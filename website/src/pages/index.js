@@ -67,6 +67,7 @@ export default function Home() {
           <p className={styles.tagline}>A small systems language: as fast and small as C, memory safe like Rust, written like C#.</p>
           <div className={styles.buttons}>
             <Link className="button button--secondary button--lg" to="/docs/learn/tour">Take the tour</Link>
+            <Link className="button button--outline button--secondary button--lg" to="/docs/learn/book/getting-started">Read the book</Link>
             <Link className="button button--outline button--secondary button--lg" to="/docs/learn/install">Install</Link>
           </div>
           <p className={styles.status}>

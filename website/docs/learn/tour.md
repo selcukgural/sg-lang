@@ -5,8 +5,8 @@ description: The language in a dozen short programs, each of which runs.
 
 # A tour of SG
 
-Each program on this page runs as it is: save it as `tour.sg` and run `sg tour.sg`, or build it with
-`sg build tour.sg`. The interpreter and the compiled program print the same.
+Each program on this page runs as it is: save it as `example.sg` and run `sg example.sg`, or build it with
+`sg build example.sg`. The interpreter and the compiled program print the same.
 
 ## Hello
 
@@ -166,11 +166,11 @@ void main() {
 
 ```text
 error: `name` was moved and can no longer be used
-  --> tour.sg:9:11
+  --> example.sg:9:11
  9 |     print(name)
    |           ^^^^
   it was moved here:
-  --> tour.sg:8:17
+  --> example.sg:8:17
  8 |     var moved = name
    |                 ^^^^
 ```
@@ -255,7 +255,7 @@ void main() {
 }
 ```
 
-`sg test tour.sg` runs the tests, and `sg test tour.sg --compiled` runs them compiled:
+`sg test example.sg` runs the tests, and `sg test example.sg --compiled` runs them compiled:
 
 ```text
 ok    twice doubles
@@ -264,8 +264,6 @@ ok    twice doubles
 
 ## Where next
 
-[SG for Rust programmers](./for-rust.md) puts each idea of Rust beside the way SG writes it. The language
-reference and the library are written out with the preview; until then, the repository has them in full:
-[the syntax](https://github.com/selcukgural/sg-lang/blob/main/design/02-syntax-draft.md), [the decisions and the rules
-as built](https://github.com/selcukgural/sg-lang/blob/main/design/04-decisions-and-open-questions.md) and [the
-examples](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples).
+[The SG book](./book/01-getting-started.md) takes each of these in turn, from the first program to tasks, C and
+building for a machine without an operating system. [The library](../library/index.md) has a page for each of the
+types used most, and [SG for Rust programmers](./for-rust.md) puts each idea of Rust beside the way SG writes it.

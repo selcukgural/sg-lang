@@ -15763,9 +15763,10 @@ impl<'a> Emitter<'a> {
         self.flush_pre(&pad, out);
         let _ = writeln!(out, "{pad}{{");
         let _ = writeln!(out, "{inner}{ctype} {held} = {value};");
-        // The names of a borrowing `match` point into the subject: what it was made from
-        // stays until the arms are done.
-        let kept = if *borrowed { self.hold() } else { None };
+        // What the subject was made from stays until the arms are done, as Rust keeps the
+        // temporaries of a `match`: the names of a borrowing `match` point into it, and so does
+        // a value that carries a borrow of one of them (`match make().trim()`, choice 1397).
+        let kept = self.hold();
         self.flush_post(&inner, out);
 
         // What the arms test: a number, a `bool`, a `T?`, or the enum behind the borrow or

@@ -1,0 +1,16 @@
+// A `match` on a borrow of a value that has no name: the value lives until the arms are done, as in
+// Rust (choice 1397). Compiled code freed it before the arms ran, and they read freed memory.
+string make() {
+    return "  hello world, and more text here  ".clone()
+}
+
+void main() {
+    match string.fromUtf8(read List<byte> { 72, 105 }) {
+        Ok(text) => print(text)
+        Error(cause) => print(cause.position)
+    }
+    match make().trim() {
+        "x" => print("x")
+        var other => print(other)
+    }
+}

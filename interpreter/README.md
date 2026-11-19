@@ -8456,6 +8456,35 @@ Choices made in the hundred-and-twenty-first slice (the web site, `website/`). A
      these pages are; one may come later from what `sg lsp` knows. The pages come with the preview, from a
      `sg doc` of their own and the `///` comments that were put off until then.
 
+Choices made in the hundred-and-twenty-second slice (what the web site teaches). Approved on 19 November 2026:
+
+1393. **The site teaches, as the sites of Rust and Go do**: Learn holds a book of fourteen chapters (the first
+     program, values, text, functions, structs and enums, `null` and errors, ownership and borrowing, collections,
+     modules, tasks and channels, C, `unsafe`, testing, building), each with programs that run, so that nothing in
+     it sends the reader to the repository.
+1394. **The reference of the language is written on the site** next, the rules as a reader looks them up; the
+     choices in this file and in design/04 stay where they are, the record of why, and the reference links to them.
+1395. **The library has a page for each type used most** (text, numbers, collections, files and paths, time,
+     tasks, random numbers, other programs), written by hand until `sg doc` makes them from the source (1392).
+1396. **Kept in step**: every program on the site is run by `npm run check`, which tells `sg error` (the checker
+     refuses it) from `sg panic` (it runs and stops) and checks the message; a page is about one idea, so a change
+     touches few. The book and the library hold 213 programs, each also compiled and run the same.
+
+Writing the pages found one fault of compiled code, approved on 19 November 2026:
+
+1397. **A `match` on a borrow of a value that has no name** (`match make().trim()`, `match
+     string.fromUtf8(read List<byte> { 72, 105 })`) freed that value before the arms ran in compiled code, which
+     then read freed memory (the address sanitizer showed it); the interpreter was right. What the subject is made
+     from now lives until the arms are done, as Rust keeps the temporaries of a `match`; before, only a `match` that
+     binds names by borrow kept them. Tested by `ok_match_on_borrow_of_temporary`.
+
+And these, approved the same day, for the next slice: a build of a folder whose program would take the folder's
+name is a clear error that asks for `-o`, as Go's is (1398); `sg emit-c` and the other outputs of the tool end
+quietly when what reads them closes, as programs do (1399); a type of `std` named only inside `$"..."` is found
+(1400); fifteen hints and messages that lead to code that does not compile, or are missing, or read wrong, each
+with a test, among them the safe way in the panic of an index, `xs.get(i)` (1401); and the documents put right
+where they said otherwise than `sg` does (1402).
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
