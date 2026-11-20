@@ -1,0 +1,19 @@
+// The condition of a `while` runs before every round and may change what the round before lent
+// (choice 1592).
+int grow(ref List<string> xs) {
+    var n = (int)xs.length()
+    xs.clear()
+    for i in 0..n + 1 {
+        xs.add($"a long text that lives on the heap {i}".toString())
+    }
+    return n + 1
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var other = "o".clone()
+    var r = read other
+    while grow(ref xs) < 5 {
+        print(r)
+        r = read xs[0]
+    }
+}

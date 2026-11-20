@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `r` borrows from it and is used again later
+  --> error_part_of_unnamed_result.sg:11:5
+ 11 |     text = "changed to something else entirely, long".clone()
+    |     ^^^^
+  `r` borrowed it here:
+  --> error_part_of_unnamed_result.sg:10:18
+ 10 |     var r = wrap(read text).text
+    |                  ^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

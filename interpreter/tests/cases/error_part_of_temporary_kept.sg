@@ -1,0 +1,15 @@
+// A field of a value that borrows a temporary: the temporary is gone when the line ends (choice
+// 1592).
+struct Word<from source> : Copyable {
+    read string text
+}
+string make() {
+    return "a long text that lives on the heap one".clone()
+}
+Word wrap(read string s) from s {
+    return Word { text = s }
+}
+void main() {
+    var r = wrap(read make()).text
+    print(r)
+}

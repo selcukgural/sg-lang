@@ -1,0 +1,12 @@
+// A `Disposable` in a `T?` is disposed of where the variable ends (choice 1592).
+struct Guard<from source> : Disposable {
+    read string text
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    Guard? g = Guard { text = read text }
+    text = "a new long text that lives on the heap two".clone()
+}

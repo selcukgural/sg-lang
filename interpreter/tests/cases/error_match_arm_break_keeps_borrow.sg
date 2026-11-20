@@ -1,0 +1,18 @@
+// An arm of a `match` that leaves by `break` ends the blocks between it and the loop (choice 1592).
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var r = read a
+    var i = 0
+    while true {
+        var b = $"second text that is long enough for the heap {i}".toString()
+        i += 1
+        match i {
+            1 => {
+                r = read b
+                break
+            }
+            _ => {}
+        }
+    }
+    print(r)
+}

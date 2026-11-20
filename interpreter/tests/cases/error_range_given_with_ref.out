@@ -1,0 +1,10 @@
+error: `s[1..]` looks at `s`, which this call is given to change
+  the call may change `s` while `s[1..]` is read, and it would be read from what was there
+  --> error_range_given_with_ref.sg:10:17
+ 10 |     grow(ref s, s[1..])
+    |                 ^^^^^^
+  given as `ref` here:
+  --> error_range_given_with_ref.sg:10:14
+ 10 |     grow(ref s, s[1..])
+    |              ^
+  hint: make it a value of its own before the call (`.clone()`, `.toList()`), and give the call that

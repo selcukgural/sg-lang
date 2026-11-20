@@ -1,0 +1,18 @@
+// A borrow added through a `ref` field is held by what the field borrows, which outlives the
+// carrier (choice 1592).
+struct Word<from source> : Copyable {
+    read string text
+}
+struct W<from source> {
+    ref List<Word> items
+}
+void main() {
+    var all = List<Word>()
+    var text = "hello world, a long text that lives on the heap".clone()
+    if true {
+        var w = W { items = ref all }
+        w.items.add(Word { text = read text })
+    }
+    text = "changed to something else entirely".clone()
+    print(all[0].text)
+}

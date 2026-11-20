@@ -1,0 +1,15 @@
+// A `Disposable` in a list is disposed of where the list ends, and its `dispose` looks at what it
+// borrowed (choice 1592).
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var gs = List<Guard>()
+    gs.add(Guard { text = read text })
+    text = "a new long text that lives on the heap two".clone()
+}

@@ -1,0 +1,13 @@
+// A field of what a call returns carries what the call's value borrowed (choice 1592).
+struct Word<from source> : Copyable {
+    read string text
+}
+Word wrap(read string s) from s {
+    return Word { text = s }
+}
+void main() {
+    var text = "hello world, a long text that lives on the heap".clone()
+    var r = wrap(read text).text
+    text = "changed to something else entirely, long".clone()
+    print(r)
+}

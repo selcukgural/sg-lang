@@ -1,0 +1,9 @@
+error: `w` cannot be moved here: `v` borrows from it and is used again later
+  --> error_carrier_moved.sg:13:10
+ 13 |     wipe(w)
+    |          ^
+  `v` borrowed it here:
+  --> error_carrier_moved.sg:11:25
+ 11 |     var w = W { items = ref xs }
+    |                         ^^^^^^
+  hint: finish with `v` before this line: a borrow ends at its last use

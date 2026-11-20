@@ -1,0 +1,6 @@
+error: `r` borrows from `x` here, but `x` is closed at the end of its block and `r` is used after that
+  what `x` opens is lent for the block only: after it another task, or another owner, may change it
+  --> error_shared_item_kept.sg:8:13
+ 8 |         r = read x
+   |             ^^^^^^
+  hint: to keep something after the block, copy it there (`.clone()`) into a variable that owns it

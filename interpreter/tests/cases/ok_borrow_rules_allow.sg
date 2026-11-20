@@ -1,0 +1,93 @@
+// What the rules of borrowing made stricter by choice 1592 still allow: a `ref` given on with no
+// borrow of it left, given to a `read` parameter, a borrow kept through `break` of an owner that
+// outlives the loop, a name of a `shared` value used in its statement, a `Disposable` in a list,
+// a `ref` field read through a `read` borrow, and a view given to a call that only reads.
+struct Holder<from source> {
+    ref List<string> items
+}
+
+struct Guard<from source> : Disposable {
+    read string text
+    void dispose(ref this) {
+        print($"done {this.text}")
+    }
+}
+
+void wipe(ref List<string> xs) {
+    xs.clear()
+}
+
+nint count(read List<string> xs) {
+    return xs.length()
+}
+
+void both(ref List<string> a, ref List<string> b) {
+    a.add("to a")
+    b.add("to b")
+}
+
+void outer(ref List<string> xs) {
+    var first = read xs[0]
+    print($"{first}, {count(xs)}")
+    wipe(xs)
+    xs.add("again")
+}
+
+nint measure(read Holder h) {
+    nint total = 0
+    for item in read h.items {
+        total += item.length()
+    }
+    return total + h.items.length()
+}
+
+void main() {
+    var xs = List<string> { "one".clone(), "two".clone() }
+    outer(ref xs)
+    print(xs)
+
+    var a = List<string>()
+    var b = List<string>()
+    both(ref a, ref b)
+    print($"{a} {b}")
+
+    var kept = "kept".clone()
+    var r = read kept
+    for i in 0..3 {
+        var inner = $"inner {i}".toString()
+        print(inner)
+        if i == 1 {
+            r = read kept
+            break
+        }
+    }
+    print(r)
+
+    var names = new shared List<string> { "s1".clone(), "s2".clone() }
+    nint length = 0
+    for item in read names {
+        var look = read item
+        length += look.length()
+    }
+    print(length)
+
+    var name = "guarded".clone()
+    if true {
+        var guards = List<Guard> { Guard { text = read name } }
+        print(guards.length())
+    }
+
+    var h = Holder { items = ref xs }
+    print(measure(read h))
+
+    var s = "Hi".clone()
+    print(Hex.encode(s.asBytes()))
+
+    var steps = List<int> { 1, 2, 3 }
+    nint at = 0
+    while at < steps.length() {
+        var step = steps[at]
+        at += step
+    }
+    print(at)
+}

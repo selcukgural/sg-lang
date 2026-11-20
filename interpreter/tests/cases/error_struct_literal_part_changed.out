@@ -1,0 +1,10 @@
+error: `xs` cannot be changed here: `read xs[0]` comes before it in this value, and the value still uses it
+  the parts of a value are computed from left to right, and it is made after the last one
+  --> error_struct_literal_part_changed.sg:17:49
+ 17 |     var w = Word { text = read xs[0], n = g(ref xs) }
+    |                                                 ^^
+  lent to the value here:
+  --> error_struct_literal_part_changed.sg:17:27
+ 17 |     var w = Word { text = read xs[0], n = g(ref xs) }
+    |                           ^^^^^^^^^^
+  hint: compute it before the value: `var value = g(ref xs)`, then give it `value`

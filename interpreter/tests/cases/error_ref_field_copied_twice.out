@@ -1,0 +1,9 @@
+error: `w.items` cannot be changed here: `a` borrows from it and is used again later
+  --> error_ref_field_copied_twice.sg:13:13
+ 13 |     var b = w.items
+    |             ^^^^^^^
+  `a` borrowed it here:
+  --> error_ref_field_copied_twice.sg:11:25
+ 11 |     var w = W { items = ref xs }
+    |                         ^^^^^^
+  hint: finish with `a` before this line: a borrow ends at its last use

@@ -1,0 +1,11 @@
+// A range of a text given beside the text as `ref` (choice 1592).
+void grow(ref string target, read string other) {
+    for _ in 0..100 {
+        target.write("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    }
+    print(other)
+}
+void main() {
+    var s = "abc".clone()
+    grow(ref s, s[1..])
+}

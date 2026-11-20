@@ -1,0 +1,17 @@
+// A `ref` field reached through a `read` borrow cannot be given to a `ref` parameter (choice 1592).
+struct W<from source> {
+    ref List<string> items
+}
+void clear(ref List<string> xs) {
+    xs.clear()
+}
+void wipe(read W w) {
+    clear(w.items)
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var v = read w.items[0]
+    wipe(read w)
+    print(v)
+}

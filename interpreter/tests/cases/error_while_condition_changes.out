@@ -1,0 +1,10 @@
+error: `xs` cannot be changed here: `r` borrows from it and is used again later
+  the loop comes round again, and `r` still holds the borrow of the round before
+  --> error_while_condition_changes.sg:15:20
+ 15 |     while grow(ref xs) < 5 {
+    |                    ^^
+  `r` borrowed it here:
+  --> error_while_condition_changes.sg:17:13
+ 17 |         r = read xs[0]
+    |             ^^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

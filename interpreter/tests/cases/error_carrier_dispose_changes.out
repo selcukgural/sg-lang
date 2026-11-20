@@ -1,0 +1,9 @@
+error: `g` cannot be changed here: `v` borrows from it and is used again later
+  --> error_carrier_dispose_changes.sg:13:13
+ 13 |         var g = Guard { items = ref xs }
+    |             ^
+  `v` borrowed it here:
+  --> error_carrier_dispose_changes.sg:13:33
+ 13 |         var g = Guard { items = ref xs }
+    |                                 ^^^^^^
+  hint: finish with `v` before this line: a borrow ends at its last use

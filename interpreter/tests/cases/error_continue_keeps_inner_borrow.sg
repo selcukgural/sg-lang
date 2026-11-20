@@ -1,0 +1,14 @@
+// A borrow taken on the way a `continue` leaves by is read in the next round, after its owner ended
+// (choice 1592).
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var r = read a
+    for i in 0..3 {
+        print(r)
+        var b = $"second text that is long enough for the heap {i}".toString()
+        if i == 0 {
+            r = read b
+            continue
+        }
+    }
+}

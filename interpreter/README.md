@@ -9761,6 +9761,74 @@ of the library, `cli.rs`, `lsp.rs` and the kernel pass too. The back end is unch
 CI: there `sg` gives git the same folder and variables, and the folders of the cache are left writable, as
 Windows' read-only mark does not keep a folder from being written.
 
+Choices made in the hundred-and-fortieth slice (fixing what the second review found, second: the rules of
+borrowing). The review showed that each fix of 1340 closed the shape it was shown and left the shapes
+beside it open; one fix had opened a fault of its own. So the rules are made rules here, not cases, each
+the way Rust has it, and each after a test that showed its fault (each program below compiled, before,
+into C that read freed memory under the address sanitizer):
+
+1592. **The rules of borrowing, made whole**:
+     - **A `break` or a `continue` ends the blocks between it and its loop**, as their ends do. Since
+       the state of borrows joined branches (1340), a borrow taken on a way that leaves by `break` or
+       `continue` (`if i == 1 { r = read b; break }`, `b` declared in the loop) was forgotten where the
+       branch was left and came back after the loop, its owner gone: an error again, as it was before
+       1340, also for `break outer`, an arm of a `match` and the names of `read ... as`.
+     - **A `ref` given on as it is lends it again, to be changed**: `wipe(xs)` with `ref List<string>
+       xs` (a parameter, a variable or a field) changes `xs` as `wipe(ref xs)` does, so a `read xs[0]`
+       held over the call is an error, and the same `ref` given to two `ref` parameters, or beside a
+       `read` of it, is lent twice. So is a `ref` copied into a variable (`var b = w.items`): two
+       copies of one `ref` are not both used. Rust's implicit reborrow of a `&mut T`.
+     - **A `ref` field reached through a `read` borrow only reads** there, as `&&mut T` does: with
+       `read W w`, `w.items` is not given to a `ref` parameter, copied into a variable or put into a
+       `ref` field (an error with the hint `read w.items`). 1340 had made writing through it an error,
+       and copying it out gave the `ref` back.
+     - **Giving away a value that holds a `ref`** (as `ref`, by value, to its own `ref this` method)
+       **changes what it borrows**, and so does its `dispose`: `wipe2(ref w)`, `consume(w)`, `w.clear()`
+       and the end of a `Guard` that empties its list are changes of the list `w.items` borrows.
+     - **A part of a value with no name carries what the value borrowed**: `wrap(read text).text`,
+       `two(read text)[0]` and `pair(read text).second.me()` borrow `text`, and a function that returns
+       one of them returns a borrow of its own local; the borrow was lost before.
+     - **Every value made of parts computed from left to right lends them until it is made**, as a call
+       does (1340): a struct (`Word { text = read xs[0], n = g(ref xs) }`), `with`, a variant, a list, a
+       comparison (`xs[0] == take(ref xs)`), `??` and `$"..."`. `s == change(ref s)` is an error too
+       now, as in Rust, though it read no freed memory: which `s` it compares depended on the order.
+     - **An argument that looks at a place another argument lends as `ref` is an error**:
+       `Hex.encodeInto(ref s, s.asBytes())`, `grow(ref s, s[1..])`, `fill(ref doc, doc.get("k")?.asString()
+       ?? "-")`; the call may move what it changes while it reads the view. Only one written `read s` was
+       found before.
+     - **A borrow put where no variable of the function is**, into what a call gave
+       (`map.getOrAdd(k, v).add(Word { text = read text })`, `pick(ref all).add(...)`), or through a `ref`
+       field (`w.items.add(...)`), **is held by what that place borrows**, `map` and `all`; it was kept
+       nowhere, or by the carrier, which ends first.
+     - **The names `for`, `is` and `match` give out of a `shared` value end with their statement**, as
+       the names of `lock` do: another owner may change or end the value after it (`b.clear()` with `var
+       b = share a`), so `r = read x` kept after `for x in read a` is an error.
+     - **A value that holds a `Disposable` anywhere by value** (in a list, an array, a `T?`, a variant, a
+       field) uses what it borrowed where it ends, as a `Disposable` variable did: its `dispose` runs
+       there. And the old value of a variable is disposed of where a new one is written over it.
+     - **A `while`'s condition is part of each round**: `while grow(ref xs) < 5 { print(r); r = read
+       xs[0] }` changes what the round before lent.
+
+Tested by 36 programs of `tests/cases`, one for each shape the review showed, all errors now:
+`error_break_keeps_inner_borrow`, `_continue_keeps_inner_borrow`, `error_match_arm_break_keeps_borrow`,
+`error_break_outer_keeps_borrow`, `error_continue_keeps_lock_name`; `error_ref_given_on_then_read`,
+`_given_twice`, `_given_with_its_item`, `error_ref_field_copied_twice`, `_through_read_copied`,
+`_through_read_given`, `_through_read_stored`; `error_carrier_lent_as_ref`, `_moved`, `_ref_this`,
+`_dispose_changes`; `error_part_of_unnamed_result`, `_unnamed_returned`, `_temporary_kept`;
+`error_struct_literal_part_changed`, `error_with_part_changed`, `error_variant_part_changed`,
+`error_comparison_part_changed`; `error_view_given_with_ref`, `error_range_given_with_ref`;
+`error_store_into_unnamed_place`, `error_store_through_ref_field`; `error_shared_item_kept`,
+`_checked_item_kept`, `_is_name_kept`, `_match_name_kept`; `error_dispose_in_list`, `_in_nullable`,
+`_in_field`, `_old_value`; `error_while_condition_changes`. And by `ok_borrow_rules_allow`, what the rules
+still allow (a `ref` given on with no borrow of it left, given to a `read` parameter, two `ref`s to two
+places, a borrow kept through `break` of an owner outside the loop, a name of a `shared` list used in its
+round, `Disposable`s in a list, a `ref` field read through `read`, a view given to a call that only
+reads), interpreted and compiled. Each of the 150 programs the review wrote that the checker refused or
+ran safely is as it was; of the 136 of the first review, `o03` (`s == change(ref s)`) is the one refused
+now.
+The whole of the tests passes on macOS (the kernel's test, which needs LLD, on Linux in the slice before;
+the back end is unchanged), with the new cases compiled under the sanitizers too.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10453,8 +10521,9 @@ them, `sg add` fetches them by `git`, with no registry, pinned by the SHA-256 of
 and kept in a cache, the versions chosen by minimal version selection, the `unsafe` of each allowed only
 by the program, and a folder `internal` keeps a library's own modules to itself. A second review of safety
 (1589) came after them, and what it found is fixed first (1590): what a package or a project brings is
-never run or followed, and a package is kept only as itself (1591); the rules of borrowing, the modules of
-`std` that read what others write, compiled code and the tool are next. Then every module of `std` is measured against
+never run or followed, and a package is kept only as itself (1591); the rules of borrowing are made rules,
+not cases (1592); a generator of programs that borrow (1593), the modules of `std` that read what others
+write, compiled code and the tool are next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

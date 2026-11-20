@@ -1,0 +1,19 @@
+// The parts of a struct literal are computed from left to right, and a later one may not change
+// what an earlier one lent (choice 1592).
+int g(ref List<string> xs) {
+    xs.clear()
+    return 1
+}
+string take(ref List<string> xs) {
+    xs.clear()
+    return "x".clone()
+}
+struct Word<from source> : Copyable {
+    read string text
+    int n
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap, number one".clone() }
+    var w = Word { text = read xs[0], n = g(ref xs) }
+    print(w.text)
+}

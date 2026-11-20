@@ -1,0 +1,5 @@
+error: `r` borrows from `b` here, but `b` is gone at the end of its block and `r` is used after that
+  --> error_break_keeps_inner_borrow.sg:9:17
+ 9 |             r = read b
+   |                 ^^^^^^
+  hint: declare `b` where `r` is declared, so that it lives as long

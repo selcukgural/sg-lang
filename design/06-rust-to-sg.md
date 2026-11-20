@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-ninth slice (packages made safer after the second review: git in a folder of its own, files written in place of links, the cache under address and version, 1591).
+Last brought up to date: 20 November 2026, the hundred-and-fortieth slice (the rules of borrowing made rules, not cases, after the second review: implicit reborrows, `&&mut T`, two-phase borrows in every value, 1592).
 
 ## Functions and variables
 
@@ -230,9 +230,10 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-ninth slice (p
 | `'a`, `fn f<'a>(a: &'a str) -> &'a str` | `read string f(read string a) from a` | built | Only a returned borrow names where it comes from |
 | `struct Token<'a> { text: &'a str }` | `struct Token<from source> { read string text }` | built | |
 | non-lexical lifetimes | a borrow lasts until its last use | built | |
-| `&&mut T` only reads | a `ref` field reached through `read this` only reads | built | |
+| `&&mut T` only reads | a `ref` field reached through `read this` only reads | built | Nor is it given on as a `ref`, copied into a variable or put into a `ref` field (1592) |
+| implicit reborrow: `wipe(xs)` with `xs: &mut Vec<T>` | `wipe(xs)` with `ref List<T> xs` | built | Lends `xs` again to be changed: no other borrow of it may be used after the call, nor given in the same call (1592) |
 | drop check: a value with `Drop` that borrows outlives what it borrows | the same for a `Disposable` value | built | Its `dispose` at the end of the block is a use of the borrow; an owner declared after it is an error |
-| two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it |
+| two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it. The same for every value made of parts: a struct, `with`, a variant, a list, `==`, `??`, `$"..."` (1592) |
 | `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |

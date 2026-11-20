@@ -1869,6 +1869,29 @@ fn plain_constant(expr: &Expr) -> bool {
 }
 
 /// A type whose value a const can hold, atomic values of numbers and of `bool` inside it too.
+/// Whether a value of `ty` holds a `Disposable` value by value anywhere: in a field, an item, a
+/// variant or a `T?` (choice 1592). Its `dispose` runs where such a value ends.
+fn holds_disposable(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> bool {
+    match ty {
+        Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => holds_disposable(inner, structs, enums, seen),
+        Ty::Map(key, value) | Ty::Result(key, value) => holds_disposable(key, structs, enums, seen) || holds_disposable(value, structs, enums, seen),
+        Ty::Struct(name) | Ty::Enum(name) => {
+            if seen.contains(name) {
+                return false;
+            }
+            seen.push(name.clone());
+            let found = match (structs.get(name), enums.get(name)) {
+                (Some(info), _) => info.disposable || info.fields.iter().any(|(_, field)| holds_disposable(field, structs, enums, seen)),
+                (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields).any(|(_, field)| holds_disposable(field, structs, enums, seen)),
+                _ => false,
+            };
+            seen.pop();
+            found
+        }
+        _ => false,
+    }
+}
+
 fn const_able(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> bool {
     match ty {
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char => true,
@@ -3173,6 +3196,23 @@ fn through_shared(place: &Expr) -> bool {
     through_holder(place, false)
 }
 
+/// Whether a place is reached through a `read` borrow, or through a `shared` value that is not
+/// `checked`, which is only read: a field or an item of something whose type, as it was found,
+/// says so.
+fn through_read(place: &Expr) -> bool {
+    let (ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. }) = &place.kind else { return false };
+    let mut ty = &recv.ty;
+    loop {
+        ty = match ty {
+            Ty::Read(_) => return true,
+            Ty::Shared(_, false) => return true,
+            Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, true) => inner,
+            _ => break,
+        };
+    }
+    through_read(recv)
+}
+
 /// Whether the place is reached through a `shared` value, or with `checked`, through a
 /// `shared checked` one.
 fn through_holder(place: &Expr, checked: bool) -> bool {
@@ -4004,9 +4044,29 @@ fn contains_itself<'d>(
 /// The root of a loan on a value that has no name: it is gone when its statement ends.
 const UNNAMED: usize = usize::MAX;
 
+/// Not a variable: among the loans of the names a pattern or a loop gives, it says that they
+/// look into a `shared` value for their statement only, as the names of `lock` do (choice 1592):
+/// another owner may change the value after it.
+const OPENS: usize = usize::MAX - 1;
+
+/// The mark `OPENS`, for the names of a statement over `place`, if it is reached through a
+/// `shared` value.
+fn opens_shared(place: &Expr) -> Option<Loan> {
+    (through_holder(place, false) || through_holder(place, true)).then(|| Loan { root: OPENS, path: String::new(), mutable: false, held: false, span: place.span })
+}
+
 /// Whether the expression gives a value that nothing owns after the statement: what a call
 /// returned, a value being built. A text constant is there for the whole run, and a borrow
 /// is judged by what it borrowed.
+/// What a place starts at: the value its fields and items are in (`wrap(x)` in `wrap(x).text`).
+fn base_of(place: &Expr) -> &Expr {
+    let mut base = place;
+    while let ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } = &base.kind {
+        base = recv;
+    }
+    base
+}
+
 fn unnamed_owner(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Const(_) | ExprKind::Static(_) => false,
@@ -5171,6 +5231,21 @@ impl<'a> Checker<'a> {
         diag.note(SHARED_READ_ONLY)
     }
 
+    /// A `ref` field reached through a `read` borrow (`w.items`, with `read W w`) only reads, as
+    /// `&&mut T` does in Rust: given on as a `ref`, copied into a variable or put into a field,
+    /// it would change what the `read` borrow only looks at (choice 1592).
+    fn not_through_read(&self, place: &Expr) -> Res<()> {
+        if !place.is_place() || !through_read(place) {
+            return Ok(());
+        }
+        let text = self.src[place.span.start..place.span.end].trim();
+        Err(self.read_only(
+            place,
+            Diag::error(place.span, format!("`{text}` is a `ref` reached through a `read` borrow, so it only reads here and cannot be given on as a `ref`"))
+                .hint(format!("lend it to read: `read {text}`; to change it, take the value it is in as `ref`")),
+        ))
+    }
+
     /// The `readonly` field a place lies in or behind, as the error for writing to it.
     fn readonly(&self, place: &Expr) -> Option<Diag> {
         match &place.kind {
@@ -5268,7 +5343,8 @@ impl<'a> Checker<'a> {
     /// What the variable a place starts at holds: its own loans, and for a parameter the
     /// mark that says "what this parameter holds".
     fn held_by(&self, place: &Expr, span: Span) -> Vec<Loan> {
-        let Some((name, _)) = store_path(place) else { return Vec::new() };
+        // A place in a value with no name holds what that value borrowed (choice 1592).
+        let Some((name, _)) = store_path(place) else { return self.loans_of(base_of(place), false) };
         let Some(var) = self.var_named(name) else { return Vec::new() };
         let mut loans = var.loans.clone();
         if var.param && self.holds(&var.declared) {
@@ -5343,6 +5419,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Field { .. } | ExprKind::Index { .. } => match self.through_borrow(expr) {
                 true => self.held_by(expr, expr.span),
+                // A part of a value with no name (`wrap(read text).text`) carries what that
+                // value borrowed (choice 1592).
+                false if store_path(expr).is_none() && (expr.ty.is_borrow() || self.holds(&expr.ty)) => self.loans_of(base_of(expr), mutable),
                 false => Vec::new(),
             },
             ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::AsSlice(inner) | ExprKind::Widen(_, inner) | ExprKind::New(inner) | ExprKind::Try { expr: inner, .. } => {
@@ -5475,6 +5554,40 @@ impl<'a> Checker<'a> {
     fn stores(&mut self, target: &Expr, value: &Expr, adds: bool) -> Res<()> {
         let loans = self.loans_of(value, false);
         self.kept_unnamed(&loans, value, "the place it is put into")?;
+        // A place no variable of the function is (`map.getOrAdd(k, v).add(x)`, `pick(ref
+        // all).add(x)`), or one behind a `ref` field (`w.items.add(x)`): what the value borrowed
+        // is held by what that place borrows from, which outlives the line or the carrier
+        // (choice 1592).
+        let own_borrow = store_path(target).and_then(|(name, _)| self.var_named(name)).is_some_and(|var| var.declared.is_borrow());
+        if store_path(target).is_none() || (self.through_borrow(target) && !own_borrow) {
+            let owners = match store_path(target) {
+                None => self.loans_of(target, true),
+                Some(_) => self.held_by(target, target.span),
+            };
+            for owner in owners.iter().filter(|owner| owner.root != UNNAMED) {
+                if owner.held {
+                    // What a parameter holds is the caller's: only what it holds goes in.
+                    if let Some(outside) = loans.iter().find(|loan| !(loan.held && loan.root == owner.root)) {
+                        let text = &self.src[value.span.start..value.span.end];
+                        let diag = Diag::error(value.span, format!("`{text}` borrows from somewhere else than the place it is put into, which the caller keeps after the call"));
+                        let diag = match outside.span == value.span {
+                            true => diag,
+                            false => diag.related(outside.span, "it is borrowed here"),
+                        };
+                        return Err(diag.note("storing a borrow from outside into what a parameter holds is not in the language yet; build the value where its source is known"));
+                    }
+                    continue;
+                }
+                let Some((depth, position)) = self.var_at(owner.root) else { continue };
+                let var = &mut self.scopes[depth].vars[position];
+                for loan in loans.iter().filter(|loan| loan.root != owner.root) {
+                    if !var.loans.iter().any(|known| same_loan(known, loan)) {
+                        var.loans.push(loan.clone());
+                    }
+                }
+            }
+            return Ok(());
+        }
         let Some((name, path)) = store_path(target) else { return Ok(()) };
         let Some(var) = self.find(name) else { return Ok(()) };
         let id = var.id;
@@ -5515,11 +5628,14 @@ impl<'a> Checker<'a> {
         let Some(var) = self.find(name) else { return };
         let root = var.id;
         let behind = var.declared.strip_borrow().clone();
+        let carrier = path.is_empty() && !var.declared.is_borrow() && var.loans.iter().any(|loan| loan.mutable && !loan.held);
         let copy_as = (var.declared.is_borrow() && behind.is_copyable(self.copyable)).then(|| behind.to_string());
         // Changing a place behind a `ref` field (`w.items.clear()`, with `ref List<string>
-        // items`) changes what the field borrowed: it is touched too.
-        let through = match access != Access::Read && self.through_borrow(expr) {
-            true => self.held_by(expr, expr.span).into_iter().filter(|loan| !loan.held && loan.root != root).collect(),
+        // items`) changes what the field borrowed: it is touched too. So does giving away, as
+        // `ref` or by value, a whole value that holds a `ref` (`wipe(ref w)`, `w.clear()` with
+        // `ref this`, `consume(w)`): the code it goes to may change through it (choice 1592).
+        let through: Vec<Loan> = match access != Access::Read && (carrier || self.through_borrow(expr)) {
+            true => self.held_by(expr, expr.span).into_iter().filter(|loan| !loan.held && loan.root != root && (!carrier || loan.mutable)).collect(),
             false => Vec::new(),
         };
         self.touch_root(root, &path, access, expr.span, copy_as, root);
@@ -5676,19 +5792,57 @@ impl<'a> Checker<'a> {
     }
 
     /// Two borrows written in one call that do not go together: the same place lent twice,
-    /// one of them as `ref`. `recv`: the receiver of a method and whether it is taken as `ref`.
-    fn lent_twice(&mut self, recv: Option<(&Expr, bool)>, args: &[Expr]) -> Res<()> {
-        let places = recv.into_iter().chain(args.iter().filter_map(|arg| match &arg.kind {
-            ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable)),
-            // The items whose address C is given may be written by it.
-            ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
-            ExprKind::RawCast { expr, .. } => match &expr.kind {
+    /// one of them as `ref`. `recv`: the receiver of a method and whether it is taken as `ref`;
+    /// `params`: what the call takes, as far as it is known.
+    ///
+    /// A `ref` given on as it is (`wipe(xs)`, with `xs` a `ref` parameter, variable or field)
+    /// lends what it borrows again, to be changed (choice 1592): the call changes that place, as
+    /// it does one written `ref xs`, and it goes with no other borrow of it in the call.
+    fn lent_twice(&mut self, recv: Option<(&Expr, bool)>, args: &[Expr], params: &[Ty]) -> Res<()> {
+        let given = |at: usize, arg: &Expr| matches!(params.get(at), Some(Ty::Ref(_))) && arg.is_place() && !matches!(arg.kind, ExprKind::Borrow { .. });
+        for (at, arg) in args.iter().enumerate() {
+            if given(at, arg) {
+                self.not_locked(arg, Access::Write)?;
+            }
+        }
+        let places: Vec<(&Expr, bool)> = recv
+            .into_iter()
+            .chain(args.iter().enumerate().filter_map(|(at, arg)| match &arg.kind {
+                _ if given(at, arg) => Some((arg, true)),
+                ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable)),
+                // The items whose address C is given may be written by it.
                 ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+                ExprKind::RawCast { expr, .. } => match &expr.kind {
+                    ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        }));
-        self.lent_places(places.collect())
+            }))
+            .collect();
+        // An argument that looks at a place another one lends as `ref` without being written
+        // as a borrow (`Hex.encodeInto(ref s, s.asBytes())`, `grow(ref s, s[1..])`): the call
+        // may change the place while it reads the view (choice 1592).
+        let changed: Vec<(usize, String, &Expr)> =
+            places.iter().filter(|(_, mutable)| *mutable).filter_map(|(place, _)| store_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place)))).collect();
+        if !changed.is_empty() {
+            let lent_itself = |arg: &Expr| match &arg.kind {
+                ExprKind::Borrow { .. } | ExprKind::Method { callee: Callee::Pointer, .. } => true,
+                ExprKind::RawCast { expr, .. } => matches!(expr.kind, ExprKind::Method { callee: Callee::Pointer, .. }),
+                _ => places.iter().any(|(place, _)| std::ptr::eq(*place, arg)),
+            };
+            for arg in args.iter().filter(|arg| !lent_itself(arg)) {
+                for loan in self.part_loans(arg, false) {
+                    let overlaps = |path: &str| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
+                    let Some((_, _, place)) = changed.iter().find(|(root, path, _)| *root == loan.root && overlaps(path)) else { continue };
+                    let (text, into) = (self.src[arg.span.start..arg.span.end].trim(), self.src[place.span.start..place.span.end].trim());
+                    return Err(Diag::error(arg.span, format!("`{text}` looks at `{into}`, which this call is given to change"))
+                        .related(place.span, "given as `ref` here")
+                        .note(format!("the call may change `{into}` while `{text}` is read, and it would be read from what was there"))
+                        .hint("make it a value of its own before the call (`.clone()`, `.toList()`), and give the call that"));
+                }
+            }
+        }
+        self.lent_places(places)
     }
 
     /// The places lent to one call: a `ref` borrow must be the only one of its place.
@@ -5811,13 +5965,17 @@ impl<'a> Checker<'a> {
         // `dispose` runs there. What it borrows from must still be there then, also an owner of
         // the same block declared after it, which is gone before it.
         for (index, var) in scope.vars.iter().enumerate() {
-            let disposes = matches!(peel(&var.declared), Ty::Struct(name) if self.structs.get(name).is_some_and(|info| info.disposable));
+            let disposes = !var.declared.is_borrow() && holds_disposable(&var.declared, self.structs, self.enums, &mut Vec::new());
             if var.loans.is_empty() || !disposes || (var.moved.whole.is_some() && !var.moved.partly) {
                 continue;
             }
             let at = self.point(self.borrows.pos);
             self.borrows.disposed.push(at.seq);
             self.borrows.uses.push((var.id, at));
+            // Its `dispose` may change what its `ref` fields borrow (choice 1592).
+            for loan in var.loans.iter().filter(|loan| loan.mutable && !loan.held) {
+                self.touch_root(loan.root, &loan.path, Access::Write, var.at, None, var.id);
+            }
             let later = var.loans.iter().filter(|loan| !loan.held).find_map(|loan| scope.vars[index + 1..].iter().find(|owner| owner.id == loan.root && !owner.declared.is_borrow()).map(|owner| (loan, owner)));
             if let Some((loan, owner)) = later {
                 let (name, owner) = (&var.name, &owner.name);
@@ -5826,9 +5984,28 @@ impl<'a> Checker<'a> {
             }
         }
         // A variable outside that still holds a borrow of an owner that ends here.
+        self.scopes.push(scope);
+        self.owners_gone(self.scopes.len() - 1);
+        let scope = self.scopes.pop().expect("the scope just put back");
+        if let Some((var, span)) = scope.vars.iter().find_map(|var| var.unopened.map(|span| (var, span))) {
+            let name = &var.name;
+            return Err(Diag::error(span, format!("`{name}` holds a `Result` that is never looked at, so an error would be lost"))
+                .hint(format!("open it with `try {name}`, `{name} ?? ...` or `match {name} {{ ... }}`; to drop it on purpose write `_ = ...`")));
+        }
+        for (name, before, assigned) in scope.narrowed.into_iter().rev() {
+            let Some(var) = self.find(&name) else { continue };
+            var.current = if var.assigned == assigned { before } else { var.declared.clone() };
+        }
+        Ok(())
+    }
+
+    /// The owners of the scopes from `depth` up end here: each borrow of one that a variable of
+    /// a scope below holds is a clash, an error if that variable is used afterwards.
+    fn owners_gone(&mut self, depth: usize) {
         let at = self.point(self.borrows.pos);
-        for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow() || var.opened) {
-            for holder in self.scopes.iter().flat_map(|outer| &outer.vars) {
+        let (holders, ending) = self.scopes.split_at(depth);
+        for owner in ending.iter().flat_map(|scope| &scope.vars).filter(|var| !var.declared.is_borrow() || var.opened) {
+            for holder in holders.iter().flat_map(|outer| &outer.vars) {
                 for loan in holder.loans.iter().filter(|loan| loan.root == owner.id && !loan.held) {
                     self.borrows.clashes.push(Clash {
                         holder: holder.id,
@@ -5845,16 +6022,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        if let Some((var, span)) = scope.vars.iter().find_map(|var| var.unopened.map(|span| (var, span))) {
-            let name = &var.name;
-            return Err(Diag::error(span, format!("`{name}` holds a `Result` that is never looked at, so an error would be lost"))
-                .hint(format!("open it with `try {name}`, `{name} ?? ...` or `match {name} {{ ... }}`; to drop it on purpose write `_ = ...`")));
-        }
-        for (name, before, assigned) in scope.narrowed.into_iter().rev() {
-            let Some(var) = self.find(&name) else { continue };
-            var.current = if var.assigned == assigned { before } else { var.declared.clone() };
-        }
-        Ok(())
     }
 
     /// What is moved out of each variable, and what each borrows: the state that the
@@ -5940,8 +6107,9 @@ impl<'a> Checker<'a> {
     /// Declares the names of a pattern. Those that are borrows hold what the pattern's value
     /// was lent from.
     fn declare_binds(&mut self, binds: Binds) -> Res<()> {
-        let loans = std::mem::take(&mut self.borrows.binds);
-        let opened = std::mem::take(&mut self.borrows.opening);
+        let mut loans = std::mem::take(&mut self.borrows.binds);
+        let opened = std::mem::take(&mut self.borrows.opening) | loans.iter().any(|loan| loan.root == OPENS);
+        loans.retain(|loan| loan.root != OPENS);
         for (name, ty, span) in binds {
             let borrows = self.holds(&ty);
             self.declare_local(&name, ty, span)?;
@@ -6057,6 +6225,13 @@ impl<'a> Checker<'a> {
                         ty => ty,
                     },
                 };
+                // A `ref` copied out of a place (`var b = w.items`) lends what it borrows again,
+                // to be changed: it goes with no other borrow of that, and is not reached
+                // through a `read` borrow (choice 1592).
+                if matches!(ty, Ty::Ref(_)) && init.is_place() {
+                    self.not_through_read(init)?;
+                    self.not_locked(init, Access::Write)?;
+                }
                 let holds_result = matches!(ty, Ty::Result(..));
                 let loans = match self.holds(&ty) {
                     true => self.loans_of(init, matches!(ty, Ty::Ref(_))),
@@ -6280,6 +6455,16 @@ impl<'a> Checker<'a> {
                     clash.at.pos = value.span.end;
                     clash.at.placed = Some(value.span.start);
                 }
+                // The old value of a variable whose type holds a `Disposable` is disposed of
+                // here, and its `dispose` still looks at what it borrowed (choice 1592).
+                if let (None, ExprKind::Var(name)) = (*op, &target.kind) {
+                    let old = self.var_named(name).filter(|var| !var.declared.is_borrow() && !var.loans.is_empty()).map(|var| (var.id, var.declared.clone()));
+                    if let Some((id, _)) = old.filter(|(_, declared)| holds_disposable(declared, self.structs, self.enums, &mut Vec::new())) {
+                        let at = self.point(value.span.end);
+                        self.borrows.disposed.push(at.seq);
+                        self.borrows.uses.push((id, at));
+                    }
+                }
                 // A value that borrows, put into a field, an item or a variable of a type that
                 // carries a borrow.
                 if !rebinds && self.holds(&target_ty) {
@@ -6404,7 +6589,8 @@ impl<'a> Checker<'a> {
                 self.scopes.push(Scope::default());
                 let exit = first_break(body, label.as_ref());
                 let fails = exit.map_or(NamesSeen::Fails, NamesSeen::Break);
-                let result = self.condition(cond, fails).and_then(|(_, fails)| self.loop_body(body, &[], Vec::new(), label.as_ref()).map(|cx| (fails, cx)));
+                let head = self.borrows.touched.len();
+                let result = self.condition(cond, fails).and_then(|(_, fails)| self.loop_body(body, &[], Vec::new(), label.as_ref(), Some(head)).map(|cx| (fails, cx)));
                 self.borrows.loops.pop();
                 let (fails, cx) = result?;
                 self.pop_scope(true)?;
@@ -6446,7 +6632,7 @@ impl<'a> Checker<'a> {
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
                 self.declare_local(var, ty, *var_span)?;
-                let result = self.loop_body(body, &[], Vec::new(), label.as_ref());
+                let result = self.loop_body(body, &[], Vec::new(), label.as_ref(), None);
                 self.borrows.loops.pop();
                 let cx = result?;
                 self.pop_scope(true)?;
@@ -6486,7 +6672,7 @@ impl<'a> Checker<'a> {
                     self.borrows.binds.clear();
                     let node = self.node();
                     self.borrows.loops.push(node);
-                    let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref());
+                    let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref(), None);
                     self.borrows.loops.pop();
                     self.after_loop(result?, true);
                     return Ok(());
@@ -6596,7 +6782,11 @@ impl<'a> Checker<'a> {
                     // `shared` value each access is checked on its own (and a `shared checked`
                     // one is lent for the loop), and the loop keeps the variable as it is.
                     let shared = matches!(found.strip_borrow(), Ty::Shared(..));
-                    let loans = if shared { Vec::new() } else { self.loans_of(iter, mode == Some(Mode::Ref)) };
+                    let mut loans = if shared { Vec::new() } else { self.loans_of(iter, mode == Some(Mode::Ref)) };
+                    // An item lent out of a `shared` value is for the round only (choice 1592).
+                    if mode.is_some() {
+                        loans.extend(opens_shared(iter));
+                    }
                     if mode.is_some() {
                         for loan in loans.iter().filter(|loan| !loan.held) {
                             let Some(at) = self.var_at(loan.root) else { continue };
@@ -6613,7 +6803,7 @@ impl<'a> Checker<'a> {
                 }
                 let node = self.node();
                 self.borrows.loops.push(node);
-                let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref());
+                let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref(), None);
                 self.borrows.loops.pop();
                 if locked {
                     self.locks.pop();
@@ -7111,6 +7301,11 @@ impl<'a> Checker<'a> {
         };
         let depth = self.loop_cx[index].depth;
         self.unclosed(depth, Some((stmt_span, word)))?;
+        // The blocks between here and the loop end here, as they would at their ends: a
+        // variable outside that borrows an owner of theirs holds a borrow of nothing when the
+        // loop goes on or is left (choice 1592). The state saved below still names the borrow,
+        // and is joined with the rest after the loop or at the next round.
+        self.owners_gone(depth);
         let moves = self.moves();
         let cx = &mut self.loop_cx[index];
         cx.used |= label.is_some();
@@ -7124,7 +7319,9 @@ impl<'a> Checker<'a> {
 
     /// A value moved inside a loop is gone when the next iteration starts: the end of the
     /// body and every `continue` of the loop start one. `label`: the name of the loop.
-    fn loop_body(&mut self, body: &mut Block, narrow: &[String], binds: Binds, label: Option<&Label>) -> Res<LoopCx> {
+    /// `head`: where the touches of the loop's own head begin, a `while`'s condition, which runs
+    /// again before every round (choice 1592).
+    fn loop_body(&mut self, body: &mut Block, narrow: &[String], binds: Binds, label: Option<&Label>, head: Option<usize>) -> Res<LoopCx> {
         if let Some(label) = label {
             if let Some(outer) = self.loop_cx.iter().find_map(|cx| cx.label.as_ref().filter(|named| named.name == label.name)) {
                 return Err(Diag::error(label.span, format!("a loop around this one is already named `{}`", label.name))
@@ -7133,7 +7330,7 @@ impl<'a> Checker<'a> {
             }
         }
         let before = self.moves();
-        let mark = self.borrows.touched.len();
+        let mark = head.unwrap_or(self.borrows.touched.len());
         self.loops += 1;
         self.loop_cx.push(LoopCx { depth: self.scopes.len(), label: label.cloned(), used: false, breaks: Vec::new(), continues: Vec::new(), before: Vec::new() });
         let result = self.block_with(body, narrow, binds);
@@ -7282,6 +7479,9 @@ impl<'a> Checker<'a> {
     }
 
     fn coerce(&mut self, expr: &mut Expr, found: Ty, expected: &Ty) -> Res<()> {
+        if matches!((&found, expected), (Ty::Ref(_), Ty::Ref(_))) {
+            self.not_through_read(expr)?;
+        }
         if found == *expected || found == Ty::Never {
             return Ok(());
         }
@@ -8039,6 +8239,24 @@ impl<'a> Checker<'a> {
             ExprKind::Slice { recv, from, to } => {
                 (std::iter::once((&**recv, true)).chain(from.iter().chain(to.iter()).map(|bound| (&**bound, false))).collect(), "range")
             }
+            // Every expression whose parts are computed one after another before it is made
+            // (choice 1592): `Word { text = read xs[0], n = g(ref xs) }`, `xs[0] == take(ref xs)`.
+            ExprKind::StructLit { fields, .. } => (fields.iter().map(|field| (&field.value, false)).collect(), "value"),
+            ExprKind::With { base, fields } => (std::iter::once((&**base, false)).chain(fields.iter().map(|field| (&field.value, false))).collect(), "value"),
+            ExprKind::Variant { args, .. } => (args.iter().map(|arg| (arg, false)).collect(), "value"),
+            ExprKind::Array { args, items, .. } => (args.iter().chain(items.iter().flatten()).map(|part| (part, false)).collect(), "value"),
+            ExprKind::Collection { args, items, .. } => (args.iter().chain(items.iter().flatten().flat_map(|item| &item.values)).map(|part| (part, false)).collect(), "value"),
+            ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } => (vec![(&**left, false), (&**right, false)], "value"),
+            ExprKind::Interp(pieces) => (
+                pieces
+                    .iter()
+                    .filter_map(|piece| match piece {
+                        InterpPart::Expr(inner, _) => Some((inner, false)),
+                        _ => None,
+                    })
+                    .collect(),
+                "value",
+            ),
             _ => return Ok(()),
         };
         let touched = &self.borrows.touched[mark..];
@@ -8058,11 +8276,15 @@ impl<'a> Checker<'a> {
                 let given = match (*receiver, what) {
                     (true, "call") => format!("`{earlier}` is what this method is called on"),
                     (true, _) => format!("`{earlier}` is what this {what} looks into"),
+                    (false, "value") => format!("`{earlier}` comes before it in this value"),
                     (false, _) => format!("`{earlier}` is given to this {what} before it"),
                 };
                 let done = if *access == Access::Move { "moved" } else { "changed" };
-                let diag = Diag::error(*span, format!("`{text}` cannot be {done} here: {given}, and the {what} still uses it"))
-                    .note(format!("the parts of {} {what} are computed from left to right, and it runs after the last one", if what == "index" { "an" } else { "a" }));
+                let note = match what {
+                    "value" => "the parts of a value are computed from left to right, and it is made after the last one".to_string(),
+                    _ => format!("the parts of {} {what} are computed from left to right, and it runs after the last one", if what == "index" { "an" } else { "a" }),
+                };
+                let diag = Diag::error(*span, format!("`{text}` cannot be {done} here: {given}, and the {what} still uses it")).note(note);
                 let diag = match (part.span.start..part.span.end).contains(&loan.span.start) && loan.span != part.span {
                     true => diag.related(loan.span, format!("lent to the {what} here")),
                     false => diag.related(part.span, format!("lent to the {what} here")),
@@ -9650,6 +9872,7 @@ impl<'a> Checker<'a> {
             return Ok(binds);
         }
         self.borrows.binds = self.place_loans(subject, *by_ref, subject.span);
+        self.borrows.binds.extend(opens_shared(subject));
         let not = *negated != flip;
         let nowhere = Diag::error(pattern.span, "nothing here can use the names in this pattern");
         let seen_where = if not { NOT_NAMES_SEEN } else { NAMES_SEEN };
@@ -9719,11 +9942,14 @@ impl<'a> Checker<'a> {
         *borrowed = mode.is_some();
         let (owner, variants) = (&of.owner, &of.list);
         // The names of the arms borrow from what the subject was lent from.
-        let subject_loans = match mode {
+        let mut subject_loans = match mode {
             Some(mode) => self.loans_of(subject, mode == Mode::Ref),
             None if self.holds(&subject_ty) => self.loans_of(subject, false),
             None => Vec::new(),
         };
+        if mode.is_some() {
+            subject_loans.extend(opens_shared(subject));
+        }
         let node = self.node();
 
         // What the arms without a condition have settled: variant positions, or numbers.
@@ -10291,7 +10517,7 @@ impl<'a> Checker<'a> {
         for (arg, param) in args.iter_mut().zip(params) {
             self.typed(arg, param)?;
         }
-        self.lent_twice(None, args)
+        self.lent_twice(None, args, params)
     }
 
     fn call(&mut self, name: &str, name_span: Span, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
@@ -10460,7 +10686,7 @@ impl<'a> Checker<'a> {
             for arg in more.iter_mut() {
                 params.push(self.variadic_arg(arg)?);
             }
-            self.lent_twice(None, args)?;
+            self.lent_twice(None, args, &params)?;
             *callee = Callee::Variadic(params);
             return Ok(sig.ret.clone());
         }
@@ -10485,7 +10711,7 @@ impl<'a> Checker<'a> {
     /// The arguments of a call of C: `buffer.pointer()` is allowed among them.
     fn c_args(&mut self, args: &mut [Expr], params: &[Ty]) -> Res<()> {
         self.c_typed(args, params)?;
-        self.lent_twice(None, args)
+        self.lent_twice(None, args, params)
     }
 
     /// One argument given after the parameters of a function of C declared with `...`: C
@@ -12584,7 +12810,7 @@ impl<'a> Checker<'a> {
                     fill_token(owner, sig, args, span);
                     self.args(name, args, &sig.params, span)?;
                     if is_place && this == This::Read {
-                        self.lent_twice(Some((recv, false)), args)?;
+                        self.lent_twice(Some((recv, false)), args, &sig.params)?;
                     }
                     *callee = Callee::Method { owner: owner.clone(), this, whole: true };
                     let this_ty = match this {
@@ -12629,7 +12855,7 @@ impl<'a> Checker<'a> {
                     false => diag,
                 })?;
                 if is_place && this != This::Value {
-                    self.lent_twice(Some((recv, this == This::Ref)), args)?;
+                    self.lent_twice(Some((recv, this == This::Ref)), args, &sig.params)?;
                 }
                 *callee = Callee::Method { owner: owner.clone(), this, whole: false };
                 let this_ty = match this {

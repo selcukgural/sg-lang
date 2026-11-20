@@ -1,0 +1,14 @@
+// A field of what a call returns, returned: a borrow of a local of the function (choice 1592).
+struct Word<from source> : Copyable {
+    read string text
+}
+Word wrap(read string s) from s {
+    return Word { text = s }
+}
+read string pick() {
+    var text = "hello world, a long text that lives on the heap".clone()
+    return wrap(read text).text
+}
+void main() {
+    print(pick())
+}

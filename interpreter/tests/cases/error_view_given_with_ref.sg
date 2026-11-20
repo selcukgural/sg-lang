@@ -1,0 +1,7 @@
+// A view of a text given beside the text as `ref`: the call may move the text while it reads the
+// view (choice 1592).
+void main() {
+    var s = "abc".clone()
+    Hex.encodeInto(ref s, s.asBytes())
+    print(s)
+}

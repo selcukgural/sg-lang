@@ -1,0 +1,17 @@
+// A `ref` field copied into a variable lends what it borrows again: two copies cannot both be used
+// (choice 1592).
+struct W<from source> {
+    ref List<string> items
+}
+void clear(ref List<string> xs) {
+    xs.clear()
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var a = w.items
+    var b = w.items
+    var v = read a[0]
+    b.clear()
+    print(v)
+}

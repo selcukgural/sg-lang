@@ -1,0 +1,20 @@
+// The parts of a `with` are computed from left to right too (choice 1592).
+int g(ref List<string> xs) {
+    xs.clear()
+    return 1
+}
+string take(ref List<string> xs) {
+    xs.clear()
+    return "x".clone()
+}
+struct Word<from source> : Copyable {
+    read string text
+    int n
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap, number one".clone() }
+    var other = "o".clone()
+    var w = Word { text = read other, n = 0 }
+    var v = w with { text = read xs[0], n = g(ref xs) }
+    print(v.text)
+}

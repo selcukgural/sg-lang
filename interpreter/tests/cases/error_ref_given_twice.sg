@@ -1,0 +1,12 @@
+// One `ref` given to two `ref` parameters of one call is two borrows that change the same place
+// (choice 1592).
+void two(ref List<string> a, ref List<string> b) {
+    var v = read a[0]
+    b.clear()
+    print(v)
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var r = ref xs
+    two(r, r)
+}

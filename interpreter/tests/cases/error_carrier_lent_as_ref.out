@@ -1,0 +1,9 @@
+error: `w` cannot be changed here: `v` borrows from it and is used again later
+  --> error_carrier_lent_as_ref.sg:13:15
+ 13 |     wipe2(ref w)
+    |               ^
+  `v` borrowed it here:
+  --> error_carrier_lent_as_ref.sg:11:25
+ 11 |     var w = W { items = ref xs }
+    |                         ^^^^^^
+  hint: finish with `v` before this line: a borrow ends at its last use

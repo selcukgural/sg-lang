@@ -1,0 +1,14 @@
+// A `ref` parameter given on as it is lends it again to be changed: `v` would look at what `wipe`
+// cleared (choice 1592).
+void wipe(ref List<string> xs) {
+    xs.clear()
+}
+void outer(ref List<string> xs) {
+    var v = read xs[0]
+    wipe(xs)
+    print(v)
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    outer(ref xs)
+}

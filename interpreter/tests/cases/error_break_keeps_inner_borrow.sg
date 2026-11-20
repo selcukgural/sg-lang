@@ -1,0 +1,14 @@
+// A borrow taken on the way a `break` leaves by outlives its owner: the block of the loop ends
+// there (choice 1592).
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var r = read a
+    for i in 0..3 {
+        var b = $"second text that is long enough for the heap {i}".toString()
+        if i == 1 {
+            r = read b
+            break
+        }
+    }
+    print(r)
+}

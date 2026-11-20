@@ -1,0 +1,9 @@
+error: this returns a borrow of `text`, and `text` is gone when the function returns
+  --> error_part_of_unnamed_returned.sg:10:12
+ 10 |     return wrap(read text).text
+    |            ^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_part_of_unnamed_returned.sg:10:17
+ 10 |     return wrap(read text).text
+    |                 ^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

@@ -1,0 +1,12 @@
+// A `ref` given on as it is, beside a `read` of its item, in one call (choice 1592).
+void two(ref List<string> a, read string v) {
+    a.clear()
+    print(v)
+}
+void outer(ref List<string> xs) {
+    two(xs, read xs[0])
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    outer(ref xs)
+}

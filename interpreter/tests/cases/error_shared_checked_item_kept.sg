@@ -1,0 +1,12 @@
+// An item lent out of a `shared checked` list is for its round too (choice 1592).
+void main() {
+    var a = new shared checked List<string> { "a long text that lives on the heap one".clone() }
+    var b = share a
+    var other = "o".clone()
+    var r = read other
+    for x in read a {
+        r = read x
+    }
+    b.clear()
+    print(r)
+}

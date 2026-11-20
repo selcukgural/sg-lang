@@ -1,0 +1,21 @@
+// What `read ... as` opens is closed at the end of its block, also on the way of a `continue`
+// (choice 1592).
+struct Counter {
+    string name
+}
+void main() {
+    var a = new shared checked Counter { name = "a long text that lives on the heap, number one".clone() }
+    var b = share a
+    var other = "other".clone()
+    var r = read other
+    for i in 0..2 {
+        read a as c {
+            if i == 0 {
+                r = read c.name
+                continue
+            }
+        }
+    }
+    b.name = "changed to a new long text on the heap".clone()
+    print(r)
+}

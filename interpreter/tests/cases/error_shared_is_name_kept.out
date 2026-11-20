@@ -1,0 +1,6 @@
+error: `r` borrows from `name` here, but `name` is closed at the end of its block and `r` is used after that
+  what `name` opens is lent for the block only: after it another task, or another owner, may change it
+  --> error_shared_is_name_kept.sg:27:13
+ 27 |         r = read name
+    |             ^^^^^^^^^
+  hint: to keep something after the block, copy it there (`.clone()`) into a variable that owns it

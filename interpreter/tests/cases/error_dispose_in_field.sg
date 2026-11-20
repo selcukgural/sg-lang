@@ -1,0 +1,16 @@
+// A `Disposable` in a field is disposed of where the value it is in ends (choice 1592).
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+struct Outer<from source> {
+    Guard g
+}
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var o = Outer { g = Guard { text = read text } }
+    text = "a new long text that lives on the heap two".clone()
+}

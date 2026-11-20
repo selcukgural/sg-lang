@@ -1,0 +1,32 @@
+// The name a `match` arm gives out of a `shared` value is for its arm (choice 1592).
+enum Shape {
+    Named(string name)
+    Empty
+}
+struct Box {
+    Shape shape
+    List<string> items
+    string? opt
+}
+using BoxRef = shared checked Box
+BoxRef make() {
+    return new BoxRef { shape = Shape.Named("a long text that lives on the heap one".clone()), items = List<string> { "a long text that lives on the heap two".clone() }, opt = "a long text that lives on the heap three".clone() }
+}
+int grow(read BoxRef b) {
+    b.items.clear()
+    b.shape = Shape.Empty
+    b.opt = null
+    return 0
+}
+void main() {
+    var a = make()
+    var b = share a
+    var other = "o".clone()
+    var r = read other
+    match read a.shape {
+        Named(name) => { r = name }
+        Empty => {}
+    }
+    b.shape = Shape.Empty
+    print(r)
+}

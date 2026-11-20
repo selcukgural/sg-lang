@@ -1,0 +1,12 @@
+// An item lent out of a `shared` list is for its round: another owner may change the list after it
+// (choice 1592).
+void main() {
+    var a = new shared List<string> { "a long text that lives on the heap one".clone() }
+    var other = "o".clone()
+    var r = read other
+    for x in read a {
+        r = read x
+    }
+    a = new shared List<string>()
+    print(r)
+}

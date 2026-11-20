@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `map` borrows from it and is used again later
+  --> error_store_into_unnamed_place.sg:9:5
+ 9 |     text = "changed to something else entirely".clone()
+   |     ^^^^
+  `map` borrowed it here:
+  --> error_store_into_unnamed_place.sg:8:53
+ 8 |     map.getOrAdd(1, List<Word>()).add(Word { text = read text })
+   |                                                     ^^^^^^^^^
+  hint: finish with `map` before this line: a borrow ends at its last use

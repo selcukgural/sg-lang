@@ -1,0 +1,9 @@
+error: `xs` cannot be changed here: `v` borrows from it and is used again later
+  --> error_ref_given_on_then_read.sg:8:10
+ 8 |     wipe(xs)
+   |          ^^
+  `v` borrowed it here:
+  --> error_ref_given_on_then_read.sg:7:13
+ 7 |     var v = read xs[0]
+   |             ^^^^^^^^^^
+  hint: finish with `v` before this line: a borrow ends at its last use

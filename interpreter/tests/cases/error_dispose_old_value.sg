@@ -1,0 +1,13 @@
+// The old value of a variable is disposed of where a new one is written (choice 1592).
+struct Guard<from source> : Disposable {
+    read string text
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var g = Guard { text = read text }
+    text = "a new long text that lives on the heap two".clone()
+    g = Guard { text = "constant" }
+}

@@ -1,0 +1,10 @@
+error: `text` cannot be changed here: `o` borrows from it and is used again later
+  `o` is `Disposable`: its `dispose` runs at the end of its block and uses it there
+  --> error_dispose_in_field.sg:15:5
+ 15 |     text = "a new long text that lives on the heap two".clone()
+    |     ^^^^
+  `o` borrowed it here:
+  --> error_dispose_in_field.sg:14:40
+ 14 |     var o = Outer { g = Guard { text = read text } }
+    |                                        ^^^^^^^^^
+  hint: put `o` in a block of its own that ends before this line

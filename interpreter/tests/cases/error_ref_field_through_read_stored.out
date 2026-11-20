@@ -1,0 +1,5 @@
+error: `w.items` is a `ref` reached through a `read` borrow, so it only reads here and cannot be given on as a `ref`
+  --> error_ref_field_through_read_stored.sg:9:28
+ 9 |     var copy = W { items = w.items }
+   |                            ^^^^^^^
+  hint: lend it to read: `read w.items`; to change it, take the value it is in as `ref`

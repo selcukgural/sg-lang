@@ -1,0 +1,18 @@
+// A `ref this` method of a value with a `ref` field may change what the field borrows (choice
+// 1592).
+struct W<from source> {
+    ref List<string> items
+    read string first(read this) from source {
+        return read this.items[0]
+    }
+    void clear(ref this) {
+        this.items.clear()
+    }
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var v = w.first()
+    w.clear()
+    print(v)
+}

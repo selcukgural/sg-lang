@@ -1,0 +1,15 @@
+// `break outer` ends every block of the inner loop and of the outer one (choice 1592).
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var r = read a
+    outer: for i in 0..3 {
+        var b = $"second text that is long enough for the heap {i}".toString()
+        for j in 0..3 {
+            if j == 1 {
+                r = read b
+                break outer
+            }
+        }
+    }
+    print(r)
+}

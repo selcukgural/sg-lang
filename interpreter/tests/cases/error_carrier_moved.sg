@@ -1,0 +1,15 @@
+// Giving away a value with a `ref` field lets the callee change what the field borrows (choice
+// 1592).
+struct W<from source> {
+    ref List<string> items
+}
+void wipe(W w) {
+    w.items.clear()
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var v = read w.items[0]
+    wipe(w)
+    print(v)
+}

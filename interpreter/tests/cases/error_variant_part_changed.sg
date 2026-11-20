@@ -1,0 +1,25 @@
+// The parts of a variant are computed from left to right too (choice 1592).
+int g(ref List<string> xs) {
+    xs.clear()
+    return 1
+}
+string take(ref List<string> xs) {
+    xs.clear()
+    return "x".clone()
+}
+struct Word<from source> : Copyable {
+    read string text
+    int n
+}
+enum E<from source> {
+    A(read string s, int n)
+    B
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap, number one".clone() }
+    var e = E.A(read xs[0], g(ref xs))
+    match e {
+        A(s, n) => print($"{s} {n}")
+        B => print("b")
+    }
+}

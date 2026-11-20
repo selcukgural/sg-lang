@@ -1,0 +1,6 @@
+error: `r` borrows from `c` here, but `c` is closed at the end of its block and `r` is used after that
+  what `c` opens is lent for the block only: after it another task, or another owner, may change it
+  --> error_continue_keeps_lock_name.sg:14:21
+ 14 |                 r = read c.name
+    |                     ^^^^^^^^^^^
+  hint: to keep something after the block, copy it there (`.clone()`) into a variable that owns it

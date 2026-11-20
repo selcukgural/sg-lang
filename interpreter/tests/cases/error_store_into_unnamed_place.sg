@@ -1,0 +1,12 @@
+// A borrow added to the list `getOrAdd` gives is held by the map (choice 1592).
+struct Word<from source> : Copyable {
+    read string text
+}
+void main() {
+    var map = HashMap<int, List<Word>>()
+    var text = "hello world, a long text that lives on the heap".clone()
+    map.getOrAdd(1, List<Word>()).add(Word { text = read text })
+    text = "changed to something else entirely".clone()
+    var got = map.get(1) ?? panic("none")
+    print(got[0].text)
+}

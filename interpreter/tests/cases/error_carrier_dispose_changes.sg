@@ -1,0 +1,17 @@
+// The `dispose` of a value with a `ref` field may change what the field borrows (choice 1592).
+struct Guard<from source> : Disposable {
+    ref List<string> items
+    void dispose(ref this) {
+        this.items.clear()
+    }
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var other = "o".clone()
+    var v = read other
+    if true {
+        var g = Guard { items = ref xs }
+        v = read g.items[0]
+    }
+    print(v)
+}

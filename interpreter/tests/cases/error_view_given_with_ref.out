@@ -1,0 +1,10 @@
+error: `s.asBytes()` looks at `s`, which this call is given to change
+  the call may change `s` while `s.asBytes()` is read, and it would be read from what was there
+  --> error_view_given_with_ref.sg:5:27
+ 5 |     Hex.encodeInto(ref s, s.asBytes())
+   |                           ^^^^^^^^^^^
+  given as `ref` here:
+  --> error_view_given_with_ref.sg:5:24
+ 5 |     Hex.encodeInto(ref s, s.asBytes())
+   |                        ^
+  hint: make it a value of its own before the call (`.clone()`, `.toList()`), and give the call that

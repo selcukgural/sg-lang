@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `all` borrows from it and is used again later
+  --> error_store_through_ref_field.sg:16:5
+ 16 |     text = "changed to something else entirely".clone()
+    |     ^^^^
+  `all` borrowed it here:
+  --> error_store_through_ref_field.sg:14:35
+ 14 |         w.items.add(Word { text = read text })
+    |                                   ^^^^^^^^^
+  hint: finish with `all` before this line: a borrow ends at its last use
