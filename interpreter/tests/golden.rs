@@ -466,6 +466,10 @@ fn modules() {
     entries.push(root.join("examples/calclib"));
     // The module of `examples/bare` that needs no machine: its tests.
     entries.push(root.join("examples/bare/log"));
+    // Programs whose `sg.project` takes packages from `tests/packages/lib` (choice 1552).
+    for entry in std::fs::read_dir(root.join("tests/packages")).unwrap() {
+        entries.push(entry.unwrap().path());
+    }
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {

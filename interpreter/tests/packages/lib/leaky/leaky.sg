@@ -1,0 +1,6 @@
+// The folder `stock` of the program that uses the package is not a module of the package.
+use stock
+
+public int count() {
+    return total()
+}

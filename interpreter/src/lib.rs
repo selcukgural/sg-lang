@@ -26,6 +26,7 @@ pub mod signals;
 #[path = "sys/signals_windows.rs"]
 pub mod signals;
 pub mod source;
+pub mod project;
 pub mod opening;
 pub mod json;
 pub mod lsp;
@@ -50,7 +51,7 @@ pub(crate) const STACK_BYTES: usize = 1 << 30;
 /// Parses the files of the program into one tree. With `tests`, the test command: only the
 /// `test` blocks of the files it was pointed at are kept.
 fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
-    let files: Vec<(usize, usize, String)> = sources.files.iter().map(|file| (file.start, file.end, file.module.clone())).collect();
+    let files: Vec<parser::FileIn> = sources.files.iter().map(|file| (file.start, file.end, file.module.clone(), file.map.clone())).collect();
     let mut prog = parser::parse_files(&sources.text, &files)?;
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
     c_files(&mut prog, sources)?;
@@ -70,7 +71,13 @@ fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
             foreign.path = Some(path.clone());
             return Ok(());
         }
-        let source = &sources.file_at(foreign.span.start).path;
+        let file = sources.file_at(foreign.span.start);
+        // A package brings SG and no C: `sg` compiles no C a package gives (choice 1560).
+        if !file.map.prefix.is_empty() {
+            return Err(Diag::error(foreign.span, format!("a package does not bring C of its own: `{written}` is in the package `{}`", file.map.prefix))
+                .note("a package calls a C library the system has, as `extern \"z\"`; it is not given C to compile"));
+        }
+        let source = &file.path;
         let folder = std::path::Path::new(source).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let place = folder.join(&written[2..]);
         // On Windows without `\\?\`, which the C compiler does not take in an `#include`.
@@ -186,9 +193,13 @@ fn missing_use(sources: &Sources, diag: &Diag) -> Option<String> {
         return None;
     }
     let name = diag.msg.split('`').nth(1)?;
+    // The folders of the program are not modules a package can name.
+    if !sources.file_at(diag.span.start).map.prefix.is_empty() {
+        return None;
+    }
     let all = sources.with_every_module()?;
     let unread = &all.files[sources.files.len()..];
-    let files: Vec<(usize, usize, String)> = unread.iter().map(|file| (file.start, file.end, file.module.clone())).collect();
+    let files: Vec<parser::FileIn> = unread.iter().map(|file| (file.start, file.end, file.module.clone(), file.map.clone())).collect();
     let prog = parser::parse_files(&all.text, &files).ok()?;
     let types = prog.structs.iter().map(|decl| (&decl.name, decl.public)).chain(prog.enums.iter().map(|decl| (&decl.name, decl.public)));
     let funcs = prog.funcs.iter().map(|func| (&func.name, func.public));

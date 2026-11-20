@@ -1,0 +1,6 @@
+package example.com/ada/shop
+
+require xml example.com/ada/xml 1.4.0
+require letters example.com/bob/utf 1.1.0
+local xml ../lib/xml
+local letters ../lib/utf

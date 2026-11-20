@@ -1,0 +1,2 @@
+require native example.com/eve/native 1.0.0
+local native ../lib/native

@@ -1,6 +1,6 @@
 ---
 title: Modules
-description: A folder is a module; `use`, `public` and `readonly` say what other modules see, and a program can be a file or a whole folder.
+description: A folder is a module; `use`, `public`, `readonly` and a folder `internal` say what other modules see; a program can be a file or a whole folder, and `sg.project` names its packages.
 sidebar_position: 9
 ---
 
@@ -289,8 +289,64 @@ Box(12) 12 1
 many small programs, each with its own `main`, is run file by file; one program spread over files is run as a
 folder.
 
-A folder is a module only if its name can be written as a name (letters, digits and `_`). There is no package
-manager yet: the modules of a program are the folders beside it.
+A folder is a module only if its name can be written as a name (letters, digits and `_`).
+
+## `internal`
+
+A library of several folders often has modules its own folders need and its users should not touch. A
+module in a folder named `internal` is named only from inside the folder that holds it: `stock/internal/`
+is for `stock` and the folders under it.
+
+```text
+error: `stock.internal` is in a folder `internal`: only the modules inside `stock` name it
+  a folder `internal` keeps what is inside it for the folder that holds it
+  --> main.sg:2:11
+ 2 |     print(stock.internal.secret())
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+## Packages
+
+A package is a library kept in its own repository: its address and a version tag (`v1.4.0`) name it, and no
+registry stands between. A program names the packages it uses in a file `sg.project` beside it, a line for
+each:
+
+```text
+package example.com/ada/shop
+
+require xml example.com/ada/xml 1.4.0
+require letters example.com/bob/utf 1.1.0
+```
+
+The word after `require` is the name the program writes after `use`; without it, the last part of the address
+is the name. Fetching packages is the next step of the language. Until then, a `local` line takes a package
+from a folder, written from the folder of `sg.project`:
+
+```text
+local xml ../lib/xml
+local letters ../lib/utf
+```
+
+A package has an `sg.project` of its own, which gives its address with `package` and names the packages it
+uses. Its root files are the module `xml`, its folders `xml.reader` and so on:
+
+```sg nocheck title="shop/main.sg"
+use xml
+use xml.reader
+
+void main() {
+    print(tag("item"))
+    var reader = Reader { name = "doc".clone() }
+    print(describe(read reader))
+    print(letters.bracket("x"))
+}
+```
+
+Inside the package, its folders are named from its own root (`use reader`), and the packages it uses by the
+names its own `sg.project` gives them. A package sees nothing of the program that uses it: a `use stock` in
+it does not find the program's folder `stock`. Its `internal` folder is its own. A folder beside the program
+cannot have the name of a package, and a package kept inside the program's folder is read only as the
+package.
 
 ## Type aliases: `using`
 

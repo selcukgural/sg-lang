@@ -150,6 +150,16 @@ impl Names {
             }
         };
         if let Some((from, name)) = written.rsplit_once('.') {
+            if let Some(file) = self.file(at) {
+                if self.known(written) && !file.map.reaches(from) {
+                    return Ok(None);
+                }
+                if let Some(parent) = crate::ast::internal_to(module, from) {
+                    if self.known(written) {
+                        return Err(internal_diag(at, &file.map, from, parent));
+                    }
+                }
+            }
             return match self.known(written) {
                 true if from == module || self.public.contains(written) => Ok(Some(written.to_string())),
                 true => Err(hidden(name, from, written)),
@@ -198,15 +208,25 @@ impl Names {
 
     /// For a name that was not found: the `use` line that would bring it in.
     fn use_hint(&self, written: &str, at: Span) -> Option<String> {
-        let uses = self.file(at).map_or(&[][..], |file| file.uses.as_slice());
-        let mut modules: Vec<&String> = self.modules.iter().collect();
+        let file = self.file(at)?;
+        let mut modules: Vec<&String> = self.modules.iter().filter(|module| file.map.reaches(module) && crate::ast::internal_to(&file.module, module).is_none()).collect();
         modules.sort();
         let module = modules.into_iter().find(|module| {
             let full = format!("{module}.{written}");
-            self.known(&full) && self.public.contains(&full) && !uses.iter().any(|(used, _)| used == *module)
+            self.known(&full) && self.public.contains(&full) && !file.uses.iter().any(|(used, _)| used == *module)
         })?;
-        Some(format!("`use {module}` at the top of the file"))
+        Some(format!("`use {}` at the top of the file", file.map.written(module)))
     }
+}
+
+/// A module in a folder `internal`, named from outside the folder that holds it (choice 1561).
+fn internal_diag(at: Span, map: &crate::ast::ModuleMap, module: &str, parent: &str) -> Diag {
+    let (module, parent) = (map.written(module), map.written(parent));
+    let holder = match parent.is_empty() {
+        true => "the program's own modules".to_string(),
+        false => format!("the modules inside `{parent}`"),
+    };
+    Diag::error(at, format!("`{module}` is in a folder `internal`: only {holder} name it")).note("a folder `internal` keeps what is inside it for the folder that holds it")
 }
 
 /// What to say about a type that lacks an interface: a type of the program can have it added, a
@@ -800,16 +820,27 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 return Err(Diag::error(*span, "`std` is the language's own module, and its types are seen from every module")
                     .hint("take the line away: `Duration`, `Instant` and `DateTime` need no `use`"));
             }
-            if names.modules.contains(module) {
+            let map = &file.map;
+            if names.modules.contains(module) && map.reaches(module) {
+                if let Some(parent) = crate::ast::internal_to(&file.module, module) {
+                    return Err(internal_diag(*span, map, module, parent));
+                }
                 continue;
             }
-            let diag = Diag::error(*span, format!("there is no module named `{module}`"));
-            if let Some(inside) = crate::source::inner_modules(&file.module, module).into_iter().find(|inside| names.modules.contains(inside)) {
-                return Err(diag.note("`use` names a module by its path from the folder of the program").hint(format!("`use {inside}`")));
+            let written = map.written(module);
+            let diag = Diag::error(*span, format!("there is no module named `{written}`"));
+            let seen = || names.modules.iter().filter(|other| map.reaches(other) && crate::ast::internal_to(&file.module, other).is_none());
+            let whose = match map.prefix.is_empty() {
+                true => "program",
+                false => "package",
+            };
+            if let Some(inside) = crate::source::inner_modules(&file.module, &written).into_iter().find(|inside| seen().any(|other| other == inside)) {
+                return Err(diag.note(format!("`use` names a module by its path from the folder of the {whose}")).hint(format!("`use {}`", map.written(&inside))));
             }
-            return Err(match nearest(module, names.modules.iter().map(String::as_str)) {
+            let shown: Vec<String> = seen().map(|other| map.written(other)).collect();
+            return Err(match nearest(&written, shown.iter().map(String::as_str)) {
                 Some(close) => diag.hint(format!("`use {close}`")),
-                None => diag.note(format!("a module is a folder with source files, next to the files of the program: `{}/`", module.replace('.', "/"))),
+                None => diag.note(format!("a module is a folder with source files, next to the files of the {whose}: `{}/`", written.replace('.', "/"))),
             });
         }
     }
@@ -4805,7 +4836,12 @@ impl<'a> Checker<'a> {
         if first == "this" || self.find(first).is_some() {
             return None;
         }
-        crate::parser::dotted(expr).filter(|path| self.names.modules.contains(path))
+        let path = crate::parser::dotted(expr)?;
+        let full = match self.names.file(expr.span) {
+            Some(file) => file.map.full(&path),
+            None => path,
+        };
+        self.names.modules.contains(&full).then_some(full)
     }
 
     /// Turns the name of a type or a function into its full name, as the rest of the checker

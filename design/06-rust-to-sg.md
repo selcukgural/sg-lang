@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-sixth slice (a plain text looked for by its two rarest bytes, 1549; UTF-8 checked faster, 1550).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-seventh slice (packages taken from folders by `sg.project`, 1555-1570; the folder `internal`, 1561).
 
 ## Functions and variables
 
@@ -371,7 +371,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-sixth slice (a
 | `use shop::stock` | `use shop.stock` | built | |
 | `stock::total(&xs)` | `stock.total(read xs)` | built | The full name works without `use` |
 | `pub` | `public` | built | On a type, a function, a field, a method |
-| `pub(crate)` | none | not in SG | A name is seen in its module or everywhere |
+| `pub(crate)` | a folder `internal/` | built | As Go's: a module in a folder `internal` is named only from inside the folder that holds it (1561); no third level of `public` |
 | The prelude (`Option`, `Vec`, ...), shadowed by what is imported | the types of `std` (`Log`, `Json`, ...), seen everywhere | built | A type of the module or of a module named with `use` comes first; `std.Log` reaches the language's |
 
 ## Files and input
@@ -637,4 +637,9 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-sixth slice (a
 | `cargo mutants` | the same tool, on the functions named in `.cargo/mutants.toml` | built | Only the rules of safety, then `--in-diff` on what a change touches |
 | rust-analyzer | `sg lsp` | built | In `sg` itself, not a program of its own: the first error as you type, and four hints applied with one click; no hover, definition or completion yet. `editors/vscode` is the extension for VS Code |
 | a suggestion marked `MachineApplicable` | an error with a fix (`Diag::fix`) | built | Given only where the code it writes is certain to check; the risky way (`_ =` on a `Result`) is never one |
-| Cargo, crates.io | none yet | designed | No package manager yet |
+| `Cargo.toml`, `[dependencies] xml = "1.4"` | `sg.project`, `require xml example.com/ada/xml 1.4.0` | built | A line for each thing, as Go's `go.mod` (1556); the name is the one written after `use` (1555) |
+| `[patch]`, `path = "../xml"` | `local xml ../xml` | built | Read only in the program's own `sg.project`, as Go's `replace` |
+| `Cargo.lock` | `sg.lock` | designed | The SHA-256 of each package's files (1558), its `unsafe` and its libraries of C (1560, 1562) |
+| crates.io, `cargo add`, `cargo update` | a repository and a tag, `sg add`, `sg update` | designed | No registry: a package is where its author keeps it (1552); versions chosen as Go chooses them, so a new release changes no build |
+| `build.rs` | none | not in SG | No code of a package runs while it is fetched or built (1559); a package calls a C library of the system, and gives no C to compile (1560) |
+| `cargo-geiger` | the `unsafe` of a `require` line | designed | A package with `unsafe` is compiled only when the program's line says `unsafe` (1562) |

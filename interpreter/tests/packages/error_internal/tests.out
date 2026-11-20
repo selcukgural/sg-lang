@@ -1,0 +1,5 @@
+error: `xml.internal` is in a folder `internal`: only the modules inside `xml` name it
+  a folder `internal` keeps what is inside it for the folder that holds it
+  --> error_internal/main.sg:1:5
+ 1 | use xml.internal
+   |     ^^^^^^^^^^^^

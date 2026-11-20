@@ -36,7 +36,7 @@ of `tests/Containerfile` has them.
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
-| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
+| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program. Packages: an `sg.project` beside the program names them, `require xml example.com/ada/xml 1.4.0`, and until they are fetched `local xml ../xml` takes one from a folder; `use xml` and `use xml.reader` name its modules, and inside it `use reader` names its own. A folder `internal` is named only from inside the folder that holds it |
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `CLong` and `CULong` (C's `long` and `unsigned long`), `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, pointers to functions of C `CFunc<A, R>`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
@@ -9524,6 +9524,84 @@ Approved the same day, for what comes next:
      SG is measured as it ships, with its checks on; the machine, the tools, the flags and what is left out
      are written beside every table.
 
+Choices made in the hundred-and-thirty-seventh slice (packages, first: the file of the project, packages
+taken from folders and the folder `internal`), approved on 20 November 2026. 1555, 1556, 1561 and the
+parts of 1557 and 1560 that need no fetching are built in this slice; 1558, 1559, 1562-1564 come with
+fetching, in the next one:
+
+1555. **A package is named by the name the project gives it**: `require xml example.com/ada/xml 1.4.0`,
+     and the program writes `use xml`, `use xml.reader`, `xml.Node`. Without a name in front of the address,
+     the last part of the address is the name; one that cannot be written after `use` (`sg-zlib`) is an
+     error whose hint is the line with a name. Inside a package its own folders are named from its root
+     (`use reader`), and the packages it uses by the names its own `sg.project` gives them, so two packages
+     may call a third by two names. A folder of the program with modules in it or below it, named as a
+     package is, is an error on the `require` line. Go writes the whole address in every file, which changes
+     every file when a package moves; Zig and Rust name the package once, as here.
+1556. **The project is a file `sg.project`, one thing on each line**: `package` (the address the project is
+     fetched from), `require`, and `local` (a package from a folder, read only in the program's own file, as
+     Go's `replace`); the file of locks, written by `sg`, is `sg.lock`. A form of our own, as Go's `go.mod`,
+     not TOML or the language's own notation: `sg` stays without dependencies, it is read in a page of code,
+     and a change shows as one line in a diff.
+1557. **A version is a tag of three numbers**, `v1.4.0`, written `1.4.0` in the project; versions are chosen
+     inside one major version, and two major versions of one address are two packages, which a program can
+     have side by side under two names (Go's rule, without `/v2` in the address). Only tags, no branches or
+     commits, at first.
+1558. **A package is fetched by `git` alone**, over HTTPS (`ssh` through git's own settings), in place of
+     `git`, `curl` and `tar` in 1552: `git clone --depth 1 --branch v1.4.0 -- URL`, with `file://`, `ext::`
+     and `git://` refused. `.git` is taken away and the SHA-256 is of the tree of files, each path and its
+     bytes in order, as Zig's, not of an archive, whose bytes a host may change. A link, a `..`, two paths
+     that differ only in case or a package too large is refused; a tag moved to other code no longer has
+     the SHA-256 the lock holds.
+1559. **No code of a package runs while it is fetched or built**: nothing like Rust's `build.rs`, npm's
+     `postinstall` or Zig's `build.zig`. Scripts that run where a package is installed are the widest door
+     of attacks on what programs are made of.
+1560. **A package that calls C calls a library of the system**, with `extern "z"` as a module does; `sg`
+     compiles no C a package gives (`extern "./native.c"` in a package is an error), and the lock writes the
+     libraries of C each package links. `vcpkg` and `pkg-config` come later.
+1561. **The boundary of a library is a folder `internal`**, as Go's: a module in a folder named `internal`
+     is named only from inside the folder that holds it, `xml.internal` from `xml` and its folders, and
+     `stock.internal` of a program from `stock` and its folders. No new word. It answers the boundary that
+     waited for packages (C#'s `internal`, Rust's `pub(crate)`).
+1562. **`unsafe` in a package is seen**: `sg` finds the `unsafe` and the `extern` of every package when it
+     fetches it and writes them in the lock, and a package that has them, used directly or through another,
+     is not compiled unless the program's `require` line ends in `unsafe`; a new version that starts to use
+     `unsafe` stops the update. Rust has nothing of the kind (`cargo-geiger` is a tool apart).
+1563. **The fetched packages are kept once for the user**, a folder for each SHA-256, their files read
+     only: `$XDG_CACHE_HOME/sg` (or `~/.cache/sg`) on Linux, `~/Library/Caches/sg` on macOS,
+     `%LOCALAPPDATA%\sg` on Windows; `SG_CACHE` names another.
+1564. **The commands**: `sg add URL[@1.4]` takes the newest tag that fits, writes both files and shows the
+     `unsafe` and the libraries of C of what it brings; `sg update [name]`; `sg remove name`. `sg`, `sg build`
+     and `sg test` fetch what the lock has and the cache does not, and never change the lock; a package not
+     in it, or whose SHA-256 differs, is an error.
+
+Found while it was written, approved the same day:
+
+1565. **The `package` line**: a program may leave it out; a package has it, and it must be the address its
+     `require` line names, so a folder given to the wrong line is found.
+1566. **A comment in `sg.project` is `//`**, as in the language, at the start of a line or after a space: an
+     address has no `//` in it.
+1567. **A folder with an `sg.project` of its own is not a module of the program around it**, as a folder
+     with a `go.mod` is not in Go: a package kept inside the program's folder (`local xml vendor/xml`) is read
+     only as the package, and `sg test` of the program does not run its tests.
+1568. **Until packages are fetched, the program names every package**, one that only another package uses
+     too, with its `local` line; the message says which line to add. The name the program gives it is the
+     name its modules are kept under, and the package that uses it keeps its own name for it.
+1569. **The folder of a `local` line is written from the folder of `sg.project`** and cleaned as Go's
+     `filepath.Clean` cleans it (`shop/../lib/xml` is `lib/xml`), so the files of a package are named in
+     messages as the reader sees them.
+1570. **A package's tests are not run by the program's `sg test`**; they are the package's to run, in its
+     own folder.
+
+Tested by six programs in `tests/packages`, beside two packages in `tests/packages/lib`: `shop` uses `xml`,
+which uses `utf` under another name than the program's, its folder `reader` and its folder `internal`,
+and its own module `stock`, interpreted, compiled (`builds_a_program_with_packages`) and with its tests
+(the packages' failing tests are not run); and an error for each of: a program that names `xml.internal`,
+by `use` and by its full name; `stock.internal` named from outside `stock`; `text`, the other package's name
+for `utf`; a package that names the program's folder `stock`; and a package with C of its own. In `cli.rs`,
+seven ways an `sg.project` cannot be followed, each stopping with 2 and the line, and a package kept inside
+the program's folder; in `project.rs`, the lines and thirteen wrong ones. The whole of the tests passes on macOS, with 483 of the 1853 programs
+compiled as before; the back end is unchanged, so it was not run again on Linux, and Windows runs it in CI.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9689,6 +9767,11 @@ check off.
   Tokio's numbers on Windows.
 
 ## Not here yet
+
+- **Of packages (1552, 1555-1570)**: fetching them, the lock, the cache, `sg add`, `sg update` and `sg
+  remove`, and the check of `unsafe` (1558, 1559, 1562-1564) come in the next slice; until then a package is
+  taken from a folder by a `local` line, and every package is named in the program's `sg.project`.
+  Versions are read and checked as written, and nothing is chosen among them yet.
 
 - **Of the output (1543-1547)**: on Windows, the message of an output that cannot be written is C's text of
   the error compiled and Windows' interpreted (1547). The padding inside a struct of
@@ -10204,8 +10287,10 @@ compiler `CC` names and an `IoError` written as a sentence (1525-1539). What the
 the next trial (1543): `print` first, which writes into a block of the program's own, its lines put
 together where they are printed (1544-1546), and ends compiled code where it cannot write, as it ends the
 interpreter (1547); then reading lines and a search for a plain text, found by its two rarest bytes, and
-UTF-8 checked faster (1549, 1550). Packages come next (1552): a package is a repository and a version,
-pinned by the SHA-256 of its contents, with no registry. Then every module of `std` is measured against
+UTF-8 checked faster (1549, 1550). Packages have begun (1552, 1555-1570): a program's `sg.project` names
+them, a package is taken from a folder for now, and a folder `internal` keeps a library's own modules to
+itself; fetching them by `git`, pinned by the SHA-256 of their files in `sg.lock`, with no registry, comes
+next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

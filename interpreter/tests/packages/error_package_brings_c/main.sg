@@ -1,0 +1,5 @@
+use native
+
+void main() {
+    print(ask())
+}

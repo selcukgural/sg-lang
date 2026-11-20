@@ -1,0 +1,5 @@
+error: there is no module named `stock`
+  a module is a folder with source files, next to the files of the package: `stock/`
+  --> lib/leaky/leaky.sg:2:5
+ 2 | use stock
+   |     ^^^^^

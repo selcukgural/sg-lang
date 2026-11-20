@@ -1,0 +1,2 @@
+require leaky example.com/eve/leaky 0.1.0
+local leaky ../lib/leaky

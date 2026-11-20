@@ -1,0 +1,5 @@
+use stock.internal
+
+public int open() {
+    return secret()
+}

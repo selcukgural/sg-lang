@@ -1,0 +1,7 @@
+extern "./native.c" {
+    public int answer()
+}
+
+public int ask() {
+    return unsafe answer()
+}

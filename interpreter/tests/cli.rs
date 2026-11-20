@@ -937,3 +937,76 @@ fn the_output_keeps_its_order() {
         assert!(both == expected, "{way}: {}", both.replace(&"x".repeat(70000), "x * 70000"));
     }
 }
+
+/// A program whose `sg.project` takes packages from folders (choices 1552, 1555): compiled, it
+/// prints what the interpreter prints (`tests/packages/shop/main.out`).
+#[test]
+fn builds_a_program_with_packages() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_a_program_with_packages");
+    let shop = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packages/shop");
+    let out = dir.join("shop");
+    assert_eq!(ran(&sg(&dir, &["build", &shop.to_string_lossy(), "-o", &out.to_string_lossy()])), (0, String::new(), String::new()));
+    let expected = std::fs::read_to_string(shop.join("main.out")).unwrap().replace("\r\n", "\n");
+    assert_eq!(ran(&Command::new(program(&dir, "shop")).output().unwrap()), (0, expected, String::new()));
+}
+
+/// An `sg.project` that cannot be followed stops the command before anything is read, with 2,
+/// as a program that cannot be read does; the message names the line.
+#[test]
+fn refuses_a_project_that_cannot_be_followed() {
+    let dir = work("refuses_a_project_that_cannot_be_followed");
+    let lib = dir.join("lib");
+    for (name, address, requires) in [("utf", "example.com/bob/utf", ""), ("xml", "example.com/ada/xml", "require text example.com/bob/utf 1.0.0\n")] {
+        std::fs::create_dir_all(lib.join(name)).unwrap();
+        write(&lib.join(name), "sg.project", &format!("package {address}\n{requires}"));
+        write(&lib.join(name), &format!("{name}.sg"), "public int one() {\n    return 1\n}\n");
+    }
+    std::fs::create_dir_all(lib.join("bare")).unwrap();
+    write(&lib.join("bare"), "bare.sg", "public int one() {\n    return 1\n}\n");
+    let cases: &[(&str, &str)] = &[
+        ("requires xml example.com/ada/xml 1.4.0\n", "sg.project:1: `requires` is not a line of `sg.project`"),
+        ("require xml example.com/ada/xml 1.4.0\n", "sg.project:1: the package `xml` has no `local` line, and packages are not fetched yet"),
+        ("require xml example.com/ada/xml 1.4.0\nlocal xml lib/nothing\n", "sg.project:2: there is no folder"),
+        ("require bare example.com/ada/bare 1.0.0\nlocal bare lib/bare\n", "has no `sg.project`, which every package has"),
+        ("require xml example.com/ada/other 1.4.0\nlocal xml lib/xml\n", "sg.project:2: the package in"),
+        ("require xml example.com/ada/xml 1.4.0\nlocal xml lib/xml\n", "the package `xml` uses example.com/bob/utf 1.0.0, which the program's `sg.project` does not name"),
+        ("require lib example.com/ada/xml 1.4.0\nlocal lib lib/xml\n", "sg.project:1: the folder `lib` beside the program has the name of the package `lib`"),
+    ];
+    write(&dir, "main.sg", "void main() {\n    print(1)\n}\n");
+    std::fs::create_dir_all(dir.join("lib/sub")).unwrap();
+    write(&dir.join("lib/sub"), "sub.sg", "public int two() {\n    return 2\n}\n");
+    for (project, said) in cases {
+        write(&dir, "sg.project", project);
+        let (code, out, err) = ran(&sg(&dir, &["main.sg"]));
+        assert_eq!((code, out.as_str()), (2, ""), "{project}: {err}");
+        assert!(err.starts_with("error: ") && err.contains(said), "{project}: {err}");
+    }
+    // Given there with a `local` line, the package the other one uses is found, by its own name.
+    write(&dir, "sg.project", "require xml example.com/ada/xml 1.4.0\nrequire letters example.com/bob/utf 1.2.0\nlocal xml lib/xml\nlocal letters lib/utf\n");
+    write(&dir, "main.sg", "use xml\nuse letters\n\nvoid main() {\n    print(xml.one() + letters.one())\n}\n");
+    std::fs::remove_dir_all(dir.join("lib/sub")).unwrap();
+    assert_eq!(ran(&sg(&dir, &["main.sg"])), (0, "2\n".into(), String::new()));
+}
+
+/// A package kept inside the program's folder is read as a package and not as a module of the
+/// program, as a folder with a `go.mod` is in Go: its tests are not the program's.
+#[test]
+fn a_package_inside_the_program_is_not_its_module() {
+    let dir = work("a_package_inside_the_program_is_not_its_module");
+    let xml = dir.join("vendor").join("xml");
+    std::fs::create_dir_all(&xml).unwrap();
+    write(&xml, "sg.project", "package example.com/ada/xml\n");
+    write(&xml, "xml.sg", "public int one() {\n    return 1\n}\n\ntest \"the package's own\" {\n    assert(false)\n}\n");
+    write(&dir, "sg.project", "require xml example.com/ada/xml 1.0.0\nlocal xml vendor/xml\n");
+    write(&dir, "main.sg", "use xml\n\nvoid main() {\n    print(one())\n}\n\ntest \"the program's own\" {\n    assert(one() == 1)\n}\n");
+    assert_eq!(ran(&sg(&dir, &["main.sg"])), (0, "1\n".into(), String::new()));
+    let (code, out, _) = ran(&sg(&dir, &["test", "."]));
+    assert_eq!((code, out.as_str()), (0, "ok    the program's own\n1 test(s) passed\n"));
+    write(&dir, "main.sg", "use vendor.xml\n\nvoid main() {\n    print(one())\n}\n");
+    let (code, _, err) = ran(&sg(&dir, &["main.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: there is no module named `vendor.xml`"), "{err}");
+}

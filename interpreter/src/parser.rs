@@ -19,17 +19,21 @@ const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked"
 type Res<T> = Result<T, Diag>;
 
 pub fn parse(src: &str) -> Res<Program> {
-    parse_files(src, &[(0, src.len(), String::new())])
+    parse_files(src, &[(0, src.len(), String::new(), Default::default())])
 }
+
+/// A file of a program: where it lies in the text, its module and how it writes the names of
+/// modules.
+pub type FileIn = (usize, usize, String, std::sync::Arc<crate::ast::ModuleMap>);
 
 /// Parses the files of a program, each given as where it lies in `src` and the module it
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
-pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
+pub fn parse_files(src: &str, files: &[FileIn]) -> Res<Program> {
     let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new(), value_layouts: Default::default() };
-    for (start, end, module) in files {
+    for (start, end, module, map) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
-        let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0 };
+        let mut parser = Parser { src, map: map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0 };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
         let (cvars, blocks, consts, statics) = (program.cvars.len(), program.blocks.len(), program.consts.len(), program.statics.len());
         let uses = parser.file(&mut program)?;
@@ -54,7 +58,7 @@ pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> 
             program.statics.push(decl);
             program.funcs.push(init);
         }
-        program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses });
+        program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses, map: map.clone() });
     }
     Ok(program)
 }
@@ -65,6 +69,9 @@ pub const MAX_NESTING: usize = 1000;
 
 struct Parser<'a> {
     src: &'a str,
+    /// How the file writes the names of modules: a name with a module in front is kept by the
+    /// full name of the module.
+    map: std::sync::Arc<crate::ast::ModuleMap>,
     toks: Vec<Token>,
     i: usize,
     /// Off while parsing a condition: there `x {` starts the block, not a struct literal.
@@ -271,6 +278,7 @@ impl<'a> Parser<'a> {
             self.bump();
             name = format!("{name}.{}", self.ident("a type name")?.0);
         }
+        let name = self.map.full_name(&name);
         let mut args = Vec::new();
         if self.eat(&Tok::Lt) {
             loop {
@@ -310,7 +318,7 @@ impl<'a> Parser<'a> {
                                 self.bump();
                                 name = format!("{name}.{}", self.ident("the name of a const")?.0);
                             }
-                            let full = self.local_const(&name).unwrap_or(name);
+                            let full = self.local_const(&name).unwrap_or_else(|| self.map.full_name(&name));
                             suffixes.push(Suffix::Named(full, Span::new(at.start, self.prev_end())));
                             if *self.peek() != Tok::RBracket {
                                 return Err(self.unexpected("`]`"));
@@ -503,8 +511,9 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(line, "`use` is written at the top of the file, before everything else"));
                 }
                 let (module, span) = self.use_line()?;
+                let module = self.map.full(&module);
                 if uses.iter().any(|(other, _)| *other == module) {
-                    return Err(Diag::error(span, format!("`use {module}` is written twice")));
+                    return Err(Diag::error(span, format!("`use {}` is written twice", self.map.written(&module))));
                 }
                 uses.push((module, span));
                 if *self.peek() != Tok::Eof {
@@ -2146,7 +2155,7 @@ impl<'a> Parser<'a> {
                 if let Some(module) = dotted(&expr) {
                     let start = expr.span.start;
                     let fields = self.struct_fields()?;
-                    let kind = ExprKind::StructLit { name: format!("{module}.{name}"), name_span: Span::new(start, name_span.end), fields };
+                    let kind = ExprKind::StructLit { name: format!("{}.{name}", self.map.full(&module)), name_span: Span::new(start, name_span.end), fields };
                     expr = Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) };
                     continue;
                 }
@@ -2459,7 +2468,7 @@ impl<'a> Parser<'a> {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
                 Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
-                    let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth };
+                    let mut inner = Parser { src: self.src, map: self.map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
                         let diag = inner.unexpected("`}`");

@@ -1,0 +1,3 @@
+void main() {
+    print(xml.internal.escaped("a"))
+}

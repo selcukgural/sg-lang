@@ -168,7 +168,97 @@ pub struct FileScope {
     pub start: usize,
     pub end: usize,
     pub module: String,
+    /// The modules `uses` names, by their full names.
     pub uses: Vec<(String, Span)>,
+    pub map: std::sync::Arc<ModuleMap>,
+}
+
+/// How the files of one package write the names of modules (choice 1555). A package's modules
+/// are kept under the name the program gives it: the root files of the package `xml` are the
+/// module `xml`, its folder `reader` is `xml.reader`. Inside the package `reader` is written, and
+/// the packages it uses by the names its own `sg.project` gives them. The program's own files
+/// write every name as it is kept.
+#[derive(Clone, Default, Debug)]
+pub struct ModuleMap {
+    /// The module of the package's root files; empty for the program's own files.
+    pub prefix: String,
+    /// The packages the package (or the program) names, each by the name it writes and the
+    /// module of that package's root files.
+    pub packages: Vec<(String, String)>,
+    /// The module of the root files of every package of the program.
+    pub every_package: std::sync::Arc<Vec<String>>,
+}
+
+impl ModuleMap {
+    /// The full name of the module written as `written` in a file of this package.
+    pub fn full(&self, written: &str) -> String {
+        let (first, rest) = written.split_once('.').map_or((written, None), |(first, rest)| (first, Some(rest)));
+        if let Some((_, root)) = self.packages.iter().find(|(name, _)| name == first) {
+            return match rest {
+                Some(rest) => format!("{root}.{rest}"),
+                None => root.clone(),
+            };
+        }
+        if self.prefix.is_empty() || first == crate::source::STD_MODULE {
+            return written.to_string();
+        }
+        format!("{}.{written}", self.prefix)
+    }
+
+    /// A name of a type or a function written with its module in front (`reader.Node`), with the
+    /// module turned into its full name.
+    pub fn full_name(&self, written: &str) -> String {
+        match written.rsplit_once('.') {
+            Some((module, name)) => format!("{}.{name}", self.full(module)),
+            None => written.to_string(),
+        }
+    }
+
+    /// The package a module is in: the module of its root files, or empty for the program's own.
+    pub fn package_of<'a>(&self, module: &'a str) -> &'a str {
+        self.every_package.iter().find(|root| module == root.as_str() || module.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('.'))).map_or("", |root| &module[..root.len()])
+    }
+
+    /// Whether a file of this package may name `module`: one of its own package, of a package it
+    /// names, or the language's own.
+    pub fn reaches(&self, module: &str) -> bool {
+        let package = self.package_of(module);
+        package == self.prefix || module == crate::source::STD_MODULE || self.packages.iter().any(|(_, root)| root == package)
+    }
+
+    /// How a file of this package writes the module kept as `full`: the other way of `full`.
+    pub fn written(&self, full: &str) -> String {
+        for (name, root) in &self.packages {
+            if full == root {
+                return name.clone();
+            }
+            if let Some(rest) = full.strip_prefix(root.as_str()).and_then(|rest| rest.strip_prefix('.')) {
+                return format!("{name}.{rest}");
+            }
+        }
+        match full.strip_prefix(self.prefix.as_str()).and_then(|rest| rest.strip_prefix('.')) {
+            Some(rest) if !self.prefix.is_empty() => rest.to_string(),
+            _ => full.to_string(),
+        }
+    }
+}
+
+/// Whether a file of `from` may name `module` by the rule of `internal` (choice 1561): a module
+/// in a folder named `internal` is named only from inside the folder that holds `internal`.
+/// Gives the folder it is kept in when it may not.
+pub fn internal_to<'a>(from: &str, module: &'a str) -> Option<&'a str> {
+    let mut at: usize = 0;
+    for part in module.split('.') {
+        if part == "internal" {
+            let parent = &module[..at.saturating_sub(1)];
+            let inside = parent.is_empty() || from == parent || from.strip_prefix(parent).is_some_and(|rest| rest.starts_with('.'));
+            if !inside {
+                return Some(parent);
+            }
+        }
+        at += part.len() + 1;
+    }
+    None
 }
 
 /// The module in a full name: `shop.stock` in `shop.stock.Product`, nothing for a name of the

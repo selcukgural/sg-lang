@@ -1,0 +1,10 @@
+use internal
+use text
+
+public string tag(read string name) {
+    return bracket(read escaped(name))
+}
+
+public string closing(read string name) {
+    return text.bracket(read internal.escaped(read $"/{name}".toString()))
+}

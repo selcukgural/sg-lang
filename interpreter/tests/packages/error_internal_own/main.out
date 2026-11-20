@@ -1,0 +1,5 @@
+error: `stock.internal` is in a folder `internal`: only the modules inside `stock` name it
+  a folder `internal` keeps what is inside it for the folder that holds it
+  --> error_internal_own/main.sg:2:11
+ 2 |     print(stock.internal.secret())
+   |           ^^^^^^^^^^^^^^^^^^^^^^^

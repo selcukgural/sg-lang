@@ -187,7 +187,8 @@ are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is writt
   in QEMU.
 - **Tools**: `sg test`, a debug build that reports leaks, and `sg lsp` with an extension for VS Code.
 
-Not yet: generics of your own, a package manager and a full standard library. Left out on purpose:
+Not yet: generics of your own, fetching packages (a program's `sg.project` takes them from folders for now)
+and a full standard library. Left out on purpose:
 closures; a function value is the address of a named function.
 
 Every test program runs in the interpreter and compiled, under the sanitizers, and the two must print the

@@ -1,0 +1,2 @@
+// A package used by the program and by another package, under two names.
+package example.com/bob/utf

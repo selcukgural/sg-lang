@@ -7,6 +7,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::ast::ModuleMap;
+use crate::project::{self, Project};
 
 use crate::diag::{snippet, Span};
 use crate::lexer::{lex, Part, Tok};
@@ -92,6 +96,19 @@ pub struct SourceFile {
     pub end: usize,
     /// Whether the test command runs the `test` blocks of this file.
     pub tested: bool,
+    /// How the file writes the names of modules: the package it is in.
+    pub map: Arc<ModuleMap>,
+}
+
+/// A package the program uses (choice 1552), taken from a folder by a `local` line.
+pub struct Package {
+    /// The name the program's `sg.project` gives it, which is the module of its root files.
+    pub name: String,
+    pub address: String,
+    pub folder: PathBuf,
+    /// The program allows it `unsafe` code (choice 1562).
+    pub allows_unsafe: bool,
+    pub map: Arc<ModuleMap>,
 }
 
 pub struct Sources {
@@ -101,13 +118,16 @@ pub struct Sources {
     root: Option<PathBuf>,
     /// The folders `-L` names (see `Program::lib_dirs`).
     pub lib_dirs: Vec<PathBuf>,
+    /// How the program's own files write the names of modules.
+    map: Arc<ModuleMap>,
+    pub packages: Vec<Package>,
 }
 
 impl Sources {
     /// A program that is one text.
     pub fn single(src: &str, path: &str) -> Sources {
-        let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true };
-        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None, lib_dirs: Vec::new() };
+        let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true, map: Arc::default() };
+        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new() };
         sources.add_std();
         sources
     }
@@ -137,7 +157,7 @@ impl Sources {
                 if !added[at] && types.iter().any(|name| named.contains(*name)) {
                     added[at] = true;
                     more = true;
-                    let start = self.add(format!("<built-in>/std/{file}"), STD_MODULE, text, false);
+                    let start = self.add(format!("<built-in>/std/{file}"), STD_MODULE, text, false, Arc::default());
                     let file = &self.files[start];
                     names_in(&self.text[..file.end], file.start, &mut named);
                 }
@@ -148,13 +168,13 @@ impl Sources {
         }
     }
 
-    fn add(&mut self, path: String, module: &str, text: &str, tested: bool) -> usize {
+    fn add(&mut self, path: String, module: &str, text: &str, tested: bool, map: Arc<ModuleMap>) -> usize {
         if !self.text.is_empty() {
             self.text.push('\n');
         }
         let start = self.text.len();
         self.text.push_str(text);
-        self.files.push(SourceFile { path, module: module.to_string(), start, end: self.text.len(), tested });
+        self.files.push(SourceFile { path, module: module.to_string(), start, end: self.text.len(), tested, map });
         self.files.len() - 1
     }
 
@@ -181,15 +201,15 @@ impl Sources {
         if modules.is_empty() {
             return None;
         }
-        let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), ..*file }).collect();
-        let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone() };
+        let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), map: file.map.clone(), ..*file }).collect();
+        let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone(), map: self.map.clone(), packages: Vec::new() };
         // Named as `load` names them: without `./` in front.
         let base = if root == Path::new(".") { PathBuf::new() } else { root.clone() };
         for module in modules {
             let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
             for file in sg_files(&folder) {
                 let text = std::fs::read_to_string(&file).ok()?;
-                all.add(file.to_string_lossy().into_owned(), &module, &text, false);
+                all.add(file.to_string_lossy().into_owned(), &module, &text, false, self.map.clone());
             }
         }
         Some(all)
@@ -234,7 +254,7 @@ fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
     folders.sort();
     for folder in folders {
         let Some(name) = folder.file_name().and_then(|name| name.to_str()) else { continue };
-        if !is_module_name(name) {
+        if !is_module_name(name) || is_project(&folder) {
             continue;
         }
         let module = if prefix.is_empty() { name.to_string() } else { format!("{prefix}.{name}") };
@@ -255,6 +275,13 @@ pub fn inner_modules(module: &str, name: &str) -> Vec<String> {
         prefix = prefix.rfind('.').map_or("", |at| &prefix[..at]);
     }
     found
+}
+
+/// A folder with an `sg.project` of its own is a project, not a module of the one around it, as
+/// a folder with a `go.mod` is in Go: a package kept inside the program's folder is read as a
+/// package, by its `local` line.
+fn is_project(folder: &Path) -> bool {
+    folder.join(project::FILE).is_file()
 }
 
 /// A folder is a module only if its name can be written in the language.
@@ -318,31 +345,60 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         Some(text) => Ok(text.clone()),
         None => std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path))),
     };
-    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new() };
-    let root = if path.is_dir() {
+    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new() };
+    let (root, root_files) = if path.is_dir() {
         let files = sg_files(path);
         if files.is_empty() {
             return Err(format!("there is no `.sg` file in {}", shown(path)));
         }
-        for file in files {
-            sources.add(shown(&file), "", &read(&file)?, true);
-        }
-        path.to_path_buf()
+        (path.to_path_buf(), files)
     } else {
-        sources.add(shown(path), "", &read(path)?, true);
-        path.parent().map(Path::to_path_buf).unwrap_or_default()
+        (path.parent().map(Path::to_path_buf).unwrap_or_default(), vec![path.to_path_buf()])
     };
     // `sg main.sg`: the modules are looked for in the current folder, and their files are named
     // as the main file is, `stock/product.sg` and not `./stock/product.sg` (choice 1401).
     let base = root.clone();
     let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root };
     sources.root = Some(root.clone());
+    if let Some(project) = project::read(&root)? {
+        sources.packages = packages(&project, &base)?;
+        let every: Arc<Vec<String>> = Arc::new(sources.packages.iter().map(|package| package.name.clone()).collect());
+        sources.map = Arc::new(ModuleMap { prefix: String::new(), packages: sources.packages.iter().map(|package| (package.name.clone(), package.name.clone())).collect(), every_package: every.clone() });
+        for package in &mut sources.packages {
+            Arc::get_mut(&mut package.map).expect("not shared yet").every_package = every.clone();
+        }
+    }
+    for file in root_files {
+        sources.add(shown(&file), "", &read(&file)?, true, sources.map.clone());
+    }
 
+    // The folder a module is in, and how its files write the names of modules.
+    let own_map = sources.map.clone();
+    let places: Vec<(String, PathBuf, Arc<ModuleMap>)> = sources.packages.iter().map(|package| (package.name.clone(), package.folder.clone(), package.map.clone())).collect();
+    let folder_of = |module: &str| -> Option<(PathBuf, Arc<ModuleMap>)> {
+        let package = own_map.package_of(module);
+        let (mut folder, map, rest) = match places.iter().find(|(name, _, _)| name == package && !package.is_empty()) {
+            Some((_, folder, map)) => (folder.clone(), map.clone(), module[package.len()..].trim_start_matches('.')),
+            None => (base.clone(), own_map.clone(), module),
+        };
+        if !rest.is_empty() {
+            if !rest.split('.').all(is_module_name) || !spelled_as(&folder, rest) {
+                return None;
+            }
+            for part in rest.split('.') {
+                folder = folder.join(part);
+                if is_project(&folder) {
+                    return None;
+                }
+            }
+        }
+        Some((folder, map))
+    };
     let mut wanted: Vec<String> = Vec::new();
     if every_module && path.is_dir() {
         modules_under(&root, "", &mut wanted);
     }
-    let mut asked: HashMap<String, bool> = HashMap::new();
+    let mut asked: HashMap<String, Option<(PathBuf, Arc<ModuleMap>)>> = HashMap::new();
     let mut loaded: HashSet<String> = HashSet::new();
     let mut scanned = 0;
     loop {
@@ -350,19 +406,22 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         while scanned < sources.files.len() {
             let file = &sources.files[scanned];
             let mut exists = |module: &str| {
-                *asked.entry(module.to_string()).or_insert_with(|| {
-                    let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
-                    module.split('.').all(is_module_name) && spelled_as(&base, module) && !sg_files(&folder).is_empty()
-                })
+                asked.entry(module.to_string()).or_insert_with(|| folder_of(module).filter(|(folder, _)| !sg_files(folder).is_empty())).is_some()
             };
-            for module in named_paths(&sources.text, Span::new(file.start, file.end)) {
+            for written in named_paths(&sources.text, Span::new(file.start, file.end)) {
+                let module = file.map.full(&written);
+                // A module of a package the file's own does not name is not read: the checker
+                // says there is no such module.
+                if !file.map.reaches(&module) {
+                    continue;
+                }
                 if exists(&module) {
                     wanted.push(module);
                     continue;
                 }
                 // `use units` in `stock/` where `stock/units/` is: that module is read too, so
                 // that the checker can say it is `use stock.units` (choice 1401).
-                if let Some(inside) = inner_modules(&file.module, &module).into_iter().find(|inside| exists(inside)) {
+                if let Some(inside) = inner_modules(&file.module, &written).into_iter().find(|inside| exists(inside)) {
                     wanted.push(inside);
                 }
             }
@@ -375,11 +434,104 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         if !loaded.insert(module.clone()) {
             continue;
         }
-        let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
+        let Some((folder, map)) = asked.get(&module).cloned().flatten().or_else(|| folder_of(&module)) else { continue };
+        let own = map.prefix.is_empty();
         for file in sg_files(&folder) {
-            sources.add(shown(&file), &module, &read(&file)?, every_module);
+            sources.add(shown(&file), &module, &read(&file)?, every_module && own, map.clone());
         }
     }
     sources.add_std();
     Ok(sources)
+}
+
+/// The packages the program's `sg.project` names, each from the folder its `local` line gives
+/// (fetching them is not here yet). A package's own `sg.project` says its address and the
+/// packages it uses, which the program names too.
+fn packages(project: &Project, base: &Path) -> Result<Vec<Package>, String> {
+    let at = |line: usize| format!("{}:{line}", project.path.display());
+    let project_folder = project.path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut found = Vec::new();
+    for require in &project.requires {
+        if holds_modules(base, &require.name) {
+            return Err(format!("{}: the folder `{}` beside the program has the name of the package `{}`: one of them is named otherwise", at(require.line), require.name, require.name));
+        }
+        let Some(local) = project.locals.iter().find(|local| local.name == require.name) else {
+            return Err(format!(
+                "{}: the package `{}` has no `local` line, and packages are not fetched yet: `local {} ../{}` takes it from a folder",
+                at(require.line),
+                require.name,
+                require.name,
+                require.name
+            ));
+        };
+        let folder = cleaned(&project_folder.join(&local.folder));
+        if !folder.is_dir() {
+            return Err(format!("{}: there is no folder {} for the package `{}`", at(local.line), folder.display(), require.name));
+        }
+        let Some(own) = project::read(&folder)? else {
+            return Err(format!("{}: {} has no `{}`, which every package has, with its `package` line", at(local.line), folder.display(), project::FILE));
+        };
+        match &own.package {
+            Some(address) if *address == require.address => {}
+            Some(address) => return Err(format!("{}: the package in {} is {address}, and the line asks for {}", at(local.line), folder.display(), require.address)),
+            None => return Err(format!("{}: the `{}` of a package says where it is fetched from: `package {}`", own.path.display(), project::FILE, require.address)),
+        }
+        found.push((require, folder, own));
+    }
+    let mut packages = Vec::new();
+    for (require, folder, own) in &found {
+        let mut names = Vec::new();
+        for needed in &own.requires {
+            let Some(given) = project.requires.iter().find(|other| other.address == needed.address && other.version.major == needed.version.major) else {
+                return Err(format!(
+                    "{}:{}: the package `{}` uses {} {}, which the program's `{}` does not name; packages are not fetched yet, so it is given there with a `local` line: `require {} {} {}`",
+                    own.path.display(),
+                    needed.line,
+                    require.name,
+                    needed.address,
+                    needed.version,
+                    project::FILE,
+                    needed.name,
+                    needed.address,
+                    needed.version
+                ));
+            };
+            if holds_modules(folder, &needed.name) {
+                return Err(format!("{}:{}: the folder `{}` of the package has the name of the package it uses: one of them is named otherwise", own.path.display(), needed.line, needed.name));
+            }
+            names.push((needed.name.clone(), given.name.clone()));
+        }
+        let map = Arc::new(ModuleMap { prefix: require.name.clone(), packages: names, every_package: Arc::default() });
+        packages.push(Package { name: require.name.clone(), address: require.address.clone(), folder: folder.clone(), allows_unsafe: require.allows_unsafe, map });
+    }
+    Ok(packages)
+}
+
+/// Whether the folder `name` under `base` holds modules: source files, in it or below it.
+fn holds_modules(base: &Path, name: &str) -> bool {
+    if !spelled_as(base, name) {
+        return false;
+    }
+    let folder = base.join(name);
+    let mut below = Vec::new();
+    modules_under(&folder, name, &mut below);
+    !sg_files(&folder).is_empty() || !below.is_empty()
+}
+
+/// A path with `.` and the `..` that follow a name taken away, as Go's `filepath.Clean` does:
+/// `shop/../lib/xml` is `lib/xml`, so the files of a package are named as the reader sees them.
+fn cleaned(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out: Vec<Component> = Vec::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(out.last(), Some(Component::Normal(_))) => {
+                out.pop();
+            }
+            Component::ParentDir if matches!(out.last(), Some(Component::RootDir | Component::Prefix(_))) => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
 }

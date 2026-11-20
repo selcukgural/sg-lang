@@ -1177,9 +1177,9 @@ Three more small decisions were approved on the same day:
 | The standard names used in the examples so far (`List`, `HashMap`, `File`, `print`) do not need `use` | `Vec` is available by default, `HashMap` and `File` need `use` | Available by default in a new project |
 | An unused `use` is not an error, the editor shows it dimmed | Warning | Warning (an error in Go) |
 
-Still open: the library boundary. In a library with more than one folder there is no level that means "my own folders
-see it, the user does not" (`internal` in C#, `pub(crate)` in Rust). It will be handled when the package system is
-designed.
+The library boundary, a level that means "my own folders see it, the user does not" (`internal` in C#, `pub(crate)`
+in Rust), waited for the package system. It was answered with it on 20 November 2026 (choice 1561): a folder named
+`internal`, as in Go, is named only from inside the folder that holds it; no new word.
 
 ## HTTP request: byte slice, zero-copy parsing
 

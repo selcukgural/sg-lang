@@ -1,0 +1,4 @@
+package example.com/ada/xml
+require text example.com/bob/utf 1.0.0
+// Only the program's own `local` lines are read.
+local text ../nowhere

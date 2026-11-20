@@ -1,0 +1,19 @@
+use xml
+use xml.reader
+use letters
+use stock
+
+void main() {
+    print(tag(read item()))
+    print(xml.closing("pen"))
+    var reader = Reader { name = "doc".clone() }
+    print(describe(read reader))
+    List<xml.reader.Reader> all = List<xml.reader.Reader>()
+    all.add(xml.reader.Reader { name = "list".clone() })
+    print(xml.reader.describe(read all[0]))
+    print(letters.bracket("x"))
+}
+
+test "the program's own tests run" {
+    assert(letters.bracket("a") == "[a]")
+}

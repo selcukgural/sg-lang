@@ -1,0 +1,9 @@
+use internal
+
+public struct Reader {
+    public string name
+}
+
+public string describe(read Reader reader) {
+    return $"reading {escaped(read reader.name)}".toString()
+}
