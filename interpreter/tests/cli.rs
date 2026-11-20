@@ -1430,7 +1430,7 @@ fn stops_reading_a_tree_that_names_too_many_files() {
     git(&repository, &["update-ref", "refs/tags/v1.0.0", &commit], None, b"");
     let started = std::time::Instant::now();
     let (code, _, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/eve/bomb"]));
-    assert!(code == 1 && err.contains("git lists more than the 100,000 files `sg` reads of a tag"), "{err}");
+    assert!(code == 1 && err.contains("git lists more than the 20,000 files `sg` reads of a tag"), "{err}");
     assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
     assert_eq!(cached(&cache), Vec::<PathBuf>::new());
 }

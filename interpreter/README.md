@@ -9721,8 +9721,8 @@ is written here with its fix as it is built, and each fix came after a test that
        files is the lock's and its `package` line its address. The cache was found by the SHA-256 alone and
        written before those were checked, so the files of a refused package, fetched from another address,
        answered a lock line of another package that named the same SHA-256.
-     - **What git lists of a tag is read as it comes**, and git is stopped once it lists more than 100,000
-       files or 32 MB: a tree of a few kilobytes that names one subtree sixteen times at each of ten levels
+     - **What git lists of a tag is read as it comes**, and git is stopped once it lists more than 20,000
+       files (twice what a package may have; Git for Windows took 34 seconds to list 100,000) or 8 MB: a tree of a few kilobytes that names one subtree sixteen times at each of ten levels
        names a trillion files, and `sg` read them all before it counted (16 million took six minutes and
        2.4 GB). An `sg.project` is at most 1 MB, and its lines are checked in time that grows with them, not
        with their square.

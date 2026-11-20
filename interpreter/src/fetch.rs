@@ -32,8 +32,10 @@ pub const MAX_FILE_BYTES: u64 = 16 << 20;
 pub const MAX_FILES: usize = 10_000;
 /// The most files and the most bytes git may list for a tag, the packages kept in its folders
 /// too, before `sg` stops it (choice 1591): a tree of a few kilobytes can name billions of files.
-const MAX_LISTED: usize = 100_000;
-const MAX_LISTING_BYTES: usize = 32 << 20;
+/// Git for Windows writes a listing slowly (100,000 files took 34 seconds), so the bound is twice
+/// the files a package may have.
+const MAX_LISTED: usize = 20_000;
+const MAX_LISTING_BYTES: usize = 8 << 20;
 
 /// Set by `sg lsp`: a package the cache has not is not fetched (choice 1591). An editor that
 /// opens a file is no reason to reach the network.
@@ -391,7 +393,7 @@ fn listed(repository: &Path, protocols: &str, reference: &str) -> Result<Vec<u8>
     if too_many {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("git lists more than the 100,000 files `sg` reads of a tag, the packages kept in its folders too".into());
+        return Err("git lists more than the 20,000 files `sg` reads of a tag, the packages kept in its folders too".into());
     }
     let status = child.wait().map_err(|error| error.to_string())?;
     let said = said.join().unwrap_or_default();
