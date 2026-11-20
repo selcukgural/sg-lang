@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-first slice (compression in `std`: DEFLATE, zlib and gzip, 1482-1500).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-second slice (zip archives in `std`: `ZipReader`, `ZipWriter`, 1501-1524).
 
 ## Functions and variables
 
@@ -610,7 +610,17 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-first slice (c
 | `flate2::Error` / `io::Error` | `CompressError` | built | `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TooLarge`, `TrailingData`, `Io(error)` |
 | `GzBuilder::filename(...)`, `GzDecoder::header()` | none yet | | The header holds no name or time; a header read is not given |
 | `Compress::compress(..., FlushCompress::Sync)`, a preset dictionary | none yet | | |
-| `zip::ZipArchive` | none yet | | The next slice (1490, 1491) |
+| `zip::ZipArchive::new(File::open(path)?)` | `ZipReader.open(read path)`, `ZipReader.of(reader)` | built | The directory is checked when it is opened: `InsecurePath`, `DuplicateName`, `Overlap` refuse the archive |
+| `for i in 0..archive.len() { archive.by_index(i)? }`, `file.name()`, `file.size()` | `for entry in zip.entries()`, `entry.name`, `entry.size` | built | `compressedSize`, `modified` (a `DateTime` in UTC), `isDirectory`, `method` too; the list is the program's own |
+| `io::copy(&mut archive.by_index(i)?, &mut out)` | `zip.copyTo(read entry, ref writer, limit)` | built | Always a limit (`TooLarge`); an entry that opens into another size than its own is `SizeMismatch` |
+| `file.read_to_end(&mut bytes)` | `zip.readBytes(read entry, limit)` | built | |
+| `file.enclosed_name()` | the names themselves | built | No name of an open archive can lead out of a folder: `..`, a root, `\\`, `:`, NUL and the device names of Windows are refused, on every system |
+| `zip::ZipWriter::new(file)`, `start_file(name, options)`, `write_all`, `finish` | `ZipWriter.create(writer)`, `zip.add(name, read bytes, ZipMethod.Deflated, modified)`, `zip.close()` | built | The time is given for each entry; zip64 where it is needed; the writer refuses the names a reader refuses |
+| `std::io::copy(&mut file, &mut zip)` after `start_file` | `zip.addFrom(name, ref reader, method, modified)` | built | A block at a time, with a data descriptor |
+| `zip.add_directory(name, options)` | `zip.addDirectory(name, modified)` | built | |
+| `zip::result::ZipError` | `ZipError` | built | `NotZip`, `Corrupt(position)`, `Truncated`, `Encrypted`, `UnsupportedMethod(code)`, `InsecurePath`, `DuplicateName`, `NameMismatch`, `Overlap`, `SizeMismatch`, `ChecksumMismatch`, `TooLarge`, `Io(error)` |
+| `archive.extract(dir)` | none | not planned | Each entry is read and written where the program decides (1467) |
+| `ZipArchive::by_name_decrypt`, `CompressionMethod::Bzip2`, `Zstd` | none yet | | Encryption and methods other than stored and deflated |
 
 ## Tests and the tools
 

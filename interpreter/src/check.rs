@@ -261,6 +261,9 @@ fn std_makers(short: &str) -> &'static str {
         "Gzip" => "nothing is made: the functions are called on the type, `Gzip.compress(read bytes, 6)`, `Gzip.decompress(read bytes, limit)`",
         "Compressor" => "`Gzip.writer(target, level)` gives one, and `Zlib.writer` and `Deflate.writer`",
         "Decompressor" => "`Gzip.reader(source, limit)` gives one, and `Zlib.reader` and `Deflate.reader`",
+        "ZipReader" => "`ZipReader.open(read path)` gives one, or `ZipReader.of(source)` for a reader of a file",
+        "ZipWriter" => "`ZipWriter.create(target)` gives one, then `zip.add(name, read bytes, ZipMethod.Deflated, modified)`",
+        "ZipEntry" => "`reader.entries()` of a `ZipReader` gives one for each entry of the archive",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }

@@ -1,0 +1,14 @@
+// A limit below 0 is a panic, as in `decompress`: no entry opens into fewer than 0 bytes (choice 1466).
+Result<void, ZipError> main(List<string> args) {
+    nint limit = -1 + (nint)args.length() * 0
+    var path = Path.join(read args[0], "one.zip")
+    var target = File.createText(read path) ?? panic("cannot write")
+    var writer = ZipWriter.create(target)
+    try writer.add("one.txt", "one".asBytes(), ZipMethod.Deflated, DateTime.fromUnixSeconds(0))
+    try writer.close()
+    var zip = try ZipReader.open(read path)
+    var entries = zip.entries()
+    print(zip.readBytes(read entries[0], 3) is Ok(_))
+    print(zip.readBytes(read entries[0], limit) is Ok(_))
+    return Ok()
+}

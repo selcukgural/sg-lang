@@ -1,0 +1,5 @@
+true
+panic: a limit of -1 bytes: it is 0 or more
+  --> panic_zip_limit.sg:12:11
+ 12 |     print(zip.readBytes(read entries[0], limit) is Ok(_))
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

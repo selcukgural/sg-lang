@@ -36,6 +36,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory"]),
     ("regex.sg", include_str!("std/regex.sg"), &["Regex", "RegexError", "RegexErrorKind", "Match", "Captures"]),
     ("compression.sg", include_str!("std/compression.sg"), &["Deflate", "Zlib", "Gzip", "Compressor", "Decompressor", "CompressError"]),
+    ("zip.sg", include_str!("std/zip.sg"), &["ZipReader", "ZipWriter", "ZipEntry", "ZipMethod", "ZipError"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of

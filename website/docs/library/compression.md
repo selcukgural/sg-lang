@@ -182,4 +182,4 @@ it reads is checked against the end of its list, where zlib's C trusts its point
 speed calls zlib through C, as the
 [zlib example](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples/zlib) does.
 
-Zip archives come next.
+[Zip archives](./zip.md) are built on `Deflate`.

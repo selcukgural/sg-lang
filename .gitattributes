@@ -7,3 +7,7 @@
 interpreter/tests/json-suite/test_parsing/** -text
 # RE2's search tests are kept byte for byte: two texts hold a raw control byte.
 interpreter/tests/regex-suite/re2-search.txt -text
+# The archives of the zip suite are kept byte for byte.
+interpreter/tests/zip-suite/go/** -text
+interpreter/tests/zip-suite/made/** -text
+interpreter/tests/zip-suite/others/** -text

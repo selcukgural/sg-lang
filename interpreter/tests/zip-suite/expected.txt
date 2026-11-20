@@ -1,0 +1,169 @@
+go/comment-truncated.zip
+  not a zip archive
+go/crc32-not-streamed.zip
+  foo.txt: file, 4 bytes, 4 in the archive, method 0, 2012-03-09T00:59:10Z, CRC 7e3265a8
+  bar.txt: file, 4 bytes, 4 in the archive, method 0, 2012-03-09T00:59:12Z, CRC 04a2b3e9
+go/dd.zip
+  filename: file, 25 bytes, 24 in the archive, method 8, 2011-02-02T13:06:20Z, CRC a2e3d6d3
+go/dupdir.zip
+  two entries are named "a/b/"
+go/go-no-datadesc-sig.zip
+  foo.txt: file, 4 bytes, 4 in the archive, method 0, 2012-03-09T00:59:10Z, CRC 7e3265a8
+  bar.txt: file, 4 bytes, 4 in the archive, method 0, 2012-03-09T00:59:12Z, CRC 04a2b3e9
+go/go-with-datadesc-sig.zip
+  foo.txt: file, 4 bytes, 4 in the archive, method 0, 1980-01-01T00:00:00Z, CRC 7e3265a8
+  bar.txt: file, 4 bytes, 4 in the archive, method 0, 1980-01-01T00:00:00Z, CRC 04a2b3e9
+go/gophercolor16x16.png
+  not a zip archive
+go/readme.notzip
+  not a zip archive
+go/readme.zip
+  README: file, 1096 bytes, 598 in the archive, method 8, 2010-09-02T15:56:59Z, CRC 82080ae0
+go/subdir.zip
+  a/: folder, 0 bytes, 0 in the archive, method 0, 2021-04-19T19:29:56Z, CRC 00000000
+  a/b/: folder, 0 bytes, 0 in the archive, method 0, 2021-04-19T19:29:59Z, CRC 00000000
+  a/b/c: file, 0 bytes, 0 in the archive, method 0, 2021-04-19T19:29:59Z, CRC 00000000
+go/symlink.zip
+  symlink: file, 9 bytes, 9 in the archive, method 0, 2012-02-03T21:56:48Z, CRC 8e9efad1
+go/test-badbase.zip
+  test.txt: file, 26 bytes, 25 in the archive, method 8, 2010-09-05T02:12:01Z, CRC c3edd7c0
+  gophercolor16x16.png: file, 785 bytes, 785 in the archive, method 0, 2010-09-05T05:52:58Z, CRC 54d531fe
+go/test-baddirsz.zip
+  test.txt: file, 26 bytes, 25 in the archive, method 8, 2010-09-05T02:12:01Z, CRC c3edd7c0
+  gophercolor16x16.png: file, 785 bytes, 785 in the archive, method 0, 2010-09-05T05:52:58Z, CRC 54d531fe
+go/test-prefix.zip
+  test.txt: file, 26 bytes, 25 in the archive, method 8, 2010-09-05T02:12:01Z, CRC c3edd7c0
+  gophercolor16x16.png: file, 785 bytes, 785 in the archive, method 0, 2010-09-05T05:52:58Z, CRC 54d531fe
+go/test-trailing-junk.zip
+  test.txt: file, 26 bytes, 25 in the archive, method 8, 2010-09-05T02:12:01Z, CRC c3edd7c0
+  gophercolor16x16.png: file, 785 bytes, 785 in the archive, method 0, 2010-09-05T05:52:58Z, CRC 54d531fe
+go/test.zip
+  test.txt: file, 26 bytes, 25 in the archive, method 8, 2010-09-05T02:12:01Z, CRC c3edd7c0
+  gophercolor16x16.png: file, 785 bytes, 785 in the archive, method 0, 2010-09-05T05:52:58Z, CRC 54d531fe
+go/time-22738.zip
+  file: file, 0 bytes, 0 in the archive, method 0, 2000-01-01T00:00:00Z, CRC 00000000
+go/time-7zip.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57.244817900Z, CRC 00000000
+go/time-go.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57Z, CRC 00000000
+go/time-infozip.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57Z, CRC 00000000
+go/time-osx.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57Z, CRC 00000000
+go/time-win7.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-10-31T21:11:58Z, CRC 00000000
+go/time-winrar.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57.244817900Z, CRC 00000000
+go/time-winzip.zip
+  test.txt: file, 0 bytes, 0 in the archive, method 0, 2017-11-01T04:11:57.244Z, CRC 00000000
+go/unix.zip
+  hello: file, 8 bytes, 8 in the archive, method 0, 2011-12-08T10:04:24Z, CRC 7d13fc8d
+  dir/bar: file, 6 bytes, 6 in the archive, method 0, 2011-12-08T10:04:50Z, CRC 7a7e9b9e
+  dir/empty/: folder, 0 bytes, 0 in the archive, method 0, 2011-12-08T10:08:06Z, CRC 00000000
+  readonly: file, 12 bytes, 12 in the archive, method 0, 2011-12-08T10:06:08Z, CRC ba6e115a
+go/utf8-7zip.zip
+  世界: file, 0 bytes, 0 in the archive, method 0, 2017-11-06T21:09:27.867862500Z, CRC 00000000
+go/utf8-infozip.zip
+  世界: file, 0 bytes, 0 in the archive, method 0, 2017-11-06T21:09:27Z, CRC 00000000
+go/utf8-osx.zip
+  世界: file, 0 bytes, 0 in the archive, method 0, 2017-11-06T21:09:27Z, CRC 00000000
+go/utf8-winrar.zip
+  世界: file, 0 bytes, 0 in the archive, method 0, 2017-11-06T21:09:27.867862500Z, CRC 00000000
+go/utf8-winzip.zip
+  世界: file, 0 bytes, 0 in the archive, method 0, 2017-11-06T21:09:27.867Z, CRC 00000000
+go/winxp.zip
+  hello: file, 8 bytes, 8 in the archive, method 0, 2011-12-08T10:04:24Z, CRC 7d13fc8d
+  dir/bar: file, 6 bytes, 6 in the archive, method 0, 2011-12-08T10:04:50Z, CRC 7a7e9b9e
+  dir/empty/: folder, 0 bytes, 0 in the archive, method 0, 2011-12-08T10:08:06Z, CRC 00000000
+  readonly: file, 12 bytes, 12 in the archive, method 0, 2011-12-08T10:06:08Z, CRC ba6e115a
+go/zip64-2.zip
+  README: file, 36 bytes, 36 in the archive, method 8, 2012-08-10T18:33:32Z, CRC 69ffe77e
+go/zip64.zip
+  README: file, 36 bytes, 36 in the archive, method 8, 2012-08-10T14:33:32Z, CRC 69ffe77e
+made/corrupt-data.zip
+  broken.bin: file, 4 bytes, 4 in the archive, method 8, 1980-01-01T00:00:00Z: corrupt zip archive at byte 40
+made/count-bomb.zip
+  corrupt zip archive at byte 89
+made/cp437.zip
+  müller.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+made/crc.zip
+  crc.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the CRC-32 of "crc.txt" is not the one written
+made/descriptor-crc-nosig.zip
+  dd.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the CRC-32 of "dd.txt" is not the one written
+made/descriptor-crc.zip
+  dd.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the CRC-32 of "dd.txt" is not the one written
+made/descriptor.zip
+  dd.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+made/directory-past-end.zip
+  corrupt zip archive at byte 89
+made/duplicate-folder.zip
+  two entries are named "a/"
+made/duplicate.zip
+  two entries are named "same.txt"
+made/encrypted.zip
+  plain.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  secret.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the entry is encrypted
+made/insecure-00.zip
+  the name "../evil.txt" could lead out of the folder it is unpacked in
+made/insecure-01.zip
+  the name "a/../../evil.txt" could lead out of the folder it is unpacked in
+made/insecure-02.zip
+  the name "/etc/passwd" could lead out of the folder it is unpacked in
+made/insecure-03.zip
+  the name "a\\b.txt" could lead out of the folder it is unpacked in
+made/insecure-04.zip
+  the name "C:evil.txt" could lead out of the folder it is unpacked in
+made/insecure-05.zip
+  the name "c:/evil.txt" could lead out of the folder it is unpacked in
+made/insecure-06.zip
+  the name "file.txt:stream" could lead out of the folder it is unpacked in
+made/insecure-07.zip
+  the name "aux.txt" could lead out of the folder it is unpacked in
+made/insecure-08.zip
+  the name "dir/NUL" could lead out of the folder it is unpacked in
+made/insecure-09.zip
+  the name "lpt9" could lead out of the folder it is unpacked in
+made/insecure-10.zip
+  the name "Com1 .txt" could lead out of the folder it is unpacked in
+made/insecure-11.zip
+  the name "" could lead out of the folder it is unpacked in
+made/insecure-12.zip
+  the name "a\u0000b" could lead out of the folder it is unpacked in
+made/method.zip
+  plain.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  bzip2.bin: file, 4 bytes, 4 in the archive, method 12, 1980-01-01T00:00:00Z: the entry is compressed by method 12, which is not read (0 stored, 8 deflated)
+made/name-mismatch.zip
+  good.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the header of "good.txt" names another entry
+made/overlap-fifield.zip
+  the data of "0000" lies over another entry's
+made/overlap-same.zip
+  the data of "a" lies over another entry's
+made/secure-names.zip
+  a..b: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  ..a: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  a/.../b: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  console.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  com10: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  lpt0: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  aux_: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  ./x: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+made/size-lie.zip
+  bomb.bin: file, 1000 bytes, 1033 in the archive, method 8, 1980-01-01T00:00:00Z: "bomb.bin" opens into another size than the one written
+made/size-short.zip
+  short.txt: file, 16 bytes, 13 in the archive, method 8, 1980-01-01T00:00:00Z: "short.txt" opens into another size than the one written
+made/stored-sizes.zip
+  stored.txt: file, 10 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: "stored.txt" opens into another size than the one written
+made/stream-long.zip
+  cut.txt: file, 11 bytes, 11 in the archive, method 8, 1980-01-01T00:00:00Z: corrupt zip archive at byte 48
+made/stream-short.zip
+  pad.txt: file, 11 bytes, 16 in the archive, method 8, 1980-01-01T00:00:00Z: corrupt zip archive at byte 50
+others/infozip.zip
+  infozip/: folder, 0 bytes, 0 in the archive, method 0, 2023-01-02T00:04:05Z, CRC 00000000
+  infozip/sub/: folder, 0 bytes, 0 in the archive, method 0, 2023-01-02T00:04:05Z, CRC 00000000
+  infozip/sub/çay.txt: file, 7 bytes, 7 in the archive, method 0, 2023-01-02T00:04:05Z, CRC 060fc07e
+  infozip/hello.txt: file, 800 bytes, 31 in the archive, method 8, 2023-01-02T00:04:05Z, CRC f0879978
+others/python.zip
+  python/hello.txt: file, 900 bytes, 29 in the archive, method 8, 2024-02-29T23:59:58Z, CRC 41f54a17
+  python/zip64.txt: file, 34 bytes, 34 in the archive, method 0, 2024-03-01T00:00:00Z, CRC 30c2ffa0
+  python/ünïcödé.txt: file, 11 bytes, 11 in the archive, method 0, 2024-03-01T12:00:00Z, CRC 9c827274
+  python/empty-folder/: folder, 0 bytes, 0 in the archive, method 0, 2024-03-01T12:00:00Z, CRC 00000000

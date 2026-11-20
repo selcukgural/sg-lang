@@ -1,0 +1,96 @@
+// Zip archives that come with the language (choices 1467, 1490, 1491, 1501-1520): an archive
+// written by `ZipWriter` with every kind of entry and read back by `ZipReader`, the same bytes on
+// every machine, the names a writer refuses, the limit of a read, `copyTo`, and `ZipReader.of`.
+// The folder is the first word of the command line.
+
+string text() {
+    var text = string.withCapacity(4000)
+    for i in 0..100 {
+        text.write($"{i}: the quick brown fox jumps over the lazy dog\n")
+    }
+    return text
+}
+
+void refused(read string what, Result<void, ZipError> result) {
+    match result {
+        Ok => print($"{what}: written")
+        Error(e) => print($"{what}: {e}")
+    }
+}
+
+Result<void, ZipError> write(read string path, read string streamed) {
+    var when = DateTime.utc(2026, 11, 20, 13, 45, 31) ?? DateTime.fromUnixSeconds(0)
+    var old = DateTime.utc(1975, 6, 1, 8, 0, 0) ?? DateTime.fromUnixSeconds(0)
+    var target = File.createText(path) ?? panic("cannot write the archive")
+    var zip = ZipWriter.create(target)
+    var body = text()
+    try zip.addDirectory("docs", when)
+    try zip.add("docs/stored.txt", body.asBytes(), ZipMethod.Stored, when)
+    try zip.add("docs/deflated.txt", body.asBytes(), ZipMethod.Deflated, when)
+    try zip.add("çay/şeker.txt", "Türkçe\n".asBytes(), ZipMethod.Deflated, old)
+    var source = File.openText(streamed) ?? panic("cannot read the file to stream")
+    try zip.addFrom("streamed.txt", ref source, ZipMethod.Deflated, when)
+    try zip.add("empty", "".asBytes(), ZipMethod.Stored, when)
+    // What a reader would refuse is not written (1510).
+    refused("../evil", zip.add("../evil", "x".asBytes(), ZipMethod.Stored, when))
+    refused("C:\\evil", zip.add("C:\\evil", "x".asBytes(), ZipMethod.Stored, when))
+    refused("nul.txt", zip.add("docs/nul.txt", "x".asBytes(), ZipMethod.Stored, when))
+    refused("twice", zip.add("docs/stored.txt", "x".asBytes(), ZipMethod.Stored, when))
+    refused("a file named as a folder", zip.add("docs", "x".asBytes(), ZipMethod.Stored, when))
+    refused("a file ending in /", zip.add("dir/", "x".asBytes(), ZipMethod.Stored, when))
+    refused("a folder named as a file", zip.addDirectory("empty", when))
+    return zip.close()
+}
+
+Result<void, ZipError> main(List<string> args) {
+    var streamed = Path.join(read args[0], "streamed.txt")
+    var body = text()
+    _ = File.writeText(read streamed, read body)
+    var path = Path.join(read args[0], "test.zip")
+    try write(read path, read streamed)
+    // Every machine writes the same bytes: the time of DOS is UTC, and DEFLATE is zlib's.
+    var bytes = File.readBytes(read path) ?? panic("cannot read the archive")
+    print($"{bytes.length()} bytes, CRC {Crc32.of(read bytes):x8}")
+
+    var zip = try ZipReader.open(read path)
+    for entry in zip.entries() {
+        print($"{entry}: method {entry.method}, {entry.compressedSize} in the archive, folder {entry.isDirectory}, {entry.modified}")
+        var data = try zip.readBytes(read entry, 1 << 20)
+        print($"  {Crc32.of(read data):x8} {data[..] == body.asBytes()}")
+    }
+    var entries = zip.entries()
+    var deflated = ref entries[2]
+    print(deflated.name)
+    // The limit: as many bytes as the entry is are read, one fewer is `TooLarge`.
+    print(zip.readBytes(read deflated, (nint)deflated.size) is Ok(_))
+    match zip.readBytes(read deflated, (nint)deflated.size - 1) {
+        Ok(_) => print("read")
+        Error(e) => print($"{e}, {e == ZipError.TooLarge}")
+    }
+    // `copyTo` writes the entry a block at a time.
+    var copyPath = Path.join(read args[0], "copy.txt")
+    var copy = File.createText(read copyPath) ?? panic("cannot write the copy")
+    try zip.copyTo(read deflated, ref copy, 1 << 20)
+    _ = copy.close()
+    print((File.readText(read copyPath) ?? "") == body)
+    var refusedCopy = File.createText(read copyPath) ?? panic("cannot write the copy")
+    print(zip.copyTo(read deflated, ref refusedCopy, 10) is Error(TooLarge))
+    _ = refusedCopy.close()
+    print((File.readText(read copyPath) ?? "?").length())
+
+    // Any reader of a file, from where it stands; bytes that are no archive are `NotZip`.
+    var source = File.openText(read path) ?? panic("cannot open")
+    var again = try ZipReader.of(source)
+    print(again.entries().length())
+    var plain = File.openText(read streamed) ?? panic("cannot open")
+    match ZipReader.of(plain) {
+        Ok(_) => print("an archive")
+        Error(e) => print(e)
+    }
+    match ZipReader.open(read Path.join(read args[0], "missing.zip")) {
+        Ok(_) => print("an archive")
+        Error(e) => print($"{e}, {e == ZipError.Io(IoError.NotFound)}")
+    }
+    print($"{ZipMethod.Stored} {ZipMethod.Deflated}")
+    return Ok()
+}

@@ -12,6 +12,7 @@ not part of `cargo test`.
 | `check` | all `sg build` does before the C compiler runs (`sg::emit_c_sources`), and the message of an error |
 | `regex` | `Regex` of the language's own module (choice 1468): the input up to its first line break is a pattern compiled when the program runs, the rest a text it is matched against every way (`isMatch`, `find`, `findAll`, `captures`, `replaceAll`, `split`), in the interpreter |
 | `inflate` | the decompressors of the language's own module (choice 1492): the first byte chooses DEFLATE, zlib or gzip, the rest is opened with a limit of a megabyte; an input of up to 2 KB is also compressed at the level its second byte chooses and must open into itself, in the interpreter |
+| `zip` | the reader of zip archives of the language's own module (choice 1512): the input is written to a file and opened by `ZipReader`, each entry read with a limit of a megabyte; an input of up to 2 KB is also written by `ZipWriter` as an entry stored and one deflated, and must read back as itself, in the interpreter |
 
 An input that is not UTF-8 is passed over: `sg` does not read such a file. An input of even
 length is built as a debug build, one of odd length as a release build. A program is given a path
@@ -23,7 +24,7 @@ overflow that a release build of `sg` would wrap is one), a stack run out, more 
 memory, or an input that takes more than 10 seconds. A message of `sg` about the program is the
 answer expected. For `regex` a panic of the SG program is a finding as well: a pattern and a text
 end with a match or a `RegexError`; for `inflate` too: any bytes end with what they open into or a
-`CompressError`. While the targets are built (`cfg(fuzzing)`), a const may take 1 000 000 steps
+`CompressError`; and for `zip`: any bytes end with the entries or a `ZipError`. While the targets are built (`cfg(fuzzing)`), a const may take 1 000 000 steps
 instead of 100 000 000 (choice 1352); `sg` itself is built as before.
 
 ## Running
@@ -40,7 +41,7 @@ Then, from the folder of the repository, without the network:
 The corpus and what is found are kept in the podman volume `sg-fuzz-data`, not in the repository:
 `/data/corpus/<target>` and `/data/artifacts/<target>`. The first run starts the corpus from the
 programs of `interpreter/tests/cases` and `interpreter/examples` (for `inflate`, the small programs of
-`tests/cases` compressed by gzip); `sg.dict` gives the fuzzer the
+`tests/cases` compressed by gzip; for `zip`, the archives of `tests/zip-suite`); `sg.dict` gives the fuzzer the
 words and marks of the language.
 
 An input that fails is made smaller with `cargo fuzz tmin` and becomes a test in

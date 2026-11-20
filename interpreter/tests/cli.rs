@@ -618,6 +618,25 @@ fn a_regex_suite() {
     }
 }
 
+/// The archives of `tests/zip-suite` (choice 1512): Go's `archive/zip/testdata`, archives made wrong
+/// on purpose by `make.py`, and archives of Python and Info-ZIP, read by `ZipReader` interpreted
+/// and compiled; what it prints is `expected.txt`.
+#[test]
+fn a_zip_suite() {
+    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("zip-suite");
+    let check = suite.join("check.sg").to_string_lossy().into_owned();
+    let folder = suite.to_string_lossy().into_owned();
+    let expected = std::fs::read_to_string(suite.join("expected.txt")).unwrap();
+    let dir = work("a_zip_suite");
+    assert_eq!(ran(&sg(&dir, &[&check, &folder])), (0, expected.clone(), String::new()), "interpreted");
+    if has_compiler() {
+        let out = program(&dir, "check").to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
+        let run = Command::new(&out).arg(&folder).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        assert_eq!(ran(&run), (0, expected, String::new()), "compiled");
+    }
+}
+
 const LOGS: &str = "void main() {\n    print(Log.level())\n    Log.debug(\"debug\")\n    Log.warn(\"warn\")\n}\n";
 
 /// The lines of standard error with the time of each left out: what follows `Z `.

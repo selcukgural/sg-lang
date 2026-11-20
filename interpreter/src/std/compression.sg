@@ -471,6 +471,9 @@ const nint DeflateMaxDist = 32506
 const nint DeflateSymEnd = 16383
 const nint DeflateTooFar = 4096
 const nint DeflateMaxStored = 65535
+// Up to this many bytes in a stream, `deflateRestart` empties only the places of the hash they
+// filled; after more, all of it (1524).
+const long DeflateRestartScan = 1024
 // What a block-making function says: more input is needed, or the stream is finished.
 const int DeflateNeedMore = 0
 const int DeflateBlockDone = 1
@@ -739,6 +742,49 @@ DeflateState deflateNew(int format, int level) {
 
 // zlib's `deflate` with Z_NO_FLUSH (`finish` false) or Z_FINISH (true), given all the room it
 // wants for its output: the input is taken in, and with `finish` the stream is ended.
+// zlib's deflateReset, for DEFLATE alone: the state made ready for a new stream at its level, its
+// buffers kept (a zip archive compresses each entry so). The hash is emptied; what the window and
+// the chains still hold of the stream before is never reached from the hash, so the bytes are
+// those of a new state.
+//
+// After a short stream only the places of the hash it filled are emptied (choice 1524): the window
+// has not moved, so its bytes are still where they were put, and the hash of a place is that of its
+// three bytes, `(w[p] << 10 ^ w[p + 1] << 5 ^ w[p + 2]) & 32767`, which is what the rolling hash
+// gives too. Emptying the hash of every place up to where the stream reached empties every place
+// it filled; the others are 0 already.
+void deflateRestart(ref DeflateState s) {
+    if s.totalIn <= DeflateRestartScan {
+        var w = s.window[..]
+        for p in 0..(nint)s.totalIn {
+            s.head[((nint)w[p] << 10 ^ (nint)w[p + 1] << 5 ^ (nint)w[p + 2]) & DeflateHashMask] = 0
+        }
+    } else {
+        for i in 0..s.head.length() {
+            s.head[i] = 0
+        }
+    }
+    s.strstart = 0
+    s.blockStart = 0
+    s.lookahead = 0
+    s.insert = 0
+    s.matchStart = 0
+    s.matchLength = 2
+    s.prevLength = 2
+    s.prevMatch = 0
+    s.matchAvailable = false
+    s.insH = 0
+    s.symNext = 0
+    s.heapLen = 0
+    s.heapMax = 0
+    s.bitBuf = 0
+    s.bitValid = 0
+    s.out.clear()
+    s.adler = Adler32()
+    s.crc = Crc32()
+    s.totalIn = 0
+    initBlock(ref s)
+}
+
 void deflateRun(ref DeflateState s, read byte[] input, bool finish) {
     nint at = 0
     if input.length() != 0 || s.lookahead != 0 || finish {

@@ -1,0 +1,1162 @@
+// Zip archives (choices 1467, 1490, 1491, 1501-1512), as Go's `archive/zip` reads and writes them:
+// entries stored or deflated, zip64 where it is needed, no encryption. Written in SG and brought
+// along by the language, over the DEFLATE of `compression.sg`.
+//
+// Reading checks what an archive says before anything of it is given (1503): a name that could
+// lead out of a folder is `InsecurePath`, two entries of one name `DuplicateName`, entries whose
+// data lie over each other `Overlap` (the bomb that makes one block of compressed data the data of
+// every entry), and the number of entries must fit in the central directory. An entry is read with
+// a limit, as compressed data is opened, and gives no more bytes than its size written in the
+// archive. There is no call that unpacks a whole archive to the disk: each entry is read, and the
+// program writes it where it decides.
+
+// Why an archive could not be read or written.
+public enum ZipError : Equatable, Formattable {
+    // No end of a central directory: the bytes are not a zip archive.
+    NotZip
+    // The archive is not what the format says, at this byte of it (counted from 0).
+    Corrupt(long position)
+    // The archive ends before what it says it holds.
+    Truncated
+    // The entry is encrypted; encryption is not read.
+    Encrypted
+    // The entry is compressed by a method other than stored (0) and deflated (8).
+    UnsupportedMethod(int code)
+    // The name could lead out of the folder the entry is unpacked in: `..`, a root, a `\`, a `:`,
+    // a name Windows keeps for a device.
+    InsecurePath(string name)
+    // Two entries have this name.
+    DuplicateName(string name)
+    // The name in the header before the entry's data is not the one of the central directory.
+    NameMismatch(string name)
+    // The entry's data lies over another entry's.
+    Overlap(string name)
+    // The entry opens into another number of bytes than its size written in the archive.
+    SizeMismatch(string name)
+    // The entry's CRC-32 is not the one written in the archive: its data was changed.
+    ChecksumMismatch(string name)
+    // The entry is larger than the limit.
+    TooLarge
+    // Reading or writing the archive's stream failed.
+    Io(IoError error)
+
+    public void format(read this, ref Formatter f) {
+        match this {
+            NotZip => f.write("not a zip archive")
+            Corrupt(position) => f.write($"corrupt zip archive at byte {position}")
+            Truncated => f.write("the zip archive ends before what it holds does")
+            Encrypted => f.write("the entry is encrypted")
+            UnsupportedMethod(code) => f.write($"the entry is compressed by method {code}, which is not read (0 stored, 8 deflated)")
+            InsecurePath(name) => f.write($"the name {quoted(name)} could lead out of the folder it is unpacked in")
+            DuplicateName(name) => f.write($"two entries are named {quoted(name)}")
+            NameMismatch(name) => f.write($"the header of {quoted(name)} names another entry")
+            Overlap(name) => f.write($"the data of {quoted(name)} lies over another entry's")
+            SizeMismatch(name) => f.write($"{quoted(name)} opens into another size than the one written")
+            ChecksumMismatch(name) => f.write($"the CRC-32 of {quoted(name)} is not the one written")
+            TooLarge => f.write("the entry is larger than the limit")
+            Io(error) => f.write($"{error}")
+        }
+    }
+}
+
+// How `ZipWriter` keeps an entry's bytes: as they are, or compressed by DEFLATE at level 6.
+public enum ZipMethod : Copyable, Equatable, Formattable {
+    Stored
+    Deflated
+}
+
+// One entry of an archive, as its central directory describes it: `reader.entries()`.
+public struct ZipEntry : Formattable {
+    // The path in the archive, with `/` between folders; a folder's ends in `/`.
+    public readonly string name
+    // How many bytes the entry opens into.
+    public readonly long size
+    // How many bytes it takes in the archive.
+    public readonly long compressedSize
+    // When it was last changed, in UTC (the time of DOS when the archive holds no other).
+    public readonly DateTime modified
+    public readonly bool isDirectory
+    // How it is compressed: 0 stored, 8 deflated, another number for a method that is not read.
+    public readonly int method
+    // The name's bytes, as the central directory has them.
+    List<byte> written
+    // Where the entry's header begins, and where the next entry or the central directory does.
+    long offset
+    long bound
+    uint crc
+    int flags
+
+    public void format(read this, ref Formatter f) {
+        f.write($"{this.name} ({this.size} bytes)")
+    }
+
+    ZipEntry copy(read this) {
+        var written = List<byte>()
+        written.addAll(read this.written)
+        return ZipEntry {
+            name = this.name.clone(),
+            size = this.size,
+            compressedSize = this.compressedSize,
+            modified = this.modified,
+            isDirectory = this.isDirectory,
+            method = this.method,
+            written = written,
+            offset = this.offset,
+            bound = this.bound,
+            crc = this.crc,
+            flags = this.flags
+        }
+    }
+}
+
+// Reads a zip archive: `ZipReader.open(path)`, then `entries()`, and `readBytes` or `copyTo` for each.
+public struct ZipReader {
+    StreamReader source
+    List<ZipEntry> list
+    // The inflater of every entry, made once: its buffers and the tables of the fixed codes are
+    // kept from one entry to the next.
+    Inflater inflater
+
+    // The archive in the file at `path`; what is wrong in it is found here (1503).
+    public Result<ZipReader, ZipError> open(read string path) {
+        match File.openText(path) {
+            Ok(source) => return ZipReader.of(source)
+            Error(error) => return Error(ZipError.Io(error))
+        }
+    }
+
+    // The archive `source` holds; the reader seeks in it, so it is a file (a pipe is `NotSeekable`).
+    // Bytes before the archive (a program that unpacks itself) are passed over.
+    public Result<ZipReader, ZipError> of(StreamReader source) {
+        var reader = ZipReader { source = source, list = List<ZipEntry>(), inflater = inflaterOf() }
+        try reader.readDirectory()
+        return Ok(reader)
+    }
+
+    // The entries, in the order of the central directory: a list of their own, so the reader may
+    // read while the program goes over them.
+    public List<ZipEntry> entries(read this) {
+        var entries = List<ZipEntry>()
+        for entry in read this.list {
+            entries.add(entry.copy())
+        }
+        return entries
+    }
+
+    // The bytes of `entry`; `TooLarge` when it opens into more than `limit` bytes.
+    public Result<List<byte>, ZipError> readBytes(ref this, read ZipEntry entry, nint limit) {
+        if limit < 0 {
+            panic($"a limit of {limit} bytes: it is 0 or more")
+        }
+        long start = try this.dataStart(entry, (long)limit)
+        var out = List<byte>()
+        var crc = Crc32()
+        if entry.method == 0 {
+            var buffer = byte[65536]
+            long left = entry.size
+            while left > 0 {
+                nint count = (nint)left.min(65536)
+                try this.fill(ref buffer[..count])
+                crc.update(buffer[..count])
+                out.addAll(buffer[..count])
+                left -= (long)count
+            }
+        } else {
+            var inflater = ref this.inflater
+            restart(ref inflater, entry.size)
+            // A large entry is opened into a list of its size, which becomes the result; a small
+            // one into the reader's buffer, from which it is copied (1520).
+            if entry.size >= ZipHandOver {
+                nint guess = (nint)entry.size.min(1 << 26) + 512
+                while inflater.out.length() + 4096 <= guess {
+                    inflater.out.addAll(read DeflateZeroBytes)
+                }
+            }
+            long left = entry.compressedSize
+            nint stop = nint.MaxValue
+            if entry.size < (long)nint.MaxValue {
+                stop = (nint)entry.size + 1
+            }
+            while inflater.mode != InflateDone {
+                try feed(ref this.source, ref inflater, ref left)
+                var result = inflater.run(stop)
+                try openedAs(result, entry, start, start + inflater.inBase + (long)inflater.inPos)
+                if (long)inflater.outLen > entry.size {
+                    return Error(ZipError.SizeMismatch(entry.name.clone()))
+                }
+                if inflater.mode != InflateDone && inflater.inEof && inflater.inPos == inflater.inEnd {
+                    return Error(ZipError.Corrupt(start + entry.compressedSize))
+                }
+            }
+            try ended(read inflater, left, entry, start)
+            crc.update(inflater.out[..inflater.outLen])
+            if inflater.outLen >= ZipHandOver {
+                // The room past the end, at most what one step of the inflater adds, goes.
+                out = inflater.out.replace(List<byte>())
+                while out.length() > inflater.outLen {
+                    _ = out.removeLast()
+                }
+            } else {
+                out.addAll(inflater.out[..inflater.outLen])
+            }
+        }
+        try this.verify(entry, crc.value(), (long)out.length())
+        return Ok(out)
+    }
+
+    // Writes the bytes of `entry` to `target`, a block at a time; `TooLarge` when it opens into more
+    // than `limit` bytes, and then nothing is written.
+    public Result<void, ZipError> copyTo(ref this, read ZipEntry entry, ref StreamWriter target, long limit) {
+        if limit < 0 {
+            panic($"a limit of {limit} bytes: it is 0 or more")
+        }
+        long start = try this.dataStart(entry, limit)
+        var crc = Crc32()
+        long given = 0
+        if entry.method == 0 {
+            var buffer = byte[65536]
+            long left = entry.size
+            while left > 0 {
+                nint count = (nint)left.min(65536)
+                try this.fill(ref buffer[..count])
+                crc.update(buffer[..count])
+                try written(target.writeBytes(buffer[..count]))
+                left -= (long)count
+            }
+            given = entry.size
+        } else {
+            var inflater = ref this.inflater
+            restart(ref inflater, entry.size)
+            long left = entry.compressedSize
+            nint from = 0
+            while inflater.mode != InflateDone {
+                try feed(ref this.source, ref inflater, ref left)
+                var result = inflater.run(inflater.outLen + 65536)
+                try openedAs(result, entry, start, start + inflater.inBase + (long)inflater.inPos)
+                if inflater.outBase + (long)inflater.outLen > entry.size {
+                    return Error(ZipError.SizeMismatch(entry.name.clone()))
+                }
+                if inflater.mode != InflateDone && inflater.inEof && inflater.inPos == inflater.inEnd && inflater.outLen == from {
+                    return Error(ZipError.Corrupt(start + entry.compressedSize))
+                }
+                crc.update(inflater.out[from..inflater.outLen])
+                try written(target.writeBytes(inflater.out[from..inflater.outLen]))
+                from = inflater.outLen
+                // What a distance can no longer reach goes.
+                if inflater.outLen > 4 * DeflateWSize {
+                    nint cut = inflater.outLen - DeflateWSize
+                    nint rest = inflater.outLen - cut
+                    for i in 0..rest {
+                        inflater.out[i] = inflater.out[cut + i]
+                    }
+                    inflater.outLen = rest
+                    inflater.outBase += (long)cut
+                    inflater.counted = 0
+                    from = rest
+                }
+            }
+            try ended(read inflater, left, entry, start)
+            given = inflater.outBase + (long)inflater.outLen
+        }
+        return this.verify(entry, crc.value(), given)
+    }
+
+    // Seeks to the data of `entry` after checking what can be checked before reading it, and
+    // gives where it begins.
+    Result<long, ZipError> dataStart(ref this, read ZipEntry entry, long limit) {
+        if entry.flags & 1 != 0 {
+            return Error(ZipError.Encrypted)
+        }
+        if entry.method != 0 && entry.method != 8 {
+            return Error(ZipError.UnsupportedMethod(entry.method))
+        }
+        if entry.size > limit {
+            return Error(ZipError.TooLarge)
+        }
+        if entry.method == 0 && entry.compressedSize != entry.size {
+            return Error(ZipError.SizeMismatch(entry.name.clone()))
+        }
+        try this.seekTo(entry.offset)
+        var header = byte[30]
+        try this.fill(ref header)
+        if uint.fromLittleEndian(header[0..4]) != 0x0403_4B50 {
+            return Error(ZipError.Corrupt(entry.offset))
+        }
+        nint nameLength = (nint)ushort.fromLittleEndian(header[26..28])
+        nint extraLength = (nint)ushort.fromLittleEndian(header[28..30])
+        var name = List<byte>()
+        for _ in 0..nameLength {
+            name.add(0)
+        }
+        try this.fill(ref name)
+        if name != entry.written {
+            return Error(ZipError.NameMismatch(entry.name.clone()))
+        }
+        long start = entry.offset + 30 + (long)nameLength + (long)extraLength
+        if start + entry.compressedSize > entry.bound {
+            return Error(ZipError.Overlap(entry.name.clone()))
+        }
+        try this.seekTo(start)
+        return Ok(start)
+    }
+
+    // The checks after an entry's bytes: its size, its CRC-32, and the CRC of its data descriptor.
+    Result<void, ZipError> verify(ref this, read ZipEntry entry, uint crc, long size) {
+        if size != entry.size {
+            return Error(ZipError.SizeMismatch(entry.name.clone()))
+        }
+        if crc != entry.crc {
+            return Error(ZipError.ChecksumMismatch(entry.name.clone()))
+        }
+        if entry.flags & 8 != 0 {
+            // A data descriptor follows, its signature written or not: its CRC must agree too.
+            var word = byte[4]
+            try this.fill(ref word)
+            uint first = uint.fromLittleEndian(read word)
+            if first == 0x0807_4B50 {
+                try this.fill(ref word)
+                first = uint.fromLittleEndian(read word)
+            }
+            if first != entry.crc {
+                return Error(ZipError.ChecksumMismatch(entry.name.clone()))
+            }
+        }
+        return Ok()
+    }
+
+    Result<void, ZipError> seekTo(ref this, long position) {
+        match this.source.seek(SeekFrom.Start(position)) {
+            Ok(_) => return Ok()
+            Error(error) => return Error(ZipError.Io(error))
+        }
+    }
+
+    // Fills `buffer` from where the source stands; `Truncated` when it ends first.
+    Result<void, ZipError> fill(ref this, ref byte[] buffer) {
+        match this.source.readBytes(ref buffer) {
+            Ok(count) => {
+                if count < buffer.length() {
+                    return Error(ZipError.Truncated)
+                }
+                return Ok()
+            }
+            Error(error) => return Error(ZipError.Io(error))
+        }
+    }
+
+    // Finds the end of the central directory, reads the directory, and checks it (1503, 1507).
+    Result<void, ZipError> readDirectory(ref this) {
+        long size = 0
+        match this.source.seek(SeekFrom.End(0)) {
+            Ok(end) => size = end
+            Error(error) => return Error(ZipError.Io(error))
+        }
+        // The end record is 22 bytes and a comment of at most 65,535; the last one whose comment
+        // fits is taken, as Go takes it.
+        long tail = size.min(65557)
+        var block = List<byte>()
+        for _ in 0..tail {
+            block.add(0)
+        }
+        try this.seekTo(size - tail)
+        try this.fill(ref block)
+        long found = -1
+        nint at = block.length() - 22
+        while at >= 0 {
+            if block[at] == 0x50 && block[at + 1] == 0x4B && block[at + 2] == 5 && block[at + 3] == 6 {
+                nint comment = (nint)ushort.fromLittleEndian(block[at + 20..at + 22])
+                if at + 22 + comment <= block.length() {
+                    found = (long)at
+                }
+                break
+            }
+            at -= 1
+        }
+        if found < 0 {
+            return Error(ZipError.NotZip)
+        }
+        nint e = (nint)found
+        long endAt = size - tail + found
+        ulong records = (ulong)ushort.fromLittleEndian(block[e + 10..e + 12])
+        ulong directorySize = (ulong)uint.fromLittleEndian(block[e + 12..e + 16])
+        ulong directoryOffset = (ulong)uint.fromLittleEndian(block[e + 16..e + 20])
+        bool wide = false
+        if records == 0xFFFF || directorySize == 0xFFFF_FFFF || directoryOffset == 0xFFFF_FFFF {
+            // The zip64 end record, which the locator just before the end record points at.
+            if endAt >= 20 {
+                var locator = byte[20]
+                try this.seekTo(endAt - 20)
+                try this.fill(ref locator)
+                if uint.fromLittleEndian(locator[0..4]) == 0x0706_4B50 {
+                    long record = (long)ulong.fromLittleEndian(locator[8..16])
+                    if record < 0 || record > endAt - 56 {
+                        return Error(ZipError.Corrupt(endAt - 20))
+                    }
+                    var wideEnd = byte[56]
+                    try this.seekTo(record)
+                    try this.fill(ref wideEnd)
+                    if uint.fromLittleEndian(wideEnd[0..4]) != 0x0606_4B50 {
+                        return Error(ZipError.Corrupt(record))
+                    }
+                    records = ulong.fromLittleEndian(wideEnd[32..40])
+                    directorySize = ulong.fromLittleEndian(wideEnd[40..48])
+                    directoryOffset = ulong.fromLittleEndian(wideEnd[48..56])
+                    endAt = record
+                    wide = true
+                }
+            }
+        }
+        if directorySize > (ulong)endAt || directoryOffset > (ulong)endAt {
+            return Error(ZipError.Corrupt(endAt))
+        }
+        // Bytes before the archive move every offset it writes (1508). Go's rule: when an entry of
+        // the directory is found where the offset says, without moving it, nothing moved, and the
+        // size written was wrong: the directory runs up to its end record (1517).
+        long base = endAt - (long)directorySize - (long)directoryOffset
+        if base < 0 {
+            return Error(ZipError.Corrupt(endAt))
+        }
+        if base > 0 {
+            var probe = byte[4]
+            try this.seekTo((long)directoryOffset)
+            try this.fill(ref probe)
+            if uint.fromLittleEndian(read probe) == 0x0201_4B50 {
+                base = 0
+                directorySize = (ulong)endAt - directoryOffset
+            }
+        }
+        // Each entry of the directory takes 46 bytes at least, so a number of entries that does
+        // not fit in its size is refused before anything is made for them (1507).
+        if records > directorySize / 46 {
+            return Error(ZipError.Corrupt(endAt))
+        }
+        long directoryAt = base + (long)directoryOffset
+        var directory = List<byte>()
+        for _ in 0..(long)directorySize {
+            directory.add(0)
+        }
+        try this.seekTo(directoryAt)
+        try this.fill(ref directory)
+        var names = HashSet<string>()
+        var starts = List<long>()
+        nint p = 0
+        while p < directory.length() {
+            long position = directoryAt + (long)p
+            if directory.length() - p < 46 || uint.fromLittleEndian(directory[p..p + 4]) != 0x0201_4B50 {
+                return Error(ZipError.Corrupt(position))
+            }
+            var entry = try entryAt(read directory, p, position, base)
+            p += 46 + (nint)ushort.fromLittleEndian(directory[p + 28..p + 30]) + (nint)ushort.fromLittleEndian(directory[p + 30..p + 32]) + (nint)ushort.fromLittleEndian(directory[p + 32..p + 34])
+            if p > directory.length() {
+                return Error(ZipError.Corrupt(position))
+            }
+            if insecure(read entry.name) {
+                return Error(ZipError.InsecurePath(entry.name.clone()))
+            }
+            if !names.add(withoutSlash(read entry.name).clone()) {
+                return Error(ZipError.DuplicateName(entry.name.clone()))
+            }
+            if entry.offset < 0 || entry.offset > directoryAt - 30 {
+                return Error(ZipError.Corrupt(position))
+            }
+            starts.add(entry.offset)
+            this.list.add(entry)
+        }
+        // The count of a directory that is not zip64 holds only its low 16 bits when there are more
+        // entries (some writers do so): those bits must agree, as Go checks them.
+        if (wide && (ulong)this.list.length() != records) || (!wide && (ulong)this.list.length() % 65536 != records % 65536) {
+            return Error(ZipError.Corrupt(endAt))
+        }
+        // No two entries may share bytes: in the order of their offsets, each header, name and data
+        // must end before the next entry begins, the last before the directory (1491).
+        starts.add(directoryAt)
+        starts.sort()
+        for i in 0..this.list.length() {
+            var entry = ref this.list[i]
+            nint place = starts.lowerBound(entry.offset)
+            long next = starts[place + 1]
+            // Each part taken from the room that is left, so that no sum can overflow.
+            long room = next - entry.offset - 30 - (long)entry.written.length()
+            if next == entry.offset || room < 0 || entry.compressedSize > room {
+                return Error(ZipError.Overlap(entry.name.clone()))
+            }
+            entry.bound = next
+        }
+        return Ok()
+    }
+}
+
+// The entry whose record begins at `p` of the central directory, at `position` in the archive.
+Result<ZipEntry, ZipError> entryAt(read List<byte> d, nint p, long position, long base) {
+    int flags = (int)ushort.fromLittleEndian(d[p + 8..p + 10])
+    int method = (int)ushort.fromLittleEndian(d[p + 10..p + 12])
+    int dosTime = (int)ushort.fromLittleEndian(d[p + 12..p + 14])
+    int dosDate = (int)ushort.fromLittleEndian(d[p + 14..p + 16])
+    uint crc = uint.fromLittleEndian(d[p + 16..p + 20])
+    ulong compressed = (ulong)uint.fromLittleEndian(d[p + 20..p + 24])
+    ulong size = (ulong)uint.fromLittleEndian(d[p + 24..p + 28])
+    nint nameLength = (nint)ushort.fromLittleEndian(d[p + 28..p + 30])
+    nint extraLength = (nint)ushort.fromLittleEndian(d[p + 30..p + 32])
+    nint commentLength = (nint)ushort.fromLittleEndian(d[p + 32..p + 34])
+    ulong offset = (ulong)uint.fromLittleEndian(d[p + 42..p + 46])
+    nint nameAt = p + 46
+    if nameAt + nameLength + extraLength + commentLength > d.length() {
+        return Error(ZipError.Corrupt(position))
+    }
+    var written = List<byte>()
+    written.addAll(d[nameAt..nameAt + nameLength])
+    var name = nameOf(read written)
+    // The extra fields: zip64's sizes and offset where the record holds 0xFFFFFFFF, and the time
+    // of the change in UTC, from the fields that hold one (1505, 1514).
+    long seconds = -1
+    long nanoseconds = 0
+    nint x = nameAt + nameLength
+    nint extraEnd = x + extraLength
+    while extraEnd - x >= 4 {
+        int tag = (int)ushort.fromLittleEndian(d[x..x + 2])
+        nint length = (nint)ushort.fromLittleEndian(d[x + 2..x + 4])
+        nint at = x + 4
+        if at + length > extraEnd {
+            break
+        }
+        nint fieldEnd = at + length
+        if tag == 0x0001 {
+            if size == 0xFFFF_FFFF {
+                if fieldEnd - at < 8 {
+                    return Error(ZipError.Corrupt(position))
+                }
+                size = ulong.fromLittleEndian(d[at..at + 8])
+                at += 8
+            }
+            if compressed == 0xFFFF_FFFF {
+                if fieldEnd - at < 8 {
+                    return Error(ZipError.Corrupt(position))
+                }
+                compressed = ulong.fromLittleEndian(d[at..at + 8])
+                at += 8
+            }
+            if offset == 0xFFFF_FFFF {
+                if fieldEnd - at < 8 {
+                    return Error(ZipError.Corrupt(position))
+                }
+                offset = ulong.fromLittleEndian(d[at..at + 8])
+            }
+        } else if tag == 0x5455 {
+            if length >= 5 && d[at] & 1 != 0 {
+                seconds = (long)uint.fromLittleEndian(d[at + 1..at + 5])
+                nanoseconds = 0
+            }
+        } else if tag == 0x5855 || tag == 0x000D {
+            if length >= 8 {
+                seconds = (long)uint.fromLittleEndian(d[at + 4..at + 8])
+                nanoseconds = 0
+            }
+        } else if tag == 0x000A {
+            // NTFS: after four bytes kept, attributes; the first (1, of 24 bytes) holds the time of
+            // the change in tenths of a microsecond since 1601.
+            nint a = at + 4
+            while fieldEnd - a >= 4 {
+                int attribute = (int)ushort.fromLittleEndian(d[a..a + 2])
+                nint attributeLength = (nint)ushort.fromLittleEndian(d[a + 2..a + 4])
+                if a + 4 + attributeLength > fieldEnd {
+                    break
+                }
+                if attribute == 1 && attributeLength == 24 {
+                    long ticks = (long)ulong.fromLittleEndian(d[a + 4..a + 12])
+                    if ticks >= 0 && ticks / 10000000 < 11644473600 + 9000000000 {
+                        seconds = ticks / 10000000 - 11644473600
+                        nanoseconds = ticks % 10000000 * 100
+                    }
+                }
+                a += 4 + attributeLength
+            }
+        }
+        x = fieldEnd
+    }
+    if size > 0x7FFF_FFFF_FFFF_FFFF || compressed > 0x7FFF_FFFF_FFFF_FFFF || offset > 0x7FFF_FFFF_FFFF_FFFF - (ulong)base {
+        return Error(ZipError.Corrupt(position))
+    }
+    var modified = dosTimeOf(dosDate, dosTime)
+    if seconds != -1 {
+        modified = DateTime.fromUnixSeconds(seconds).plus(Duration.fromNanoseconds(nanoseconds))
+    }
+    bool isDirectory = name.endsWith('/')
+    return Ok(ZipEntry {
+        name = name,
+        size = (long)size,
+        compressedSize = (long)compressed,
+        modified = modified,
+        isDirectory = isDirectory,
+        method = method,
+        written = written,
+        offset = base + (long)offset,
+        bound = 0,
+        crc = crc,
+        flags = flags
+    })
+}
+
+// What `inflater.run` gave, as the entry's error: a place in the compressed data becomes a place
+// in the archive; bytes after the end of the stream are wrong from `after` on.
+Result<void, ZipError> openedAs(Result<void, CompressError> result, read ZipEntry entry, long start, long after) {
+    match result {
+        Ok => return Ok()
+        Error(cause) => {
+            match cause {
+                Corrupt(position) => return Error(ZipError.Corrupt(start + position))
+                Truncated => return Error(ZipError.Corrupt(start + entry.compressedSize))
+                TrailingData => return Error(ZipError.Corrupt(after))
+                TooLarge => return Error(ZipError.SizeMismatch(entry.name.clone()))
+                ChecksumMismatch => return Error(ZipError.ChecksumMismatch(entry.name.clone()))
+                Io(error) => return Error(ZipError.Io(error))
+            }
+        }
+    }
+}
+
+// Reads more of an entry's compressed data into `inflater`: no more than `left` bytes, the end
+// of its input when they are all read.
+Result<void, ZipError> feed(ref StreamReader source, ref Inflater inflater, ref long left) {
+    if inflater.inEof || inflater.inEnd - inflater.inPos >= InflateAhead {
+        return Ok()
+    }
+    nint held = (nint)(inflater.bits >> 3)
+    nint first = inflater.inPos - held
+    nint unread = inflater.inEnd - first
+    for i in 0..unread {
+        inflater.input[i] = inflater.input[first + i]
+    }
+    inflater.inBase += (long)first
+    inflater.inPos = held
+    inflater.inEnd = unread
+    while left > 0 && inflater.inEnd < InflateAhead {
+        nint end = inflater.inEnd
+        nint room = (nint)((long)(inflater.input.length() - end)).min(left)
+        match source.readSome(ref inflater.input[end..end + room]) {
+            Ok(count) => {
+                if count == 0 {
+                    return Error(ZipError.Truncated)
+                }
+                inflater.inEnd += count
+                left -= (long)count
+            }
+            Error(error) => return Error(ZipError.Io(error))
+        }
+    }
+    if left == 0 {
+        inflater.inEof = true
+    }
+    return Ok()
+}
+
+// From this size on, `readBytes` gives the list an entry was opened into; below it, a copy.
+const nint ZipHandOver = 1 << 20
+
+// The inflater of a reader, with room for 64 KB of compressed data at a time.
+Inflater inflaterOf() {
+    var inflater = inflaterNew(DeflateRaw, 0)
+    for _ in 0..16 {
+        inflater.input.addAll(read DeflateZeroBytes)
+    }
+    inflater.input.addAll(DeflateZeroBytes[..InflateAhead])
+    return inflater
+}
+
+// The inflater made ready for the next entry, which opens into at most `limit` bytes: all is as
+// new but its buffers and the tables of the fixed codes, which every entry may use.
+void restart(ref Inflater inflater, long limit) {
+    inflater.format = DeflateRaw
+    inflater.inPos = 0
+    inflater.inEnd = 0
+    inflater.inEof = false
+    inflater.inBase = 0
+    inflater.hold = 0
+    inflater.bits = 0
+    inflater.outLen = 0
+    inflater.outBase = 0
+    inflater.counted = 0
+    inflater.memberStart = 0
+    inflater.limit = limit
+    inflater.mode = InflateHeader
+    inflater.last = false
+    inflater.storedLeft = 0
+}
+
+// The end of an entry's DEFLATE stream must be the end of its compressed size.
+Result<void, ZipError> ended(read Inflater inflater, long left, read ZipEntry entry, long start) {
+    if left > 0 || inflater.inPos < inflater.inEnd {
+        long position = start + inflater.inBase + (long)inflater.inPos
+        return Error(ZipError.Corrupt(position))
+    }
+    return Ok()
+}
+
+Result<void, ZipError> written(Result<void, IoError> result) {
+    match result {
+        Ok => return Ok()
+        Error(error) => return Error(ZipError.Io(error))
+    }
+}
+
+// The name, from its bytes: UTF-8 when they are, else code page 437, the format's first encoding
+// (1514).
+string nameOf(read List<byte> bytes) {
+    match string.fromUtf8(read bytes) {
+        Ok(text) => return text.clone()
+        Error(_) => {}
+    }
+    var text = string.withCapacity(bytes.length() * 2)
+    for b in read bytes {
+        if b < 128 {
+            text.write((char)b)
+        } else {
+            text.write((char)ZipCp437[(nint)b - 128])
+        }
+    }
+    return text
+}
+
+// Code page 437, from 128 to 255.
+const int[128] ZipCp437 = {
+    0xC7, 0xFC, 0xE9, 0xE2, 0xE4, 0xE0, 0xE5, 0xE7, 0xEA, 0xEB, 0xE8, 0xEF, 0xEE, 0xEC, 0xC4, 0xC5,
+    0xC9, 0xE6, 0xC6, 0xF4, 0xF6, 0xF2, 0xFB, 0xF9, 0xFF, 0xD6, 0xDC, 0xA2, 0xA3, 0xA5, 0x20A7, 0x192,
+    0xE1, 0xED, 0xF3, 0xFA, 0xF1, 0xD1, 0xAA, 0xBA, 0xBF, 0x2310, 0xAC, 0xBD, 0xBC, 0xA1, 0xAB, 0xBB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x3B1, 0xDF, 0x393, 0x3C0, 0x3A3, 0x3C3, 0xB5, 0x3C4, 0x3A6, 0x398, 0x3A9, 0x3B4, 0x221E, 0x3C6, 0x3B5, 0x2229,
+    0x2261, 0xB1, 0x2265, 0x2264, 0x2320, 0x2321, 0xF7, 0x2248, 0xB0, 0x2219, 0xB7, 0x221A, 0x207F, 0xB2, 0x25A0, 0xA0
+}
+
+// `name` in quotes, with the characters that are not seen or that drive a terminal escaped (as
+// `Log` escapes them), so that a name in an archive cannot forge what is printed.
+string quoted(read string name) {
+    var text = string.withCapacity(name.length() + 2)
+    text.write('"')
+    for c in name.chars() {
+        int code = (int)c
+        if code < 32 || code == 127 || (code >= 0x80 && code < 0xA0) || code == 0xFEFF || (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069) {
+            text.write($"\\u{code:x4}")
+        } else if c == '"' || c == '\\' {
+            text.write('\\')
+            text.write(c)
+        } else {
+            text.write(c)
+        }
+    }
+    text.write('"')
+    return text
+}
+
+// The time of DOS, read as UTC (as Go reads it); fields that make no day are 1980-01-01 (1515).
+DateTime dosTimeOf(int date, int time) {
+    match DateTime.utc((date >> 9) + 1980, (date >> 5) & 15, date & 31, time >> 11, (time >> 5) & 63, (time & 31) * 2) {
+        Ok(moment) => return moment
+        Error(_) => return DateTime.fromUnixSeconds(315532800)
+    }
+}
+
+// Whether a name could lead out of the folder it is unpacked in, on any system (1502): empty, a
+// root, a `\`, a `:`, a NUL, a part `..`, or a part that Windows keeps for a device.
+bool insecure(read string name) {
+    if name.length() == 0 || name.startsWith('/') || name.contains('\\') || name.contains(':') || name.contains('\0') {
+        return true
+    }
+    nint from = 0
+    while from <= name.length() {
+        nint end = name.length()
+        nint? slash = name[from..].indexOf('/')
+        if slash is not null {
+            end = from + slash
+        }
+        var part = name[from..end]
+        if part == ".." || reservedOnWindows(part) {
+            return true
+        }
+        from = end + 1
+    }
+    return false
+}
+
+// CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9, in any case, with or without an extension or
+// spaces after them.
+bool reservedOnWindows(read string part) {
+    nint end = part.length()
+    nint? dot = part.indexOf('.')
+    if dot is not null {
+        end = dot
+    }
+    var base = part[..end].trimEnd()
+    if base.length() == 3 {
+        return base.equalsIgnoreAsciiCase("CON") || base.equalsIgnoreAsciiCase("PRN") || base.equalsIgnoreAsciiCase("AUX") || base.equalsIgnoreAsciiCase("NUL")
+    }
+    if base.length() == 4 && base[3] >= '1' && base[3] <= '9' {
+        return base[..3].equalsIgnoreAsciiCase("COM") || base[..3].equalsIgnoreAsciiCase("LPT")
+    }
+    return false
+}
+
+// A name with the `/` of a folder taken off: a file and a folder of one name are two entries of
+// one name.
+read string withoutSlash(read string name) {
+    if name.endsWith('/') {
+        return name[..name.length() - 1]
+    }
+    return name
+}
+
+// ---------------------------------------------------------------------------------------------
+
+// Writes a zip archive into a `StreamWriter`: `ZipWriter.create(target)`, `add` for each entry,
+// then `close`, which writes the central directory. A local one is closed. It refuses what a
+// reader refuses (1510), so what it writes can be read.
+public struct ZipWriter : Closable {
+    StreamWriter target
+    // How many bytes are written: the place of the next entry.
+    long at
+    List<ZipRecord> records
+    HashSet<string> names
+    // The compressor of every entry, made once and restarted for each.
+    DeflateState deflater
+
+    // A writer of an archive into `target`, which the archive begins at.
+    public ZipWriter create(StreamWriter target) {
+        return ZipWriter { target = target, at = 0, records = List<ZipRecord>(), names = HashSet<string>(), deflater = deflateNew(DeflateRaw, 6) }
+    }
+
+    // An entry `name` that holds `data`, changed last at `modified`.
+    public Result<void, ZipError> add(ref this, read string name, read byte[] data, ZipMethod method, DateTime modified) {
+        try this.allowed(name, false)
+        var record = recordOf(name, method, modified, 0)
+        record.crc = Crc32.of(data)
+        record.size = (long)data.length()
+        record.offset = this.at
+        if method == ZipMethod.Deflated {
+            deflateRestart(ref this.deflater)
+            deflateRun(ref this.deflater, data, true)
+            record.compressedSize = (long)this.deflater.out.length()
+            try this.header(read record)
+            try this.putCompressed()
+        } else {
+            record.compressedSize = record.size
+            try this.header(read record)
+            try this.put(data)
+        }
+        this.records.add(record)
+        return Ok()
+    }
+
+    // An entry `name` that holds what is left in `source`, read and written a block at a time; its
+    // sizes and CRC-32 follow its data, in a data descriptor.
+    public Result<void, ZipError> addFrom(ref this, read string name, ref StreamReader source, ZipMethod method, DateTime modified) {
+        try this.allowed(name, false)
+        var record = recordOf(name, method, modified, 8)
+        record.offset = this.at
+        try this.header(read record)
+        var crc = Crc32()
+        var buffer = byte[65536]
+        long size = 0
+        long compressed = 0
+        deflateRestart(ref this.deflater)
+        while true {
+            nint count = 0
+            match source.readSome(ref buffer) {
+                Ok(got) => count = got
+                Error(error) => return Error(ZipError.Io(error))
+            }
+            crc.update(buffer[..count])
+            size += (long)count
+            if method == ZipMethod.Stored {
+                if count == 0 {
+                    break
+                }
+                try this.put(buffer[..count])
+                compressed += (long)count
+            } else {
+                deflateRun(ref this.deflater, buffer[..count], count == 0)
+                if this.deflater.out.length() >= 65536 || count == 0 {
+                    compressed += (long)this.deflater.out.length()
+                    try this.putCompressed()
+                }
+                if count == 0 {
+                    break
+                }
+            }
+        }
+        record.crc = crc.value()
+        record.size = size
+        record.compressedSize = compressed
+        var descriptor = List<byte>()
+        appendBytes(ref descriptor, read ((uint)0x0807_4B50).toLittleEndian())
+        appendBytes(ref descriptor, read record.crc.toLittleEndian())
+        if record.wide() {
+            appendBytes(ref descriptor, read ((ulong)compressed).toLittleEndian())
+            appendBytes(ref descriptor, read ((ulong)size).toLittleEndian())
+        } else {
+            appendBytes(ref descriptor, read ((uint)compressed).toLittleEndian())
+            appendBytes(ref descriptor, read ((uint)size).toLittleEndian())
+        }
+        try this.put(read descriptor)
+        this.records.add(record)
+        return Ok()
+    }
+
+    // A folder `name`; a `/` is put at its end when it has none.
+    public Result<void, ZipError> addDirectory(ref this, read string name, DateTime modified) {
+        var folder = name.clone()
+        if !folder.endsWith('/') {
+            folder.write('/')
+        }
+        try this.allowed(read folder, true)
+        var record = recordOf(read folder, ZipMethod.Stored, modified, 0)
+        record.offset = this.at
+        try this.header(read record)
+        this.records.add(record)
+        return Ok()
+    }
+
+    // Writes the central directory and the end of the archive, and closes the target.
+    public Result<void, ZipError> close(this) {
+        long start = this.at
+        var out = List<byte>()
+        for record in read this.records {
+            centralRecord(ref out, record)
+        }
+        long size = (long)out.length()
+        long count = (long)this.records.length()
+        if count >= 0xFFFF || size >= 0xFFFF_FFFF || start >= 0xFFFF_FFFF {
+            // zip64's end record and its locator.
+            long record = start + size
+            appendBytes(ref out, read ((uint)0x0606_4B50).toLittleEndian())
+            appendBytes(ref out, read ((ulong)44).toLittleEndian())
+            appendBytes(ref out, read ((ushort)0x032D).toLittleEndian())
+            appendBytes(ref out, read ((ushort)45).toLittleEndian())
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+            appendBytes(ref out, read ((ulong)count).toLittleEndian())
+            appendBytes(ref out, read ((ulong)count).toLittleEndian())
+            appendBytes(ref out, read ((ulong)size).toLittleEndian())
+            appendBytes(ref out, read ((ulong)start).toLittleEndian())
+            appendBytes(ref out, read ((uint)0x0706_4B50).toLittleEndian())
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+            appendBytes(ref out, read ((ulong)record).toLittleEndian())
+            appendBytes(ref out, read ((uint)1).toLittleEndian())
+        }
+        appendBytes(ref out, read ((uint)0x0605_4B50).toLittleEndian())
+        appendBytes(ref out, read ((uint)0).toLittleEndian())
+        appendBytes(ref out, read ((ushort)count.min(0xFFFF)).toLittleEndian())
+        appendBytes(ref out, read ((ushort)count.min(0xFFFF)).toLittleEndian())
+        appendBytes(ref out, read ((uint)size.min(0xFFFF_FFFF)).toLittleEndian())
+        appendBytes(ref out, read ((uint)start.min(0xFFFF_FFFF)).toLittleEndian())
+        appendBytes(ref out, read ((ushort)0).toLittleEndian())
+        try written(this.target.writeBytes(read out))
+        return written(this.target.close())
+    }
+
+    // A name the archive may take: one a reader takes, not taken yet, and a folder's only through
+    // `addDirectory`.
+    Result<void, ZipError> allowed(ref this, read string name, bool folder) {
+        if (!folder && name.endsWith('/')) || name.length() > 65535 {
+            return Error(ZipError.Io(IoError.InvalidInput))
+        }
+        if insecure(name) {
+            return Error(ZipError.InsecurePath(name.clone()))
+        }
+        if !this.names.add(withoutSlash(name).clone()) {
+            return Error(ZipError.DuplicateName(name.clone()))
+        }
+        return Ok()
+    }
+
+    // The header before an entry's data.
+    Result<void, ZipError> header(ref this, read ZipRecord record) {
+        var out = List<byte>()
+        bool wide = record.flags & 8 == 0 && record.wide()
+        appendBytes(ref out, read ((uint)0x0403_4B50).toLittleEndian())
+        appendBytes(ref out, read ((ushort)record.version()).toLittleEndian())
+        appendBytes(ref out, read ((ushort)record.flags).toLittleEndian())
+        appendBytes(ref out, read ((ushort)record.method).toLittleEndian())
+        appendBytes(ref out, read ((ushort)record.dosTime).toLittleEndian())
+        appendBytes(ref out, read ((ushort)record.dosDate).toLittleEndian())
+        if record.flags & 8 != 0 {
+            // The CRC and the sizes follow the data.
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+            appendBytes(ref out, read ((uint)0).toLittleEndian())
+        } else if wide {
+            appendBytes(ref out, read record.crc.toLittleEndian())
+            appendBytes(ref out, read ((uint)0xFFFF_FFFF).toLittleEndian())
+            appendBytes(ref out, read ((uint)0xFFFF_FFFF).toLittleEndian())
+        } else {
+            appendBytes(ref out, read record.crc.toLittleEndian())
+            appendBytes(ref out, read ((uint)record.compressedSize).toLittleEndian())
+            appendBytes(ref out, read ((uint)record.size).toLittleEndian())
+        }
+        var extra = List<byte>()
+        if wide {
+            appendBytes(ref extra, read ((ushort)0x0001).toLittleEndian())
+            appendBytes(ref extra, read ((ushort)16).toLittleEndian())
+            appendBytes(ref extra, read ((ulong)record.size).toLittleEndian())
+            appendBytes(ref extra, read ((ulong)record.compressedSize).toLittleEndian())
+        }
+        record.timeField(ref extra)
+        appendBytes(ref out, read ((ushort)record.name.length()).toLittleEndian())
+        appendBytes(ref out, read ((ushort)extra.length()).toLittleEndian())
+        out.addAll(record.name.asBytes())
+        out.addAll(read extra)
+        return this.put(read out)
+    }
+
+    // Writes what the compressor holds, and empties it.
+    Result<void, ZipError> putCompressed(ref this) {
+        var packed = this.deflater.out.replace(List<byte>())
+        var result = this.put(read packed)
+        packed.clear()
+        this.deflater.out = packed
+        return result
+    }
+
+    Result<void, ZipError> put(ref this, read byte[] bytes) {
+        try written(this.target.writeBytes(bytes))
+        this.at += (long)bytes.length()
+        return Ok()
+    }
+}
+
+// What the central directory says of an entry written.
+struct ZipRecord {
+    string name
+    int flags
+    int method
+    int dosTime
+    int dosDate
+    // Seconds since 1970 for the field 0x5455, or -1 when they do not fit in it.
+    long unixTime
+    uint crc
+    long size
+    long compressedSize
+    long offset
+    bool folder
+
+    // Whether a size takes zip64's field.
+    bool wide(read this) {
+        return this.size >= 0xFFFF_FFFF || this.compressedSize >= 0xFFFF_FFFF
+    }
+
+    // The version of the format needed to read the entry: 2.0, or 4.5 for zip64.
+    int version(read this) {
+        if this.wide() || this.offset >= 0xFFFF_FFFF {
+            return 45
+        }
+        return 20
+    }
+
+    // The field 0x5455 with the time of the change, in UTC (1505).
+    void timeField(read this, ref List<byte> extra) {
+        if this.unixTime < 0 {
+            return
+        }
+        appendBytes(ref extra, read ((ushort)0x5455).toLittleEndian())
+        appendBytes(ref extra, read ((ushort)5).toLittleEndian())
+        extra.add(1)
+        appendBytes(ref extra, read ((uint)this.unixTime).toLittleEndian())
+    }
+}
+
+ZipRecord recordOf(read string name, ZipMethod method, DateTime modified, int flags) {
+    int all = flags
+    for b in name.asBytes() {
+        if b >= 128 {
+            all |= 0x800
+            break
+        }
+    }
+    int code = 0
+    if method == ZipMethod.Deflated {
+        code = 8
+    }
+    // The time of DOS, in UTC so that every machine writes the same bytes; a year it cannot hold is
+    // 1980-01-01.
+    int dosDate = 0x21
+    int dosTime = 0
+    int year = modified.year()
+    if year >= 1980 && year <= 2107 {
+        dosDate = (year - 1980) << 9 | modified.month() << 5 | modified.day()
+        dosTime = modified.hour() << 11 | modified.minute() << 5 | modified.second() / 2
+    }
+    long seconds = modified.unixSeconds()
+    if seconds < 0 || seconds > 0x7FFF_FFFF {
+        seconds = -1
+    }
+    return ZipRecord {
+        name = name.clone(),
+        flags = all,
+        method = code,
+        dosTime = dosTime,
+        dosDate = dosDate,
+        unixTime = seconds,
+        crc = 0,
+        size = 0,
+        compressedSize = 0,
+        offset = 0,
+        folder = name.endsWith('/')
+    }
+}
+
+// The record of `record` in the central directory, added to `out`.
+void centralRecord(ref List<byte> out, read ZipRecord record) {
+    bool wideSizes = record.wide()
+    bool wideOffset = record.offset >= 0xFFFF_FFFF
+    int version = record.version()
+    appendBytes(ref out, read ((uint)0x0201_4B50).toLittleEndian())
+    // Made by Unix (3), so the modes below are read.
+    appendBytes(ref out, read ((ushort)(0x0300 | version)).toLittleEndian())
+    appendBytes(ref out, read ((ushort)version).toLittleEndian())
+    appendBytes(ref out, read ((ushort)record.flags).toLittleEndian())
+    appendBytes(ref out, read ((ushort)record.method).toLittleEndian())
+    appendBytes(ref out, read ((ushort)record.dosTime).toLittleEndian())
+    appendBytes(ref out, read ((ushort)record.dosDate).toLittleEndian())
+    appendBytes(ref out, read record.crc.toLittleEndian())
+    if wideSizes {
+        appendBytes(ref out, read ((uint)0xFFFF_FFFF).toLittleEndian())
+        appendBytes(ref out, read ((uint)0xFFFF_FFFF).toLittleEndian())
+    } else {
+        appendBytes(ref out, read ((uint)record.compressedSize).toLittleEndian())
+        appendBytes(ref out, read ((uint)record.size).toLittleEndian())
+    }
+    var extra = List<byte>()
+    if wideSizes || wideOffset {
+        long length = 0
+        if wideSizes {
+            length += 16
+        }
+        if wideOffset {
+            length += 8
+        }
+        appendBytes(ref extra, read ((ushort)0x0001).toLittleEndian())
+        appendBytes(ref extra, read ((ushort)length).toLittleEndian())
+        if wideSizes {
+            appendBytes(ref extra, read ((ulong)record.size).toLittleEndian())
+            appendBytes(ref extra, read ((ulong)record.compressedSize).toLittleEndian())
+        }
+        if wideOffset {
+            appendBytes(ref extra, read ((ulong)record.offset).toLittleEndian())
+        }
+    }
+    record.timeField(ref extra)
+    appendBytes(ref out, read ((ushort)record.name.length()).toLittleEndian())
+    appendBytes(ref out, read ((ushort)extra.length()).toLittleEndian())
+    appendBytes(ref out, read ((ushort)0).toLittleEndian())
+    appendBytes(ref out, read ((ushort)0).toLittleEndian())
+    appendBytes(ref out, read ((ushort)0).toLittleEndian())
+    // The mode of Unix in the high half: rw-r--r-- for a file, rwxr-xr-x for a folder, with the
+    // folder bit of DOS.
+    uint attributes = 0x81A4_0000
+    if record.folder {
+        attributes = 0x41ED_0010
+    }
+    appendBytes(ref out, read attributes.toLittleEndian())
+    appendBytes(ref out, read ((uint)record.offset.min(0xFFFF_FFFF)).toLittleEndian())
+    out.addAll(record.name.asBytes())
+    out.addAll(read extra)
+}

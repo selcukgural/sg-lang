@@ -15,7 +15,7 @@ and cancellation; `Memory` and the types of C. Their methods are checked by the 
 it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
-`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 and Adler-32 (`Crc32`, `Adler32`), compression (`Deflate`, `Zlib`, `Gzip`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), a log (`Log`), regular expressions (`Regex`), the general category of a character (`UnicodeCategory`), folders and paths (`Directory`, `Path`,
+`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 and Adler-32 (`Crc32`, `Adler32`), compression (`Deflate`, `Zlib`, `Gzip`), zip archives (`ZipReader`, `ZipWriter`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), a log (`Log`), regular expressions (`Regex`), the general category of a character (`UnicodeCategory`), folders and paths (`Directory`, `Path`,
 `FileInfo`), other programs (`Command`, `Process`), `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can
@@ -76,5 +76,7 @@ from each item to its source.
   the text and no more, a pattern of the program checked when it is compiled.
 - [Compression](./compression.md): `Deflate`, `Zlib` and `Gzip`, both ways, at once or as a stream; zlib's
   bytes at every level, and a limit on what is opened.
+- [Zip archives](./zip.md): `ZipReader` and `ZipWriter`, archives checked for Zip Slip and bombs before anything
+  is read.
 
 The network (`TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`) does not have a page yet.

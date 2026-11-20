@@ -82,6 +82,7 @@ of `tests/Containerfile` has them.
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Written in SG in the module `std` |
 | Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
+| Zip archives | `var zip = try ZipReader.open(read path)` (or `ZipReader.of(reader)` over a file opened another way) reads the central directory and checks it before anything is given: a name that could lead out of a folder (`..`, a root, `\`, `:`, NUL, a name Windows keeps for a device, empty) is `InsecurePath`, two entries of one name `DuplicateName`, entries whose data lie over each other `Overlap` (the bomb of one block of data shared by every entry), more entries than the directory holds `Corrupt`. `zip.entries()` gives a list of `ZipEntry` (`name`, `size`, `compressedSize`, `modified` in UTC, `isDirectory`, `method`), its own, so the reader reads while the program goes over it; `zip.readBytes(read entry, limit)` gives the bytes and `zip.copyTo(read entry, ref writer, limit)` writes them a block at a time: an entry larger than the limit is `TooLarge`, one that opens into another size than the one written `SizeMismatch`, a wrong CRC-32 `ChecksumMismatch`, encryption `Encrypted`, a method other than stored and deflated `UnsupportedMethod`. `var writer = ZipWriter.create(target)`, then `writer.add(name, read bytes, ZipMethod.Deflated, modified)`, `writer.addFrom(name, ref reader, method, modified)` (a block at a time, with a data descriptor), `writer.addDirectory(name, modified)` and `writer.close()`; zip64 where it is needed, the flag of UTF-8 for a name that is not ASCII, the time of DOS in UTC and the field 0x5455, so every machine writes the same bytes; the writer refuses the names a reader refuses. No call unpacks a whole archive to the disk. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -9078,7 +9079,7 @@ the zip archives of the next slice (1467) will be:
      `examples/zlib`), streams made wrong by hand, and a fuzz target of inflate; for zip, archives made by Go,
      Python and `zip`, and the odd ones of Go's `archive/zip/testdata`.
 
-Taken while the slice was written, on 20 November 2026, and open to review:
+Taken while the slice was written, and approved on 20 November 2026:
 
 1493. **Where `Corrupt` points**: the byte of the compressed data where the part that is wrong begins: the
      header, the description of a block's codes, or the code itself.
@@ -9123,6 +9124,122 @@ level 6 in 1.04 times zlib's time, and open in 2.60 times it ("Slower than C").
 With 1482-1500, 477 of the 1847 programs are compiled on macOS and on Linux (103 under the thread sanitizer), and the
 240 programs of the site run as they show; on the Windows Arm VM `ok_compression` prints the same interpreted
 and compiled, and the tests of `examples/zlib` pass both ways against vcpkg's zlib.
+
+Choices made in the hundred-and-thirty-second slice (the library: zip archives). 1501-1512 were approved on
+20 November 2026, before the slice was written; they say how 1467, 1490 and 1491 are written:
+
+1501. **One enum of errors**, `ZipError`: `NotZip`, `Corrupt(long position)`, `Truncated`, `Encrypted`,
+     `UnsupportedMethod(int code)`, `InsecurePath(string name)`, `DuplicateName(string name)`,
+     `NameMismatch(string name)`, `Overlap(string name)`, `SizeMismatch(string name)`, `ChecksumMismatch(string
+     name)`, `TooLarge`, `Io(IoError)`. An error of inflate becomes one of these, and the position of
+     `Corrupt` is a byte of the archive.
+1502. **A name that could lead out of a folder** is the same on every system: empty, beginning with `/`,
+     holding a `\`, a `:` (a drive of Windows, and its streams: `a.txt:hidden`) or a NUL, a part `..`, or a
+     part that Windows keeps for a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`, in
+     any case, with an extension or not). Go, on Unix, takes `:` and the names of devices; Rust's `zip` crate
+     (`enclosed_name`) refuses only `..` and a root.
+1503. **What is wrong in the structure is found when the archive is opened**: a name that could lead out,
+     two entries of one name, data that lie over each other, a count of entries the directory cannot hold.
+     `ZipReader.open` gives the error and no reader, as Go 1.20 does by default (Go gives the reader too).
+1504. **Encryption and other methods**: such an entry is listed, and reading it is `Encrypted` or
+     `UnsupportedMethod`. `ZipEntry.method` is the number the archive writes (0, 8, ...); a writer takes a
+     `ZipMethod`, `Stored` or `Deflated`, so it cannot be given another, and `Deflated` is level 6.
+1505. **Every entry written takes its time**: `add(name, data, method, modified)`, and so `addFrom` and
+     `addDirectory`; a program that archives files gives `FileInfo.modified`, a build that wants the same bytes
+     every time gives a fixed time. Read: the field 0x5455 when there is one, in UTC, else the time of DOS
+     taken as UTC (as Go). Written: the time of DOS in UTC and the field 0x5455, so every machine writes the
+     same bytes; a year DOS cannot hold (before 1980, after 2107) is 1980-01-01 in its fields.
+1506. **The central directory is the truth**: the sizes, the CRC-32 and the method are its; the name of the
+     header before the data must be its name; an entry whose size is larger than the limit is `TooLarge`
+     before anything is opened, and one that opens into more than its size stops there, `SizeMismatch`.
+1507. **Limits when an archive is opened**: the count of entries must fit in the size of the directory (46
+     bytes each at least) and the directory in the file, before anything is made for them; the comments and
+     the extra fields are read and passed over, and not given yet.
+1508. **Bytes before the archive** (a program that unpacks itself) are passed over, as Go and Python do.
+1509. **`ZipReader.open(path)` and `ZipReader.of(reader)`**: the reader seeks, so it is a file (a pipe is
+     `NotSeekable`); the file is closed when the reader ends.
+1510. **A writer refuses what a reader refuses**: `InsecurePath` and `DuplicateName`, so what SG writes SG
+     reads; Go's writer does not look at names. A name that ends in `/` given to `add` is `Io(InvalidInput)`: a
+     folder is `addDirectory`, which puts the `/` at the end when it is not there.
+1511. **No reader of one entry as a stream** yet (`reader.open(entry)` giving a `Decompressor`): `readBytes`
+     and `copyTo`, which writes a block at a time, do the work.
+1512. **Tests**: Go's `archive/zip/testdata`, kept with its licence, archives made by Python's `zipfile` and
+     by Info-ZIP's `zip`, a small overlapping bomb made by a script (after David Fifield's), archives written
+     by SG opened by `unzip -t`, Python and Go, and a fuzz target `zip`.
+
+Taken while the slice was written, and approved on 20 November 2026:
+
+1513. **`entries()` gives a list of its own**, a copy: a `for` over the reader's own list would hold the
+     reader while `readBytes` seeks in it, which the checker refuses. It is made once, and costs the names.
+1514. **The bytes of a name** are UTF-8 when they are, else code page 437, the format's first encoding,
+     whatever its flag says (a name in another code page of DOS reads with the wrong letters, but reads). The
+     time of the change comes from 0x5455, from NTFS's field (0x000A) or from Info-ZIP's fields of Unix
+     (0x5855, 0x000D), as Go reads them, the last in the record winning; without them, from DOS's.
+1515. **A time of DOS that makes no day** (a date of 0, a month of 13) is 1980-01-01, the first day DOS
+     writes; Go turns a date of 0 into 1979-11-30.
+1516. **`read` is a word of the language**, so the call that gives an entry's bytes is `readBytes(read entry,
+     limit)`, as `File.readBytes(path)` gives a file's. Its limit is an `nint`, as `decompress`'s, and the
+     limit of `copyTo` a `long`, as a `Decompressor`'s; a limit below 0 is a panic.
+1517. **A directory whose size is written wrong**: Go's rule. When a record of the directory is found at the
+     offset the end record writes, no bytes come before the archive, and the directory runs up to its end
+     record (two archives of Go's tests are so).
+1518. **A data descriptor**: its CRC-32, after its signature or without one, must be the directory's; its
+     sizes are not read, since writers do not agree on when they take 4 bytes or 8 (Go reads only the CRC
+     too).
+1519. **What a writer writes besides**: made by Unix, `rw-r--r--` for a file and `rwxr-xr-x` for a folder,
+     with the folder bit of DOS; `add` knows the sizes before the data and writes no descriptor, `addFrom`
+     writes one, with sizes of 8 bytes only when one has passed 4 GB (as Go); the field 0x5455 only for a time
+     from 1970 to 2038, where the readers that take it as signed and those that take it as unsigned agree; an
+     entry is deflated when asked even if stored would be smaller; a name longer than 65,535 bytes is
+     `Io(InvalidInput)`.
+1520. **One inflater and one compressor**: a reader keeps one inflater for all its entries, its buffers and
+     the tables of the fixed codes, and a writer one compressor, restarted for each entry as zlib's
+     `deflateReset` restarts it, so the bytes of every entry are those of `Deflate.compress(data, 6)`.
+     `readBytes` copies an entry of less than a megabyte out of the reader's buffer, and gives the list a
+     larger one was opened into.
+1521. **The end record is the last one whose comment fits** in the file; bytes after it are passed over, as
+     Go and `unzip` pass them over (gzip's `TrailingData` has no counterpart here: the end of an archive is
+     found from the end of the file).
+1522. **A message quotes a name**, with what is not seen or drives a terminal escaped as `Log` escapes it, so
+     a name in an archive cannot forge what a program prints.
+1523. **A file and a folder of one name** (`a` and `a/`) are `DuplicateName` too; Go's `dupdir.zip` holds
+     `a/b` and `a/b/`. An empty name is `InsecurePath`; Go takes it.
+
+Asked for on 20 November 2026, after the measurement below, and approved:
+
+1524. **After a short stream the compressor empties only the places of its hash that the stream filled**,
+     not all 32,768 as zlib's `deflateReset` does: the window has not moved, so the bytes of the stream are
+     still where they were put, and the hash of a place is that of its three bytes, which is what the rolling
+     hash gives. The bytes written do not change (3,000 entries of 0 to 6,000 bytes written one after the
+     other, each checked against zlib, with a check that the whole hash was empty after every restart). Up to
+     1,024 bytes: past about 1.5 KB the places, written one by one, cost more than emptying 64 KB at once
+     (10-byte entries 20 % faster, 500-byte ones 5 %, 2,000 bytes and more the same).
+
+Tested by `ok_zip` (an archive written with every call of `ZipWriter` and read back, the CRC-32 of its bytes,
+the names a writer refuses, the limit at its edge for `readBytes` and `copyTo`, `ZipReader.of`, `NotZip`, a
+missing file), `panic_zip_limit`, and `a_zip_suite` of `tests/cli.rs`, which reads the archives of
+`tests/zip-suite` interpreted and compiled: the 33 files of Go's `archive/zip/testdata`, read as Go reads them but
+for 1515, 1523 and `NotZip`; 34 made by `make.py`, every name of 1502, two entries of one name, a local name
+that is not the central one, sizes that lie, wrong CRCs in the directory and in a descriptor, encryption, a
+method not read, DEFLATE that is broken, short or long, a count of entries too large, a directory past the
+end, entries at one offset and Fifield's bomb (50 entries of a megabyte from 5.5 KB, which Python opens), a
+name in code page 437; and archives of Python's `zipfile` and Info-ZIP's `zip`, read as Go reads them. While it
+was written, archives written by SG were opened by `unzip -t`, Python and Go with the same entries and bytes:
+one of every kind of entry, one of 70,000 entries (zip64's end record), and one with an entry of 4.4 GB, deflated
+and stored, and an entry after it at an offset past 4 GB (zip64's fields); 300 entries of every size and kind
+written one after the other each gave the bytes zlib gives for it at level 6. The fuzz target `zip` (`fuzz/`)
+opens any bytes as an archive and writes and reads back an input of up to 2 KB.
+
+Measured (Apple M3 Max, release builds): the 70,000 small entries are read in 31 ms (Go's `archive/zip` 90 ms)
+and written in 96 ms (Go 42 ms). Writing is zlib's own time: zlib in C, given the same 70,000 entries with a
+`deflateReset` before each and nothing of zip around them, takes 125 ms, and SG took as much before 1524. Of that
+time, about half is the trees of Huffman that zlib builds at the end of every block, to choose between stored,
+fixed and dynamic codes, and a fifth was emptying its hash; Go's `compress/flate` is another compressor, which
+makes other bytes. Skipping the trees for a short block would change the bytes, so it is not done (1485).
+
+With 1501-1524, 479 of the 1849 programs are compiled on macOS and on Linux (103 under the thread sanitizer), and the
+242 programs of the site run as they show; on the Windows Arm VM `ok_zip` and the archives of `tests/zip-suite`
+print the same interpreted and compiled, byte for byte, the archive of `ok_zip` included.
 
 ## Slower than C, and could be better
 
@@ -9279,7 +9396,12 @@ check off.
 
 ## Not here yet
 
-- **Of compression (1482-1500)**: zip archives (the next slice, 1467, 1490, 1491); what a gzip header holds
+- **Of zip archives (1501-1524)**: encryption (ZipCrypto, AES) and the methods other than stored and deflated
+  (bzip2, LZMA, Zstandard); a reader of one entry as a stream (1511); the comments of the archive and of its
+  entries; the mode of Unix and links (an entry that is a link reads as a file that holds its target); an
+  archive in memory, or one read from a source that cannot seek; adding to an archive that is written; a level
+  other than 6; archives on several disks.
+- **Of compression (1482-1500)**: what a gzip header holds
   (name, time, comment), given when a program asks for it; flushing in the middle of a stream (zlib's
   `Z_SYNC_FLUSH`), a preset dictionary, zlib's strategies (`Z_RLE`, `Z_HUFFMAN_ONLY`) and its smaller windows
   and memory levels; the `async` versions of a `Compressor` and a `Decompressor`; a `Decompressor` over a
@@ -9778,7 +9900,8 @@ GNU's way of writing, 1410, 1423-1433) and JSON (`Json`, `JsonValue`, read stric
 JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building nothing, 1412, 1447-1456), and regular expressions (`Regex`, RE2's
 meaning, a pattern of the program checked when it is compiled, and the general category of Unicode with
 `c.category()`, 1457-1481), and compression (`Deflate`, `Zlib`, `Gzip`, zlib's bytes at every level, opened with a limit, 1465, 1466,
-1482-1500). Zip archives come next (1467, 1490, 1491), then real programs written in
+1482-1500), and zip archives (`ZipReader`, `ZipWriter`, checked before anything is read, 1467, 1490, 1491,
+1501-1524). Real programs come next, written in
 SG, Rust and Go and measured against each other, each difference a choice (1418), and after them XML without
 a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg

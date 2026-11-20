@@ -1,0 +1,39 @@
+// Reads every archive of the folders `go`, `made` and `others` of this suite (choice 1512) and
+// prints what `ZipReader` finds: each entry with its size, compressed size, method, time and the
+// CRC-32 of its bytes, or the error of the archive or of the entry. `tests/cli.rs` (`a_zip_suite`)
+// compares it with `expected.txt`, interpreted and compiled. The suite's folder is the first word
+// of the command line.
+
+Result<void, IoError> main(List<string> args) {
+    for folder in (List<string> { "go", "made", "others" }) {
+        var path = Path.join(args[0], read folder)
+        var names = List<string>()
+        for item in try Directory.list(read path) {
+            if item.name != "LICENSE" {
+                names.add(item.name.clone())
+            }
+        }
+        names.sort()
+        for name in read names {
+            print($"{folder}/{name}")
+            match ZipReader.open(read Path.join(read path, name)) {
+                Ok(zip) => {
+                    var reader = zip
+                    for entry in reader.entries() {
+                        var kind = "file"
+                        if entry.isDirectory {
+                            kind = "folder"
+                        }
+                        string line = $"  {entry.name}: {kind}, {entry.size} bytes, {entry.compressedSize} in the archive, method {entry.method}, {entry.modified}".toString()
+                        match reader.readBytes(read entry, 1 << 20) {
+                            Ok(bytes) => print($"{line}, CRC {Crc32.of(read bytes):x8}")
+                            Error(e) => print($"{line}: {e}")
+                        }
+                    }
+                }
+                Error(e) => print($"  {e}")
+            }
+        }
+    }
+    return Ok()
+}

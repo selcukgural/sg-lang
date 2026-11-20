@@ -1,0 +1,30 @@
+../evil: the name "../evil" could lead out of the folder it is unpacked in
+C:\evil: the name "C:\\evil" could lead out of the folder it is unpacked in
+nul.txt: the name "docs/nul.txt" could lead out of the folder it is unpacked in
+twice: two entries are named "docs/stored.txt"
+a file named as a folder: two entries are named "docs"
+a file ending in /: InvalidInput
+a folder named as a file: two entries are named "empty/"
+6105 bytes, CRC 3b67388d
+docs/ (0 bytes): method 0, 0 in the archive, folder true, 2026-11-20T13:45:31Z
+  00000000 false
+docs/stored.txt (4790 bytes): method 0, 4790 in the archive, folder false, 2026-11-20T13:45:31Z
+  295a529f true
+docs/deflated.txt (4790 bytes): method 8, 282 in the archive, folder false, 2026-11-20T13:45:31Z
+  295a529f true
+çay/şeker.txt (9 bytes): method 8, 11 in the archive, folder false, 1975-06-01T08:00:00Z
+  32d3f7b3 false
+streamed.txt (4790 bytes): method 8, 282 in the archive, folder false, 2026-11-20T13:45:31Z
+  295a529f true
+empty (0 bytes): method 0, 0 in the archive, folder false, 2026-11-20T13:45:31Z
+  00000000 false
+docs/deflated.txt
+true
+the entry is larger than the limit, true
+true
+true
+0
+6
+not a zip archive
+NotFound, true
+Stored Deflated
