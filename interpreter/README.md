@@ -76,11 +76,12 @@ of `tests/Containerfile` has them.
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on. On Windows the same, through Winsock: the loop asks the driver under the sockets (AFD) on an I/O completion port, as mio and Tokio do, and the interpreter waits with `WSAPoll`; a listener and a datagram socket hold their port alone, and a datagram socket that is not connected is not told of a datagram that came back, as on Linux and macOS. Windows tells of a refused connection after about two seconds, and `localhost` tries `::1` before `127.0.0.1` (1025) |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. `d.toLocal()` gives a `DateTimeOffset`, the moment seen at the offset of the system's time zone (`2026-11-18T12:30:05+03:00`, its parts those of the place), `d.withOffset(offset)` one at an offset of your own, `DateTimeOffset.local(2026, 3, 29, 2, 30, 0)` the moment the clocks of the place show that at (`SkippedLocalTime` in the hour summer time skips, the earlier of the two in the hour it repeats), and `t.toUtc()` the moment back; `DateTime.parse(text)` and `DateTimeOffset.parse(text)` read RFC 3339 (`InvalidText(position)` where the text stops being one). A format of your own is written with the parts: `$"{t.day():D2}.{t.month():D2}.{t.year()}"`. All four are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
-| Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of zlib, gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
+| Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece; `Adler32` is zlib's checksum, used the same way. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Written in SG in the module `std` |
+| Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -522,6 +523,8 @@ hand with no checks):
 | `sha256`: a gigabyte through `Sha256` of `std`, written in SG, 64 KB of an array at a time (the C calls OpenSSL 3.5's SHA-256, which uses the processor's SHA instructions; the same algorithm written in plain C takes 2.90 s) | 3.138 s | 3.198 s | 0.351 s | 8.93 |
 | `json`: a JSON document of 100,000 records (34 MB) read five times by `Json.parse` of `std`, written in SG, and walked once (the C reads it with cJSON 1.7.19) | 0.773 s | 0.789 s | 0.675 s | 1.15 |
 | `log`: a billion `Log.debug($"...")` calls while the level is `Info`, in a loop that does little else, so no text is built: the static of the level, a load and a compare (the C tests an atomic global the same way; between 1.01 and 1.10 over several runs) | 0.811 s | 0.808 s | 0.805 s | 1.01 |
+| `gzip`: sixteen megabytes of text made of words compressed at level 6 by `Gzip.compress` of `std`, written in SG (the C calls zlib 1.2.12 of macOS; the bytes are the same, so both print the same length and CRC-32) | 0.528 s | 0.528 s | 0.509 s | 1.04 |
+| `gunzip`: the same text compressed at level 1 and opened twenty times by `Gzip.decompress` of `std`, each time with its CRC-32 (the C calls zlib's `inflate`) | 0.950 s | 1.064 s | 0.365 s | 2.60 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
 virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
@@ -957,6 +960,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
 | `src/std/signals.sg` | The same module's signals (`Signal`, `Signals`, `SignalListener`). Only it calls `System.signalListen`, `System.signalNext` and the other calls of the signals |
 | `src/std/regex.sg`, `src/std/unicode.sg` | The same module's regular expressions (`Regex`, `Match`, `Captures`, `RegexError`: a tree, a program of Thompson's construction and Pike's machine) and the general category of a character (`UnicodeCategory`, the work of `c.category()`). Only they call `System.charCategory` and `System.charFold`, which read the Unicode tables; `Regex.problem` is run by the checker on each pattern written in the program (`patterns_checked` in `src/check.rs`) |
+| `src/std/compression.sg` | The same module's compression (`Deflate`, `Zlib`, `Gzip`, `Compressor`, `Decompressor`, `CompressError`): zlib's `deflate.c` and `trees.c` written again in SG, with zlib's licence at its top, and an inflate of tables of 9 and 6 bits. The checker looks at a level written in the program (`level_written` in `src/check.rs`) |
 | `src/signals.rs` | For the interpreter: the signals of the process, a handler that writes the kind into a pipe and a thread that hands each to its listeners, waking the fiber that waits through the scheduler |
 | `src/lsp.rs` | The language server (`sg lsp`): the messages of the Language Server Protocol on the input and output, the program each open file belongs to, a check 300 ms after the last change on a thread of its own, the first error as a diagnostic and its fix as a quick fix, positions in UTF-16 as the protocol counts them |
 | `src/json.rs` | JSON read and written for the language server, so that `sg` keeps no dependencies |
@@ -9031,6 +9035,95 @@ With 1457-1481, 474 of the 1842 programs are compiled on macOS and on Linux (103
 236 programs of the site run as they show; on the Windows Arm VM `ok_regex` and `ok_char_category` print the
 same interpreted and compiled, and RE2's search tests give the same count both ways.
 
+Choices made in the hundred-and-thirty-first slice (the library: compression). 1482-1492 were approved on
+20 November 2026, before the slice was written; they say how 1465 and 1466 are written, and 1490 and 1491 what
+the zip archives of the next slice (1467) will be:
+
+1482. **Two slices**: DEFLATE, zlib and gzip in this one; zip archives, which are built on them and have their
+     own rules of safety, in the next, each with its own commit and its own run of CI.
+1483. **The calls**, a type for each format, as Go has a package for each: `Deflate`, `Zlib` and `Gzip`, each
+     with `compress(read byte[] data, int level)`, giving a `List<byte>`, `decompress(read byte[] data, nint
+     limit)`, giving a `Result<List<byte>, CompressError>`, `reader(StreamReader source, long limit)`, giving a
+     `Decompressor` with the calls of a `StreamReader` (`readSome`, `readBytes`, `readLine`, `readText`), and
+     `writer(StreamWriter target, int level)`, giving a `Compressor` (`writeBytes`, `close`; `Closable`). One
+     enum of errors, `CompressError`: `Corrupt(long position)`, `Truncated`, `ChecksumMismatch`, `TooLarge`,
+     `TrailingData`, `Io(IoError)`.
+1484. **The level** is an `int` from 0 to 9; one outside them is a panic, and one written in the program is a
+     compile error. zlib's -1 for its default is not taken: the default is written, 6.
+1485. **The bytes are zlib's** (1.3.1) at every level: the same ways of compressing (stored for 0, matches
+     taken at once for 1 to 3, the lazy search for 4 to 9), the same hash and table of levels, and the same
+     choice for each block between stored, fixed and dynamic codes (`trees.c`). The source names zlib and holds
+     its licence, as an altered version must. Go's `compress/flate` makes other bytes.
+1486. **Opening is by tables**, as zlib's: 9 bits at a time for a literal or a length, 6 for a distance, and
+     tables below them for the longer codes; it is measured against zlib, and what is slower goes into
+     "Slower than C".
+1487. **gzip**: members one after the other open as one stream (as `gunzip` and Go do); the name, the comment
+     and the extra field of a header are read and passed over, and its CRC is checked; what the header holds is
+     not given yet. A header written holds no name, a time of 0 and 255 for the system (as Go), so every
+     machine writes the same bytes.
+1488. **Strict**: a byte after the end of the stream is `TrailingData`. The limit counts opened bytes: as many
+     as the limit is no error, one more is `TooLarge`; a reader counts all it opens.
+1489. **`Adler32`** comes into `std/checksum.sg`, public and used as `Crc32` is: zlib's format needs it.
+1490. **Zip archives** (the next slice), as Go's `archive/zip`: `ZipReader.open(path)` and its `entries`, each a
+     `ZipEntry` (`name`, `size`, `compressedSize`, `modified` as a `DateTime`, `isDirectory`, `method`);
+     `reader.read(read entry, limit)` gives its bytes and `reader.copyTo(read entry, ref writer, limit)` writes
+     them; `ZipWriter.create(StreamWriter)` with `add(name, read data, ZipMethod)`, `addFrom(name, ref
+     StreamReader, ZipMethod)` (with a data descriptor), `addDirectory(name)` and `close()`; zip64 when it is
+     needed, the flag of UTF-8 for a name that is not ASCII, the time as DOS writes it and as UTC in the extra
+     field 0x5455.
+1491. **Reading a zip archive checks more than Go**: two entries of one name are `DuplicateName`, a name in a
+     local header that is not the one of the central directory is an error, and entries whose data lie over
+     each other are refused (the overlapping bomb).
+1492. **Tests**: compressing and opening against zlib, its bytes at every level (through the zlib of
+     `examples/zlib`), streams made wrong by hand, and a fuzz target of inflate; for zip, archives made by Go,
+     Python and `zip`, and the odd ones of Go's `archive/zip/testdata`.
+
+Taken while the slice was written, on 20 November 2026, and open to review:
+
+1493. **Where `Corrupt` points**: the byte of the compressed data where the part that is wrong begins: the
+     header, the description of a block's codes, or the code itself.
+1494. **A `Compressor` fails only by writing**: `writeBytes` and `close` give a `Result<void, IoError>`, the
+     error of its `StreamWriter`; compressing itself cannot fail.
+1495. **A reader gives the bytes up to its limit**, and asking for one more is `TooLarge`; it does not fail as
+     soon as it has opened past the limit, which it does a block at a time.
+1496. **A line that is not UTF-8** is `Io(InvalidText(position))`, the position counted in the opened bytes, as
+     a `StreamReader` counts it in the file.
+1497. **What a header may not hold**: gzip's flags that are reserved, a method other than 8, zlib's window
+     above 32 KB and its preset dictionary are `Corrupt`; a dictionary is not given to a decompressor here.
+1498. **At level 0 a stream's stored blocks follow its pieces**, as zlib's do: the bytes are zlib's for the
+     same pieces; at levels 1 to 9 they are the same however the data is cut.
+1499. **The opened bytes of `decompress` start at a guessed size**: gzip's length at its end, or four times the
+     input, never past the limit nor past 1,032 times the input, the most DEFLATE opens into; the list grows
+     from there.
+1500. **A module is the folder of the name as written**: on macOS and Windows, whose file names ignore case,
+     `Zlib.compress` in a program beside a folder `zlib` read that folder as the module `Zlib` and declared
+     its C functions twice. The checker now takes a folder as a module only if its name is spelled as the
+     program writes it.
+
+Tested by `ok_compression` (zlib's bytes for a text at level 6 in the three formats, each level of gzip there
+and back, Adler-32, every error of `CompressError` from data made wrong by hand, the limit at its edge, two
+members of gzip, a gzip file written by a `Compressor` and read back by lines, as text and by bytes, a line
+that is not UTF-8), `error_compress_level`, `error_compress_level_negative`, `panic_compress_level`,
+`panic_compress_limit`, and two tests of `examples/zlib`, which compare the language's `Zlib` with zlib through
+its C at every level and open each other's bytes. While it was written, the compressor was compared with zlib
+1.3.1 built from its source on thirteen files (empty, one to three bytes, text, a program, random bytes, zeros,
+repeats, a window of 32 KB three times, mixed) in the three formats at every level, 390 cases, all the same
+bytes; a `Compressor` fed in pieces of 1 to 100,000 bytes was compared with zlib fed the same pieces, 176
+cases, the same bytes, and each read back by a `Decompressor`; the zlib of macOS (1.2.12) gives the same bytes
+as 1.3.1 on all of them at levels 0, 1, 4, 6 and 9. 23,000 streams made by zlib and changed at random (bits flipped, bytes
+replaced, cut, lengthened) were opened by zlib and by `Gzip`, `Zlib` and `Deflate`: every one opened by both
+into the same bytes or refused by both. The fuzz target `inflate` (`fuzz/`) opens any bytes in the
+interpreter, and compresses and opens again an input of up to 2 KB; its first half hour, 4,705 inputs (each
+checks the module again in a build made for the fuzzer, so it is slow), found nothing wrong; two took more
+than its 10 seconds there, and give their `Corrupt` in 50 ms and 3 ms in `sg`.
+
+Measured against zlib (`bench/gzip` and `bench/gunzip`, Apple M3 Max): sixteen megabytes of text compress at
+level 6 in 1.04 times zlib's time, and open in 2.60 times it ("Slower than C").
+
+With 1482-1500, 477 of the 1847 programs are compiled on macOS and on Linux (103 under the thread sanitizer), and the
+240 programs of the site run as they show; on the Windows Arm VM `ok_compression` prints the same interpreted
+and compiled, and the tests of `examples/zlib` pass both ways against vcpkg's zlib.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9042,6 +9135,14 @@ check off.
   while zlib on macOS folds the bytes with the CRC instructions of the processor and multiplication
   without carries. Candidate: a built-in for those instructions, which the C compiler maps to them on
   each machine and to the tables where there are none; until then a program calls zlib's `crc32`.
+
+- **Opening DEFLATE** (`gunzip`, 2.60 times zlib on macOS, choice 1486): the decoder reads its codes from
+  tables as zlib's does, with the bits, the place in the input and the length of the output in locals and the
+  lists looked at through slices, but each byte it writes and each entry it reads is checked against the end
+  of its slice, and a match is copied a byte at a time; zlib's C trusts its pointers and copies three bytes
+  in a step. A profile puts the time in that loop, not in growing the output. Candidates: a copy of a window
+  of a list into itself that the checker allows when the two do not overlap, and checks the compiler can see
+  are needed once a block; until then a program that opens gigabytes calls zlib.
 
 - **SHA-256 without the processor's instructions** (`sha256`, 8.93 times OpenSSL on macOS, choice 1422):
   `Sha256` takes a block of 64 bytes through 64 rounds of plain arithmetic, about the time of the same
@@ -9178,6 +9279,11 @@ check off.
 
 ## Not here yet
 
+- **Of compression (1482-1500)**: zip archives (the next slice, 1467, 1490, 1491); what a gzip header holds
+  (name, time, comment), given when a program asks for it; flushing in the middle of a stream (zlib's
+  `Z_SYNC_FLUSH`), a preset dictionary, zlib's strategies (`Z_RLE`, `Z_HUFFMAN_ONLY`) and its smaller windows
+  and memory levels; the `async` versions of a `Compressor` and a `Decompressor`; a `Decompressor` over a
+  `TcpStream` or another source than a `StreamReader`, which waits for interfaces or a push of bytes.
 - **Of regular expressions (1457-1481)**: matching bytes (`read byte[]`, 1470); the scripts of Unicode in
   `\p` (`\p{Greek}`) and its long names (`\p{Letter}`); POSIX's leftmost-longest match (1473); a lazy DFA,
   which the measurement of 1418 decides; the groups of every match at once (Go's `FindAllStringSubmatch`), a
@@ -9671,7 +9777,8 @@ SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409) and the 
 GNU's way of writing, 1410, 1423-1433) and JSON (`Json`, `JsonValue`, read strictly and tested with
 JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building nothing, 1412, 1447-1456), and regular expressions (`Regex`, RE2's
 meaning, a pattern of the program checked when it is compiled, and the general category of Unicode with
-`c.category()`, 1457-1481). Compression and zip archives come next (1465-1467), then real programs written in
+`c.category()`, 1457-1481), and compression (`Deflate`, `Zlib`, `Gzip`, zlib's bytes at every level, opened with a limit, 1465, 1466,
+1482-1500). Zip archives come next (1467, 1490, 1491), then real programs written in
 SG, Rust and Go and measured against each other, each difference a choice (1418), and after them XML without
 a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg

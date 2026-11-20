@@ -10,7 +10,7 @@ the three systems:
     python3 bench/run.py --runs 1 spawn   one run of each instead of the best of five, for a
                                           program that takes long (starting 5,000 programs on
                                           Windows)
-    python3 bench/run.py -L folder ...    the libraries of `crc`, `checksum`, `sha256`, `deflate`,
+    python3 bench/run.py -L folder ...    the libraries of `crc`, `checksum`, `sha256`, `deflate`, `gzip`, `gunzip`,
                                           `sqlite`, `curl` and `json` (cJSON) are also looked for there (on Windows, vcpkg's `lib`
                                           and `bin`; their headers through `CPATH`)
 
@@ -39,7 +39,7 @@ PROGRAMS = """fib primes collatz words list expr parse vector counts show lookup
 numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async
 asynclines tasklist asynccopy echo echosync echowork netlines ring crc deflate clock dates rng
 secure listing status spawn capture pipelines pipesasync spawnasync case letters udpecho
-udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256 json log""".split()
+udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256 json log gzip gunzip""".split()
 
 
 def compiler():

@@ -1,0 +1,5 @@
+5
+panic: compression level 12: a level is 0 (stored as it is) to 9 (smallest)
+  --> panic_compress_level.sg:5:11
+ 5 |     print(Deflate.compress("abc".asBytes(), level).length())
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

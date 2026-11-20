@@ -1,10 +1,10 @@
 ---
-title: CRC-32
-description: Crc32, the checksum of zlib, gzip, PNG and ZIP, at once or piece by piece.
+title: CRC-32 and Adler-32
+description: Crc32, the checksum of gzip, PNG and ZIP, and Adler32, the checksum of zlib, at once or piece by piece.
 sidebar_position: 10
 ---
 
-# CRC-32
+# CRC-32 and Adler-32
 
 `Crc32` computes the CRC-32 that zlib, gzip, PNG and ZIP write into their files (IEEE 802.3, the polynomial
 `0xEDB88320`), so a program can check what it reads from them and write what they expect. It is written in SG in
@@ -55,3 +55,35 @@ the program is compiled. Four gigabytes take 1.1 seconds on an Apple M3 Max, as 
 written in C does. zlib on macOS takes a tenth of that with the processor's own CRC instructions, which SG
 cannot call yet; a program that needs that speed calls zlib's `crc32` through C, as the
 [zlib example](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples/zlib) does.
+
+## Adler-32
+
+`Adler32` computes the Adler-32 that the zlib format writes after its data (RFC 1950): two sums modulo 65,521,
+of the bytes and of the first sum after each. It is quicker to compute than a CRC and finds fewer changes in
+short data. It is used as `Crc32` is.
+
+| Signature | What it does |
+|---|---|
+| `uint Adler32.of(read byte[] data)` | The Adler-32 of all the bytes at once; 1 for no bytes |
+| `Adler32 Adler32()` | An Adler-32 of no bytes yet, to take them in piece by piece |
+| `void a.update(read byte[] data)` | Takes in more bytes |
+| `uint a.value()` | The Adler-32 of the bytes taken in so far; more may still be taken in after it |
+
+```sg
+void main() {
+    print($"{Adler32.of("Wikipedia".asBytes()):x8}")
+    var a = Adler32()
+    a.update("Wiki".asBytes())
+    a.update("pedia".asBytes())
+    print($"{a.value():x8}")
+}
+```
+
+It prints:
+
+```text
+11e60398
+11e60398
+```
+
+[Compression](./compression.md) computes both for the formats that need them.

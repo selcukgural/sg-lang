@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirtieth slice (regular expressions in `std`, 1457-1481; the general category of a character, 1475, 1476).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-first slice (compression in `std`: DEFLATE, zlib and gzip, 1482-1500).
 
 ## Functions and variables
 
@@ -524,6 +524,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirtieth slice (regu
 | `crc32fast::hash(bytes)` | `Crc32.of(read bytes)` | built | In the language's own module; a `uint` |
 | `let mut h = crc32fast::Hasher::new(); h.update(bytes); h.finalize()` | `var c = Crc32(); c.update(read bytes); c.value()` | built | `value()` does not end it: more may be taken in after it |
 | `crc32fast` with the processor's CRC instructions | none yet | | Sixteen bytes in a step through tables, as `crc32fast` without them; zlib's `crc32` through C for that speed |
+| `adler::adler32_slice(bytes)` | `Adler32.of(read bytes)` | built | zlib's checksum; `var a = Adler32(); a.update(read bytes); a.value()` piece by piece |
 | `sha2::Sha256::digest(bytes)` | `Sha256.of(read bytes)` | built | A `byte[32]`; `Hex.encode(read hash)` writes it as text |
 | `let mut h = Sha256::new(); h.update(bytes); h.finalize()` | `var h = Sha256(); h.update(read bytes); h.finish()` | built | `finish()` does not end it: more may be taken in after it |
 | `Hmac::<Sha256>::new_from_slice(key)?.chain_update(data).finalize()` | `Hmac.sha256(read key, read data)` | built | One call; a key of any length |
@@ -595,6 +596,21 @@ Last brought up to date: 20 November 2026, the hundred-and-thirtieth slice (regu
 | `regex::bytes::Regex` | none yet | | A `string` is matched |
 | `replace_all(text, \|caps\| ...)` | none | | No closures |
 | `fancy-regex` (back references, look-around) | none | not planned | A match grows with the text and no more |
+
+## Compression
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `flate2::write::GzEncoder::new(Vec::new(), Compression::new(6))`, `write_all`, `finish` | `Gzip.compress(read bytes, 6)` | built | zlib's bytes at every level; a level outside 0 to 9 written in the program is a compile error |
+| `flate2::read::GzDecoder::new(&bytes[..]).read_to_end(&mut out)` | `Gzip.decompress(read bytes, limit)` | built | Always a limit: `TooLarge` past it; flate2 leaves the bound to `take` |
+| `flate2::{ZlibEncoder, DeflateEncoder}`, `miniz_oxide::deflate::compress_to_vec` | `Zlib.compress`, `Deflate.compress` | built | The same calls on each format |
+| `GzEncoder::new(file, level)` | `Gzip.writer(writer, level)` | built | A `Compressor` over a `StreamWriter`: `writeBytes`, `close` (`Closable`) |
+| `BufReader::new(GzDecoder::new(file)).lines()` | `Gzip.reader(reader, limit)`, `readLine` | built | A `Decompressor` over a `StreamReader`: `readSome`, `readBytes`, `readLine`, `readText` |
+| `MultiGzDecoder` | `Gzip.decompress`, `Gzip.reader` | built | Members one after the other always open as one; bytes after the end are an error |
+| `flate2::Error` / `io::Error` | `CompressError` | built | `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TooLarge`, `TrailingData`, `Io(error)` |
+| `GzBuilder::filename(...)`, `GzDecoder::header()` | none yet | | The header holds no name or time; a header read is not given |
+| `Compress::compress(..., FlushCompress::Sync)`, a preset dictionary | none yet | | |
+| `zip::ZipArchive` | none yet | | The next slice (1490, 1491) |
 
 ## Tests and the tools
 

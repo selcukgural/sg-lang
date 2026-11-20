@@ -1,0 +1,6 @@
+// zlib's -1 for "the default" is no level here: the default is written, 6 (choice 1484).
+Result<void, IoError> main() {
+    var writer = Zlib.writer(try File.createText("x.z"), -1)
+    try writer.close()
+    return Ok()
+}

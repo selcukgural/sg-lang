@@ -1,0 +1,5 @@
+error: compression level 10: a level is 0 (stored as it is) to 9 (smallest)
+  --> error_compress_level.sg:4:50
+ 4 |     var packed = Gzip.compress("text".asBytes(), 10)
+   |                                                  ^^
+  hint: 6 is zlib's default, 1 the fastest that compresses

@@ -1,0 +1,5 @@
+true
+panic: a limit of -1 bytes: it is 0 or more
+  --> panic_compress_limit.sg:6:11
+ 6 |     print(Gzip.decompress(read packed, limit) is Ok(_))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

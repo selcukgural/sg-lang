@@ -1,0 +1,30 @@
+// Sixteen megabytes of text made up of words, compressed at level 6 by the language's own gzip:
+// `Gzip.compress` of `std`, written in SG, next to zlib's `deflate` called from C. The bytes are
+// the same (choice 1485), so both print the same length and CRC-32.
+
+List<string> wordList() {
+    return List<string> { "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "compression", "of", "text", "is", "a", "matter", "repeated", "words", "and", "their", "places", "window" }
+}
+
+List<byte> made() {
+    var words = wordList()
+    var data = List<byte>()
+    uint state = 12345
+    while data.length() < 16_000_000 {
+        state = state.wrappingMultiply(1103515245).wrappingAdd(12345)
+        nint word = (nint)(state >> 16) % words.length()
+        data.addAll(words[word].asBytes())
+        if state >> 8 & 15 == 0 {
+            data.add(10)
+        } else {
+            data.add(32)
+        }
+    }
+    return data
+}
+
+void main() {
+    var data = made()
+    var packed = Gzip.compress(read data, 6)
+    print($"{packed.length()} {Crc32.of(read packed)}")
+}

@@ -1,0 +1,2542 @@
+// Compression (choices 1465, 1466, 1482-1489): DEFLATE (RFC 1951), and the two formats around it,
+// zlib (RFC 1950) and gzip (RFC 1952), both ways, written in SG and brought along by the language.
+//
+// The compressor is zlib's, step for step (deflate.c and trees.c of zlib 1.3.1, by Jean-loup Gailly
+// and Mark Adler, under the zlib licence below): the same hash of three bytes and its chains, the
+// same table of levels, the lazy search of levels 4 to 9, the same blocks and the same choice of
+// stored, fixed or dynamic codes for each. So the bytes it gives are the bytes zlib gives for the
+// same input, level by level (1485). The decompressor is written here, after zlib's inflate: codes
+// are decoded by tables, 9 bits at a time for a literal or a length and 6 for a distance, with
+// tables below them for the longer codes (1486).
+//
+// Decompressing always takes a limit, the most bytes it may give, so that a small input that would
+// open into gigabytes (a bomb) is refused with `TooLarge` (1466).
+//
+// zlib's licence, as its notice asks for an altered version:
+//
+//   Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+//
+//   This software is provided 'as-is', without any express or implied warranty. In no event will
+//   the authors be held liable for any damages arising from the use of this software.
+//
+//   Permission is granted to anyone to use this software for any purpose, including commercial
+//   applications, and to alter it and redistribute it freely, subject to the following
+//   restrictions:
+//
+//   1. The origin of this software must not be misrepresented; you must not claim that you wrote
+//      the original software. If you use this software in a product, an acknowledgment in the
+//      product documentation would be appreciated but is not required.
+//   2. Altered source versions must be plainly marked as such, and must not be misrepresented as
+//      being the original software.
+//   3. This notice may not be removed or altered from any source distribution.
+//
+// This file is such an altered version: zlib's C written again in SG, with only the parts these
+// formats need (no preset dictionary, no strategies, no flushing in the middle of a stream).
+
+// Why compressed data could not be opened.
+public enum CompressError : Equatable, Formattable {
+    // The data is not what the format says, at this byte of the compressed input (counted from 0).
+    Corrupt(long position)
+    // The data ends before the stream does.
+    Truncated
+    // The data opened, but its checksum (CRC-32 for gzip, Adler-32 for zlib) or its length is not
+    // the one written after it: it was changed.
+    ChecksumMismatch
+    // The data opens into more bytes than the limit.
+    TooLarge
+    // Bytes follow the end of the stream.
+    TrailingData
+    // Reading the compressed stream failed, or the text read is not UTF-8.
+    Io(IoError error)
+
+    public void format(read this, ref Formatter f) {
+        match this {
+            Corrupt(position) => f.write($"corrupt compressed data at byte {position}")
+            Truncated => f.write("the compressed data ends before its stream does")
+            ChecksumMismatch => f.write("the checksum of the data is not the one written after it")
+            TooLarge => f.write("the data opens into more bytes than the limit")
+            TrailingData => f.write("bytes follow the end of the compressed stream")
+            Io(error) => f.write($"{error}")
+        }
+    }
+}
+
+// DEFLATE alone (RFC 1951), with no header and no checksum: what zip archives and PNG hold.
+public struct Deflate {
+    // `data` compressed at `level`, from 0 (stored as it is) to 9 (smallest); 6 is zlib's default.
+    public List<byte> compress(read byte[] data, int level) {
+        return deflateAll(DeflateRaw, data, level)
+    }
+
+    // `data` opened; `TooLarge` when it opens into more than `limit` bytes.
+    public Result<List<byte>, CompressError> decompress(read byte[] data, nint limit) {
+        return inflateAll(DeflateRaw, data, limit)
+    }
+
+    // A reader of what `source` holds, opened as it is read; at most `limit` bytes in all.
+    public Decompressor reader(StreamReader source, long limit) {
+        return decompressorOf(DeflateRaw, source, limit)
+    }
+
+    // A writer that compresses what it is given at `level` into `target`; `close` ends the stream.
+    public Compressor writer(StreamWriter target, int level) {
+        return compressorOf(DeflateRaw, target, level)
+    }
+}
+
+// The zlib format (RFC 1950): DEFLATE with two bytes before it and an Adler-32 after it.
+public struct Zlib {
+    // `data` compressed at `level`, from 0 (stored as it is) to 9 (smallest); 6 is zlib's default.
+    public List<byte> compress(read byte[] data, int level) {
+        return deflateAll(DeflateZlib, data, level)
+    }
+
+    // `data` opened; `TooLarge` when it opens into more than `limit` bytes.
+    public Result<List<byte>, CompressError> decompress(read byte[] data, nint limit) {
+        return inflateAll(DeflateZlib, data, limit)
+    }
+
+    // A reader of what `source` holds, opened as it is read; at most `limit` bytes in all.
+    public Decompressor reader(StreamReader source, long limit) {
+        return decompressorOf(DeflateZlib, source, limit)
+    }
+
+    // A writer that compresses what it is given at `level` into `target`; `close` ends the stream.
+    public Compressor writer(StreamWriter target, int level) {
+        return compressorOf(DeflateZlib, target, level)
+    }
+}
+
+// The gzip format (RFC 1952): DEFLATE with a header of ten bytes before it and a CRC-32 and the
+// length after it. A file of several members, one after the other, is opened as one (1487).
+public struct Gzip {
+    // `data` compressed at `level`, from 0 (stored as it is) to 9 (smallest); 6 is zlib's default.
+    // The header holds no name and no time, and 255 for the system, so every machine gives the same
+    // bytes.
+    public List<byte> compress(read byte[] data, int level) {
+        return deflateAll(DeflateGzip, data, level)
+    }
+
+    // `data` opened; `TooLarge` when it opens into more than `limit` bytes.
+    public Result<List<byte>, CompressError> decompress(read byte[] data, nint limit) {
+        return inflateAll(DeflateGzip, data, limit)
+    }
+
+    // A reader of what `source` holds, opened as it is read; at most `limit` bytes in all.
+    public Decompressor reader(StreamReader source, long limit) {
+        return decompressorOf(DeflateGzip, source, limit)
+    }
+
+    // A writer that compresses what it is given at `level` into `target`; `close` ends the stream.
+    public Compressor writer(StreamWriter target, int level) {
+        return compressorOf(DeflateGzip, target, level)
+    }
+}
+
+// Compresses what it is given into a `StreamWriter`, a piece at a time. The bytes are the same as
+// those of compressing all of it at once, at levels 1 to 9; at level 0 the stored blocks follow
+// the pieces, as zlib's do. A local one is closed: `close` writes the end of the stream.
+public struct Compressor : Closable {
+    DeflateState state
+    StreamWriter target
+
+    // Compresses `data`; what is compressed is written to the target as it fills a block.
+    public Result<void, IoError> writeBytes(ref this, read byte[] data) {
+        nint at = 0
+        while at < data.length() {
+            nint end = (at + 65536).min(data.length())
+            deflateRun(ref this.state, data[at..end], false)
+            at = end
+            if this.state.out.length() >= 65536 {
+                try this.target.writeBytes(read this.state.out)
+                this.state.out.clear()
+            }
+        }
+        return Ok()
+    }
+
+    // Ends the stream, writes what is left and closes the target.
+    public Result<void, IoError> close(this) {
+        var none = List<byte>()
+        deflateRun(ref this.state, read none, true)
+        try this.target.writeBytes(read this.state.out)
+        return this.target.close()
+    }
+}
+
+// Reads what a `StreamReader` holds, opened as it is read. It gives at most the limit it was made
+// with, and `TooLarge` past it.
+public struct Decompressor {
+    Inflater inflater
+    StreamReader source
+    // The bytes of `inflater.out` before this one have been given.
+    nint given
+    // The end of the stream was reached and counted.
+    bool ended
+
+    // Fills `buffer` with what comes next, as much as is ready; how many bytes, 0 at the end.
+    public Result<nint, CompressError> readSome(ref this, ref byte[] buffer) {
+        if buffer.length() == 0 {
+            return Ok(0)
+        }
+        if this.given == this.ready() && !try this.more() {
+            return Ok(0)
+        }
+        nint count = (this.ready() - this.given).min(buffer.length())
+        for i in 0..count {
+            buffer[i] = this.inflater.out[this.given + i]
+        }
+        this.given += count
+        return Ok(count)
+    }
+
+    // Fills `buffer` unless the end comes first; how many bytes.
+    public Result<nint, CompressError> readBytes(ref this, ref byte[] buffer) {
+        nint filled = 0
+        while filled < buffer.length() {
+            nint count = try this.readSome(ref buffer[filled..])
+            if count == 0 {
+                break
+            }
+            filled += count
+        }
+        return Ok(filled)
+    }
+
+    // The next line into `line`, without its `\n` or `\r\n`; `false` at the end. Text that is not
+    // UTF-8 is `Io(InvalidText(position))`, the position counted in the opened bytes.
+    public Result<bool, CompressError> readLine(ref this, ref string line) {
+        line.clear()
+        nint searched = 0
+        while true {
+            nint from = this.given + searched
+            nint? found = this.inflater.out[from..this.ready()].indexOf((byte)10)
+            if found is not null {
+                nint end = from + found
+                nint next = end + 1
+                if end > this.given && this.inflater.out[end - 1] == 13 {
+                    end -= 1
+                }
+                try this.text(ref line, this.given, end)
+                this.given = next
+                return Ok(true)
+            }
+            searched = this.ready() - this.given
+            if !try this.more() {
+                if this.given == this.ready() {
+                    return Ok(false)
+                }
+                try this.text(ref line, this.given, this.ready())
+                this.given = this.ready()
+                return Ok(true)
+            }
+        }
+        return Ok(false)
+    }
+
+    // All that is left, as text.
+    public Result<string, CompressError> readText(ref this) {
+        var text = string.withCapacity(0)
+        while true {
+            nint end = this.ready()
+            // A character cut by the end of what is ready waits for its other bytes.
+            nint cut = utf8Whole(read this.inflater.out, this.given, end)
+            try this.text(ref text, this.given, cut)
+            this.given = cut
+            if !try this.more() {
+                break
+            }
+        }
+        try this.text(ref text, this.given, this.ready())
+        this.given = this.ready()
+        return Ok(text)
+    }
+
+    // The bytes `from` up to `end` of what is opened, added to `target` as text.
+    Result<void, CompressError> text(ref this, ref string target, nint from, nint end) {
+        match string.fromUtf8(this.inflater.out[from..end]) {
+            Ok(text) => target.write(text)
+            Error(cause) => {
+                long position = this.inflater.outBase + (long)from + (long)cause.position
+                return Error(CompressError.Io(IoError.InvalidText(position)))
+            }
+        }
+        return Ok()
+    }
+
+    // How many of the opened bytes may be given: all of them, or those up to the limit.
+    nint ready(read this) {
+        long allowed = this.inflater.limit - this.inflater.outBase
+        if (long)this.inflater.outLen > allowed {
+            return (nint)allowed
+        }
+        return this.inflater.outLen
+    }
+
+    // Opens more of the stream: `true` when bytes that were not given are ready, `false` at its
+    // end, `TooLarge` when what is asked for lies past the limit.
+    Result<bool, CompressError> more(ref this) {
+        if this.given < this.ready() {
+            return Ok(true)
+        }
+        if this.inflater.outBase + (long)this.inflater.outLen > this.inflater.limit {
+            return Error(CompressError.TooLarge)
+        }
+        this.forget()
+        while true {
+            if this.inflater.mode == InflateDone {
+                if !this.ended {
+                    this.ended = true
+                    if !this.inflater.inEof {
+                        // The end of the stream must be the end of the source too.
+                        try this.refill()
+                        if this.inflater.inPos < this.inflater.inEnd {
+                            return Error(CompressError.TrailingData)
+                        }
+                    }
+                }
+                return Ok(false)
+            }
+            if !this.inflater.inEof && this.inflater.inEnd - this.inflater.inPos < InflateAhead {
+                try this.refill()
+            }
+            nint stop = this.inflater.outLen + 65536
+            long room = this.inflater.limit - this.inflater.outBase + 1
+            if room < (long)stop {
+                stop = (nint)room
+            }
+            try this.inflater.run(stop)
+            if this.given < this.ready() {
+                return Ok(true)
+            }
+            if this.inflater.outBase + (long)this.inflater.outLen > this.inflater.limit {
+                return Error(CompressError.TooLarge)
+            }
+        }
+        return Ok(false)
+    }
+
+    // Reads the source until `InflateAhead` bytes wait to be opened, or it ends.
+    Result<void, CompressError> refill(ref this) {
+        // The whole bytes the bits still hold are kept too: a stored block gives them back.
+        nint held = (nint)(this.inflater.bits >> 3)
+        nint start = this.inflater.inPos - held
+        nint unread = this.inflater.inEnd - start
+        for i in 0..unread {
+            this.inflater.input[i] = this.inflater.input[start + i]
+        }
+        this.inflater.inBase += (long)start
+        this.inflater.inPos = held
+        this.inflater.inEnd = unread
+        while !this.inflater.inEof && this.inflater.inEnd < InflateAhead {
+            nint end = this.inflater.inEnd
+            match this.source.readSome(ref this.inflater.input[end..]) {
+                Ok(count) => {
+                    if count == 0 {
+                        this.inflater.inEof = true
+                    }
+                    this.inflater.inEnd += count
+                }
+                Error(error) => return Error(CompressError.Io(error))
+            }
+        }
+        return Ok()
+    }
+
+    // Lets go of the bytes given, but for the 32 KB a distance may still reach back into.
+    void forget(ref this) {
+        nint keep = this.inflater.outLen - DeflateWSize
+        nint cut = this.given.min(keep)
+        if cut < 4 * DeflateWSize {
+            return
+        }
+        this.inflater.checksum()
+        nint rest = this.inflater.outLen - cut
+        for i in 0..rest {
+            this.inflater.out[i] = this.inflater.out[cut + i]
+        }
+        this.inflater.outLen = rest
+        this.inflater.outBase += (long)cut
+        this.inflater.counted -= cut
+        this.given -= cut
+    }
+}
+
+// Where a character of UTF-8 cut at `end` begins, or `end` when none is: the bytes from `from`.
+nint utf8Whole(read List<byte> bytes, nint from, nint end) {
+    nint at = end
+    nint back = 0
+    while at > from && back < 4 {
+        at -= 1
+        back += 1
+        byte b = bytes[at]
+        if b & 0xC0 != 0x80 {
+            nint size = 1
+            if b >= 0xF0 {
+                size = 4
+            } else if b >= 0xE0 {
+                size = 3
+            } else if b >= 0xC0 {
+                size = 2
+            }
+            if size > back {
+                return at
+            }
+            return end
+        }
+    }
+    return end
+}
+
+Decompressor decompressorOf(int format, StreamReader source, long limit) {
+    if limit < 0 {
+        panic($"a limit of {limit} bytes: it is 0 or more")
+    }
+    var inflater = inflaterNew(format, limit)
+    for _ in 0..16 {
+        inflater.input.addAll(read DeflateZeroBytes)
+    }
+    return Decompressor { inflater = inflater, source = source, given = 0, ended = false }
+}
+
+Compressor compressorOf(int format, StreamWriter target, int level) {
+    return Compressor { state = deflateNew(format, level), target = target }
+}
+
+List<byte> deflateAll(int format, read byte[] data, int level) {
+    var state = deflateNew(format, level)
+    deflateRun(ref state, data, true)
+    return state.out.replace(List<byte>())
+}
+
+Result<List<byte>, CompressError> inflateAll(int format, read byte[] data, nint limit) {
+    if limit < 0 {
+        panic($"a limit of {limit} bytes: it is 0 or more")
+    }
+    var inflater = inflaterNew(format, (long)limit)
+    inflater.input.addAll(data)
+    inflater.inEnd = data.length()
+    inflater.inEof = true
+    nint stop = nint.MaxValue
+    if limit < nint.MaxValue {
+        stop = limit + 1
+    }
+    // A first guess of the size, so the output seldom grows: what gzip writes at its end (the
+    // size modulo 4 GB, of the last member), or four times the input; never past the limit, nor
+    // past 1,032 times the input, the most DEFLATE can open into.
+    long guess = (long)data.length() * 4
+    if format == DeflateGzip && data.length() >= 18 {
+        guess = (long)uint.fromLittleEndian(data[data.length() - 4..])
+    }
+    guess = guess.min((long)data.length() * 1032).min((long)limit) + 512
+    while (long)inflater.out.length() < guess {
+        inflater.out.addAll(read DeflateZeroBytes)
+    }
+    try inflater.run(stop)
+    if (long)inflater.outLen > inflater.limit {
+        return Error(CompressError.TooLarge)
+    }
+    if inflater.mode != InflateDone {
+        return Error(CompressError.Truncated)
+    }
+    // The room the output was given past its end goes: one by one when it is little, else the
+    // bytes are copied to a list of their own size.
+    var out = inflater.out.replace(List<byte>())
+    if out.length() - inflater.outLen > 65536 {
+        var exact = List<byte>()
+        exact.addAll(out[..inflater.outLen])
+        return Ok(exact)
+    }
+    while out.length() > inflater.outLen {
+        _ = out.removeLast()
+    }
+    return Ok(out)
+}
+
+// The formats.
+const int DeflateRaw = 0
+const int DeflateZlib = 1
+const int DeflateGzip = 2
+
+// ---------------------------------------------------------------------------------------------
+// The compressor: zlib's deflate.c and trees.c, with zlib's defaults (a window of 15 bits, a
+// memLevel of 8: a hash of 15 bits and 16 K symbols to a block).
+
+const nint DeflateWSize = 32768
+const nint DeflateWMask = 32767
+const nint DeflateWindowSize = 65536
+const nint DeflateHashMask = 32767
+const nint DeflateMinLookahead = 262
+const nint DeflateMaxDist = 32506
+const nint DeflateSymEnd = 16383
+const nint DeflateTooFar = 4096
+const nint DeflateMaxStored = 65535
+// What a block-making function says: more input is needed, or the stream is finished.
+const int DeflateNeedMore = 0
+const int DeflateBlockDone = 1
+const int DeflateFinishDone = 2
+
+// zlib's table of levels: when a match is good enough to search less, how long a match stops the
+// lazy search, how long one stops the search, and how many links of a chain are followed.
+const nint[] DeflateGood = { 0, 4, 4, 4, 4, 8, 8, 8, 32, 32 }
+const nint[] DeflateLazy = { 0, 4, 5, 6, 4, 16, 16, 32, 128, 258 }
+const nint[] DeflateNice = { 0, 8, 16, 32, 16, 32, 128, 128, 258, 258 }
+const nint[] DeflateChain = { 0, 4, 8, 32, 16, 32, 128, 256, 1024, 4096 }
+
+const int[] DeflateExtraLength = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 }
+const int[] DeflateExtraDist = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
+const int[] DeflateExtraBl = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 7 }
+const nint[] DeflateBlOrder = { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 }
+const int[] DeflateBaseLength = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 0 }
+const int[] DeflateBaseDist = { 0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576 }
+const byte[256] DeflateLengthCode = deflateLengthCodes()
+const byte[512] DeflateDistCode = deflateDistCodes()
+const int[288] DeflateStaticLength = deflateStaticLengths()
+const int[288] DeflateStaticCode = deflateStaticCodes()
+const byte[4096] DeflateZeroBytes = byte[4096]
+
+// The trees of a block lie one after the other in the arrays of `DeflateState`: the literals and
+// lengths (286 codes and the nodes above them), the distances (30), the lengths of the code lengths
+// (19).
+const nint TreeL = 0
+const nint TreeD = 573
+const nint TreeBl = 634
+const nint HeapSize = 573
+
+// The length code of a length less 3.
+byte[256] deflateLengthCodes() {
+    var codes = byte[256]
+    nint length = 0
+    for code in 0..28 {
+        for _ in 0..(1 << DeflateExtraLength[code]) {
+            codes[length] = (byte)code
+            length += 1
+        }
+    }
+    codes[255] = 28
+    return codes
+}
+
+// The distance code of a distance less 1: below 256 the distance itself, above it 256 and the
+// distance divided by 128.
+byte[512] deflateDistCodes() {
+    var codes = byte[512]
+    nint dist = 0
+    for code in 0..16 {
+        for _ in 0..(1 << DeflateExtraDist[code]) {
+            codes[dist] = (byte)code
+            dist += 1
+        }
+    }
+    dist = dist >> 7
+    for code in 16..30 {
+        for _ in 0..(1 << (DeflateExtraDist[code] - 7)) {
+            codes[256 + dist] = (byte)code
+            dist += 1
+        }
+    }
+    return codes
+}
+
+// The lengths of the fixed code of literals and lengths (RFC 1951, 3.2.6).
+int[288] deflateStaticLengths() {
+    var lengths = int[288]
+    for n in 0..288 {
+        if n <= 143 {
+            lengths[n] = 8
+        } else if n <= 255 {
+            lengths[n] = 9
+        } else if n <= 279 {
+            lengths[n] = 7
+        } else {
+            lengths[n] = 8
+        }
+    }
+    return lengths
+}
+
+// The codes of the fixed code of literals and lengths, their bits reversed as they are sent.
+int[288] deflateStaticCodes() {
+    var lengths = deflateStaticLengths()
+    var counts = int[16]
+    for n in 0..288 {
+        counts[lengths[n]] += 1
+    }
+    var next = int[16]
+    int code = 0
+    for bits in 1..16 {
+        code = (code + counts[bits - 1]) << 1
+        next[bits] = code
+    }
+    var codes = int[288]
+    for n in 0..288 {
+        int length = lengths[n]
+        codes[n] = bitReverse(next[length], length)
+        next[length] += 1
+    }
+    return codes
+}
+
+// The `length` low bits of `code` in the other order.
+int bitReverse(int code, int length) {
+    int result = 0
+    int rest = code
+    for _ in 0..length {
+        result = (result << 1) | (rest & 1)
+        rest = rest >> 1
+    }
+    return result
+}
+
+// The distance code of a distance less 1.
+nint distCode(nint dist) {
+    if dist < 256 {
+        return DeflateDistCode[dist]
+    }
+    return DeflateDistCode[256 + (dist >> 7)]
+}
+
+// What zlib's `deflate_state` holds, for these formats.
+struct DeflateState {
+    int level
+    int format
+    // Twice the window: the bytes being compressed, and the 32 KB before them that a match may reach.
+    List<byte> window
+    // The chains of the hash: `head` the last place of each hash, `prev` the place before each.
+    List<ushort> prev
+    List<ushort> head
+    nint strstart
+    // Where the block being made starts in the window; below 0 once the window has moved past it.
+    nint blockStart
+    nint lookahead
+    nint insert
+    nint matchStart
+    nint matchLength
+    nint prevLength
+    nint prevMatch
+    bool matchAvailable
+    nint insH
+    nint goodMatch
+    nint maxLazy
+    nint niceMatch
+    nint maxChain
+    // The symbols of the block: a distance (0 for a literal) and a literal or a length less 3.
+    List<ushort> symDist
+    List<byte> symLc
+    nint symNext
+    // The trees (TreeL, TreeD, TreeBl): how often each symbol comes, its code, its length, its
+    // parent in the tree being built.
+    int[673] freq
+    int[673] code
+    int[673] len
+    int[673] dad
+    nint[3] maxCode
+    int[573] heap
+    int[573] depth
+    nint heapLen
+    nint heapMax
+    int[16] blCount
+    long optLen
+    long staticLen
+    // The bits not yet written, from the lowest.
+    ulong bitBuf
+    int bitValid
+    // What is compressed.
+    List<byte> out
+    Adler32 adler
+    Crc32 crc
+    long totalIn
+}
+
+List<ushort> zeroShorts(nint count) {
+    var zeros = ushort[1024]
+    var list = List<ushort>()
+    for _ in 0..count / 1024 {
+        list.addAll(read zeros)
+    }
+    return list
+}
+
+DeflateState deflateNew(int format, int level) {
+    if level < 0 || level > 9 {
+        panic($"compression level {level}: a level is 0 (stored as it is) to 9 (smallest)")
+    }
+    var window = List<byte>()
+    for _ in 0..DeflateWindowSize / 4096 {
+        window.addAll(read DeflateZeroBytes)
+    }
+    var symLc = List<byte>()
+    for _ in 0..4 {
+        symLc.addAll(read DeflateZeroBytes)
+    }
+    var s = DeflateState {
+        level = level,
+        format = format,
+        window = window,
+        prev = zeroShorts(DeflateWSize),
+        head = zeroShorts(DeflateHashMask + 1),
+        strstart = 0,
+        blockStart = 0,
+        lookahead = 0,
+        insert = 0,
+        matchStart = 0,
+        matchLength = 2,
+        prevLength = 2,
+        prevMatch = 0,
+        matchAvailable = false,
+        insH = 0,
+        goodMatch = DeflateGood[level],
+        maxLazy = DeflateLazy[level],
+        niceMatch = DeflateNice[level],
+        maxChain = DeflateChain[level],
+        symDist = zeroShorts(16384),
+        symLc = symLc,
+        symNext = 0,
+        freq = int[673],
+        code = int[673],
+        len = int[673],
+        dad = int[673],
+        maxCode = nint[3],
+        heap = int[573],
+        depth = int[573],
+        heapLen = 0,
+        heapMax = 0,
+        blCount = int[16],
+        optLen = 0,
+        staticLen = 0,
+        bitBuf = 0,
+        bitValid = 0,
+        out = List<byte>(),
+        adler = Adler32(),
+        crc = Crc32(),
+        totalIn = 0
+    }
+    initBlock(ref s)
+    if format == DeflateZlib {
+        int flags = 3
+        if level < 2 {
+            flags = 0
+        } else if level < 6 {
+            flags = 1
+        } else if level == 6 {
+            flags = 2
+        }
+        int header = (8 + (7 << 4)) << 8 | flags << 6
+        header += 31 - header % 31
+        s.out.add((byte)(header >> 8))
+        s.out.add((byte)(header & 255))
+    } else if format == DeflateGzip {
+        byte extra = 0
+        if level == 9 {
+            extra = 2
+        } else if level < 2 {
+            extra = 4
+        }
+        s.out.addAll(read byte[10] { 0x1F, 0x8B, 8, 0, 0, 0, 0, 0, extra, 255 })
+    }
+    return s
+}
+
+// zlib's `deflate` with Z_NO_FLUSH (`finish` false) or Z_FINISH (true), given all the room it
+// wants for its output: the input is taken in, and with `finish` the stream is ended.
+void deflateRun(ref DeflateState s, read byte[] input, bool finish) {
+    nint at = 0
+    if input.length() != 0 || s.lookahead != 0 || finish {
+        if s.level == 0 {
+            _ = deflateStored(ref s, input, ref at, finish)
+        } else if s.level <= 3 {
+            _ = deflateFast(ref s, input, ref at, finish)
+        } else {
+            _ = deflateSlow(ref s, input, ref at, finish)
+        }
+    }
+    if !finish {
+        return
+    }
+    if s.format == DeflateZlib {
+        uint check = s.adler.value()
+        s.out.add((byte)(check >> 24))
+        s.out.add((byte)(check >> 16 & 255))
+        s.out.add((byte)(check >> 8 & 255))
+        s.out.add((byte)(check & 255))
+    } else if s.format == DeflateGzip {
+        uint check = s.crc.value()
+        uint size = (uint)(s.totalIn & 0xFFFF_FFFF)
+        for shift in 0..4 {
+            s.out.add((byte)(check >> (8 * shift) & 255))
+        }
+        for shift in 0..4 {
+            s.out.add((byte)(size >> (8 * shift) & 255))
+        }
+    }
+}
+
+// zlib's `read_buf`: `count` bytes of the input into the window at `to`, counted in the checksum.
+void deflateRead(ref DeflateState s, read byte[] input, ref nint at, nint to, nint count) {
+    for k in 0..count {
+        s.window[to + k] = input[at + k]
+    }
+    if s.format == DeflateZlib {
+        s.adler.update(input[at..at + count])
+    } else if s.format == DeflateGzip {
+        s.crc.update(input[at..at + count])
+    }
+    s.totalIn += (long)count
+    at += count
+}
+
+// The window's upper half moved down to its lower one.
+void slideWindow(ref DeflateState s, nint count) {
+    for k in 0..count {
+        s.window[k] = s.window[k + DeflateWSize]
+    }
+}
+
+// zlib's `slide_hash`: every place of the chains moved down with the window.
+void slideHash(ref DeflateState s) {
+    for n in 0..DeflateHashMask + 1 {
+        ushort m = s.head[n]
+        if m >= 32768 {
+            s.head[n] = m - 32768
+        } else {
+            s.head[n] = 0
+        }
+    }
+    for n in 0..DeflateWSize {
+        ushort m = s.prev[n]
+        if m >= 32768 {
+            s.prev[n] = m - 32768
+        } else {
+            s.prev[n] = 0
+        }
+    }
+}
+
+// zlib's `fill_window`: more of the input into the window, moving it down when it is almost full.
+void deflateFill(ref DeflateState s, read byte[] input, ref nint at) {
+    while true {
+        nint more = DeflateWindowSize - s.lookahead - s.strstart
+        if s.strstart >= DeflateWSize + DeflateMaxDist {
+            slideWindow(ref s, DeflateWSize - more)
+            s.matchStart -= DeflateWSize
+            s.strstart -= DeflateWSize
+            s.blockStart -= DeflateWSize
+            if s.insert > s.strstart {
+                s.insert = s.strstart
+            }
+            slideHash(ref s)
+            more += DeflateWSize
+        }
+        nint available = input.length() - at
+        if available == 0 {
+            break
+        }
+        nint count = available.min(more)
+        deflateRead(ref s, input, ref at, s.strstart + s.lookahead, count)
+        s.lookahead += count
+        if s.lookahead + s.insert >= 3 {
+            nint str = s.strstart - s.insert
+            s.insH = s.window[str]
+            s.insH = ((s.insH << 5) ^ (nint)s.window[str + 1]) & DeflateHashMask
+            while s.insert > 0 {
+                s.insH = ((s.insH << 5) ^ (nint)s.window[str + 2]) & DeflateHashMask
+                s.prev[str & DeflateWMask] = s.head[s.insH]
+                s.head[s.insH] = (ushort)str
+                str += 1
+                s.insert -= 1
+                if s.lookahead + s.insert < 3 {
+                    break
+                }
+            }
+        }
+        if s.lookahead >= DeflateMinLookahead || at == input.length() {
+            break
+        }
+    }
+}
+
+// zlib's INSERT_STRING: the three bytes at `str` into their chain; the place before them on it.
+nint insertString(ref DeflateState s, nint str) {
+    s.insH = ((s.insH << 5) ^ (nint)s.window[str + 2]) & DeflateHashMask
+    ushort head = s.head[s.insH]
+    s.prev[str & DeflateWMask] = head
+    s.head[s.insH] = (ushort)str
+    return head
+}
+
+// zlib's `longest_match`: the longest match of the bytes at `strstart` along the chain from
+// `curMatch`, longer than `prevLength`; its place goes to `matchStart`.
+nint longestMatch(ref DeflateState s, nint curMatch) {
+    nint chain = s.maxChain
+    nint scan = s.strstart
+    nint bestLen = s.prevLength
+    nint nice = s.niceMatch
+    nint limit = 0
+    if s.strstart > DeflateMaxDist {
+        limit = s.strstart - DeflateMaxDist
+    }
+    byte scanEnd1 = s.window[scan + bestLen - 1]
+    byte scanEnd = s.window[scan + bestLen]
+    byte first = s.window[scan]
+    byte second = s.window[scan + 1]
+    if s.prevLength >= s.goodMatch {
+        chain = chain >> 2
+    }
+    if nice > s.lookahead {
+        nice = s.lookahead
+    }
+    nint current = curMatch
+    while true {
+        nint candidate = current
+        if s.window[candidate + bestLen] == scanEnd && s.window[candidate + bestLen - 1] == scanEnd1 &&
+            s.window[candidate] == first && s.window[candidate + 1] == second {
+            // The third bytes are equal, as the hash of three bytes says.
+            nint length = 3
+            while length < 258 && s.window[scan + length] == s.window[candidate + length] {
+                length += 1
+            }
+            if length > bestLen {
+                s.matchStart = current
+                bestLen = length
+                if length >= nice {
+                    break
+                }
+                scanEnd1 = s.window[scan + bestLen - 1]
+                scanEnd = s.window[scan + bestLen]
+            }
+        }
+        current = s.prev[current & DeflateWMask]
+        if current <= limit {
+            break
+        }
+        chain -= 1
+        if chain == 0 {
+            break
+        }
+    }
+    if bestLen <= s.lookahead {
+        return bestLen
+    }
+    return s.lookahead
+}
+
+// A literal in the block; whether the block is full.
+bool tallyLiteral(ref DeflateState s, byte c) {
+    s.symDist[s.symNext] = 0
+    s.symLc[s.symNext] = c
+    s.symNext += 1
+    s.freq[TreeL + (nint)c] += 1
+    return s.symNext == DeflateSymEnd
+}
+
+// A match in the block, `length` less 3 bytes at `dist` back; whether the block is full.
+bool tallyMatch(ref DeflateState s, nint dist, nint length) {
+    s.symDist[s.symNext] = (ushort)dist
+    s.symLc[s.symNext] = (byte)length
+    s.symNext += 1
+    s.freq[TreeL + (nint)DeflateLengthCode[length] + 257] += 1
+    s.freq[TreeD + distCode(dist - 1)] += 1
+    return s.symNext == DeflateSymEnd
+}
+
+// zlib's FLUSH_BLOCK: the block from `blockStart` up to `strstart` is written.
+void flushBlock(ref DeflateState s, bool last) {
+    flushTrees(ref s, s.blockStart, s.strstart - s.blockStart, last)
+    s.blockStart = s.strstart
+}
+
+// zlib's `deflate_fast`, of levels 1 to 3: a match is taken as soon as it is found.
+int deflateFast(ref DeflateState s, read byte[] input, ref nint at, bool finish) {
+    while true {
+        if s.lookahead < DeflateMinLookahead {
+            deflateFill(ref s, input, ref at)
+            if s.lookahead < DeflateMinLookahead && !finish {
+                return DeflateNeedMore
+            }
+            if s.lookahead == 0 {
+                break
+            }
+        }
+        nint hashHead = 0
+        if s.lookahead >= 3 {
+            hashHead = insertString(ref s, s.strstart)
+        }
+        if hashHead != 0 && s.strstart - hashHead <= DeflateMaxDist {
+            s.matchLength = longestMatch(ref s, hashHead)
+        }
+        bool full = false
+        if s.matchLength >= 3 {
+            full = tallyMatch(ref s, s.strstart - s.matchStart, s.matchLength - 3)
+            s.lookahead -= s.matchLength
+            if s.matchLength <= s.maxLazy && s.lookahead >= 3 {
+                s.matchLength -= 1
+                while true {
+                    s.strstart += 1
+                    _ = insertString(ref s, s.strstart)
+                    s.matchLength -= 1
+                    if s.matchLength == 0 {
+                        break
+                    }
+                }
+                s.strstart += 1
+            } else {
+                s.strstart += s.matchLength
+                s.matchLength = 0
+                s.insH = s.window[s.strstart]
+                s.insH = ((s.insH << 5) ^ (nint)s.window[s.strstart + 1]) & DeflateHashMask
+            }
+        } else {
+            full = tallyLiteral(ref s, s.window[s.strstart])
+            s.lookahead -= 1
+            s.strstart += 1
+        }
+        if full {
+            flushBlock(ref s, false)
+        }
+    }
+    s.insert = s.strstart.min(2)
+    if finish {
+        flushBlock(ref s, true)
+        return DeflateFinishDone
+    }
+    if s.symNext != 0 {
+        flushBlock(ref s, false)
+    }
+    return DeflateBlockDone
+}
+
+// zlib's `deflate_slow`, of levels 4 to 9: a match is taken only if the next place has no longer
+// one (the lazy search).
+int deflateSlow(ref DeflateState s, read byte[] input, ref nint at, bool finish) {
+    while true {
+        if s.lookahead < DeflateMinLookahead {
+            deflateFill(ref s, input, ref at)
+            if s.lookahead < DeflateMinLookahead && !finish {
+                return DeflateNeedMore
+            }
+            if s.lookahead == 0 {
+                break
+            }
+        }
+        nint hashHead = 0
+        if s.lookahead >= 3 {
+            hashHead = insertString(ref s, s.strstart)
+        }
+        s.prevLength = s.matchLength
+        s.prevMatch = s.matchStart
+        s.matchLength = 2
+        if hashHead != 0 && s.prevLength < s.maxLazy && s.strstart - hashHead <= DeflateMaxDist {
+            s.matchLength = longestMatch(ref s, hashHead)
+            if s.matchLength <= 5 && s.matchLength == 3 && s.strstart - s.matchStart > DeflateTooFar {
+                s.matchLength = 2
+            }
+        }
+        if s.prevLength >= 3 && s.matchLength <= s.prevLength {
+            nint maxInsert = s.strstart + s.lookahead - 3
+            bool full = tallyMatch(ref s, s.strstart - 1 - s.prevMatch, s.prevLength - 3)
+            s.lookahead -= s.prevLength - 1
+            s.prevLength -= 2
+            while true {
+                s.strstart += 1
+                if s.strstart <= maxInsert {
+                    _ = insertString(ref s, s.strstart)
+                }
+                s.prevLength -= 1
+                if s.prevLength == 0 {
+                    break
+                }
+            }
+            s.matchAvailable = false
+            s.matchLength = 2
+            s.strstart += 1
+            if full {
+                flushBlock(ref s, false)
+            }
+        } else if s.matchAvailable {
+            bool full = tallyLiteral(ref s, s.window[s.strstart - 1])
+            if full {
+                flushBlock(ref s, false)
+            }
+            s.strstart += 1
+            s.lookahead -= 1
+        } else {
+            s.matchAvailable = true
+            s.strstart += 1
+            s.lookahead -= 1
+        }
+    }
+    if s.matchAvailable {
+        _ = tallyLiteral(ref s, s.window[s.strstart - 1])
+        s.matchAvailable = false
+    }
+    s.insert = s.strstart.min(2)
+    if finish {
+        flushBlock(ref s, true)
+        return DeflateFinishDone
+    }
+    if s.symNext != 0 {
+        flushBlock(ref s, false)
+    }
+    return DeflateBlockDone
+}
+
+// A stored block's header: its kind, then the bytes aligned, its length and the length's
+// complement.
+void storedHeader(ref DeflateState s, nint length, bool last) {
+    sendBits(ref s, bitOf(last), 3)
+    bitsWindup(ref s)
+    s.out.add((byte)(length & 255))
+    s.out.add((byte)(length >> 8 & 255))
+    s.out.add((byte)(~length & 255))
+    s.out.add((byte)(~length >> 8 & 255))
+}
+
+// zlib's `deflate_stored`, of level 0, given all the room it wants for its output: blocks of up to
+// 65,535 bytes, written from the input when they are worth it (32 KB) or the stream ends, and
+// kept in the window until then.
+int deflateStored(ref DeflateState s, read byte[] input, ref nint at, bool finish) {
+    nint minBlock = DeflateWSize
+    bool last = false
+    nint used = input.length() - at
+    while true {
+        nint length = DeflateMaxStored
+        nint left = s.strstart - s.blockStart
+        nint available = input.length() - at
+        if length > left + available {
+            length = left + available
+        }
+        if length < minBlock && (!finish || length != left + available) {
+            break
+        }
+        last = finish && length == left + available
+        storedHeader(ref s, length, last)
+        if left > 0 {
+            if left > length {
+                left = length
+            }
+            appendBytes(ref s.out, s.window[s.blockStart..s.blockStart + left])
+            s.blockStart += left
+            length -= left
+        }
+        if length > 0 {
+            s.out.addAll(input[at..at + length])
+            if s.format == DeflateZlib {
+                s.adler.update(input[at..at + length])
+            } else if s.format == DeflateGzip {
+                s.crc.update(input[at..at + length])
+            }
+            s.totalIn += (long)length
+            at += length
+        }
+        if last {
+            break
+        }
+    }
+    used -= input.length() - at
+    if used > 0 {
+        if used >= DeflateWSize {
+            for k in 0..DeflateWSize {
+                s.window[k] = input[at - DeflateWSize + k]
+            }
+            s.strstart = DeflateWSize
+            s.insert = s.strstart
+        } else {
+            if DeflateWindowSize - s.strstart <= used {
+                s.strstart -= DeflateWSize
+                slideWindow(ref s, s.strstart)
+                if s.insert > s.strstart {
+                    s.insert = s.strstart
+                }
+            }
+            for k in 0..used {
+                s.window[s.strstart + k] = input[at - used + k]
+            }
+            s.strstart += used
+            s.insert += used.min(DeflateWSize - s.insert)
+        }
+        s.blockStart = s.strstart
+    }
+    if last {
+        return DeflateFinishDone
+    }
+    nint have = DeflateWindowSize - s.strstart
+    nint available = input.length() - at
+    if available > have && s.blockStart >= DeflateWSize {
+        s.blockStart -= DeflateWSize
+        s.strstart -= DeflateWSize
+        slideWindow(ref s, s.strstart)
+        have += DeflateWSize
+        if s.insert > s.strstart {
+            s.insert = s.strstart
+        }
+    }
+    if have > available {
+        have = available
+    }
+    if have > 0 {
+        deflateRead(ref s, input, ref at, s.strstart, have)
+        s.strstart += have
+        s.insert += have.min(DeflateWSize - s.insert)
+    }
+    available = input.length() - at
+    have = (65536 - ((nint)(s.bitValid & 7) + 42 >> 3)).min(DeflateMaxStored)
+    minBlock = have.min(DeflateWSize)
+    nint left = s.strstart - s.blockStart
+    if left >= minBlock || (finish && available == 0 && left <= have) {
+        nint length = left.min(have)
+        last = finish && available == 0 && length == left
+        storedHeader(ref s, length, last)
+        appendBytes(ref s.out, s.window[s.blockStart..s.blockStart + length])
+        s.blockStart += length
+    }
+    if last {
+        return DeflateFinishDone
+    }
+    return DeflateNeedMore
+}
+
+// ---------------------------------------------------------------------------------------------
+// zlib's trees.c: the Huffman trees of a block and the bits that are written.
+
+void initBlock(ref DeflateState s) {
+    for n in 0..286 {
+        s.freq[TreeL + n] = 0
+    }
+    for n in 0..30 {
+        s.freq[TreeD + n] = 0
+    }
+    for n in 0..19 {
+        s.freq[TreeBl + n] = 0
+    }
+    s.freq[TreeL + 256] = 1
+    s.optLen = 0
+    s.staticLen = 0
+    s.symNext = 0
+}
+
+// `length` bits of `value`, the lowest first.
+void sendBits(ref DeflateState s, int value, int length) {
+    s.bitBuf = s.bitBuf | ((ulong)value << s.bitValid)
+    s.bitValid += length
+    if s.bitValid >= 32 {
+        ulong bits = s.bitBuf
+        s.out.add((byte)(bits & 255))
+        s.out.add((byte)(bits >> 8 & 255))
+        s.out.add((byte)(bits >> 16 & 255))
+        s.out.add((byte)(bits >> 24 & 255))
+        s.bitBuf = bits >> 32
+        s.bitValid -= 32
+    }
+}
+
+// The bits not yet written, to the end of their byte.
+void bitsWindup(ref DeflateState s) {
+    while s.bitValid > 0 {
+        s.out.add((byte)(s.bitBuf & 255))
+        s.bitBuf = s.bitBuf >> 8
+        s.bitValid -= 8
+    }
+    s.bitBuf = 0
+    s.bitValid = 0
+}
+
+// The code of symbol `n` of the tree at `tree`.
+void sendCode(ref DeflateState s, nint tree, nint n) {
+    sendBits(ref s, s.code[tree + n], s.len[tree + n])
+}
+
+nint treeElements(nint tree) {
+    if tree == TreeL {
+        return 286
+    } else if tree == TreeD {
+        return 30
+    }
+    return 19
+}
+
+nint treeIndex(nint tree) {
+    if tree == TreeL {
+        return 0
+    } else if tree == TreeD {
+        return 1
+    }
+    return 2
+}
+
+// The length of symbol `n` in the fixed code of the tree at `tree`.
+int staticLength(nint tree, nint n) {
+    if tree == TreeL {
+        return DeflateStaticLength[n]
+    }
+    return 5
+}
+
+// zlib's `smaller`: node `n` before node `m` in the heap.
+bool smaller(read DeflateState s, nint tree, nint n, nint m) {
+    int fn = s.freq[tree + n]
+    int fm = s.freq[tree + m]
+    return fn < fm || (fn == fm && s.depth[n] <= s.depth[m])
+}
+
+// zlib's `pqdownheap`: the node at `k` moved down to its place in the heap.
+void downHeap(ref DeflateState s, nint tree, nint start) {
+    nint k = start
+    int v = s.heap[k]
+    nint j = k << 1
+    while j <= s.heapLen {
+        if j < s.heapLen && smaller(read s, tree, (nint)s.heap[j + 1], (nint)s.heap[j]) {
+            j += 1
+        }
+        if smaller(read s, tree, (nint)v, (nint)s.heap[j]) {
+            break
+        }
+        s.heap[k] = s.heap[j]
+        k = j
+        j = j << 1
+    }
+    s.heap[k] = v
+}
+
+// zlib's `gen_bitlen`: the length of each code, none longer than the most the tree allows.
+void genBitLengths(ref DeflateState s, nint tree) {
+    nint maxCode = s.maxCode[treeIndex(tree)]
+    nint extraBase = 0
+    if tree == TreeL {
+        extraBase = 257
+    }
+    int maxLength = 15
+    if tree == TreeBl {
+        maxLength = 7
+    }
+    for bits in 0..16 {
+        s.blCount[bits] = 0
+    }
+    s.len[tree + (nint)s.heap[s.heapMax]] = 0
+    int overflow = 0
+    nint h = s.heapMax + 1
+    while h < HeapSize {
+        nint n = s.heap[h]
+        h += 1
+        int bits = s.len[tree + (nint)s.dad[tree + n]] + 1
+        if bits > maxLength {
+            bits = maxLength
+            overflow += 1
+        }
+        s.len[tree + n] = bits
+        if n > maxCode {
+            continue
+        }
+        s.blCount[bits] += 1
+        int extra = 0
+        if n >= extraBase {
+            if tree == TreeL {
+                extra = DeflateExtraLength[n - extraBase]
+            } else if tree == TreeD {
+                extra = DeflateExtraDist[n]
+            } else {
+                extra = DeflateExtraBl[n]
+            }
+        }
+        long f = s.freq[tree + n]
+        s.optLen += f * (long)(bits + extra)
+        if tree != TreeBl {
+            s.staticLen += f * (long)(staticLength(tree, n) + extra)
+        }
+    }
+    if overflow == 0 {
+        return
+    }
+    while overflow > 0 {
+        int bits = maxLength - 1
+        while s.blCount[bits] == 0 {
+            bits -= 1
+        }
+        s.blCount[bits] -= 1
+        s.blCount[bits + 1] += 2
+        s.blCount[maxLength] -= 1
+        overflow -= 2
+    }
+    h = HeapSize
+    int bits = maxLength
+    while bits != 0 {
+        int n = s.blCount[bits]
+        while n != 0 {
+            h -= 1
+            nint m = s.heap[h]
+            if m > maxCode {
+                continue
+            }
+            if s.len[tree + m] != bits {
+                s.optLen += (long)(bits - s.len[tree + m]) * (long)s.freq[tree + m]
+                s.len[tree + m] = bits
+            }
+            n -= 1
+        }
+        bits -= 1
+    }
+}
+
+// zlib's `gen_codes`: the code of each symbol from the lengths, its bits reversed.
+void genCodes(ref DeflateState s, nint tree, nint maxCode) {
+    var next = int[16]
+    int code = 0
+    for bits in 1..16 {
+        code = (code + s.blCount[bits - 1]) << 1
+        next[bits] = code
+    }
+    nint n = 0
+    while n <= maxCode {
+        int length = s.len[tree + n]
+        if length != 0 {
+            s.code[tree + n] = bitReverse(next[length], length)
+            next[length] += 1
+        }
+        n += 1
+    }
+}
+
+// zlib's `build_tree`: the Huffman tree of the symbols of the tree at `tree`, by how often each
+// came.
+void buildTree(ref DeflateState s, nint tree) {
+    nint elements = treeElements(tree)
+    nint maxCode = -1
+    s.heapLen = 0
+    s.heapMax = HeapSize
+    for n in 0..elements {
+        if s.freq[tree + n] != 0 {
+            s.heapLen += 1
+            s.heap[s.heapLen] = (int)n
+            maxCode = n
+            s.depth[n] = 0
+        } else {
+            s.len[tree + n] = 0
+        }
+    }
+    while s.heapLen < 2 {
+        nint node = 0
+        if maxCode < 2 {
+            maxCode += 1
+            node = maxCode
+        }
+        s.heapLen += 1
+        s.heap[s.heapLen] = (int)node
+        s.freq[tree + node] = 1
+        s.depth[node] = 0
+        s.optLen -= 1
+        if tree != TreeBl {
+            s.staticLen -= (long)staticLength(tree, node)
+        }
+    }
+    s.maxCode[treeIndex(tree)] = maxCode
+    nint k = s.heapLen / 2
+    while k >= 1 {
+        downHeap(ref s, tree, k)
+        k -= 1
+    }
+    nint node = elements
+    while true {
+        nint n = s.heap[1]
+        s.heap[1] = s.heap[s.heapLen]
+        s.heapLen -= 1
+        downHeap(ref s, tree, 1)
+        nint m = s.heap[1]
+        s.heapMax -= 1
+        s.heap[s.heapMax] = (int)n
+        s.heapMax -= 1
+        s.heap[s.heapMax] = (int)m
+        s.freq[tree + node] = s.freq[tree + n] + s.freq[tree + m]
+        s.depth[node] = s.depth[n].max(s.depth[m]) + 1
+        s.dad[tree + n] = (int)node
+        s.dad[tree + m] = (int)node
+        s.heap[1] = (int)node
+        node += 1
+        downHeap(ref s, tree, 1)
+        if s.heapLen < 2 {
+            break
+        }
+    }
+    s.heapMax -= 1
+    s.heap[s.heapMax] = s.heap[1]
+    genBitLengths(ref s, tree)
+    genCodes(ref s, tree, maxCode)
+}
+
+// zlib's `scan_tree`: how often each length of the tree at `tree` is sent, runs counted as runs.
+void scanTree(ref DeflateState s, nint tree, nint maxCode) {
+    int prevLen = -1
+    int nextLen = s.len[tree]
+    int count = 0
+    int maxCount = 7
+    int minCount = 4
+    if nextLen == 0 {
+        maxCount = 138
+        minCount = 3
+    }
+    s.len[tree + maxCode + 1] = 0xFFFF
+    nint n = 0
+    while n <= maxCode {
+        int curLen = nextLen
+        nextLen = s.len[tree + n + 1]
+        n += 1
+        count += 1
+        if count < maxCount && curLen == nextLen {
+            continue
+        } else if count < minCount {
+            s.freq[TreeBl + (nint)curLen] += count
+        } else if curLen != 0 {
+            if curLen != prevLen {
+                s.freq[TreeBl + (nint)curLen] += 1
+            }
+            s.freq[TreeBl + 16] += 1
+        } else if count <= 10 {
+            s.freq[TreeBl + 17] += 1
+        } else {
+            s.freq[TreeBl + 18] += 1
+        }
+        count = 0
+        prevLen = curLen
+        if nextLen == 0 {
+            maxCount = 138
+            minCount = 3
+        } else if curLen == nextLen {
+            maxCount = 6
+            minCount = 3
+        } else {
+            maxCount = 7
+            minCount = 4
+        }
+    }
+}
+
+// zlib's `send_tree`: the lengths of the tree at `tree`, in the code of lengths.
+void sendTree(ref DeflateState s, nint tree, nint maxCode) {
+    int prevLen = -1
+    int nextLen = s.len[tree]
+    int count = 0
+    int maxCount = 7
+    int minCount = 4
+    if nextLen == 0 {
+        maxCount = 138
+        minCount = 3
+    }
+    nint n = 0
+    while n <= maxCode {
+        int curLen = nextLen
+        nextLen = s.len[tree + n + 1]
+        n += 1
+        count += 1
+        if count < maxCount && curLen == nextLen {
+            continue
+        } else if count < minCount {
+            while count > 0 {
+                sendCode(ref s, TreeBl, (nint)curLen)
+                count -= 1
+            }
+        } else if curLen != 0 {
+            if curLen != prevLen {
+                sendCode(ref s, TreeBl, (nint)curLen)
+                count -= 1
+            }
+            sendCode(ref s, TreeBl, 16)
+            sendBits(ref s, count - 3, 2)
+        } else if count <= 10 {
+            sendCode(ref s, TreeBl, 17)
+            sendBits(ref s, count - 3, 3)
+        } else {
+            sendCode(ref s, TreeBl, 18)
+            sendBits(ref s, count - 11, 7)
+        }
+        count = 0
+        prevLen = curLen
+        if nextLen == 0 {
+            maxCount = 138
+            minCount = 3
+        } else if curLen == nextLen {
+            maxCount = 6
+            minCount = 3
+        } else {
+            maxCount = 7
+            minCount = 4
+        }
+    }
+}
+
+// zlib's `build_bl_tree`: the tree of the code lengths; the last of them sent, in their order.
+nint buildLengthsTree(ref DeflateState s) {
+    scanTree(ref s, TreeL, s.maxCode[0])
+    scanTree(ref s, TreeD, s.maxCode[1])
+    buildTree(ref s, TreeBl)
+    nint maxIndex = 18
+    while maxIndex >= 3 {
+        if s.len[TreeBl + DeflateBlOrder[maxIndex]] != 0 {
+            break
+        }
+        maxIndex -= 1
+    }
+    s.optLen += 3 * (long)(maxIndex + 1) + 5 + 5 + 4
+    return maxIndex
+}
+
+// zlib's `send_all_trees`: the header of a block of dynamic codes.
+void sendAllTrees(ref DeflateState s, nint lcodes, nint dcodes, nint blcodes) {
+    sendBits(ref s, (int)(lcodes - 257), 5)
+    sendBits(ref s, (int)(dcodes - 1), 5)
+    sendBits(ref s, (int)(blcodes - 4), 4)
+    for rank in 0..blcodes {
+        sendBits(ref s, s.len[TreeBl + DeflateBlOrder[rank]], 3)
+    }
+    sendTree(ref s, TreeL, lcodes - 1)
+    sendTree(ref s, TreeD, dcodes - 1)
+}
+
+// zlib's `compress_block`: the symbols of the block in the fixed codes or in its own.
+void compressBlock(ref DeflateState s, bool fixed) {
+    for sx in 0..s.symNext {
+        nint dist = s.symDist[sx]
+        nint lc = s.symLc[sx]
+        if dist == 0 {
+            if fixed {
+                sendBits(ref s, DeflateStaticCode[lc], DeflateStaticLength[lc])
+            } else {
+                sendCode(ref s, TreeL, lc)
+            }
+            continue
+        }
+        nint code = DeflateLengthCode[lc]
+        if fixed {
+            sendBits(ref s, DeflateStaticCode[code + 257], DeflateStaticLength[code + 257])
+        } else {
+            sendCode(ref s, TreeL, code + 257)
+        }
+        int extra = DeflateExtraLength[code]
+        if extra != 0 {
+            sendBits(ref s, (int)lc - DeflateBaseLength[code], extra)
+        }
+        dist -= 1
+        code = distCode(dist)
+        if fixed {
+            sendBits(ref s, bitReverse((int)code, 5), 5)
+        } else {
+            sendCode(ref s, TreeD, code)
+        }
+        extra = DeflateExtraDist[code]
+        if extra != 0 {
+            sendBits(ref s, (int)dist - DeflateBaseDist[code], extra)
+        }
+    }
+    if fixed {
+        sendBits(ref s, DeflateStaticCode[256], DeflateStaticLength[256])
+    } else {
+        sendCode(ref s, TreeL, 256)
+    }
+}
+
+// zlib's `_tr_flush_block`: the block written in the smallest of its three forms (stored, fixed
+// codes, its own codes). `start` is where its bytes begin in the window, below 0 when they are no
+// longer all there, which leaves the stored form out.
+void flushTrees(ref DeflateState s, nint start, nint storedLen, bool last) {
+    buildTree(ref s, TreeL)
+    buildTree(ref s, TreeD)
+    nint maxIndex = buildLengthsTree(ref s)
+    long optBytes = (s.optLen + 3 + 7) >> 3
+    long staticBytes = (s.staticLen + 3 + 7) >> 3
+    if staticBytes <= optBytes {
+        optBytes = staticBytes
+    }
+    if (long)storedLen + 4 <= optBytes && start >= 0 {
+        storedHeader(ref s, storedLen, last)
+        appendBytes(ref s.out, s.window[start..start + storedLen])
+    } else if staticBytes == optBytes {
+        sendBits(ref s, 2 + bitOf(last), 3)
+        compressBlock(ref s, true)
+    } else {
+        sendBits(ref s, 4 + bitOf(last), 3)
+        sendAllTrees(ref s, s.maxCode[0] + 1, s.maxCode[1] + 1, maxIndex + 1)
+        compressBlock(ref s, false)
+    }
+    initBlock(ref s)
+    if last {
+        bitsWindup(ref s)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The decompressor.
+
+// How many bytes of input wait before a block's header is read: the longest header takes less.
+const nint InflateAhead = 2048
+
+// What comes next in the stream.
+const int InflateHeader = 0
+const int InflateBlock = 1
+const int InflateStored = 2
+const int InflateCodes = 3
+const int InflateTrailer = 4
+const int InflateEnd = 5
+const int InflateDone = 6
+
+// The kinds of a table entry (bits 8 to 15): a literal, a base with its extra bits (16 and their
+// number), the end of the block, a code no symbol has, a link to a table below (128 and its
+// bits). Bits 0 to 7 are the bits the entry takes, 16 to 31 its value.
+const uint EntryBase = 16
+const uint EntryEnd = 32
+const uint EntryInvalid = 64
+const uint EntryLink = 128
+
+// The tables' kinds, as zlib's `inflate_table`.
+const int TableCodes = 0
+const int TableLengths = 1
+const int TableDistances = 2
+
+const uint[] InflateLengthBase = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 }
+const uint[] InflateLengthExtra = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 }
+const uint[] InflateDistBase = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 }
+const uint[] InflateDistExtra = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
+
+// zlib's `inflate_table`: the table of decoding of the code whose lengths are `lens`, with
+// `rootWanted` bits for its first level; the bits taken, or -1 when the lengths make no code.
+int inflateTable(int kind, read int[] lens, ref uint[] table, ref int[320] work, int rootWanted) {
+    var count = int[16]
+    var offs = int[16]
+    nint codes = lens.length()
+    for sym in 0..codes {
+        count[lens[sym]] += 1
+    }
+    int root = rootWanted
+    int max = 15
+    while max >= 1 {
+        if count[max] != 0 {
+            break
+        }
+        max -= 1
+    }
+    if root > max {
+        root = max
+    }
+    if max == 0 {
+        // No symbol at all: a table that only says so.
+        uint none = EntryInvalid << 8 | 1
+        table[0] = none
+        table[1] = none
+        return 1
+    }
+    int min = 1
+    while min < max {
+        if count[min] != 0 {
+            break
+        }
+        min += 1
+    }
+    if root < min {
+        root = min
+    }
+    int left = 1
+    for length in 1..16 {
+        left = left << 1
+        left -= count[length]
+        if left < 0 {
+            return -1
+        }
+    }
+    if left > 0 && (kind == TableCodes || max != 1) {
+        return -1
+    }
+    offs[1] = 0
+    for length in 1..15 {
+        offs[length + 1] = offs[length] + count[length]
+    }
+    for sym in 0..codes {
+        int length = lens[sym]
+        if length != 0 {
+            work[offs[length]] = (int)sym
+            offs[length] += 1
+        }
+    }
+    uint huff = 0
+    nint sym = 0
+    int length = min
+    nint next = 0
+    int curr = root
+    int drop = 0
+    uint low = 0xFFFF_FFFF
+    nint used = (nint)1 << root
+    uint mask = (uint)used - 1
+    if used > table.length() {
+        return -1
+    }
+    while true {
+        uint here = inflateEntry(kind, work[sym], (uint)(length - drop))
+        uint incr = (uint)1 << (length - drop)
+        uint fill = (uint)1 << curr
+        nint size = (nint)fill
+        while true {
+            fill -= incr
+            table[next + (nint)(huff >> drop) + (nint)fill] = here
+            if fill == 0 {
+                break
+            }
+        }
+        incr = (uint)1 << (length - 1)
+        while huff & incr != 0 {
+            incr = incr >> 1
+        }
+        if incr != 0 {
+            huff = huff & (incr - 1)
+            huff += incr
+        } else {
+            huff = 0
+        }
+        sym += 1
+        count[length] -= 1
+        if count[length] == 0 {
+            if length == max {
+                break
+            }
+            length = lens[(nint)work[sym]]
+        }
+        if length > root && huff & mask != low {
+            if drop == 0 {
+                drop = root
+            }
+            next += size
+            curr = length - drop
+            int more = 1 << curr
+            while curr + drop < max {
+                more -= count[curr + drop]
+                if more <= 0 {
+                    break
+                }
+                curr += 1
+                more = more << 1
+            }
+            used += (nint)1 << curr
+            if used > table.length() {
+                return -1
+            }
+            low = huff & mask
+            table[(nint)low] = (uint)next << 16 | (EntryLink + (uint)curr) << 8 | (uint)root
+        }
+    }
+    if huff != 0 {
+        table[next + (nint)huff] = EntryInvalid << 8 | (uint)(length - drop)
+    }
+    return root
+}
+
+// The entry of symbol `sym` of a table of `kind`, taking `bits` bits.
+uint inflateEntry(int kind, int sym, uint bits) {
+    if kind == TableCodes {
+        return (uint)sym << 16 | bits
+    }
+    if kind == TableLengths {
+        if sym < 256 {
+            return (uint)sym << 16 | bits
+        }
+        if sym == 256 {
+            return EntryEnd << 8 | bits
+        }
+        if sym > 285 {
+            return EntryInvalid << 8 | bits
+        }
+        nint at = sym - 257
+        return InflateLengthBase[at] << 16 | (EntryBase + InflateLengthExtra[at]) << 8 | bits
+    }
+    if sym > 29 {
+        return EntryInvalid << 8 | bits
+    }
+    return InflateDistBase[sym] << 16 | (EntryBase + InflateDistExtra[sym]) << 8 | bits
+}
+
+// A stream being opened: the input not yet read, the bits taken from it, what is opened so far.
+struct Inflater {
+    int format
+    List<byte> input
+    nint inPos
+    nint inEnd
+    bool inEof
+    // How many bytes of input came before `input[0]`.
+    long inBase
+    ulong hold
+    int bits
+    // What is opened, with the 32 KB before it that a distance may reach: `outLen` bytes, and
+    // room after them.
+    List<byte> out
+    nint outLen
+    // How many opened bytes came before `out[0]`.
+    long outBase
+    // `out` up to here is counted in the checksum.
+    nint counted
+    // Where the present member of gzip began, counted in all the opened bytes.
+    long memberStart
+    long limit
+    int mode
+    bool last
+    nint storedLeft
+    List<uint> lenTable
+    int lenBits
+    List<uint> distTable
+    int distBits
+    bool fixedTables
+    int[320] lens
+    int[320] work
+    Crc32 crc
+    Adler32 adler
+    // The header of gzip read so far: the field reached, the bytes left in it, its flags, its CRC.
+    int step
+    nint stepLeft
+    int flags
+    Crc32 headerCrc
+    // A member of gzip came before this one.
+    bool another
+
+    // Opens what can be opened: until the stream ends, the output reaches `stop` bytes, or (with
+    // more input to come) the input runs short.
+    Result<void, CompressError> run(ref this, nint stop) {
+        while true {
+            if this.mode == InflateHeader {
+                if this.format == DeflateRaw {
+                    this.mode = InflateBlock
+                } else if this.format == DeflateZlib {
+                    if this.starved(2) {
+                        return Ok()
+                    }
+                    try this.zlibHeader()
+                    this.mode = InflateBlock
+                } else {
+                    if !try this.gzipHeader() {
+                        return Ok()
+                    }
+                    this.mode = InflateBlock
+                }
+            } else if this.mode == InflateBlock {
+                if this.starved(InflateAhead) {
+                    return Ok()
+                }
+                try this.blockHeader()
+            } else if this.mode == InflateStored {
+                if this.outLen >= stop {
+                    return Ok()
+                }
+                nint count = this.storedLeft.min(this.inEnd - this.inPos).min(stop - this.outLen)
+                this.room(count, stop)
+                var o = ref this.out[this.outLen..this.outLen + count]
+                var from = this.input[this.inPos..this.inPos + count]
+                for k in 0..count {
+                    o[k] = from[k]
+                }
+                this.outLen += count
+                this.inPos += count
+                this.storedLeft -= count
+                if this.storedLeft == 0 {
+                    this.mode = this.next()
+                } else if this.inPos == this.inEnd {
+                    if this.inEof {
+                        return Error(CompressError.Truncated)
+                    }
+                    return Ok()
+                }
+            } else if this.mode == InflateCodes {
+                if !try this.codes(stop) {
+                    return Ok()
+                }
+                this.mode = this.next()
+            } else if this.mode == InflateTrailer {
+                if this.starved(16) {
+                    return Ok()
+                }
+                try this.trailer()
+                this.mode = InflateEnd
+            } else if this.mode == InflateEnd {
+                if this.inPos < this.inEnd {
+                    if this.format != DeflateGzip {
+                        return Error(CompressError.TrailingData)
+                    }
+                    // Another member of gzip.
+                    this.memberStart = this.outBase + (long)this.outLen
+                    this.crc = Crc32()
+                    this.headerCrc = Crc32()
+                    this.step = 0
+                    this.another = true
+                    this.mode = InflateHeader
+                } else if this.inEof {
+                    this.mode = InflateDone
+                } else {
+                    return Ok()
+                }
+            } else {
+                return Ok()
+            }
+        }
+        return Ok()
+    }
+
+    // What follows the block that ended.
+    int next(read this) {
+        if this.last {
+            return InflateTrailer
+        }
+        return InflateBlock
+    }
+
+    // More input is to come, and fewer than `count` bytes of it are here.
+    bool starved(read this, nint count) {
+        return !this.inEof && this.inEnd - this.inPos < count
+    }
+
+    // Where the reading is, in bytes of the compressed input.
+    long position(read this) {
+        return this.inBase + (long)this.inPos - (long)(this.bits >> 3)
+    }
+
+    // The bytes of the input into the bits, as many as fit.
+    void fill(ref this) {
+        while this.bits <= 56 && this.inPos < this.inEnd {
+            this.hold = this.hold | ((ulong)this.input[this.inPos] << this.bits)
+            this.inPos += 1
+            this.bits += 8
+        }
+    }
+
+    // The next `count` bits.
+    Result<uint, CompressError> take(ref this, int count) {
+        if this.bits < count {
+            this.fill()
+            if this.bits < count {
+                return Error(CompressError.Truncated)
+            }
+        }
+        uint value = (uint)(this.hold & (((ulong)1 << count) - 1))
+        this.hold = this.hold >> count
+        this.bits -= count
+        return Ok(value)
+    }
+
+    // The bits to the end of their byte are dropped, and the whole bytes still held go back to
+    // the input.
+    void alignToByte(ref this) {
+        this.inPos -= (nint)(this.bits >> 3)
+        this.hold = 0
+        this.bits = 0
+    }
+
+    // The two bytes of zlib's header: the method 8 (DEFLATE), a window of 32 KB or less, no preset
+    // dictionary, and the check that makes them a multiple of 31.
+    Result<void, CompressError> zlibHeader(ref this) {
+        if this.inEnd - this.inPos < 2 {
+            return Error(CompressError.Truncated)
+        }
+        uint cmf = this.input[this.inPos]
+        uint flg = this.input[this.inPos + 1]
+        long at = this.inBase + (long)this.inPos
+        if (cmf * 256 + flg) % 31 != 0 || cmf & 15 != 8 || cmf >> 4 > 7 {
+            return Error(CompressError.Corrupt(at))
+        }
+        if flg & 0x20 != 0 {
+            return Error(CompressError.Corrupt(at + 1))
+        }
+        this.inPos += 2
+        return Ok()
+    }
+
+    // The header of a member of gzip, read as far as the input goes: `true` when it is all read.
+    // The fields: the magic number 1F 8B, the method 8, the flags, the time, the extra flags and the
+    // system (6 bytes), then by the flags the extra field, the name and the comment (each ending
+    // with 0), and the CRC of the header.
+    Result<bool, CompressError> gzipHeader(ref this) {
+        while true {
+            if this.step == 10 && this.flags & 4 == 0 {
+                this.step = 13
+            }
+            if this.step == 12 && this.stepLeft == 0 {
+                this.step = 13
+            }
+            if this.step == 13 && this.flags & 8 == 0 {
+                this.step = 14
+            }
+            if this.step == 14 && this.flags & 16 == 0 {
+                this.step = 15
+            }
+            if this.step == 15 && this.flags & 2 == 0 {
+                this.step = 17
+            }
+            if this.step == 17 {
+                return Ok(true)
+            }
+            if this.inPos == this.inEnd {
+                if this.inEof {
+                    return Error(CompressError.Truncated)
+                }
+                return Ok(false)
+            }
+            byte b = this.input[this.inPos]
+            long at = this.inBase + (long)this.inPos
+            if this.step < 15 {
+                this.headerCrc.update(this.input[this.inPos..this.inPos + 1])
+            }
+            this.inPos += 1
+            if this.step == 0 || this.step == 1 {
+                byte magic = 0x1F
+                if this.step == 1 {
+                    magic = 0x8B
+                }
+                if b != magic {
+                    if this.another {
+                        return Error(CompressError.TrailingData)
+                    }
+                    return Error(CompressError.Corrupt(at))
+                }
+                this.step += 1
+            } else if this.step == 2 {
+                if b != 8 {
+                    return Error(CompressError.Corrupt(at))
+                }
+                this.step = 3
+            } else if this.step == 3 {
+                if b & 0xE0 != 0 {
+                    return Error(CompressError.Corrupt(at))
+                }
+                this.flags = b
+                this.step = 4
+                this.stepLeft = 6
+            } else if this.step == 4 {
+                this.stepLeft -= 1
+                if this.stepLeft == 0 {
+                    this.step = 10
+                }
+            } else if this.step == 10 {
+                this.stepLeft = b
+                this.step = 11
+            } else if this.step == 11 {
+                this.stepLeft += (nint)b << 8
+                this.step = 12
+            } else if this.step == 12 {
+                this.stepLeft -= 1
+            } else if this.step == 13 {
+                if b == 0 {
+                    this.step = 14
+                }
+            } else if this.step == 14 {
+                if b == 0 {
+                    this.step = 15
+                }
+            } else if this.step == 15 {
+                this.stepLeft = b
+                this.step = 16
+            } else {
+                uint written = (uint)this.stepLeft | (uint)b << 8
+                if written != this.headerCrc.value() & 0xFFFF {
+                    return Error(CompressError.ChecksumMismatch)
+                }
+                this.step = 17
+            }
+        }
+        return Ok(false)
+    }
+
+    // The header of a block: stored, of the fixed codes, or of codes of its own.
+    Result<void, CompressError> blockHeader(ref this) {
+        long at = this.position()
+        uint head = try this.take(3)
+        this.last = head & 1 != 0
+        uint kind = head >> 1
+        if kind == 0 {
+            this.alignToByte()
+            if this.inEnd - this.inPos < 4 {
+                return Error(CompressError.Truncated)
+            }
+            nint p = this.inPos
+            nint length = (nint)this.input[p] | (nint)this.input[p + 1] << 8
+            nint check = (nint)this.input[p + 2] | (nint)this.input[p + 3] << 8
+            if length != (~check & 0xFFFF) {
+                return Error(CompressError.Corrupt(this.inBase + (long)p))
+            }
+            this.inPos += 4
+            this.storedLeft = length
+            this.mode = InflateStored
+        } else if kind == 1 {
+            if !this.fixedTables {
+                for n in 0..288 {
+                    this.lens[n] = DeflateStaticLength[n]
+                }
+                this.lenBits = inflateTable(TableLengths, this.lens[0..288], ref this.lenTable, ref this.work, 9)
+                for n in 0..32 {
+                    this.lens[n] = 5
+                }
+                this.distBits = inflateTable(TableDistances, this.lens[0..32], ref this.distTable, ref this.work, 6)
+                this.fixedTables = true
+            }
+            this.mode = InflateCodes
+        } else if kind == 2 {
+            this.fixedTables = false
+            try this.dynamicTables()
+            this.mode = InflateCodes
+        } else {
+            return Error(CompressError.Corrupt(at))
+        }
+        return Ok()
+    }
+
+    // The codes of a block of its own codes: their lengths, sent in a code of lengths.
+    Result<void, CompressError> dynamicTables(ref this) {
+        long at = this.position()
+        nint nlen = (nint)try this.take(5) + 257
+        nint ndist = (nint)try this.take(5) + 1
+        nint ncode = (nint)try this.take(4) + 4
+        if nlen > 286 || ndist > 30 {
+            return Error(CompressError.Corrupt(at))
+        }
+        for i in 0..19 {
+            this.lens[i] = 0
+        }
+        for i in 0..ncode {
+            this.lens[DeflateBlOrder[i]] = (int)try this.take(3)
+        }
+        int rootBits = inflateTable(TableCodes, this.lens[0..19], ref this.lenTable, ref this.work, 7)
+        if rootBits < 0 {
+            return Error(CompressError.Corrupt(at))
+        }
+        this.lenBits = rootBits
+        nint have = 0
+        while have < nlen + ndist {
+            uint entry = try this.decode(false)
+            uint sym = entry >> 16
+            if sym < 16 {
+                this.lens[have] = (int)sym
+                have += 1
+                continue
+            }
+            int copy = 0
+            nint repeat = 0
+            if sym == 16 {
+                if have == 0 {
+                    return Error(CompressError.Corrupt(this.position()))
+                }
+                copy = this.lens[have - 1]
+                repeat = 3 + (nint)try this.take(2)
+            } else if sym == 17 {
+                repeat = 3 + (nint)try this.take(3)
+            } else {
+                repeat = 11 + (nint)try this.take(7)
+            }
+            if have + repeat > nlen + ndist {
+                return Error(CompressError.Corrupt(this.position()))
+            }
+            for _ in 0..repeat {
+                this.lens[have] = copy
+                have += 1
+            }
+        }
+        if this.lens[256] == 0 {
+            return Error(CompressError.Corrupt(at))
+        }
+        this.lenBits = inflateTable(TableLengths, this.lens[0..nlen], ref this.lenTable, ref this.work, 9)
+        if this.lenBits < 0 {
+            return Error(CompressError.Corrupt(at))
+        }
+        this.distBits = inflateTable(TableDistances, this.lens[nlen..nlen + ndist], ref this.distTable, ref this.work, 6)
+        if this.distBits < 0 {
+            return Error(CompressError.Corrupt(at))
+        }
+        return Ok()
+    }
+
+    // The entry of the next code of the table of lengths (or of distances), its bits taken.
+    Result<uint, CompressError> decode(ref this, bool distance) {
+        this.fill()
+        uint entry = 0
+        if distance {
+            entry = this.distTable[(nint)(this.hold & (((ulong)1 << this.distBits) - 1))]
+        } else {
+            entry = this.lenTable[(nint)(this.hold & (((ulong)1 << this.lenBits) - 1))]
+        }
+        uint op = entry >> 8 & 255
+        if op >= EntryLink {
+            int root = (int)(entry & 255)
+            if root > this.bits {
+                return Error(CompressError.Truncated)
+            }
+            this.hold = this.hold >> root
+            this.bits -= root
+            nint at = (nint)(entry >> 16) + (nint)(this.hold & (((ulong)1 << (op - EntryLink)) - 1))
+            if distance {
+                entry = this.distTable[at]
+            } else {
+                entry = this.lenTable[at]
+            }
+        }
+        int count = (int)(entry & 255)
+        if count > this.bits {
+            return Error(CompressError.Truncated)
+        }
+        this.hold = this.hold >> count
+        this.bits -= count
+        return Ok(entry)
+    }
+
+    // Room for `count` more bytes of output after `outLen`: the list grows to twice its size, but
+    // not far past `stop`, where the opening stops.
+    void room(ref this, nint count, nint stop) {
+        nint needed = this.outLen + count
+        if this.out.length() >= needed {
+            return
+        }
+        nint target = (2 * this.out.length()).max(65536)
+        if stop < nint.MaxValue / 2 {
+            target = target.min(stop + 65536)
+        }
+        target = target.max(needed)
+        while this.out.length() < target {
+            this.out.addAll(read DeflateZeroBytes)
+        }
+    }
+
+    // The symbols of a block of codes: `true` at its end, `false` when the output reached `stop` or
+    // (with more input to come) the input ran short. The bits, the place in the input and the
+    // length of the output are kept in locals while it runs, and the lists are looked at through
+    // slices, so the bytes it writes are never read back as their places.
+    Result<bool, CompressError> codes(ref this, nint stop) {
+        ulong hold = this.hold
+        int bits = this.bits
+        nint pos = this.inPos
+        nint end = this.inEnd
+        bool eof = this.inEof
+        ulong lenMask = ((ulong)1 << this.lenBits) - 1
+        ulong distMask = ((ulong)1 << this.distBits) - 1
+        // The bytes of this member opened before `out[0]`.
+        long before = this.outBase - this.memberStart
+        bool ended = false
+        bool starved = false
+        while !ended && !starved && this.outLen < stop {
+            // Each symbol gives at most 258 bytes.
+            if this.out.length() - this.outLen < 1024 {
+                this.room(65536, stop)
+            }
+            nint size = this.outLen
+            nint limit = (this.out.length() - 258).min(stop)
+            var o = ref this.out[..]
+            var input = this.input[..]
+            var lengths = this.lenTable[..]
+            var distances = this.distTable[..]
+            while size < limit {
+                // At least 56 bits after a refill: a literal takes 15 at most, a length 20, and the
+                // distance after it refills on its own.
+                if bits >= 32 {
+                } else if pos + 8 <= end {
+                    hold = hold | (ulong.fromLittleEndian(input[pos..pos + 8]) << bits)
+                    pos += (nint)((63 - bits) >> 3)
+                    bits = bits | 56
+                } else if eof {
+                    while bits <= 56 && pos < end {
+                        hold = hold | ((ulong)input[pos] << bits)
+                        pos += 1
+                        bits += 8
+                    }
+                } else {
+                    starved = true
+                    break
+                }
+                uint entry = lengths[(nint)(hold & lenMask)]
+                uint op = entry >> 8 & 255
+                if op >= EntryLink {
+                    int root = (int)(entry & 255)
+                    if root > bits {
+                        return Error(CompressError.Truncated)
+                    }
+                    hold = hold >> root
+                    bits -= root
+                    entry = lengths[(nint)(entry >> 16) + (nint)(hold & (((ulong)1 << (op - EntryLink)) - 1))]
+                    op = entry >> 8 & 255
+                }
+                int count = (int)(entry & 255)
+                if count > bits {
+                    return Error(CompressError.Truncated)
+                }
+                hold = hold >> count
+                bits -= count
+                if op == 0 {
+                    o[size] = (byte)(entry >> 16)
+                    size += 1
+                    continue
+                }
+                if op >= EntryBase && op < EntryEnd {
+                    nint length = (nint)(entry >> 16)
+                    int extra = (int)(op & 15)
+                    if extra != 0 {
+                        if extra > bits {
+                            return Error(CompressError.Truncated)
+                        }
+                        length += (nint)(hold & (((ulong)1 << extra) - 1))
+                        hold = hold >> extra
+                        bits -= extra
+                    }
+                    if bits < 28 {
+                        if pos + 8 <= end {
+                            hold = hold | (ulong.fromLittleEndian(input[pos..pos + 8]) << bits)
+                            pos += (nint)((63 - bits) >> 3)
+                            bits = bits | 56
+                        } else {
+                            while bits <= 56 && pos < end {
+                                hold = hold | ((ulong)input[pos] << bits)
+                                pos += 1
+                                bits += 8
+                            }
+                        }
+                    }
+                    entry = distances[(nint)(hold & distMask)]
+                    op = entry >> 8 & 255
+                    if op >= EntryLink {
+                        int root = (int)(entry & 255)
+                        if root > bits {
+                            return Error(CompressError.Truncated)
+                        }
+                        hold = hold >> root
+                        bits -= root
+                        entry = distances[(nint)(entry >> 16) + (nint)(hold & (((ulong)1 << (op - EntryLink)) - 1))]
+                        op = entry >> 8 & 255
+                    }
+                    count = (int)(entry & 255)
+                    if count > bits {
+                        return Error(CompressError.Truncated)
+                    }
+                    hold = hold >> count
+                    bits -= count
+                    if op < EntryBase || op >= EntryEnd {
+                        return Error(CompressError.Corrupt(this.inBase + (long)pos - (long)(bits >> 3) - 1))
+                    }
+                    nint dist = (nint)(entry >> 16)
+                    extra = (int)(op & 15)
+                    if extra != 0 {
+                        if extra > bits {
+                            return Error(CompressError.Truncated)
+                        }
+                        dist += (nint)(hold & (((ulong)1 << extra) - 1))
+                        hold = hold >> extra
+                        bits -= extra
+                    }
+                    if (long)dist > before + (long)size {
+                        return Error(CompressError.Corrupt(this.inBase + (long)pos - (long)(bits >> 3) - 1))
+                    }
+                    nint from = size - dist
+                    for k in 0..length {
+                        o[size + k] = o[from + k]
+                    }
+                    size += length
+                    continue
+                }
+                if op == EntryEnd {
+                    ended = true
+                    break
+                }
+                return Error(CompressError.Corrupt(this.inBase + (long)pos - (long)(bits >> 3) - 1))
+            }
+            this.outLen = size
+        }
+        this.hold = hold
+        this.bits = bits
+        this.inPos = pos
+        return Ok(ended)
+    }
+
+    // The checksum of the member, with what was opened since it was last counted.
+    void checksum(ref this) {
+        nint size = this.outLen
+        if this.format == DeflateGzip {
+            this.crc.update(this.out[this.counted..size])
+        } else if this.format == DeflateZlib {
+            this.adler.update(this.out[this.counted..size])
+        }
+        this.counted = size
+    }
+
+    // What follows the last block: Adler-32 for zlib (high byte first), CRC-32 and the length for
+    // gzip (low byte first).
+    Result<void, CompressError> trailer(ref this) {
+        this.alignToByte()
+        if this.format == DeflateRaw {
+            return Ok()
+        }
+        this.checksum()
+        nint p = this.inPos
+        if this.format == DeflateZlib {
+            if this.inEnd - p < 4 {
+                return Error(CompressError.Truncated)
+            }
+            uint written = (uint)this.input[p] << 24 | (uint)this.input[p + 1] << 16 | (uint)this.input[p + 2] << 8 | (uint)this.input[p + 3]
+            this.inPos += 4
+            if written != this.adler.value() {
+                return Error(CompressError.ChecksumMismatch)
+            }
+            return Ok()
+        }
+        if this.inEnd - p < 8 {
+            return Error(CompressError.Truncated)
+        }
+        uint written = uint.fromLittleEndian(this.input[p..p + 4])
+        uint size = uint.fromLittleEndian(this.input[p + 4..p + 8])
+        this.inPos += 8
+        long opened = this.outBase + (long)this.outLen - this.memberStart
+        if written != this.crc.value() || size != (uint)(opened & 0xFFFF_FFFF) {
+            return Error(CompressError.ChecksumMismatch)
+        }
+        return Ok()
+    }
+}
+
+List<uint> zeroWords(nint count) {
+    var zeros = uint[256]
+    var list = List<uint>()
+    for _ in 0..count / 256 {
+        list.addAll(read zeros)
+    }
+    return list
+}
+
+Inflater inflaterNew(int format, long limit) {
+    return Inflater {
+        format = format,
+        input = List<byte>(),
+        inPos = 0,
+        inEnd = 0,
+        inEof = false,
+        inBase = 0,
+        hold = 0,
+        bits = 0,
+        out = List<byte>(),
+        outLen = 0,
+        outBase = 0,
+        counted = 0,
+        memberStart = 0,
+        limit = limit,
+        mode = InflateHeader,
+        last = false,
+        storedLeft = 0,
+        lenTable = zeroWords(1024),
+        lenBits = 0,
+        distTable = zeroWords(1024),
+        distBits = 0,
+        fixedTables = false,
+        lens = int[320],
+        work = int[320],
+        crc = Crc32(),
+        adler = Adler32(),
+        step = 0,
+        stepLeft = 0,
+        flags = 0,
+        headerCrc = Crc32(),
+        another = false
+    }
+}
+
+
+// 1 for `true`, 0 for `false`.
+int bitOf(bool value) {
+    if value {
+        return 1
+    }
+    return 0
+}
+
+// The bytes added at the end of `out`.
+void appendBytes(ref List<byte> out, read byte[] bytes) {
+    out.addAll(bytes)
+}

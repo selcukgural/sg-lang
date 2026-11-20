@@ -28,13 +28,14 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
     ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),
     ("encoding.sg", include_str!("std/encoding.sg"), &["Hex", "Base64", "DecodeError"]),
-    ("checksum.sg", include_str!("std/checksum.sg"), &["Crc32"]),
+    ("checksum.sg", include_str!("std/checksum.sg"), &["Crc32", "Adler32"]),
     ("hash.sg", include_str!("std/hash.sg"), &["Sha256", "Hmac", "Bytes"]),
     ("command_line.sg", include_str!("std/command_line.sg"), &["CommandLine", "Arguments", "CommandLineError"]),
     ("json.sg", include_str!("std/json.sg"), &["Json", "JsonValue", "JsonObject", "JsonError", "JsonErrorKind"]),
     ("log.sg", include_str!("std/log.sg"), &["Log", "LogLevel"]),
     ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory"]),
     ("regex.sg", include_str!("std/regex.sg"), &["Regex", "RegexError", "RegexErrorKind", "Match", "Captures"]),
+    ("compression.sg", include_str!("std/compression.sg"), &["Deflate", "Zlib", "Gzip", "Compressor", "Decompressor", "CompressError"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of
@@ -194,6 +195,25 @@ impl Sources {
     }
 }
 
+/// Each folder of `module` is there under `base` with its name written as the module writes it:
+/// on a system whose names ignore case (macOS, Windows), `Zlib.compress` of the language's own
+/// `Zlib` is not the folder `zlib`.
+fn spelled_as(base: &Path, module: &str) -> bool {
+    let mut dir = base.to_path_buf();
+    for part in module.split('.') {
+        let listed = if dir.as_os_str().is_empty() { Path::new(".") } else { dir.as_path() };
+        let found = match std::fs::read_dir(listed) {
+            Ok(entries) => entries.flatten().any(|entry| entry.file_name() == part && entry.path().is_dir()),
+            Err(_) => false,
+        };
+        if !found {
+            return false;
+        }
+        dir = dir.join(part);
+    }
+    true
+}
+
 fn sg_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => entries.flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "sg") && path.is_file()).collect(),
@@ -331,7 +351,7 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
             let mut exists = |module: &str| {
                 *asked.entry(module.to_string()).or_insert_with(|| {
                     let folder = module.split('.').fold(base.clone(), |folder, part| folder.join(part));
-                    module.split('.').all(is_module_name) && !sg_files(&folder).is_empty()
+                    module.split('.').all(is_module_name) && spelled_as(&base, module) && !sg_files(&folder).is_empty()
                 })
             };
             for module in named_paths(&sources.text, Span::new(file.start, file.end)) {

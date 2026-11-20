@@ -1,0 +1,6 @@
+// A level written in the program is 0 to 9, or a compile error (choice 1484); one made when the
+// program runs is checked then (panic_compress_level).
+void main() {
+    var packed = Gzip.compress("text".asBytes(), 10)
+    print(packed.length())
+}

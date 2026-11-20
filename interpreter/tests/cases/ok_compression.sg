@@ -1,0 +1,151 @@
+// Compression that comes with the language (choices 1465, 1466, 1482-1489): DEFLATE, zlib and gzip
+// both ways, the bytes zlib 1.3.1 gives (written below as zlib printed them), every level, the
+// errors of data that is not what it says, the limit, and a gzip file written and read as a
+// stream. The folder is the first word of the command line.
+
+string sample() {
+    var text = string.withCapacity(4000)
+    for i in 0..120 {
+        text.write($"{i}: the quick brown fox {i % 7} jumps over the lazy dog\n")
+    }
+    return text
+}
+
+List<byte> copyOf(read byte[] bytes) {
+    var copy = List<byte>()
+    copy.addAll(bytes)
+    return copy
+}
+
+void opened(read string what, Result<List<byte>, CompressError> result) {
+    match result {
+        Ok(bytes) => print($"{what}: {bytes.length()} bytes, {string.fromUtf8(read bytes) ?? "not text"}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, IoError> main(List<string> args) {
+    // The bytes zlib gives at level 6.
+    var hello = "hello, hello, hello".asBytes()
+    print(Hex.encode(read Deflate.compress(hello, 6)) == "cb48cdc9c9d751c840a200")
+    print(Hex.encode(read Zlib.compress(hello, 6)) == "789ccb48cdc9c9d751c840a200442806d5")
+    print(Hex.encode(read Gzip.compress(hello, 6)) == "1f8b08000000000000ffcb48cdc9c9d751c840a2009fa1ca0913000000")
+    print($"{Adler32.of("Wikipedia".asBytes()):x8} {Adler32.of(read List<byte>())}")
+    var sum = Adler32()
+    sum.update("Wiki".asBytes())
+    sum.update("pedia".asBytes())
+    print($"{sum.value():x8}")
+
+    // Every level of gzip, and the other two formats at zlib's default: the size, and the text back.
+    var text = sample()
+    for level in 0..10 {
+        var g = Gzip.compress(text.asBytes(), level)
+        bool back = false
+        match Gzip.decompress(read g, text.length()) {
+            Ok(bytes) => back = (string.fromUtf8(read bytes) ?? "") == text
+            Error(_) => back = false
+        }
+        print($"level {level}: {g.length()} {back}")
+    }
+    var d = Deflate.compress(text.asBytes(), 6)
+    var z = Zlib.compress(text.asBytes(), 6)
+    match Deflate.decompress(read d, text.length()) {
+        Ok(bytes) => print($"deflate {d.length()} {(string.fromUtf8(read bytes) ?? "") == text}")
+        Error(cause) => print(cause)
+    }
+    match Zlib.decompress(read z, text.length()) {
+        Ok(bytes) => print($"zlib {z.length()} {(string.fromUtf8(read bytes) ?? "") == text}")
+        Error(cause) => print(cause)
+    }
+    print(Deflate.compress(read List<byte>(), 6).length())
+    opened("empty", Gzip.decompress(read Gzip.compress(read List<byte>(), 9), 0))
+
+    // What is not the data it says it is.
+    var packed = Gzip.compress(hello, 6)
+    var bad = copyOf(read packed)
+    bad[0] = 0x1E
+    opened("not gzip", Gzip.decompress(read bad, 100))
+    opened("cut", Gzip.decompress(packed[..packed.length() - 3], 100))
+    var changed = copyOf(read packed)
+    changed[packed.length() - 5] ^= 1
+    opened("crc", Gzip.decompress(read changed, 100))
+    var longer = copyOf(read packed)
+    longer.add(0)
+    opened("after", Gzip.decompress(read longer, 100))
+    opened("limit 18", Gzip.decompress(read packed, 18))
+    opened("limit 19", Gzip.decompress(read packed, 19))
+    opened("nothing", Deflate.decompress(read List<byte>(), 100))
+    opened("block 3", Deflate.decompress(read List<byte> { 7 }, 100))
+    opened("dictionary", Zlib.decompress(read List<byte> { 0x78, 0xBB, 0, 0, 0, 1 }, 100))
+    opened("far back", Deflate.decompress(read List<byte> { 3, 2, 0 }, 100))
+    var zlibbed = Zlib.compress(hello, 1)
+    zlibbed[zlibbed.length() - 1] ^= 0x80
+    opened("adler", Zlib.decompress(read zlibbed, 100))
+
+    // Two members of gzip, one after the other, open as one.
+    var two = Gzip.compress("one, ".asBytes(), 1)
+    two.addAll(read Gzip.compress("two".asBytes(), 9))
+    opened("members", Gzip.decompress(read two, 100))
+    two.add(0x1F)
+    opened("half a member", Gzip.decompress(read two, 100))
+
+    // A stream: written in pieces, read back by lines, as text, by bytes.
+    var path = Path.join(read args[0], "lines.gz")
+    var writer = Gzip.writer(try File.createText(read path), 6)
+    for i in 0..600 {
+        try writer.writeBytes($"line {i}\r\n".toString().asBytes())
+    }
+    try writer.close()
+    print(File.exists(read path))
+    var reader = Gzip.reader(try File.openText(read path), 1 << 20)
+    var line = string.withCapacity(16)
+    nint count = 0
+    while true {
+        match reader.readLine(ref line) {
+            Ok(more) => {
+                if !more {
+                    break
+                }
+                if count % 150 == 0 {
+                    print($"[{line}]")
+                }
+                count += 1
+            }
+            Error(cause) => {
+                print(cause)
+                break
+            }
+        }
+    }
+    print(count)
+    var whole = Gzip.reader(try File.openText(read path), 1 << 20)
+    match whole.readText() {
+        Ok(all) => print($"{all.length()} {all.endsWith("line 599\r\n")}")
+        Error(cause) => print(cause)
+    }
+    var small = Gzip.reader(try File.openText(read path), 1000)
+    var buffer = byte[600]
+    match small.readBytes(ref buffer) {
+        Ok(n) => print($"{n} {buffer[0]}")
+        Error(cause) => print(cause)
+    }
+    match small.readBytes(ref buffer) {
+        Ok(n) => print(n)
+        Error(cause) => print(cause)
+    }
+
+    // Text that is not UTF-8 says where, counted in the opened bytes.
+    var notText = Path.join(read args[0], "bytes.gz")
+    var bytesWriter = Zlib.writer(try File.createText(read notText), 1)
+    try bytesWriter.writeBytes("ab\ncd".asBytes())
+    try bytesWriter.writeBytes(read List<byte> { 0xFF, 10 })
+    try bytesWriter.close()
+    var bytesReader = Zlib.reader(try File.openText(read notText), 100)
+    for _ in 0..3 {
+        match bytesReader.readLine(ref line) {
+            Ok(more) => print($"{more} [{line}]")
+            Error(cause) => print(cause)
+        }
+    }
+    return Ok()
+}

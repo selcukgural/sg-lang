@@ -1,0 +1,7 @@
+// A limit below 0 is a panic: no data opens into fewer than 0 bytes (choice 1466).
+void main(List<string> args) {
+    nint limit = -1 + (nint)args.length() * 0
+    var packed = Gzip.compress("abc".asBytes(), 6)
+    print(Gzip.decompress(read packed, 3) is Ok(_))
+    print(Gzip.decompress(read packed, limit) is Ok(_))
+}

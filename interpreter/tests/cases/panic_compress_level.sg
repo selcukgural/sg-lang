@@ -1,0 +1,6 @@
+// A level made when the program runs that is not 0 to 9 is a panic (choice 1484).
+void main(List<string> args) {
+    int level = 12 + (int)args.length() * 0
+    print(Deflate.compress("abc".asBytes(), 9).length())
+    print(Deflate.compress("abc".asBytes(), level).length())
+}

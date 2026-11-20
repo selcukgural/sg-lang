@@ -1,0 +1,44 @@
+true
+true
+true
+11e60398 1
+11e60398
+level 0: 6033 true
+level 1: 523 true
+level 2: 523 true
+level 3: 522 true
+level 4: 523 true
+level 5: 517 true
+level 6: 517 true
+level 7: 425 true
+level 8: 421 true
+level 9: 421 true
+deflate 499 true
+zlib 505 true
+2
+empty: 0 bytes, 
+not gzip: corrupt compressed data at byte 0
+cut: the compressed data ends before its stream does
+crc: the checksum of the data is not the one written after it
+after: bytes follow the end of the compressed stream
+limit 18: the data opens into more bytes than the limit
+limit 19: 19 bytes, hello, hello, hello
+nothing: the compressed data ends before its stream does
+block 3: corrupt compressed data at byte 0
+dictionary: corrupt compressed data at byte 1
+far back: corrupt compressed data at byte 1
+adler: the checksum of the data is not the one written after it
+members: 8 bytes, one, two
+half a member: the compressed data ends before its stream does
+true
+[line 0]
+[line 150]
+[line 300]
+[line 450]
+600
+5890 true
+600 108
+the data opens into more bytes than the limit
+true [ab]
+InvalidText(5)
+InvalidText(5)

@@ -1,0 +1,38 @@
+// Sixteen megabytes of text made up of words, compressed at level 1 and opened twenty times by the
+// language's own gzip: `Gzip.decompress` of `std`, written in SG, next to zlib's `inflate` called
+// from C.
+
+List<string> wordList() {
+    return List<string> { "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "compression", "of", "text", "is", "a", "matter", "repeated", "words", "and", "their", "places", "window" }
+}
+
+List<byte> made() {
+    var words = wordList()
+    var data = List<byte>()
+    uint state = 12345
+    while data.length() < 16_000_000 {
+        state = state.wrappingMultiply(1103515245).wrappingAdd(12345)
+        nint word = (nint)(state >> 16) % words.length()
+        data.addAll(words[word].asBytes())
+        if state >> 8 & 15 == 0 {
+            data.add(10)
+        } else {
+            data.add(32)
+        }
+    }
+    return data
+}
+
+Result<void, CompressError> main() {
+    var data = made()
+    var packed = Gzip.compress(read data, 1)
+    uint check = 0
+    nint size = 0
+    for _ in 0..20 {
+        var plain = try Gzip.decompress(read packed, 1 << 30)
+        size = plain.length()
+        check = Crc32.of(read plain)
+    }
+    print($"{size} {check}")
+    return Ok()
+}

@@ -5,4 +5,6 @@ ok    zlib: the checksum is the one zlib computes
 ok    zlib: a stream given in pieces comes back whole
 ok    zlib: a level outside 0 to 9 is an error
 ok    zlib: a deflater that is not closed gives back what zlib holds
-7 test(s) passed
+ok    zlib: the language's zlib makes zlib's bytes at every level
+ok    zlib: each opens what the other compressed
+9 test(s) passed

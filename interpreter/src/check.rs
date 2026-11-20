@@ -255,6 +255,12 @@ fn std_makers(short: &str) -> &'static str {
         "Match" => "`regex.find(text)` gives one, and `regex.findAll(text)` a list of them",
         "Captures" => "`regex.captures(text)` gives one",
         "RegexError" => "`Regex.compile(pattern)` gives one for a pattern that is not a regular expression",
+        "Adler32" => "`Adler32()`, then `a.update(read bytes)` and `a.value()`; or `Adler32.of(read bytes)` at once",
+        "Deflate" => "nothing is made: the functions are called on the type, `Deflate.compress(read bytes, 6)`, `Deflate.decompress(read bytes, limit)`",
+        "Zlib" => "nothing is made: the functions are called on the type, `Zlib.compress(read bytes, 6)`, `Zlib.decompress(read bytes, limit)`",
+        "Gzip" => "nothing is made: the functions are called on the type, `Gzip.compress(read bytes, 6)`, `Gzip.decompress(read bytes, limit)`",
+        "Compressor" => "`Gzip.writer(target, level)` gives one, and `Zlib.writer` and `Deflate.writer`",
+        "Decompressor" => "`Gzip.reader(source, limit)` gives one, and `Zlib.reader` and `Deflate.reader`",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }
@@ -3370,6 +3376,20 @@ fn bare_slice(span: Span, slice: &Ty) -> Diag {
     let Ty::Slice(item) = slice else { unreachable!("called for a slice") };
     Diag::error(span, format!("`{slice}` is not a type on its own: a slice only looks at items that something else owns"))
         .hint(format!("`List<{item}>` to own the items, `read {slice}` for a window onto them"))
+}
+
+/// The level of `Gzip.compress(data, level)` and of the other formats: one written in the program
+/// is 0 to 9, or a compile error (choice 1484); one made when the program runs is checked then.
+fn level_written(arg: &Expr) -> Res<()> {
+    let level = match &unwidened(arg).kind {
+        ExprKind::Unary(UnOp::Neg, inner) => known_int(inner).map(|value| -value),
+        _ => known_int(arg),
+    };
+    match level {
+        Some(level) if !(0..=9).contains(&level) => Err(Diag::error(arg.span, format!("compression level {level}: a level is 0 (stored as it is) to 9 (smallest)"))
+            .hint("6 is zlib's default, 1 the fastest that compresses")),
+        _ => Ok(()),
+    }
 }
 
 /// The number an index is known to be before the program runs.
@@ -10649,6 +10669,10 @@ impl<'a> Checker<'a> {
         })?;
         if owner == format!("{STD_MODULE}.Regex") && matches!(name, "compile" | "of") {
             self.pattern_written(name, &args[0])?;
+        }
+        let compressing = ["Deflate", "Zlib", "Gzip"].iter().any(|format| owner == format!("{STD_MODULE}.{format}"));
+        if compressing && matches!(name, "compress" | "writer") {
+            level_written(&args[1])?;
         }
         *callee = Callee::Static { owner: owner.to_string(), name: name.to_string() };
         self.method_gives(name, sig, None, args, span, awaited)

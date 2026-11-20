@@ -53,3 +53,50 @@ test "a deflater that is not closed gives back what zlib holds" {
     kept.add(deflater)
     try kept[0].write("never closed".asBytes())
 }
+
+// The language's own zlib (`Zlib` of `std`, written in SG) against zlib itself (choices 1485 and
+// 1492): at every level the same bytes, and each opens what the other made.
+string sample(nint lines) {
+    var text = string.withCapacity(lines * 40)
+    for i in 0..lines {
+        text.write($"line {i}: {i * i % 977} of the sample, {"ab".repeat(i % 7)}\n")
+    }
+    return text
+}
+
+Result<List<byte>, ZlibError> zlibOf(read byte[] data, int level) {
+    var deflater = try Deflater(level)
+    try deflater.write(data)
+    var packed = deflater.take()
+    var rest = try deflater.close()
+    packed.addAll(read rest)
+    return Ok(packed)
+}
+
+test "the language's zlib makes zlib's bytes at every level" {
+    // Under 32 KB, so that level 0 stores it as one block written at the end, as one call of zlib does.
+    var small = sample(400)
+    assert(small.length() < 32768)
+    for level in 0..10 {
+        var ours = Zlib.compress(small.asBytes(), level)
+        var theirs = try zlibOf(small.asBytes(), level)
+        assert(ours == theirs)
+    }
+    var large = sample(8000)
+    for level in 1..10 {
+        var ours = Zlib.compress(large.asBytes(), level)
+        var theirs = try zlibOf(large.asBytes(), level)
+        assert(ours == theirs)
+    }
+}
+
+test "each opens what the other compressed" {
+    var text = sample(3000)
+    var theirs = try compress(text.asBytes())
+    var opened = Zlib.decompress(read theirs, text.length()) ?? List<byte>()
+    assert((string.fromUtf8(read opened) ?? "") == text)
+    var ours = Zlib.compress(text.asBytes(), 9)
+    var back = try decompress(read ours, text.length())
+    assert((string.fromUtf8(read back) ?? "") == text)
+    assert(checksum(text.asBytes()) == Crc32.of(text.asBytes()))
+}

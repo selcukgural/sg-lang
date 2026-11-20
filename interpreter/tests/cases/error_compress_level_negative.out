@@ -1,0 +1,5 @@
+error: compression level -1: a level is 0 (stored as it is) to 9 (smallest)
+  --> error_compress_level_negative.sg:3:58
+ 3 |     var writer = Zlib.writer(try File.createText("x.z"), -1)
+   |                                                          ^^
+  hint: 6 is zlib's default, 1 the fastest that compresses
