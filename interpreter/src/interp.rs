@@ -5825,6 +5825,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                 if let Some(text) = self.own_format(name, value, span)? {
                     return Ok(text);
                 }
+                // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
+                if &**name == "IoError" {
+                    let text = crate::check::IO_ERROR_TEXTS[*index];
+                    return Ok(match *index {
+                        4 | 5 => format!("{text}{}", list(self, fields)?.join("")),
+                        _ => text.to_string(),
+                    });
+                }
                 let word = match &**name {
                     "Result" => ["Ok", "Error"][*index],
                     _ => self.enums[&**name].variants[*index].name.as_str(),

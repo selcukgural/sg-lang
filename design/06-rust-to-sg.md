@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-second slice (zip archives in `std`: `ZipReader`, `ZipWriter`, 1501-1524).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-third slice (the first trials of 1418, `grep` and `wc` in SG, Rust and Go: lazy DFAs in `Regex`, `CC`, an `IoError` written as a sentence, 1525-1539).
 
 ## Functions and variables
 
@@ -386,6 +386,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-second slice (
 | `OpenOptions::new().write(true).create(true).open(p)?` | `File.openWrite(p)` | built | A `StreamWriter` from the start, over what the file holds |
 | `file.seek(SeekFrom::Start(n))?` | `try reader.seek(SeekFrom.Start(n))`, `try writer.seek(...)` | built | `End(n)` and `Current(n)` too; gives the new place as a `long`. `Start` holds a `long`, and a place before the start is `InvalidInput`. A reader moves inside its block without the system for `Start` too, where `BufReader` does only for `seek_relative`; a writer writes what it holds first, as `BufWriter` does |
 | `file.stream_position()?` | `try reader.seek(SeekFrom.Current(0))` | built | |
+| `eprintln!("{path}: {e}")` of an `io::Error` | `printError($"{path}: {cause}")` | built | `not found`, `invalid text at byte 812`: a sentence in lower case, as Go's; Rust writes the system's own words and the code (`No such file or directory (os error 2)`) |
 | `ErrorKind::NotSeekable` | `IoError.NotSeekable` | built | Also a writer of `openAppend`; `Stdin.seek` and `seek` on the reader of a connection are compile errors, where `Stdin` has no `Seek` in Rust |
 | `tokio::io::AsyncSeekExt::seek` on a `BufWriter` | `try await writer.seekAsync(from)` | built | A reader seeks as it is in an async function, since it neither reads nor writes |
 | `writeln!(w, "{}", x)?` | `try w.writeLine(x)` | built | |
@@ -584,9 +585,9 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-second slice (
 | Rust | SG | Status | Note |
 |---|---|---|---|
 | `Regex::new(r"\d+").unwrap()` | `Regex.of("""\d+""")` | built | Only a pattern written in the program, checked when it is compiled; never fails when it runs |
-| `static RE: LazyLock<Regex> = LazyLock::new(\|\| Regex::new(...).unwrap())` | `static Regex Re = Regex.of("...")` | built | Compiled the first time it is read; any task reads it |
+| `static RE: LazyLock<Regex> = LazyLock::new(\|\| Regex::new(...).unwrap())` | `static Regex Re = Regex.of("...")` | built | Compiled the first time it is read; any task searches it. The states of its DFAs are kept in it behind a lock, where Rust's `regex` keeps a cache for each thread in a pool |
 | `Regex::new(&pattern)` | `Regex.compile(read pattern)` | built | A `Result<Regex, RegexError>`; the error has the column |
-| `re.is_match(text)`, `re.find(text)` | `re.isMatch(text)`, `re.find(text)` | built | A `Match?`: `start`, `end`, `m.of(text)` |
+| `re.is_match(text)`, `re.find(text)` | `re.isMatch(text)`, `re.find(text)` | built | A `Match?`: `start`, `end`, `m.of(text)`. Searched by lazy DFAs, as Rust's, after an inner text every match holds; Pike's machine only for the groups |
 | `re.find_iter(text).collect()` | `re.findAll(text)` | built | A `List<Match>`; no iterator |
 | `re.captures(text)`, `caps.get(1)`, `caps.name("y")` | `re.captures(text)`, `caps.get(1)`, `caps.named("y")` | built | |
 | `re.replace_all(text, "$2-$1")` | `re.replaceAll(text, "$2-$1")` | built | `$1x` is group 1 and `x`; a group the pattern lacks is a panic |
@@ -629,7 +630,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-second slice (
 | `#[test] fn name()` | `test "name" { }` | built | At the top level of the file, next to the code |
 | `cargo test` | `sg test file.sg` | built | `sg test --compiled` runs them compiled, each test in a process of its own (the program starts itself again with `--only N`), where Rust's harness runs them on threads of one process |
 | `cargo run` | `sg file.sg` | built | The interpreter |
-| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/`. `sg build shop` from the folder above `shop` asks for `-o`, as `go build` does, where Cargo names the program after the package in `target/` |
+| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/`. `sg build shop` from the folder above `shop` asks for `-o`, as `go build` does, where Cargo names the program after the package in `target/`. The C compiler is the one `CC` names, as Cargo's `cc` crate takes it |
 | a test that leaks `Rc` passes | the test fails with the leak report | built | |
 | a leak is seen only under a tool (LSan, Valgrind, Miri) | a debug build counts the blocks of its values and reports those not given back | built | On every system, Windows too, where there is no LSan; raw memory is not counted |
 | `cargo fuzz` | `fuzz/` (libFuzzer on the front end) and `fuzz/difference` (generated programs, interpreter against compiled code) | built | A crate apart, so `sg` keeps no dependencies; the second has a generator of its own, as Csmith is for C and rustlantis for Rust |

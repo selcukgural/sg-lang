@@ -40,5 +40,5 @@ true
 600 108
 the data opens into more bytes than the limit
 true [ab]
-InvalidText(5)
-InvalidText(5)
+invalid text at byte 5
+invalid text at byte 5

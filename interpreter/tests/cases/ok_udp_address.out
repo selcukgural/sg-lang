@@ -10,22 +10,22 @@
 [1:2:3:4:5:6:7::]:1 -> [1:2:3:4:5:6:7:0]:1, host 1:2:3:4:5:6:7:0, port 1
 [::1.2.3.4]:2 -> [::102:304]:2, host ::102:304, port 2
 [1::]:5 -> [1::]:5, host 1::, port 5
-01.2.3.4:5 -> InvalidInput
-1.2.3:4 -> InvalidInput
-1.2.3.4.5:6 -> InvalidInput
-256.1.1.1:1 -> InvalidInput
-1.2.3.4:65536 -> InvalidInput
-1.2.3.4: -> InvalidInput
-1.2.3.4 -> InvalidInput
-::1:53 -> InvalidInput
-[1::2::3]:4 -> InvalidInput
-[1:2:3:4:5:6:7:8:9]:1 -> InvalidInput
-[12345::]:1 -> InvalidInput
-[::1.2.3]:1 -> InvalidInput
-[fe80::1%en0]:1 -> InvalidInput
-x:1 -> InvalidInput
-:53 -> InvalidInput
-[::1:53 -> InvalidInput
+01.2.3.4:5 -> invalid input
+1.2.3:4 -> invalid input
+1.2.3.4.5:6 -> invalid input
+256.1.1.1:1 -> invalid input
+1.2.3.4:65536 -> invalid input
+1.2.3.4: -> invalid input
+1.2.3.4 -> invalid input
+::1:53 -> invalid input
+[1::2::3]:4 -> invalid input
+[1:2:3:4:5:6:7:8:9]:1 -> invalid input
+[12345::]:1 -> invalid input
+[::1.2.3]:1 -> invalid input
+[fe80::1%en0]:1 -> invalid input
+x:1 -> invalid input
+:53 -> invalid input
+[::1:53 -> invalid input
 true
 false
 true
@@ -34,6 +34,6 @@ true
 true
 3
 [[::1]:80]
-example.com -> HostNotFound
-1.2.3.4: -> HostNotFound
-:80 -> HostNotFound
+example.com -> host not found
+1.2.3.4: -> host not found
+:80 -> host not found

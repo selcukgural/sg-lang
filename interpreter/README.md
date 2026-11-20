@@ -80,7 +80,7 @@ of `tests/Containerfile` has them.
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
-| Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Written in SG in the module `std` |
+| Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Searched by lazy DFAs, forwards for whether and where a match ends and backwards for where it starts, with Pike's machine only for the groups; their states are kept in the `Regex` behind a lock, so one in a `static` serves every task (1535-1539). Written in SG in the module `std` |
 | Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
 | Zip archives | `var zip = try ZipReader.open(read path)` (or `ZipReader.of(reader)` over a file opened another way) reads the central directory and checks it before anything is given: a name that could lead out of a folder (`..`, a root, `\`, `:`, NUL, a name Windows keeps for a device, empty) is `InsecurePath`, two entries of one name `DuplicateName`, entries whose data lie over each other `Overlap` (the bomb of one block of data shared by every entry), more entries than the directory holds `Corrupt`. `zip.entries()` gives a list of `ZipEntry` (`name`, `size`, `compressedSize`, `modified` in UTC, `isDirectory`, `method`), its own, so the reader reads while the program goes over it; `zip.readBytes(read entry, limit)` gives the bytes and `zip.copyTo(read entry, ref writer, limit)` writes them a block at a time: an entry larger than the limit is `TooLarge`, one that opens into another size than the one written `SizeMismatch`, a wrong CRC-32 `ChecksumMismatch`, encryption `Encrypted`, a method other than stored and deflated `UnsupportedMethod`. `var writer = ZipWriter.create(target)`, then `writer.add(name, read bytes, ZipMethod.Deflated, modified)`, `writer.addFrom(name, ref reader, method, modified)` (a block at a time, with a data descriptor), `writer.addDirectory(name, modified)` and `writer.close()`; zip64 where it is needed, the flag of UTF-8 for a name that is not ASCII, the time of DOS in UTC and the field 0x5455, so every machine writes the same bytes; the writer refuses the names a reader refuses. No call unpacks a whole archive to the disk. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
@@ -833,7 +833,8 @@ Choices made here, approved on 12 November 2026:
 4. **Deep recursion is not caught in compiled code.** The interpreter counts calls; compiled code would pay
    for a count on every call, so the open "stack depth" question of the design stays open here.
 5. **`sg build` and `sg emit-c`** are the commands, with `--release` for a release build; the C compiler is
-   `cc`, with `-O0` for a debug build and `-O2` for a release build.
+   `cc`, with `-O0` for a debug build and `-O2` for a release build. (Since 1533 the one `CC` names, when it
+   names one.)
 6. **A cast that does not fit (`(int)big`) follows the overflow rule**: it panics in a debug build and is
    cut to size in a release build (decided on 12 November 2026).
 
@@ -960,7 +961,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
 | `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
 | `src/std/signals.sg` | The same module's signals (`Signal`, `Signals`, `SignalListener`). Only it calls `System.signalListen`, `System.signalNext` and the other calls of the signals |
-| `src/std/regex.sg`, `src/std/unicode.sg` | The same module's regular expressions (`Regex`, `Match`, `Captures`, `RegexError`: a tree, a program of Thompson's construction and Pike's machine) and the general category of a character (`UnicodeCategory`, the work of `c.category()`). Only they call `System.charCategory` and `System.charFold`, which read the Unicode tables; `Regex.problem` is run by the checker on each pattern written in the program (`patterns_checked` in `src/check.rs`) |
+| `src/std/regex.sg`, `src/std/unicode.sg` | The same module's regular expressions (`Regex`, `Match`, `Captures`, `RegexError`: a tree, a program of Thompson's construction and its reverse, lazy DFAs and Pike's machine) and the general category of a character (`UnicodeCategory`, the work of `c.category()`). Only they call `System.charCategory` and `System.charFold`, which read the Unicode tables; `Regex.problem` is run by the checker on each pattern written in the program (`patterns_checked` in `src/check.rs`) |
 | `src/std/compression.sg` | The same module's compression (`Deflate`, `Zlib`, `Gzip`, `Compressor`, `Decompressor`, `CompressError`): zlib's `deflate.c` and `trees.c` written again in SG, with zlib's licence at its top, and an inflate of tables of 9 and 6 bits. The checker looks at a level written in the program (`level_written` in `src/check.rs`) |
 | `src/signals.rs` | For the interpreter: the signals of the process, a handler that writes the kind into a pipe and a thread that hands each to its listeners, waking the fiber that waits through the scheduler |
 | `src/lsp.rs` | The language server (`sg lsp`): the messages of the Language Server Protocol on the input and output, the program each open file belongs to, a check 300 ms after the last change on a thread of its own, the first error as a diagnostic and its fix as a quick fix, positions in UTF-16 as the protocol counts them |
@@ -2197,6 +2198,7 @@ back end together), approved on 13 November 2026:
      the path: that would make it own a text and stop being `Copyable`, and the caller has the path to put
      in its own error (as `wc` does). Rust's `io::Error` leaves the path out too; Go's `PathError` and
      C#'s message keep it. `print` and an error of `main` write the variant: `NotFound`, `InvalidText(12)`.
+     (Since 1537 they write a sentence: `not found`, `invalid text at byte 12`.)
 196. **`main(List<string> args)`** gets the words after the program's name; `void main()` stays, and so does
      `Result<void, E> main(...)`. The program's own name is not among them, as in C# (`args[0]` is the
      first word); C, Rust and Go put the name first. The list is the program's own: it can change it and
@@ -8939,7 +8941,7 @@ the same day, also before:
      construction), and the program run by Pike's machine, which follows every way the pattern could go at
      once, one character at a time, with where each group began and ended. Plain text every match starts with
      is looked for first, as text (`indexOf`), and a pattern that is plain text is only looked for. No lazy DFA:
-     the measurement of 1418 says whether one is needed. `x*` of an `x` that can match nothing is compiled as
+     the measurement of 1418 says whether one is needed. (It said so: 1536 and 1539 add one.) `x*` of an `x` that can match nothing is compiled as
      `(x+)?`, so the empty way is taken in the order the pattern prefers (as Go since golang.org/issue/46123:
      `(|a)*` matches nothing of `aaa`). A search makes its lists of threads itself, and `findAll` and
      `replaceAll` make them once: a `Regex` is never written by a search, so one in a `static` is read by any
@@ -9241,11 +9243,140 @@ With 1501-1524, 479 of the 1849 programs are compiled on macOS and on Linux (103
 242 programs of the site run as they show; on the Windows Arm VM `ok_zip` and the archives of `tests/zip-suite`
 print the same interpreted and compiled, byte for byte, the archive of `ok_zip` included.
 
+Choices made in the hundred-and-thirty-third slice (real programs, 1418: `grep` and `wc`). 1525-1532 were
+approved on 20 November 2026, before the slice was written; 1533-1539 the same day, as the measurements
+found them (1538 in place of 1534, which was approved and then given up); 1540-1542 that night, which put
+Zig in the place of Go:
+
+1525. **Where the trials live**: `trials/` at the root of the repository, a folder for each program with
+     `sg/`, `rust/` and `go/` (`zig/` since 1540), the input made by a program, and `trials/README.md` with the measurements.
+1526. **What each language may use**: Go its standard library only (Zig, since 1540, its own and a library
+     of C where it has none, 1541); Rust its standard library and the crates
+     people use for the job (`regex`, `serde_json`), pinned in `Cargo.lock`, with threads rather than an async
+     runtime; SG what comes with the language. What is the work of the program (the LZW of a GIF, the
+     interpreter of Lox, the log of a store) is written by hand in all three.
+1527. **What is measured**: the time (one run to warm up, then the best of five), the most memory held (the
+     peak resident set, from `wait4`), the size of the program stripped, and its lines that are neither blank
+     nor only a comment. On the Apple M3 Max; Linux only checks that the outputs are the same. `hyperfine` is
+     not needed: `trials/measure.py` does it.
+1528. **How each is built**: as each language builds a release by default (`sg build --release`, `cargo build
+     --release`, `go build`; Zig twice since 1542), no LTO and no profile; SG once more with its arithmetic checked, its C compiled
+     at `-O2` (`sg build` alone compiles at `-O0`, for a debugger, and is not what is measured).
+1529. **The same output**: on the same input the three print the same bytes and end with the same code, which
+     `measure.py` checks before it measures; the errors are worded each its own way and not compared.
+     `the_trials` in `tests/cli.rs` runs the SG versions interpreted and compiled on a megabyte and holds them
+     to the counts Rust and Zig give.
+1530. **No large input in the repository**: `trials/inputs/text.sg` makes the lines of a log from a seed (the
+     same bytes on every machine), some of them past ASCII and one in fifty ended with `\r\n`.
+1531. **The order**: `grep` and `wc` first, then a `jq` of JSON, a key-value store with a write-ahead log, a
+     pool of workers, an HTTP/1.1 file server under load (the tool that loads it chosen then), a GIF tool and
+     an interpreter of Lox, a slice each.
+1532. **Where the results go**: `trials/README.md`; what is left slower goes into "Slower than C, and could be
+     better" below, and the root README says in a line that the trials exist.
+1533. **`sg build` takes the C compiler `CC` names, on every system**, as C's builds and Rust's `cc` crate
+     have it; with none named, `cc` on Linux and macOS and Clang on Windows, as before. Found by `wc`: SG took
+     0.089 s against Rust's 0.068 s, and the whole difference was the compiler. The same C through Homebrew's
+     clang 23.1 (Rust's LLVM is 23.1 too) takes 0.043 s; Apple's clang 21 does not turn the loop over the
+     bytes into vector instructions. A message that names the compiler names the one used, so the golden
+     tests write it as `cc` (`builds_with_the_compiler_cc_names` in `tests/cli.rs`).
+1534. *(Approved, then given up for 1538.)* Pike's machine of a small pattern on the stack, in arrays: an
+     array of SG is filled with zeros each time it is made, so a machine on the stack costs a call about as
+     much as one taken from the heap.
+1535. **An inner text**: when the pattern is read, the plain text every match must hold is found (a run of
+     literal characters along a concatenation, inside groups and repetitions of at least one; the one with the
+     rarest byte, by a rough table, and the longer of two alike), and a text without it is passed over at the
+     speed of `memmem`, by `isMatch` and by every search. Under `(?i)` an ASCII text is looked for in any
+     case, a byte at a time; `k` and `s` are left out of it, since they also match `K` (Kelvin, U+212A) and
+     `ſ` (U+017F). `-i error` went from 1.16 s to 0.36 s, `in [0-9]{4} ms: .*日本` from 0.83 s to 0.16 s.
+1536. **A lazy DFA**, RE2's and Rust's way: a state is the list of steps a match goes on from and what came
+     before (the start of the text, a line feed, a character of a word, when the pattern has an assertion);
+     its move on a character follows those steps through jumps, splits and assertions, now that the
+     character after is known, in Pike's order, and reads it; each state and each move is made the first
+     time a search needs it and kept. A row of 129 moves (the ASCII bytes and the end of the text) for each
+     state, a map for the characters past ASCII, a state known by where its row starts so that a move is an
+     addition and a load, and a loop that follows the moves already made until one is missing. About 4,000
+     states (2 MB); past that the cache is emptied and the search goes on, and emptied more than 8 times in
+     one search it leaves the search to Pike's machine. `isMatch` uses it: the address took 0.23 s, from
+     2.06 s (Rust 0.15 s, Go 1.33 s).
+1537. **An `IoError` is written as a sentence**: `not found`, `permission denied`, `is a folder`, `no space
+     left`, `invalid text at byte 812`, `system error 5`, `cancelled`, `connection refused`, `connection
+     reset`, `address in use`, `host not found`, `line too long`, `already exists`, `not a folder`, `folder not
+     empty`, `invalid input`, `message too long`, `cannot seek`; in lower case, as Go's errors, so that
+     `$"grep: {name}: {cause}"` reads as a tool's message. Found by `grep` and `wc`, which wrote
+     `grep: nope: NotFound` where Rust's write `No such file or directory (os error 2)`. The variants and
+     their names do not change; `match` and `==` see them as before. The table is
+     `check::IO_ERROR_TEXTS`, read by the interpreter and by the C it writes.
+1538. **The states are kept in the `Regex`, behind a lock** (in place of 1534): a `shared locked RegexCache`
+     holds the DFAs and Pike's machines of `find` and of `captures`, so `isMatch(read this, ...)` stays as it
+     is, a `Regex` in a `static` is searched by any task, and tasks that share one wait for each other while
+     its DFA runs (a task that should not wait keeps one of its own). A search takes the lock once
+     (`findAll` and `replaceAll` once for all their matches), an uncontended lock costing tens of
+     nanoseconds. Asked against `ref this` (no lock, but no search through `read`, nor of a `static`) and a
+     cache for each thread (Rust's pool, a new mechanism of the runtime). `find` and `captures` of a short
+     text took 3.64 s for two million calls and take 2.63 s with their machines kept.
+1539. **Where a match is, by the DFA too**: RE2's three passes. A DFA forwards finds where the match the
+     pattern prefers ends: its states keep their steps in the order of preference, a match cuts the steps
+     after it as in Pike's machine, and once a match is seen no new one is started. A DFA of the reverse
+     program (the concatenations backwards, `^` and `$` swapped, no groups) reads backwards from that end and
+     finds the leftmost start. Pike's machine runs only for the groups, from that start. In the first state,
+     when every match starts with plain text and there is no assertion, the search goes straight to where
+     that text is next (RE2's acceleration of the first state). `findAll` over the 100 MB: `\w+@\w+\.com`
+     0.30 s (Pike's machine 2.99 s, Go 2.62 s, Rust 0.08 s), `(?i)error` 0.33 s (1.47, 1.65, 0.02),
+     `[0-9]{4}-[0-9]{2}` 0.25 s (2.04, 1.90, 0.04), `\bcache\b` 0.27 s (1.72, 1.50, 0.006), `ş\w*` 0.010 s
+     (0.030, 0.031, 0.007), `in [0-9]{4} ms` 0.13 s (0.23, 0.22, 0.04), a plain word 0.04 s as before.
+
+1540. **Zig in the place of Go** (decided after 1533-1539 were measured): SG is in the lane of C, Rust and
+     Zig, compiled ahead of time with no collector and memory the program holds and frees, while Go's
+     collector and runtime put it in another; so the trials are written in SG, Rust and Zig, and `grep` and
+     `wc` were written again in Zig and their Go versions removed. The numbers of Go in 1533-1539 stay as
+     they were measured.
+1541. **A library of C where Zig's has none**: Zig's standard library has no regular expressions, and a Zig
+     program gets them from C. `grep` links PCRE2 10.49, its header translated by `build.zig` (Zig 0.17 has
+     no `@cImport`), its pattern compiled once with PCRE2's JIT and each line checked to be UTF-8 first, as
+     in the others. PCRE2 backtracks, where SG and Rust do not; the patterns measured mean the same.
+1542. **Zig is measured twice**: `ReleaseFast`, its fastest, and `ReleaseSafe`, which keeps its checks of
+     bounds and of overflow and is the build to set beside SG's guarantees, as SG is measured with its
+     arithmetic checked and not.
+The trials are in `trials/`, with their numbers in `trials/README.md`. `grep` and `wc` give the same bytes
+in SG, Rust and Zig (`ReleaseFast` and `ReleaseSafe`) on 17 cases. SG's programs are the smallest (50 KB and
+164 KB stripped, against 352 KB and 1.7 MB for Rust and 345 KB and 362 KB for Zig, whose `grep` loads PCRE2
+besides) and hold the least memory (2 MB). SG's `wc` takes 0.089 s, Rust's 0.071 s and Zig's 0.101 s
+(0.111 s safe), and SG's 0.043 s through the clang Rust's LLVM matches (1533). SG's `grep` is the fastest of
+the three on plain words and inverted (0.052 s, Rust 0.073 s, Zig 0.065 s) and on
+`in [0-9]{4} ms: .*日本` (0.069 s, Rust 0.109 s, Zig 0.076 s); where the DFA reads every byte it takes 1.5 to
+1.9 times Rust and 1.8 to 2.3 times Zig with PCRE2's JIT (`-i error` 0.162 s, Rust 0.087 s, Zig 0.071 s;
+the address 0.233 s, 0.152 s, 0.131 s). Zig's checks cost it up to 11 per cent, SG's checked arithmetic up to
+5.
+
+Tested besides: `tests/regex-suite/check.sg` now also holds `find` and the first match of `findAll` to what
+`captures` says, on RE2's 1772 cases interpreted and compiled, none wrong; `ok_regex_dfa` (a pattern that
+empties the cache, assertions where a search goes on past the start, characters of two to four bytes read
+backwards, `(?i)` with `k` and `s`, the groups, a `static` searched by tasks), checked against Go;
+`a_regex_dfa_that_gives_up` in `tests/cli.rs`, compiled only, a pattern whose search empties the cache more
+than 8 times. While it was written, 240,000 random patterns and texts (`findAll`, the groups of the first
+match, `isMatch`) gave what Go's `regexp` gives, every one; the first version of 1539, which weighed the
+assertions of a state after its closure was made, gave a different order of preference on 54 of the first
+30,000 (`(?:\b|\w)+`), and a state was made a list of the steps a match goes on from for it.
+
+With 1525-1542, 480 of the 1850 programs are compiled on macOS and on Linux (107 under the thread sanitizer), and the
+242 programs of the site run as they show; on the Windows Arm VM `ok_regex_dfa`, `ok_net_errors`, `ok_c_errno`,
+`ok_udp_unreachable` and `ok_path_join_inside` print the same interpreted and compiled as their `.out`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
 here to be talked over when their time comes; none of them breaks a program, and none is fixed by turning a
 check off.
+
+- **A regular expression where the DFA reads every byte** (`grep`, 1.5 times Rust's `regex` and 1.8 times
+  Zig's PCRE2 on the address, 1.9 and 2.3 times on `-i error`, choices 1535, 1536, 1541): Rust's `regex` looks for an inner text in any case with
+  the processor's vector instructions (Teddy), where SG's `(?i)` search goes a byte at a time, and unrolls its
+  DFA's loop without checks, where SG's checks each read of its table against the table's end; PCRE2's JIT
+  makes machine code of the pattern. Candidates:
+  a search for a short text in any case that the C compiler can make vector code of; a loop over the table
+  that reads through `unsafe` once the row is known to be inside it. `findAll` over 100 MB takes 1.4 to 45
+  times Rust's (`\bcache\b` the most), for the same reasons and because Rust's looks for an inner text
+  through the whole text with vector instructions before its DFA starts.
 
 - **CRC-32 without the processor's instructions** (`checksum`, 9.67 times zlib on macOS, choice 1415):
   `Crc32` takes sixteen bytes in a step through tables, in the time of the same algorithm written in C,
@@ -9407,8 +9538,7 @@ check off.
   and memory levels; the `async` versions of a `Compressor` and a `Decompressor`; a `Decompressor` over a
   `TcpStream` or another source than a `StreamReader`, which waits for interfaces or a push of bytes.
 - **Of regular expressions (1457-1481)**: matching bytes (`read byte[]`, 1470); the scripts of Unicode in
-  `\p` (`\p{Greek}`) and its long names (`\p{Letter}`); POSIX's leftmost-longest match (1473); a lazy DFA,
-  which the measurement of 1418 decides; the groups of every match at once (Go's `FindAllStringSubmatch`), a
+  `\p` (`\p{Greek}`) and its long names (`\p{Letter}`); POSIX's leftmost-longest match (1473); the groups of every match at once (Go's `FindAllStringSubmatch`), a
   replacement made by a function, and going over the matches without a list. The tests of Rust's `regex`,
   which 1468 named, are not taken: RE2's are, and the comparison with Go's `regexp` was run while the slice
   was written, not kept as a test. `(?i)` with `\p` goes over every code point up to U+1E943 once in a
@@ -9901,8 +10031,10 @@ JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building n
 meaning, a pattern of the program checked when it is compiled, and the general category of Unicode with
 `c.category()`, 1457-1481), and compression (`Deflate`, `Zlib`, `Gzip`, zlib's bytes at every level, opened with a limit, 1465, 1466,
 1482-1500), and zip archives (`ZipReader`, `ZipWriter`, checked before anything is read, 1467, 1490, 1491,
-1501-1524). Real programs come next, written in
-SG, Rust and Go and measured against each other, each difference a choice (1418), and after them XML without
-a DTD (1413), the reference of the language on the site
+1501-1524). Real programs are now written in SG, Rust and Zig and measured against each other, each
+difference a choice (1418, `trials/`): `grep` and `wc` first, which brought a lazy DFA to `Regex`, the C
+compiler `CC` names and an `IoError` written as a sentence (1525-1539); a `jq` of JSON is next, then a
+key-value store with a write-ahead log, a pool of workers, an HTTP/1.1 file server, a GIF tool and an
+interpreter of Lox. After them come XML without a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

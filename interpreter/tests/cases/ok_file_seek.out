@@ -1,7 +1,7 @@
 end of what was written: 39
 back to the size: 5
-before the start: InvalidInput
-past a long: InvalidInput
+before the start: invalid input
+past a long: invalid input
 size=0039
 first line
 second line
@@ -21,9 +21,9 @@ in the middle of a word: 12
 4 bytes: 114 115 116 32
 past the end: 49
 []
-before the start: InvalidInput
+before the start: invalid input
 after an error: 49
-bad text: InvalidText(5)
+bad text: invalid text at byte 5
 after the word: 4
 SIZE=0039
 first line
@@ -31,9 +31,9 @@ second line
 third
 
 6 bytes: 0 0 33
-append: NotSeekable
-Stdin: NotSeekable
-Stdout: NotSeekable
+append: cannot seek
+Stdin: cannot seek
+Stdout: cannot seek
 SIZE=0039
 first line
 second line

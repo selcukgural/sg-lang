@@ -1,0 +1,112 @@
+// `grep`: the lines of each file named, or of the input, that a regular expression matches, with
+// RE2's syntax. `-i` ignores case, `-v` gives the lines that do not match, `-n` writes each line's
+// number in front of it, `-c` gives only how many lines there were. With more than one file, each
+// line starts with its file's name. A line is read as UTF-8 text without its `\n` or `\r\n`.
+// The exit code is 0 when a line was given, 1 when none was, 2 when a file could not be read or
+// the pattern is not one (as GNU grep's).
+
+struct Options : Copyable {
+    bool count
+    bool invert
+    bool numbers
+    bool names
+}
+
+// Writes the lines of `reader` that are wanted; how many there were.
+Result<long, IoError> search(ref StreamReader reader, read Regex regex, Options options, read string name) {
+    string line = ""
+    string out = string.withCapacity(256)
+    long number = 0
+    long found = 0
+    while try reader.readLine(ref line) {
+        number += 1
+        if regex.isMatch(read line) == options.invert {
+            continue
+        }
+        found += 1
+        if options.count {
+            continue
+        }
+        out.clear()
+        if options.names {
+            out.write($"{name}:")
+        }
+        if options.numbers {
+            out.write($"{number}:")
+        }
+        out.write(read line)
+        print(out)
+    }
+    if options.count {
+        if options.names {
+            print($"{name}:{found}")
+        } else {
+            print(found)
+        }
+    }
+    return Ok(found)
+}
+
+void main(List<string> args) {
+    var cl = CommandLine("grep", "Prints the lines that match a regular expression.")
+    cl.flag("count", 'c', "Print only how many lines match")
+    cl.flag("ignore-case", 'i', "Ignore the case of letters")
+    cl.flag("line-number", 'n', "Print each line's number")
+    cl.flag("invert-match", 'v', "Print the lines that do not match")
+    cl.positional("pattern", "A regular expression, RE2's syntax")
+    cl.rest("files", "The files to read; the input when there is none")
+    var a = cl.parseOrExit(read args)
+
+    string pattern = a.positional("pattern").clone()
+    if a.flag("ignore-case") {
+        pattern = $"(?i){pattern}".toString()
+    }
+    var regex = match Regex.compile(read pattern) {
+        Ok(r) => r
+        Error(cause) => {
+            printError($"grep: {cause}")
+            exit(2)
+        }
+    }
+    var files = a.rest()
+    var options = Options {
+        count = a.flag("count"),
+        invert = a.flag("invert-match"),
+        numbers = a.flag("line-number"),
+        names = files.length() > 1,
+    }
+    long found = 0
+    bool failed = false
+    if files.length() == 0 {
+        match search(ref Stdin, read regex, options, "") {
+            Ok(n) => found += n
+            Error(cause) => {
+                printError($"grep: {cause}")
+                failed = true
+            }
+        }
+    }
+    for name in read files {
+        match File.openText(read name) {
+            Ok(reader) => {
+                match search(ref reader, read regex, options, read name) {
+                    Ok(n) => found += n
+                    Error(cause) => {
+                        printError($"grep: {name}: {cause}")
+                        failed = true
+                    }
+                }
+            }
+            Error(cause) => {
+                printError($"grep: {name}: {cause}")
+                failed = true
+            }
+        }
+    }
+    if failed {
+        exit(2)
+    }
+    if found == 0 {
+        exit(1)
+    }
+}

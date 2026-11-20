@@ -3,7 +3,7 @@ C:\evil: the name "C:\\evil" could lead out of the folder it is unpacked in
 nul.txt: the name "docs/nul.txt" could lead out of the folder it is unpacked in
 twice: two entries are named "docs/stored.txt"
 a file named as a folder: two entries are named "docs"
-a file ending in /: InvalidInput
+a file ending in /: invalid input
 a folder named as a file: two entries are named "empty/"
 6105 bytes, CRC 3b67388d
 docs/ (0 bytes): method 0, 0 in the archive, folder true, 2026-11-20T13:45:31Z
@@ -26,5 +26,5 @@ true
 0
 6
 not a zip archive
-NotFound, true
+not found, true
 Stored Deflated

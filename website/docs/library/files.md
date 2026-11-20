@@ -65,7 +65,7 @@ two
 three
 [111, 110, 101]
 File 14 true
-NotFound
+not found
 false
 ```
 
@@ -265,8 +265,8 @@ It prints:
 a.txt File
 b.txt File
 logs Directory
-DirectoryNotEmpty
-AlreadyExists
+folder not empty
+already exists
 a
 false
 ```
@@ -316,7 +316,7 @@ report.tar.gz
 logs/2026
 [] []
 uploads/2026/report.txt
-InvalidInput
+invalid input
 ```
 
 ## `IoError`
@@ -336,5 +336,9 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
 | `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
+
+Printed, an `IoError` is a sentence in lower case, as Go's errors are: `not found`, `permission denied`,
+`invalid text at byte 812`, `system error 5`, so `printError($"{path}: {cause}")` reads as a tool's message.
+`match` and `==` see the variants.
 
 `IoError.fromErrno(n)` and `IoError.fromCode(n)` make one out of what a function of C left.

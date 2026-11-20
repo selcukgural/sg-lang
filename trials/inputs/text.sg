@@ -1,0 +1,89 @@
+// The text the trials read (choice 1530): lines of a log, made from a seed, so the same seed gives
+// the same bytes on every machine and nothing large is kept in the repository.
+//
+//     sg build trials/inputs/text.sg --release -o target/text
+//     target/text 100 1 > target/text-100.log      about 100 MB, seed 1
+//
+// A line is a time, a level, a user's address, a path, a number of milliseconds and a few words, some
+// of them not ASCII (`café`, `şehir`, `日本`). One line in fifty ends with `\r\n`.
+//
+//     2026-11-20T08:14:03Z WARN  ada7@example.com GET /api/items/4417 in 312 ms: slow cache café
+
+List<string> words() {
+    return List<string> {
+        "the", "cache", "request", "slow", "user", "database", "timeout", "retry", "connection",
+        "reset", "fetched", "stored", "missing", "token", "session", "error", "item", "order",
+        "payment", "queue", "café", "şehir", "naïve", "日本", "Größe", "worker", "lock", "disk",
+    }
+}
+
+List<string> levels() {
+    return List<string> { "TRACE", "DEBUG", "INFO ", "INFO ", "INFO ", "WARN ", "ERROR" }
+}
+
+List<string> users() {
+    return List<string> { "ada", "grace", "linus", "ken", "barbara", "dennis", "margaret", "alan" }
+}
+
+List<string> paths() {
+    return List<string> { "/api/items/", "/api/orders/", "/static/img/", "/login", "/search?q=" }
+}
+
+List<string> methods() {
+    return List<string> { "GET", "GET", "GET", "POST", "PUT", "DELETE" }
+}
+
+// Two digits, with a zero in front of a single one.
+void two(ref string line, int n) {
+    line.write($"{n:D2}")
+}
+
+void main(List<string> args) {
+    if args.length() != 2 {
+        printError("usage: text <megabytes> <seed>")
+        exit(2)
+    }
+    long megabytes = long.parse(read args[0]) ?? panic("the megabytes are a whole number")
+    long seed = long.parse(read args[1]) ?? panic("the seed is a whole number")
+    long wanted = megabytes * 1_000_000
+    var random = Random.fromSeed(seed)
+    var words = words()
+    var levels = levels()
+    var users = users()
+    var paths = paths()
+    var methods = methods()
+    long written = 0
+    long second = 0
+    string line = string.withCapacity(256)
+    while written < wanted {
+        line.clear()
+        second += (long)random.nextInt(0, 3)
+        line.write("2026-11-")
+        two(ref line, 1 + (int)(second / 86400 % 28))
+        line.write('T')
+        two(ref line, (int)(second / 3600 % 24))
+        line.write(':')
+        two(ref line, (int)(second / 60 % 60))
+        line.write(':')
+        two(ref line, (int)(second % 60))
+        line.write("Z ")
+        line.write(levels[random.nextInt(0, (int)levels.length())])
+        line.write(' ')
+        line.write(users[random.nextInt(0, (int)users.length())])
+        line.write($"{random.nextInt(0, 100)}@example.com ")
+        line.write(methods[random.nextInt(0, (int)methods.length())])
+        line.write(' ')
+        line.write(paths[random.nextInt(0, (int)paths.length())])
+        line.write($"{random.nextInt(0, 10000)} in {random.nextInt(1, 2000)} ms:")
+        int count = random.nextInt(1, 9)
+        for _ in 0..count {
+            line.write(' ')
+            line.write(words[random.nextInt(0, (int)words.length())])
+        }
+        if random.nextInt(0, 50) == 0 {
+            line.write('\r')
+        }
+        print(line)
+        written += line.length() + 1
+    }
+}

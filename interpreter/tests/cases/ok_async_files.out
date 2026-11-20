@@ -2,6 +2,6 @@
 one
 two
 [1, 255]
-NotFound
-Cancelled(Cancelled)
-other: NotFound
+not found
+cancelled
+other: not found

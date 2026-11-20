@@ -21,8 +21,8 @@ kept: [kept in a field
 ]
 part1: [part
 ]
-openText: NotFound
-openText: IsDirectory
-openText: NotFound
-createText: NotFound
-createText: IsDirectory
+openText: not found
+openText: is a folder
+openText: not found
+createText: not found
+createText: is a folder

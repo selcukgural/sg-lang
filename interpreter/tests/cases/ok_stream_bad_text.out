@@ -1,4 +1,4 @@
 line: [good]
-error: InvalidText(9)
+error: invalid text at byte 9
 true
 [after]

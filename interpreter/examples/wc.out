@@ -1,4 +1,4 @@
 3 7 33 examples/hello.sg
 14 55 317 examples/fizzbuzz.sg
 17 62 350 total
-wc: examples/no-such-file.txt: NotFound
+wc: examples/no-such-file.txt: not found

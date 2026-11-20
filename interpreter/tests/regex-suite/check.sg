@@ -78,17 +78,30 @@ int hex(read string line, nint at, nint count) {
 }
 
 // What a search gave, as the file writes it: `-` for no match, else `start-end` for each group
-// with `-` for one that took no part, apart by spaces.
+// with `-` for one that took no part, apart by spaces. `isMatch`, `find` and the first of
+// `findAll`, which the DFAs answer (1536, 1539), are held to what `captures` says.
 string written(read Regex re, read string text) {
     var caps = re.captures(text)
+    var first = re.find(text)
+    var all = re.findAll(text)
     if caps is null {
         if re.isMatch(text) {
             return "isMatch says yes, captures says no"
+        }
+        if first is not null || all.length() > 0 {
+            return "find says yes, captures says no"
         }
         return "-"
     }
     if !re.isMatch(text) {
         return "isMatch says no, captures says yes"
+    }
+    var whole = caps.get(0) ?? panic("a match has group 0")
+    if first is null || first != whole {
+        return $"find says {first ?? whole}, captures says {whole}".toString()
+    }
+    if all.length() == 0 || all[0] != whole {
+        return "findAll does not start with what captures says"
     }
     var out = string.withCapacity(32)
     for g in 0..caps.length() {

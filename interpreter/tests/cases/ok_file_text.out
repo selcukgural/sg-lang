@@ -5,15 +5,15 @@ text: [one two]
 text: []
 [104, 105, 0, 255, 10]
 true
-error: InvalidText(3)
+error: invalid text at byte 3
 0
-error: InvalidText(1)
+error: invalid text at byte 1
 text: [5 €]
-error: NotFound
-error: IsDirectory
-error: NotDirectory
-error: NotFound
-write: NotFound
+error: not found
+error: is a folder
+error: not a folder
+error: not found
+write: not found
 true
 false
 not text from byte 3

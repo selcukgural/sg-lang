@@ -36,7 +36,8 @@ from 20.11.2026 to 05.01.2027
 `Regex.of` takes a pattern written in the program, and the compiler reads it: a pattern that is not a regular
 expression is a compile error, so `Regex.of` gives a `Regex` and never fails when the program runs. Raw text,
 `"""..."""`, keeps the backslashes from doubling. Kept in a `static`, the pattern is compiled the first time
-the static is read, once, and any task may use it.
+the static is read, once, and any task may use it; tasks that share one take turns while it searches, and a
+task that should not wait keeps one of its own.
 
 ```sg error
 static Regex Numbers = Regex.of("""(\d+""")
@@ -186,6 +187,18 @@ It prints:
 [0..7, 9..16, 18..25, 27..35]
 [0..5, 14..20]
 ```
+
+## How it searches
+
+A pattern is compiled to a program, and the program is run by lazy DFAs, as RE2 and Rust's `regex` run it:
+a state of the automaton is made the first time a search needs it and kept in the `Regex` for the next search,
+up to about 2 MB. One DFA says whether there is a match (`isMatch`), one finds where the match the pattern
+prefers ends, and one, running the pattern backwards from there, where it starts; the groups are found
+after that, over the match alone. Plain text that every match holds is looked for first, so a text without
+it is passed over at the speed of a search for text. Over 100 MB of a log, `isMatch` of
+`[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 1.5 times what Rust's `regex` takes and 1.8
+times what PCRE2 takes with its JIT; a pattern with a rarer inner text, such as `in [0-9]{4} ms: .*日本`,
+takes less than either.
 
 ## What it leaves out
 

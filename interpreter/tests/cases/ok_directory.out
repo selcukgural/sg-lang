@@ -1,6 +1,6 @@
 create: done
-create again: AlreadyExists
-create without the folders on the way: NotFound
+create again: already exists
+create without the folders on the way: not found
 createAll: done
 createAll again: done
 true
@@ -13,24 +13,24 @@ tree:
   link Link
   sub Directory
   ä File
-createAll through a file: NotDirectory
-createAll of a file: AlreadyExists
-list a file: NotDirectory
-list a missing folder: NotFound
+createAll through a file: not a folder
+createAll of a file: already exists
+list a file: not a folder
+list a missing folder: not found
 File 5 true
 Directory
 false
 true
 false
-info of a missing file: NotFound
-delete: DirectoryNotEmpty
-delete a file: NotDirectory
-deleteAll of a link: NotDirectory
-deleteAll of a file: NotDirectory
+info of a missing file: not found
+delete: folder not empty
+delete a file: not a folder
+deleteAll of a link: not a folder
+deleteAll of a file: not a folder
 deleteAll: done
 false
 still here
-deleteAll again: NotFound
+deleteAll again: not found
 delete an empty folder: done
 true
 true

@@ -1,11 +1,11 @@
-taken: AddressInUse
-no port: HostNotFound
-port too big: HostNotFound
-a name: HostNotFound
-v6 without brackets: HostNotFound
-no port: HostNotFound
-no host: HostNotFound
-brackets left open: HostNotFound
-nobody listens: ConnectionRefused
-async: ConnectionRefused
-async: HostNotFound
+taken: address in use
+no port: host not found
+port too big: host not found
+a name: host not found
+v6 without brackets: host not found
+no port: host not found
+no host: host not found
+brackets left open: host not found
+nobody listens: connection refused
+async: connection refused
+async: host not found

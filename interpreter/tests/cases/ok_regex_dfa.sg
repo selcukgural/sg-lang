@@ -1,0 +1,67 @@
+// The DFAs of `Regex` (choices 1535, 1536, 1538, 1539): a pattern with more states than the cache
+// keeps, which empties it (and `a_regex_dfa_that_gives_up` in `tests/cli.rs` one that empties it so
+// often that it leaves the search to Pike's machine, too slow for the interpreter); assertions where a
+// search starts past the start of the text; text past ASCII read backwards; an inner text looked
+// for in any case; a `Regex` in a `static` searched by several tasks at once. What it prints was
+// checked against Go's `regexp`.
+
+static Regex Word = Regex.of("""\b[a-z]+\b""")
+
+// 12,000 letters `a` and `b`, the same as Go makes them with the same numbers.
+string letters(int count) {
+    var out = string.withCapacity(count)
+    uint x = 1
+    for _ in 0..count {
+        x = x.wrappingMultiply(1103515245).wrappingAdd(12345)
+        if (x >> 16) & 1 == 0 {
+            out.write('a')
+        } else {
+            out.write('b')
+        }
+    }
+    return out
+}
+
+void many(read string text, read string pattern) {
+    var re = Regex.compile(read pattern) ?? panic("a pattern")
+    var all = re.findAll(read text)
+    var first = re.find(read text) ?? panic("a match")
+    var last = all[all.length() - 1]
+    print($"{pattern}: {all.length()} matches, first {first}, last {last}, isMatch {re.isMatch(read text)}")
+}
+
+int words(int seed) {
+    var text = $"one two {seed} three-four five".toString()
+    return (int)Word.findAll(read text).length()
+}
+
+void main() {
+    var text = letters(12000)
+    many(read text, "a(a|b){12}b")
+    many(read text, "(?:a|b)*?ab{3}a")
+
+    // Where a search goes on past the start, what came before decides `\b` and `^`.
+    print(Regex.of("""\bab""").findAll("ab ab xab ab"))
+    print(Regex.of("(?m)^x").findAll("x\nxx\nax\nx"))
+    print(Regex.of("""\B""").findAll("ab é"))
+    print(Regex.of("a*").findAll("baaac"))
+    print(Regex.of("(?:x|)*").findAll("xxa"))
+
+    // Backwards over characters of two, three and four bytes.
+    print(Regex.of("é+ş?日*").findAll("aééş日日 é😀é"))
+    print(Regex.of(".😀").find("aé😀b") ?? panic("a match"))
+
+    // `k` and `s` are not looked for as ASCII under `(?i)`: they also match `K` (Kelvin) and `ſ`.
+    print(Regex.of("(?i)ask").isMatch("A\u{17F}\u{212A}"))
+    print(Regex.of("(?i)error").findAll("ERROR, Error, eRRoR, err"))
+
+    // The groups, found by Pike's machine from where the DFAs say the match starts.
+    var c = Regex.of("""(\w+)@(\w+)\.com""").captures("write to ada@example.com today") ?? panic("a match")
+    print($"{c.get(0) ?? panic("group 0")} {c.get(1) ?? panic("group 1")} {c.get(2) ?? panic("group 2")}")
+    print(Regex.of("""(\d+)-(\d+)""").replaceAll("10-20, 3-4", "$2-$1"))
+
+    var a = Task.run(words, 1)
+    var b = Task.run(words, 2)
+    var c3 = Task.run(words, 3)
+    print($"{a.wait() + b.wait() + c3.wait() + words(4)} words")
+}

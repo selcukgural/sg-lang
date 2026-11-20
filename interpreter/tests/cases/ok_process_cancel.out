@@ -1,5 +1,5 @@
-status: Cancelled(Cancelled)
-output: Cancelled(Cancelled)
-wait: Cancelled(Cancelled)
-run: Cancelled(Cancelled)
+status: cancelled
+output: cancelled
+wait: cancelled
+run: cancelled
 exited with code 0

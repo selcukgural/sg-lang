@@ -145,6 +145,8 @@ Windows' C library (`printf`, `fgets`) are several times faster in SG. These are
 two machines, not proof. All the numbers, and how they were taken, are in the
 [interpreter README](interpreter/README.md#the-c-back-end).
 
+Real programs are measured too, written the same way in SG, Rust and Zig: the [trials](trials/README.md).
+
 ## Try it
 
 You need Rust (to build `sg`) and a C compiler (`cc`, clang or gcc) for compiled programs.
@@ -205,6 +207,7 @@ SG rules out. It is taken up when the language is further along.
 |---|---|
 | [design](design) | The language itself, on paper |
 | [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests and benchmarks |
+| [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) in SG, Rust and Zig, measured against each other |
 | [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
 | [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
 | [website](website/README.md) | The web site, [sg-lang.org](https://sg-lang.org), built with Docusaurus |

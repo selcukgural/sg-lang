@@ -1,0 +1,79 @@
+// `wc`: the lines, words and bytes of each file named, and their total when there are several; with
+// no file, those of the input. A word is a run of bytes that are not ASCII white space (space, tab,
+// line feed, vertical tab, form feed, carriage return), so a file need not be text. A file that
+// cannot be opened or read is told on the standard error, the others are still counted, and the
+// program ends with exit code 1.
+
+struct Counts : Copyable {
+    long lines
+    long words
+    long bytes
+}
+
+// The counts of what `reader` gives, read in pieces of 64 KB.
+Result<Counts, IoError> count(ref StreamReader reader) {
+    byte[65536] buffer = byte[65536]
+    long lines = 0
+    long words = 0
+    long bytes = 0
+    bool inWord = false
+    while true {
+        var got = try reader.readBytes(ref buffer)
+        if got == 0 {
+            break
+        }
+        bytes += got
+        for b in buffer[0..got] {
+            if b == '\n' {
+                lines += 1
+            }
+            bool space = b == ' ' || (b >= '\t' && b <= '\r')
+            if !space && !inWord {
+                words += 1
+            }
+            inWord = !space
+        }
+    }
+    return Ok(Counts { lines = lines, words = words, bytes = bytes })
+}
+
+void main(List<string> args) {
+    if args.length() == 0 {
+        match count(ref Stdin) {
+            Ok(c) => print($"{c.lines} {c.words} {c.bytes}")
+            Error(cause) => {
+                printError($"wc: {cause}")
+                exit(1)
+            }
+        }
+        return
+    }
+    var total = Counts { lines = 0, words = 0, bytes = 0 }
+    byte code = 0
+    for name in read args {
+        match File.openText(read name) {
+            Ok(reader) => {
+                match count(ref reader) {
+                    Ok(c) => {
+                        print($"{c.lines} {c.words} {c.bytes} {name}")
+                        total.lines += c.lines
+                        total.words += c.words
+                        total.bytes += c.bytes
+                    }
+                    Error(cause) => {
+                        printError($"wc: {name}: {cause}")
+                        code = 1
+                    }
+                }
+            }
+            Error(cause) => {
+                printError($"wc: {name}: {cause}")
+                code = 1
+            }
+        }
+    }
+    if args.length() > 1 {
+        print($"{total.lines} {total.words} {total.bytes} total")
+    }
+    exit(code)
+}

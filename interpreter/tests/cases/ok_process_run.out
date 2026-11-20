@@ -14,10 +14,10 @@ exit 0: exited with code 0, success true
 kill -9: was stopped by signal 9, success false
 kill: was stopped by signal 15, success false
 code 7
-missing: NotFound
-missing path: NotFound
-empty: NotFound
-not runnable: PermissionDenied
+missing: not found
+missing path: not found
+empty: not found
+not runnable: permission denied
 hello from a script
 runnable: done
-folder: PermissionDenied
+folder: permission denied

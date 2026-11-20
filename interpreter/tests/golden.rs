@@ -297,7 +297,14 @@ fn run_file(path: &Path) -> String {
         Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
-    log_times(&text.replace(&given.dir.display().to_string(), "{dir}"))
+    default_compiler(&log_times(&text.replace(&given.dir.display().to_string(), "{dir}")))
+}
+
+/// A message that names the C compiler, written with the name of the one used when `CC` names
+/// none (`cc`, on Windows `clang`): `CC` is honoured (1533), and the tests of other machines set it.
+fn default_compiler(text: &str) -> String {
+    let default = if cfg!(windows) { "clang" } else { "cc" };
+    text.replace(&format!("the C compiler `{}`", sg::cc::shown_here()), &format!("the C compiler `{default}`"))
 }
 
 /// A program of several files: `path` is its main file, or its folder. With `tests` the test
@@ -993,7 +1000,7 @@ fn compiled_input_cancel() {
     let stdin = child.stdin.take().unwrap();
     let first = feed_after_cancel(errors, stdin);
     let run = child.wait_with_output().unwrap();
-    assert_eq!(first.as_deref(), Ok("first: Cancelled(Cancelled)"));
+    assert_eq!(first.as_deref(), Ok("first: cancelled"));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "then: true late\n");
     assert!(run.status.success());
 }
@@ -1011,7 +1018,7 @@ fn interpreted_input_cancel() {
     let first = feed_after_cancel(errors, &mut feeder);
     drop(feeder);
     let (ok, out) = running.join().unwrap();
-    assert_eq!(first.as_deref(), Ok("first: Cancelled(Cancelled)"));
+    assert_eq!(first.as_deref(), Ok("first: cancelled"));
     assert_eq!(out, "then: true late\n");
     assert!(ok);
 }
@@ -1363,8 +1370,8 @@ void main() {
     show("crash code", Command("crash.bat").output())
 }
 "#;
-    const EXPECTED: &str = "found: found\nwith its extension: found\nquoted folder: quoted\nhere: NotFound\nrelative: NotFound\nrooted: NotFound\nwith a slash: here\n\
-                            batch: [a b] [50%PATH%] [say \"\"hi\"\"] []\nbatch without its extension: NotFound\na line break: InvalidInput\n\
+    const EXPECTED: &str = "found: found\nwith its extension: found\nquoted folder: quoted\nhere: not found\nrelative: not found\nrooted: not found\nwith a slash: here\n\
+                            batch: [a b] [50%PATH%] [say \"\"hi\"\"] []\nbatch without its extension: not found\na line break: invalid input\n\
                             crash code: the program exited with code 0xC0000005\n";
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let work = root.join("target").join("process-path");
@@ -1415,7 +1422,7 @@ void main() {
     show("with a slash", Command("./here").output())
 }
 "#;
-    const EXPECTED: &str = "ls: /\nhere: NotFound\nrelative: NotFound\nwith a slash: here\n";
+    const EXPECTED: &str = "ls: /\nhere: not found\nrelative: not found\nwith a slash: here\n";
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let work = root.join("target").join("process-path");
     let _ = std::fs::remove_dir_all(&work);

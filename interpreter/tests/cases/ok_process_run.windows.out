@@ -12,9 +12,9 @@ exit 1: the program exited with code 1
 exit 3: exited with code 3, success false
 exit 0: exited with code 0, success true
 code 7
-missing: NotFound
-missing path: NotFound
-empty: NotFound
+missing: not found
+missing path: not found
+empty: not found
 hello from a script
 runnable: done
-folder: NotFound
+folder: not found

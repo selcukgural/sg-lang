@@ -1,6 +1,6 @@
-move onto b: AlreadyExists
-move onto itself: AlreadyExists
-move a missing file: NotFound
+move onto b: already exists
+move onto itself: already exists
+move a missing file: not found
 move a to c: done
 false
 first
@@ -8,18 +8,18 @@ replace b with c: done
 first
 false
 copy b to c: done
-copy b onto c: AlreadyExists
-copy a missing file: NotFound
-copy the folder: IsDirectory
+copy b onto c: already exists
+copy a missing file: not found
+copy the folder: is a folder
 first
 0
 copy the script: done
 true
 false
 delete c: done
-delete c again: NotFound
-delete the folder: IsDirectory
-delete a zero byte: NotFound
-read through a file: NotDirectory
+delete c again: not found
+delete the folder: is a folder
+delete a zero byte: not found
+read through a file: not a folder
 false
 false

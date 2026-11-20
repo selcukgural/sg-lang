@@ -269,6 +269,21 @@ public struct Regex : Formattable {
     bool literal
     // Every match starts at the start of the text.
     bool anchored
+    // Plain text every match holds somewhere (1535), the rarest found; looked for before the
+    // machine runs, so a text without it is passed over at the speed of a search. Empty when
+    // there is none, or when it is `prefix`. With `innerFolded`, it is written in lower case and
+    // looked for whatever the case of its ASCII letters (`(?i)error`).
+    string inner
+    bool innerFolded
+    // The program has an assertion (`^`, `$`, `\b`, ...): the DFA then tells its states apart by
+    // what came before.
+    bool asserts
+    // The program of the reverse pattern, read backwards from the end of a match (1539).
+    List<RegexInst> back
+    // The states the DFAs have made, and the lists their searches use (1536, 1538): kept from one
+    // search to the next, behind a lock, so that a `Regex` in a `static` or used by several tasks
+    // is searched as it is anywhere else.
+    shared locked RegexCache cache
 
     // The pattern read and compiled, or where and why it is not a regular expression. A pattern
     // written in the program is checked when the program is compiled (1463).
@@ -281,7 +296,7 @@ public struct Regex : Formattable {
         }
         var code = List<RegexInst>()
         _ = regexEmit(ref code, RegexOpSave, 0, 0)
-        regexCompile(ref code, read parser, root)
+        regexCompile(ref code, read parser, root, false)
         _ = regexEmit(ref code, RegexOpSave, 1, 0)
         _ = regexEmit(ref code, RegexOpMatch, 0, 0)
         for i in 0..parser.classes.length() {
@@ -290,6 +305,22 @@ public struct Regex : Formattable {
         var prefix = string.withCapacity(16)
         bool literal = regexPrefix(read parser, root, ref prefix) && parser.names.length() <= 1
         bool anchored = regexAnchored(read parser, root)
+        var inner = RegexInner { best = string.withCapacity(16), bestFolded = false, bestScore = -1 }
+        regexRequired(read parser, root, ref inner)
+        if !inner.bestFolded && inner.best == prefix {
+            inner.best.clear()
+        }
+        bool asserts = false
+        for inst in read code {
+            if inst.op == RegexOpAssert {
+                asserts = true
+            }
+        }
+        var back = List<RegexInst>()
+        regexCompile(ref back, read parser, root, true)
+        _ = regexEmit(ref back, RegexOpMatch, 0, 0)
+        nint size = code.length()
+        nint backSize = back.length()
         return Ok(Regex {
             source = pattern.clone(),
             code = code,
@@ -297,7 +328,12 @@ public struct Regex : Formattable {
             names = parser.names.replace(List<string>()),
             prefix = prefix,
             literal = literal,
-            anchored = anchored
+            anchored = anchored,
+            inner = inner.best,
+            innerFolded = inner.bestFolded,
+            asserts = asserts,
+            back = back,
+            cache = new shared locked regexCacheFor(size, backSize)
         })
     }
 
@@ -343,6 +379,16 @@ public struct Regex : Formattable {
         if this.literal {
             return text.contains(read this.prefix)
         }
+        if this.inner.length() > 0 && regexInnerAt(read this, text, 0) < 0 {
+            return false
+        }
+        nint end = -1
+        lock this.cache as c {
+            end = regexDfaForward(this, ref c.any, text, 0)
+        }
+        if end != -2 {
+            return end >= 0
+        }
         var found = List<nint>()
         return regexRun(this, text, 0, true, 0, ref found)
     }
@@ -350,35 +396,27 @@ public struct Regex : Formattable {
     // The first match, leftmost, and of those the one the pattern prefers (`a|ab` takes `a`, `a+`
     // takes as many as there are, `a+?` one).
     public Match? find(read this, read string text) {
-        var m = regexMachine(this, 2)
-        return regexFindAt(this, text, 0, ref m)
+        if this.literal {
+            var m = regexMachine(this, 0)
+            return regexFindAt(this, text, 0, ref m)
+        }
+        Match? found = null
+        lock this.cache as c {
+            var m = c.two.take() ?? regexMachine(this, 2)
+            found = regexNext(this, ref c, text, 0, ref m)
+            c.two = m
+        }
+        return found
     }
 
     // Every match, one after the other, none overlapping; an empty match right after another
     // match is left out, as Go does.
     public List<Match> findAll(read this, read string text) {
         var all = List<Match>()
-        var m = regexMachine(this, 2)
-        nint position = 0
-        nint previousEnd = -1
-        while position <= text.length() {
-            var found = regexFindAt(this, text, position, ref m)
-            if found is null {
-                break
-            }
-            bool keep = true
-            if found.end == position {
-                if found.start == previousEnd {
-                    keep = false
-                }
-                position += regexWidthAt(text, position)
-            } else {
-                position = found.end
-            }
-            previousEnd = found.end
-            if keep {
-                all.add(found)
-            }
+        lock this.cache as c {
+            var m = c.two.take() ?? regexMachine(this, 2)
+            regexAll(this, ref c, text, ref m, ref all)
+            c.two = m
         }
         return all
     }
@@ -386,7 +424,22 @@ public struct Regex : Formattable {
     // Where each group matched in the first match; `null` when there is no match.
     public Captures? captures(read this, read string text) {
         var slots = List<nint>()
-        if !regexRun(this, text, 0, false, 2 * this.names.length(), ref slots) {
+        bool matched = false
+        lock this.cache as c {
+            var m = c.groups.take() ?? regexMachine(this, 2 * this.names.length())
+            nint start = 0
+            nint end = 0
+            // The DFAs find where the match starts; Pike's machine runs from there for the groups.
+            int found = regexDfaFind(this, ref c, text, 0, ref start, ref end)
+            if found != 0 {
+                if found == 2 {
+                    start = 0
+                }
+                matched = regexSearch(this, text, start, false, ref m, ref slots)
+            }
+            c.groups = m
+        }
+        if !matched {
             return null
         }
         var names = List<string>()
@@ -1388,7 +1441,10 @@ nint regexSize(read RegexParser p, nint node) {
     return 1
 }
 
-void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
+// Writes the steps of `node`; with `reverse`, those of a pattern that matches the same texts read
+// from their end (1539): a concatenation backwards, `^` and `$` (`\A` and `\z`) swapped, and no
+// group saved.
+void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node, bool reverse) {
     var n = p.nodes[node]
     int kind = n.kind
     if kind == RegexEmpty {
@@ -1415,12 +1471,28 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
         return
     }
     if kind == RegexAssertNode {
-        _ = regexEmit(ref code, RegexOpAssert, n.a, 0)
+        nint assertion = n.a
+        if reverse {
+            if assertion == RegexBeginText {
+                assertion = RegexEndText
+            } else if assertion == RegexEndText {
+                assertion = RegexBeginText
+            } else if assertion == RegexBeginLine {
+                assertion = RegexEndLine
+            } else if assertion == RegexEndLine {
+                assertion = RegexBeginLine
+            }
+        }
+        _ = regexEmit(ref code, RegexOpAssert, assertion, 0)
         return
     }
     if kind == RegexConcat {
         for i in 0..n.count {
-            regexCompile(ref code, p, p.kids[n.first + i])
+            nint at = i
+            if reverse {
+                at = n.count - 1 - i
+            }
+            regexCompile(ref code, p, p.kids[n.first + at], reverse)
         }
         return
     }
@@ -1429,11 +1501,11 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
         for i in 0..n.count {
             if i + 1 < n.count {
                 nint split = regexEmit(ref code, RegexOpSplit, 0, 0)
-                regexCompile(ref code, p, p.kids[n.first + i])
+                regexCompile(ref code, p, p.kids[n.first + i], reverse)
                 jumps.add(regexEmit(ref code, RegexOpJump, 0, 0))
                 code[split] = RegexInst { op = RegexOpSplit, a = split + 1, b = code.length() }
             } else {
-                regexCompile(ref code, p, p.kids[n.first + i])
+                regexCompile(ref code, p, p.kids[n.first + i], reverse)
             }
         }
         for jump in jumps {
@@ -1442,8 +1514,12 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
         return
     }
     if kind == RegexCapture {
+        if reverse {
+            regexCompile(ref code, p, n.first, reverse)
+            return
+        }
         _ = regexEmit(ref code, RegexOpSave, 2 * n.a, 0)
-        regexCompile(ref code, p, n.first)
+        regexCompile(ref code, p, n.first, reverse)
         _ = regexEmit(ref code, RegexOpSave, 2 * n.a + 1, 0)
         return
     }
@@ -1454,7 +1530,7 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
     if max < 0 {
         // `min - 1` copies, then one that repeats: `x{2,}` is `x x+`, `x*` a loop around `x`.
         for _ in 1..min {
-            regexCompile(ref code, p, n.first)
+            regexCompile(ref code, p, n.first, reverse)
         }
         if min == 0 && regexNullable(p, n.first) {
             // `x*` of an `x` that can match nothing is `(x+)?`, so that the empty way is taken
@@ -1462,18 +1538,18 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
             // nothing of `aaa`, as `(|a)+` does.
             nint skip = regexEmit(ref code, RegexOpSplit, 0, 0)
             nint start = code.length()
-            regexCompile(ref code, p, n.first)
+            regexCompile(ref code, p, n.first, reverse)
             nint split = regexEmit(ref code, RegexOpSplit, 0, 0)
             code[split] = regexFork(start, split + 1, greedy)
             code[skip] = regexFork(start, code.length(), greedy)
         } else if min == 0 {
             nint loop = regexEmit(ref code, RegexOpSplit, 0, 0)
-            regexCompile(ref code, p, n.first)
+            regexCompile(ref code, p, n.first, reverse)
             _ = regexEmit(ref code, RegexOpJump, loop, 0)
             code[loop] = regexFork(loop + 1, code.length(), greedy)
         } else {
             nint start = code.length()
-            regexCompile(ref code, p, n.first)
+            regexCompile(ref code, p, n.first, reverse)
             _ = regexEmit(ref code, RegexOpSplit, 0, 0)
             nint split = code.length() - 1
             code[split] = regexFork(start, split + 1, greedy)
@@ -1481,12 +1557,12 @@ void regexCompile(ref List<RegexInst> code, read RegexParser p, nint node) {
         return
     }
     for _ in 0..min {
-        regexCompile(ref code, p, n.first)
+        regexCompile(ref code, p, n.first, reverse)
     }
     var splits = List<nint>()
     for _ in min..max {
         splits.add(regexEmit(ref code, RegexOpSplit, 0, 0))
-        regexCompile(ref code, p, n.first)
+        regexCompile(ref code, p, n.first, reverse)
     }
     nint end = code.length()
     for split in splits {
@@ -1561,6 +1637,190 @@ bool regexPrefix(read RegexParser p, nint node, ref string prefix) {
     return false
 }
 
+// The best plain text found so far that every match holds (1535), and the run of plain text
+// being read along a concatenation.
+struct RegexInner {
+    string best
+    bool bestFolded
+    int bestScore
+}
+
+// How rare a byte is in text, roughly: 0 for space and the commonest lower case letters, up to 3
+// for a byte past ASCII. The text with the rarest byte is looked for, the longer of two alike.
+int regexRarity(byte b) {
+    if b >= 0x80 {
+        return 3
+    }
+    if b == ' ' || b == 'e' || b == 't' || b == 'a' || b == 'o' || b == 'i' || b == 'n' || b == 's' || b == 'r' || b == 'h' || b == 'l' {
+        return 0
+    }
+    if b >= 'a' && b <= 'z' {
+        return 1
+    }
+    return 2
+}
+
+void regexOffer(ref RegexInner inner, read string run, bool folded) {
+    if run.length() == 0 {
+        return
+    }
+    int rarest = 0
+    for b in run.asBytes() {
+        int r = regexRarity(b)
+        if r > rarest {
+            rarest = r
+        }
+    }
+    int score = rarest * 100000 + (int)run.length().min(99999)
+    if score > inner.bestScore {
+        inner.bestScore = score
+        inner.best.clear()
+        inner.best.write(read run)
+        inner.bestFolded = folded
+    }
+}
+
+// The way a literal of the tree joins a run of plain text: 0 plain, 1 folded (an ASCII letter
+// under `(?i)`, but `k` and `s`, which also match `K` (Kelvin) and `ſ`), 2 either (an ASCII
+// character that is no letter), -1 not at all (any other character under `(?i)`).
+int regexLiteralWay(RegexNode n) {
+    if n.b == 0 {
+        return 0
+    }
+    if n.a >= 0x80 {
+        return -1
+    }
+    char c = (char)n.a
+    if !c.isAsciiLetter() {
+        return 2
+    }
+    if c == 'k' || c == 'K' || c == 's' || c == 'S' {
+        return -1
+    }
+    return 1
+}
+
+// Writes to `run` the one text `node` matches, if it matches one text only and in the way `way`
+// allows (0 plain, 1 folded, 2 either; narrowed as letters are met); false, `run` and `way` then
+// unchanged in what counts, when it does not.
+bool regexExact(read RegexParser p, nint node, ref string run, ref int way) {
+    var n = p.nodes[node]
+    if n.kind == RegexLiteral {
+        int own = regexLiteralWay(n)
+        if own < 0 || (own != 2 && way != 2 && own != way) {
+            return false
+        }
+        if own != 2 {
+            way = own
+        }
+        if own == 1 {
+            run.write(((char)n.a).toAsciiLower())
+        } else {
+            run.write((char)n.a)
+        }
+        return true
+    }
+    if n.kind == RegexConcat {
+        for i in 0..n.count {
+            if !regexExact(p, p.kids[n.first + i], ref run, ref way) {
+                return false
+            }
+        }
+        return true
+    }
+    if n.kind == RegexCapture {
+        return regexExact(p, n.first, ref run, ref way)
+    }
+    return n.kind == RegexEmpty
+}
+
+// Offers to `inner` every run of plain text that a match of `node` must hold.
+void regexRequired(read RegexParser p, nint node, ref RegexInner inner) {
+    var n = p.nodes[node]
+    if n.kind == RegexLiteral || n.kind == RegexCapture || (n.kind == RegexRepeat && n.a == 0) {
+        var run = string.withCapacity(4)
+        int way = 2
+        if regexExact(p, node, ref run, ref way) {
+            regexOffer(ref inner, read run, way == 1)
+            return
+        }
+        if n.kind == RegexCapture {
+            regexRequired(p, n.first, ref inner)
+        }
+        return
+    }
+    if n.kind == RegexRepeat {
+        regexRequired(p, n.first, ref inner)
+        return
+    }
+    if n.kind != RegexConcat {
+        return
+    }
+    var run = string.withCapacity(16)
+    int way = 2
+    for i in 0..n.count {
+        nint kid = p.kids[n.first + i]
+        var piece = string.withCapacity(8)
+        int pieceWay = way
+        if regexExact(p, kid, ref piece, ref pieceWay) {
+            run.write(read piece)
+            way = pieceWay
+            continue
+        }
+        // A piece that is one text, but not in the run's way, starts a run of its own.
+        piece.clear()
+        pieceWay = 2
+        bool alone = regexExact(p, kid, ref piece, ref pieceWay)
+        regexOffer(ref inner, read run, way == 1)
+        run.clear()
+        way = 2
+        if alone {
+            run.write(read piece)
+            way = pieceWay
+        } else {
+            regexRequired(p, kid, ref inner)
+        }
+    }
+    regexOffer(ref inner, read run, way == 1)
+}
+
+// Where the inner text of `re` is first found in `text` from `from`, a place where a character
+// starts; -1 when it is not there.
+nint regexInnerAt(read Regex re, read string text, nint from) {
+    var bytes = text.asBytes()
+    if from > bytes.length() {
+        return -1
+    }
+    if !re.innerFolded {
+        nint? at = text[from..].indexOf(read re.inner)
+        if at is null {
+            return -1
+        }
+        return from + at
+    }
+    var needle = re.inner.asBytes()
+    nint last = bytes.length() - needle.length()
+    byte first = needle[0]
+    nint i = from
+    while i <= last {
+        if (bytes[i] | 0x20) == first || bytes[i] == first {
+            bool same = true
+            for k in 1..needle.length() {
+                byte b = bytes[i + k]
+                if b != needle[k] && (b | 0x20) != needle[k] {
+                    same = false
+                    break
+                }
+            }
+            if same {
+                return i
+            }
+        }
+        i += 1
+    }
+    return -1
+}
+
 // Whether every match must start at the start of the text: `\A` or `^` without `(?m)` first.
 bool regexAnchored(read RegexParser p, nint node) {
     var n = p.nodes[node]
@@ -1574,6 +1834,602 @@ bool regexAnchored(read RegexParser p, nint node) {
         return regexAnchored(p, n.first)
     }
     return false
+}
+
+// ---- The lazy DFA (1536, 1539) ----
+// RE2's way: a state is the list of steps a match goes on from (those after the characters read,
+// and the start when a match may still start there), and what came before (the start of the text,
+// a line feed, a character of a word) when the program has assertions. Its move on a character
+// follows those steps through jumps, splits and assertions, now that the character after is known,
+// in the order and with the same steps left out as Pike's machine (so a match is the one Pike's
+// machine finds), and then reads the character. A state
+// is made the first time a search reaches it, and so is each of its moves, kept for the next
+// time: for each of the 128 ASCII bytes and the end of the text in a row of the table, for any
+// other character in a map. A move tells whether a match ends before the character. Where the
+// cache would grow past about 2 MB it is emptied and the search goes on; emptied too often in one
+// search, it leaves the search to Pike's machine.
+//
+// Three DFAs, each with its own states: one says whether there is a match at all (`isMatch`); one
+// finds where the match the pattern prefers ends, its states in the order of preference so that a
+// match cuts the ways after it, as in Pike's machine; one reads the reverse program backwards from
+// that end and finds the leftmost place the match can start. Pike's machine then runs only for
+// the groups, from that start.
+
+// A row of the table: the 128 ASCII bytes, then the end of the text.
+const nint RegexDfaWidth = 129
+const nint RegexDfaEnd = 128
+const nint RegexDfaStates = 4000
+const int RegexDfaResets = 8
+const int RegexAtStart = 1
+const int RegexAfterNewline = 2
+const int RegexAfterWord = 4
+// The first match is seen: no match may start later.
+const int RegexMatched = 8
+// What a DFA looks for.
+const int RegexAnyMatch = 0
+const int RegexFirstEnd = 1
+const int RegexLongestStart = 2
+
+// A state is known by where its row starts in the table, its number times `RegexDfaWidth`, so that
+// a move is one addition and one load.
+struct RegexDfa {
+    int kind
+    // For each move: -1 when not made yet, else the row of the next state times two, plus one when
+    // a match ends before the character.
+    List<int> table
+    HashMap<long, int> wide
+    // The steps of each state, from `setStart[i]` to `setStart[i + 1]`, and what came before it.
+    List<nint> sets
+    List<nint> setStart
+    List<int> flags
+    HashMap<string, int> ids
+    // The row of the first state for each way of what came before; -1 before it is made.
+    List<int> starts
+    // The row of the state with no step left; -1 if none was made.
+    int dead
+    int resets
+    // A sparse set of steps, the stack of the closure, a list and the key of a state.
+    List<nint> dense
+    List<nint> sparse
+    nint count
+    List<nint> stack
+    List<nint> list
+    string key
+}
+
+struct RegexCache {
+    RegexDfa any
+    RegexDfa first
+    RegexDfa back
+    // Pike's machine of a search with two slots and of one with every group's, made by the first
+    // search that needs it and kept for the next (1538).
+    RegexMachine? two
+    RegexMachine? groups
+}
+
+RegexDfa regexDfaFor(int kind, nint size) {
+    var d = RegexDfa {
+        kind = kind,
+        table = List<int>(),
+        wide = HashMap<long, int>(),
+        sets = List<nint>(),
+        setStart = List<nint> { 0 },
+        flags = List<int>(),
+        ids = HashMap<string, int>(),
+        starts = List<int>(),
+        dead = -1,
+        resets = 0,
+        dense = List<nint>(),
+        sparse = List<nint>(),
+        count = 0,
+        stack = List<nint>(),
+        list = List<nint>(),
+        key = string.withCapacity(64)
+    }
+    for _ in 0..8 {
+        d.starts.add(-1)
+    }
+    for _ in 0..size {
+        d.dense.add(0)
+        d.sparse.add(0)
+    }
+    return d
+}
+
+RegexCache regexCacheFor(nint size, nint backSize) {
+    return RegexCache {
+        any = regexDfaFor(RegexAnyMatch, size),
+        first = regexDfaFor(RegexFirstEnd, size),
+        back = regexDfaFor(RegexLongestStart, backSize),
+        two = null,
+        groups = null
+    }
+}
+
+// Forgets every state: the cache had grown too large.
+void regexDfaEmpty(ref RegexDfa d) {
+    d.table.clear()
+    d.wide.clear()
+    d.sets.clear()
+    d.setStart.clear()
+    d.setStart.add(0)
+    d.flags.clear()
+    d.ids.clear()
+    for i in 0..8 {
+        d.starts[i] = -1
+    }
+    d.dead = -1
+    d.resets += 1
+}
+
+// Adds `pc` to the sparse set; false when it was there.
+bool regexSetAdd(ref RegexDfa d, nint pc) {
+    nint place = d.sparse[pc]
+    if place < d.count && d.dense[place] == pc {
+        return false
+    }
+    d.sparse[pc] = d.count
+    d.dense[d.count] = pc
+    d.count += 1
+    return true
+}
+
+// Adds to the set `pc` and every step reached from it without reading a character, through jumps,
+// splits, saves and the assertions that hold between what came before (`flags`) and the character
+// `ch` next, in the order the pattern prefers, as Pike's machine adds a thread.
+void regexClosure(read List<RegexInst> code, ref RegexDfa d, nint pc0, int flags, int ch) {
+    d.stack.add(pc0)
+    while true {
+        var top = d.stack.removeLast()
+        if top is null {
+            break
+        }
+        nint pc = top
+        while regexSetAdd(ref d, pc) {
+            var inst = code[pc]
+            if inst.op == RegexOpJump {
+                pc = inst.a
+            } else if inst.op == RegexOpSplit {
+                d.stack.add(inst.b)
+                pc = inst.a
+            } else if inst.op == RegexOpSave {
+                pc += 1
+            } else if inst.op == RegexOpAssert {
+                if !regexDfaAssert(inst.a, flags, ch) {
+                    break
+                }
+                pc += 1
+            } else {
+                break
+            }
+        }
+    }
+}
+
+// Whether an assertion holds between what came before (`flags`) and the character `ch` (-1 at
+// the end of the text).
+bool regexDfaAssert(nint kind, int flags, int ch) {
+    if kind == RegexBeginText {
+        return flags & RegexAtStart != 0
+    }
+    if kind == RegexEndText {
+        return ch < 0
+    }
+    if kind == RegexBeginLine {
+        return flags & (RegexAtStart | RegexAfterNewline) != 0
+    }
+    if kind == RegexEndLine {
+        return ch < 0 || ch == '\n'
+    }
+    bool before = flags & RegexAfterWord != 0
+    bool after = ch >= 0 && ch < 0x80 && regexWordByte((byte)ch)
+    if kind == RegexWordBoundary {
+        return before != after
+    }
+    return before == after
+}
+
+// What came before a place, for the assertions: the start of the text, a line feed, a character
+// of a word. `ch` is the character before it, -1 at the start.
+int regexFlagsAfter(read Regex re, int ch) {
+    if !re.asserts {
+        return 0
+    }
+    if ch < 0 {
+        return RegexAtStart
+    }
+    int flags = 0
+    if ch == '\n' {
+        flags = RegexAfterNewline
+    }
+    if ch < 0x80 && regexWordByte((byte)ch) {
+        flags |= RegexAfterWord
+    }
+    return flags
+}
+
+// Whether step `inst` takes the character `ch`.
+bool regexTakes(read Regex re, RegexInst inst, int ch) {
+    int op = inst.op
+    if op == RegexOpChar {
+        return ch == inst.a
+    }
+    if op == RegexOpFoldChar {
+        return (int)System.charFold((char)ch) == inst.a
+    }
+    if op == RegexOpClass {
+        return regexInClass(read re.classes[inst.a], ch)
+    }
+    if op == RegexOpAnyNotNewline {
+        return ch != '\n'
+    }
+    return op == RegexOpAny
+}
+
+// The row of the state whose steps are those in `d.list` with `flags`, made if it is new: sorted
+// where their order does not count, so that the same steps are the same state.
+int regexDfaState(ref RegexDfa d, int flags) {
+    if d.kind != RegexFirstEnd {
+        d.list.sort()
+    }
+    d.key.clear()
+    d.key.write(flags)
+    for pc in read d.list {
+        d.key.write(',')
+        d.key.write(pc)
+    }
+    int? known = d.ids.get(read d.key)
+    if known is not null {
+        return known * (int)RegexDfaWidth
+    }
+    if d.flags.length() >= RegexDfaStates {
+        regexDfaEmpty(ref d)
+    }
+    int id = (int)d.flags.length()
+    for k in 0..d.list.length() {
+        d.sets.add(d.list[k])
+    }
+    d.setStart.add(d.sets.length())
+    d.flags.add(flags)
+    for _ in 0..RegexDfaWidth {
+        d.table.add(-1)
+    }
+    d.ids.add(d.key.clone(), id)
+    int row = id * (int)RegexDfaWidth
+    if d.list.length() == 0 {
+        d.dead = row
+    }
+    return row
+}
+
+// The row of the first state, with `flags` for what came before the place the search starts.
+int regexDfaStart(ref RegexDfa d, int flags) {
+    int row = d.starts[flags]
+    if row < 0 {
+        d.list.clear()
+        d.list.add(0)
+        row = regexDfaState(ref d, flags)
+        d.starts[flags] = row
+    }
+    return row
+}
+
+// The move of the state at row `row` on the character `ch` (-1 for the end of the text): the row
+// of the next state times two, plus one when a match ends before `ch`.
+int regexDfaStep(read Regex re, read List<RegexInst> code, ref RegexDfa d, int row, int ch) {
+    nint s = (nint)row / RegexDfaWidth
+    int flags = d.flags[s]
+    d.count = 0
+    for k in d.setStart[s]..d.setStart[s + 1] {
+        regexClosure(code, ref d, d.sets[k], flags, ch)
+    }
+    // A match ends here; looking for the end of the one preferred, the ways after it are cut.
+    bool matched = false
+    nint cut = d.count
+    for i in 0..d.count {
+        if code[d.dense[i]].op == RegexOpMatch {
+            matched = true
+            if d.kind == RegexAnyMatch {
+                return 1
+            }
+            if d.kind == RegexFirstEnd {
+                cut = i
+                break
+            }
+        }
+    }
+    int found = 0
+    if matched {
+        found = 1
+    }
+    if ch < 0 {
+        return found
+    }
+    d.list.clear()
+    for k in 0..cut {
+        nint pc = d.dense[k]
+        if regexTakes(re, code[pc], ch) {
+            d.list.add(pc + 1)
+        }
+    }
+    // A search that is not anchored may start a match at the next character too, until the first
+    // match is seen.
+    bool seen = matched || flags & RegexMatched != 0
+    if d.kind != RegexLongestStart && !re.anchored && !(d.kind == RegexFirstEnd && seen) {
+        d.list.add(0)
+    }
+    int next = regexFlagsAfter(re, ch) & ~RegexAtStart
+    if d.kind == RegexFirstEnd && seen {
+        next |= RegexMatched
+    }
+    return regexDfaState(ref d, next) * 2 + found
+}
+
+// The move of row `s` on `ch` (-1 for the end of the text), made if it is not yet; -2 when the
+// cache was emptied too often in this search.
+int regexDfaMove(read Regex re, read List<RegexInst> code, ref RegexDfa d, int s, int ch) {
+    int t = -1
+    if ch < 0 {
+        t = d.table[(nint)s + RegexDfaEnd]
+    } else if ch < 0x80 {
+        t = d.table[(nint)s + ch]
+    } else {
+        t = d.wide.get((long)s << 21 | ch) ?? -1
+    }
+    if t >= 0 {
+        return t
+    }
+    int resets = d.resets
+    t = regexDfaStep(re, code, ref d, s, ch)
+    if d.resets > RegexDfaResets {
+        return -2
+    }
+    if d.resets == resets {
+        if ch < 0 {
+            d.table[(nint)s + RegexDfaEnd] = t
+        } else if ch < 0x80 {
+            d.table[(nint)s + ch] = t
+        } else {
+            d.wide.add((long)s << 21 | ch, t)
+        }
+    }
+    return t
+}
+
+// Follows the moves already made from `at` while the text is ASCII, the state's row in `s`; stops
+// at the end, at a byte past ASCII, at a move not made yet, at the state with no step (`dead`), at
+// the first state when it can be skipped over (`idle`), and after a move where a match ended,
+// `hit` then the place where it ended. Where it stopped.
+nint regexDfaRun(read int[] table, read byte[] bytes, nint at, ref int s, int dead, int idle, ref nint hit) {
+    nint i = at
+    int row = s
+    while i < bytes.length() {
+        byte b = bytes[i]
+        if b >= 0x80 {
+            break
+        }
+        int t = table[row + b]
+        if t < 0 {
+            break
+        }
+        row = t >> 1
+        i += 1
+        if t & 1 != 0 {
+            hit = i - 1
+            break
+        }
+        if row == dead || row == idle {
+            break
+        }
+    }
+    s = row
+    return i
+}
+
+// Reads `text` forwards from `from`: with the DFA of `isMatch`, where a match first ends; with
+// the other, where the match the pattern prefers ends. -1 when there is none; -2 when the cache was
+// emptied too often, and Pike's machine is to answer.
+nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from) {
+    d.resets = 0
+    var bytes = text.asBytes()
+    nint length = bytes.length()
+    int before = -1
+    if from > 0 {
+        before = regexCodeBefore(bytes, from)
+    }
+    int s = regexDfaStart(ref d, regexFlagsAfter(re, before))
+    // In the first state no step is alive but those that start a match, and every match starts with
+    // `prefix`: the search goes straight to where it is next (RE2's acceleration of the first
+    // state). Not with assertions, whose first states differ by what came before.
+    int idle = -1
+    if re.prefix.length() > 0 && !re.asserts && !re.anchored {
+        idle = s
+    }
+    nint end = -1
+    nint i = from
+    while true {
+        if s == idle {
+            if i > length {
+                return end
+            }
+            nint? next = text[i..].indexOf(read re.prefix)
+            if next is null {
+                return end
+            }
+            i += next
+        }
+        nint hit = -1
+        i = regexDfaRun(read d.table, bytes, i, ref s, d.dead, idle, ref hit)
+        if hit >= 0 {
+            if d.kind == RegexAnyMatch {
+                return hit
+            }
+            end = hit
+        }
+        if s == d.dead {
+            return end
+        }
+        if i >= length {
+            break
+        }
+        if hit >= 0 {
+            continue
+        }
+        // A move not made yet, or a character past ASCII.
+        int ch = regexCodeAt(bytes, i)
+        int resets = d.resets
+        int t = regexDfaMove(re, read re.code, ref d, s, ch)
+        if t == -2 {
+            return -2
+        }
+        if d.resets != resets {
+            idle = -1
+        }
+        if t & 1 != 0 {
+            if d.kind == RegexAnyMatch {
+                return i
+            }
+            end = i
+        }
+        s = t >> 1
+        i += regexWidth(bytes[i])
+        if s == d.dead {
+            return end
+        }
+    }
+    int t = regexDfaMove(re, read re.code, ref d, s, -1)
+    if t == -2 {
+        return -2
+    }
+    if t & 1 != 0 {
+        return length
+    }
+    return end
+}
+
+// Reads `text` backwards from `end` down to `from` with the reverse program: the leftmost place
+// where a match that ends at `end` starts; -1 when there is none, -2 when the cache was emptied
+// too often.
+nint regexDfaBackward(read Regex re, ref RegexDfa d, read string text, nint from, nint end) {
+    d.resets = 0
+    var bytes = text.asBytes()
+    // What lies after `end` is what comes before, read backwards.
+    int after = -1
+    if end < bytes.length() {
+        after = regexCodeAt(bytes, end)
+    }
+    int s = regexDfaStart(ref d, regexFlagsAfter(re, after))
+    nint start = -1
+    nint p = end
+    while p > from {
+        nint q = p - 1
+        while bytes[q] >= 0x80 && bytes[q] < 0xC0 {
+            q -= 1
+        }
+        int t = regexDfaMove(re, read re.back, ref d, s, regexCodeAt(bytes, q))
+        if t == -2 {
+            return -2
+        }
+        if t & 1 != 0 {
+            start = p
+        }
+        s = t >> 1
+        p = q
+        if s == d.dead {
+            return start
+        }
+    }
+    // At `from`, what lies before it decides the assertions; no match starts earlier.
+    int before = -1
+    if from > 0 {
+        before = regexCodeBefore(bytes, from)
+    }
+    int t = regexDfaMove(re, read re.back, ref d, s, before)
+    if t == -2 {
+        return -2
+    }
+    if t & 1 != 0 {
+        start = from
+    }
+    return start
+}
+
+// The character that ends at `position`, where one ends.
+int regexCodeBefore(read byte[] bytes, nint position) {
+    nint q = position - 1
+    while bytes[q] >= 0x80 && bytes[q] < 0xC0 {
+        q -= 1
+    }
+    return regexCodeAt(bytes, q)
+}
+
+// The leftmost match from `from` that the pattern prefers, by the two DFAs, written to `found`
+// (start and end); 0 when there is none, 1 when there is, 2 when they gave up and Pike's machine is
+// to search.
+int regexDfaFind(read Regex re, ref RegexCache c, read string text, nint from, ref nint start, ref nint end) {
+    if re.inner.length() > 0 && regexInnerAt(re, text, from) < 0 {
+        return 0
+    }
+    nint e = regexDfaForward(re, ref c.first, text, from)
+    if e == -2 {
+        return 2
+    }
+    if e < 0 {
+        return 0
+    }
+    nint b = regexDfaBackward(re, ref c.back, text, from, e)
+    if b == -2 {
+        return 2
+    }
+    if b < 0 {
+        panic($"the regular expression {re.source} found a match ending at {e} with no start")
+    }
+    start = b
+    end = e
+    return 1
+}
+
+// The next match from `from`, by the DFAs, or by Pike's machine `m` when they gave up.
+Match? regexNext(read Regex re, ref RegexCache c, read string text, nint from, ref RegexMachine m) {
+    if re.literal {
+        return regexFindAt(re, text, from, ref m)
+    }
+    nint start = 0
+    nint end = 0
+    int found = regexDfaFind(re, ref c, text, from, ref start, ref end)
+    if found == 0 {
+        return null
+    }
+    if found == 1 {
+        return Match { start = start, end = end }
+    }
+    return regexFindAt(re, text, from, ref m)
+}
+
+// The matches of `findAll` added to `all`, one after the other, none overlapping; an empty match
+// right after another match is left out, as Go does.
+void regexAll(read Regex re, ref RegexCache c, read string text, ref RegexMachine m, ref List<Match> all) {
+    nint position = 0
+    nint previousEnd = -1
+    while position <= text.length() {
+        var found = regexNext(re, ref c, text, position, ref m)
+        if found is null {
+            break
+        }
+        bool keep = true
+        if found.end == position {
+            if found.start == previousEnd {
+                keep = false
+            }
+            position += regexWidthAt(text, position)
+        } else {
+            position = found.end
+        }
+        previousEnd = found.end
+        if keep {
+            all.add(found)
+        }
+    }
 }
 
 // ---- Running the program: Pike's machine ----
@@ -1760,8 +2616,17 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
     bool matched = false
     nint side = 0
     nint position = start
+    // Where the inner text was last found: a match that starts at `position` holds it at
+    // `position` or after.
+    nint innerAt = -1
     while true {
         if !matched && (!re.anchored || position == 0) {
+            if m.counts[side] == 0 && re.inner.length() > 0 && innerAt < position {
+                innerAt = regexInnerAt(re, text, position)
+                if innerAt < 0 {
+                    break
+                }
+            }
             if m.counts[side] == 0 && re.prefix.length() > 0 {
                 // No thread is alive: the next match starts where the prefix is next.
                 if position > length {

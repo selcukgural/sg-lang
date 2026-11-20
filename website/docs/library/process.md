@@ -79,7 +79,7 @@ It prints:
 [hello]
 exited with code 3 false true
 the program exited with code 4
-could not start: NotFound
+could not start: not found
 ```
 
 ## `Process`
@@ -166,7 +166,7 @@ hex, as Windows writes it: `exited with code 0xC0000005`.
 
 `ProcessError` is `Io(IoError cause)`, the program could not be started (`NotFound`, `PermissionDenied`,
 `InvalidInput` for a word with a zero byte in it) or its output was not UTF-8, or `Failed(ExitStatus status)`,
-it ran and did not end with 0. It prints as the `IoError` does, or `the program exited with code 4`.
+it ran and did not end with 0. It prints as the `IoError` does (`not found`), or `the program exited with code 4`.
 
 ## `Environment`
 

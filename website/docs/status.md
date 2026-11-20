@@ -34,6 +34,11 @@ undefined-behaviour and thread sanitizers, and the two must print the same. Befo
 was also reviewed for soundness, its front end fuzzed, generated programs run both ways, and the functions
 that make the rules of safety tried with mutants; each finding was fixed after a test that shows it.
 
+Now it is tried on programs people write: each is written in SG, in Rust and in Zig, the three are measured
+against each other, and each difference is a choice that is fixed and measured again. `grep` and `wc` are
+the first; the
+[trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) keep the programs and their numbers.
+
 ## Not yet
 
 Generics of your own, a package manager and a full standard library. Closures are left out on purpose: a

@@ -12955,6 +12955,20 @@ impl<'a> Emitter<'a> {
                     body.push_str(" sg_put(out, \" }\", 2);");
                 }
             }
+            // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
+            Ty::Enum(owner) if owner == "IoError" => {
+                body.push_str("switch (v->tag) {");
+                for (index, text) in crate::check::IO_ERROR_TEXTS.iter().enumerate() {
+                    let _ = write!(body, " case {index}: {}", put_text(text));
+                    match index {
+                        4 => body.push_str(" sg_put_int(out, (long long)v->u.v4.m_position);"),
+                        5 => body.push_str(" sg_put_int(out, (long long)v->u.v5.m_code);"),
+                        _ => {}
+                    }
+                    body.push_str(" break;");
+                }
+                body.push_str(" default: break; }");
+            }
             Ty::Enum(_) | Ty::Result(..) => {
                 let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
                 let words: Vec<String> = match ty {

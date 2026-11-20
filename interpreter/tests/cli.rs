@@ -686,3 +686,111 @@ fn log_level_from_the_environment() {
         }
     }
 }
+
+/// `sg build` compiles with the C compiler `CC` names, on every system (1533): one that is not
+/// there is told by its name, and an empty `CC` is no compiler named.
+#[test]
+fn builds_with_the_compiler_cc_names() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_with_the_compiler_cc_names");
+    write(&dir, "hello.sg", HELLO);
+    let build = |cc: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sg"))
+            .args(["build", "hello.sg", "-o", "hello"])
+            .env("CC", cc)
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        ran(&out)
+    };
+    let (code, out, err) = build("no-such-compiler-1533");
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.starts_with("error: cannot run the C compiler `no-such-compiler-1533`: "), "{err}");
+    let (code, _, err) = build("");
+    assert_eq!(code, 0, "{err}");
+    assert!(program(&dir, "hello").exists());
+}
+
+/// A pattern with so many states that the DFAs of `Regex` empty their cache more often than they
+/// may in one search, and leave it to Pike's machine (1536, 1539): compiled only, as the
+/// interpreter takes minutes over it. What it prints is Go's.
+#[test]
+fn a_regex_dfa_that_gives_up() {
+    if !has_compiler() {
+        return;
+    }
+    const PROGRAM: &str = r#"void main() {
+    var text = string.withCapacity(60000)
+    uint x = 1
+    for _ in 0..60000 {
+        x = x.wrappingMultiply(1103515245).wrappingAdd(12345)
+        if (x >> 16) & 1 == 0 {
+            text.write('a')
+        } else {
+            text.write('b')
+        }
+    }
+    var re = Regex.of("(a|b)*a(a|b){16}")
+    print($"{re.find(read text) ?? panic("a match")} {re.isMatch(read text)} {Regex.of("a(a|b){16}b").findAll(read text).length()}")
+}
+"#;
+    let dir = work("a_regex_dfa_that_gives_up");
+    write(&dir, "many.sg", PROGRAM);
+    let out = program(&dir, "many").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", "many.sg", "--release", "-o", &out])), (0, String::new(), String::new()));
+    let run = Command::new(&out).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(ran(&run), (0, "0..60000 true 2869\n".to_string(), String::new()));
+}
+
+/// The trials of `trials/` (1418, 1529): `grep` and `wc` written in SG, interpreted and compiled, on
+/// the megabyte `trials/inputs/text.sg` makes from seed 7, give what their versions in Rust and Zig
+/// give; the counts below were taken from those (`python3 trials/measure.py` holds the three to one
+/// another on more cases and on 100 MB).
+#[test]
+fn the_trials() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let source = |trial: &str| trials.join(trial).join("sg").join(format!("{trial}.sg")).to_string_lossy().into_owned();
+    let dir = work("the_trials");
+    let text = program(&dir, "text").to_string_lossy().into_owned();
+    let maker = trials.join("inputs").join("text.sg").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &maker, "--release", "-o", &text])), (0, String::new(), String::new()));
+    let made = Command::new(&text).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    assert!(made.status.success());
+    std::fs::write(dir.join("t1.log"), &made.stdout).unwrap();
+    let mut built = Vec::new();
+    for trial in ["grep", "wc"] {
+        let out = program(&dir, trial).to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &source(trial), "--release", "-o", &out])), (0, String::new(), String::new()));
+        built.push(out);
+    }
+    let cases: [(&str, &[&str], &str); 5] = [
+        ("wc", &["t1.log"], "9198 115234 1000058 t1.log\n"),
+        ("grep", &["-c", "ERROR", "t1.log"], "1293\n"),
+        ("grep", &["-c", "-i", "TIMEOUT|ş[a-z]+r", "t1.log"], "2565\n"),
+        ("grep", &["-v", "-c", r"@example\.com (GET|POST)", "t1.log"], "3010\n"),
+        ("grep", &["-n", "in [0-9]{4} ms: .*日本", "t1.log"], ""),
+    ];
+    let mut printed = Vec::new();
+    for (trial, args, expected) in cases {
+        let script = source(trial);
+        let mut words = vec![script.as_str()];
+        words.extend_from_slice(args);
+        let interpreted = ran(&sg(&dir, &words));
+        let program = &built[if trial == "grep" { 0 } else { 1 }];
+        let compiled = ran(&Command::new(program).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        assert_eq!(interpreted, compiled, "{trial} {args:?}: interpreted and compiled");
+        if !expected.is_empty() {
+            assert_eq!(compiled, (0, expected.to_string(), String::new()), "{trial} {args:?}");
+        }
+        printed.push(compiled.1);
+    }
+    // The lines of the last case: 660, each with its number.
+    assert_eq!(printed[4].lines().count(), 660);
+    assert!(printed[4].lines().all(|line| line.split_once(':').is_some_and(|(n, _)| n.parse::<u32>().is_ok())));
+}

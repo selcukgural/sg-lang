@@ -562,6 +562,31 @@ const IO_ERROR: &str = "IoError";
 /// send as one message, or one longer than the buffer it was received into. `NotSeekable`: `seek`
 /// on a stream that is not a file opened by `File` (a pipe, the input of the program), or on a
 /// writer that writes at the end (`File.openAppend`).
+/// What an `IoError` is written as (1537), by variant: a short sentence in lower case, as Go's
+/// errors are, followed by the number a variant carries (`invalid text at byte 812`,
+/// `system error 5`); `Cancelled` writes no field. The interpreter and compiled code write it
+/// from this table.
+pub const IO_ERROR_TEXTS: [&str; 18] = [
+    "not found",
+    "permission denied",
+    "is a folder",
+    "no space left",
+    "invalid text at byte ",
+    "system error ",
+    "cancelled",
+    "connection refused",
+    "connection reset",
+    "address in use",
+    "host not found",
+    "line too long",
+    "already exists",
+    "not a folder",
+    "folder not empty",
+    "invalid input",
+    "message too long",
+    "cannot seek",
+];
+
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();

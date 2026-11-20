@@ -3,15 +3,15 @@ true
 5
 true
 hello
-MessageTooLong
+message too long
 0
-MessageTooLong
+message too long
 true
 true
 one
 two
 ::1
-example.com:53 -> HostNotFound
-1.2.3.4 -> HostNotFound
-:70000 -> HostNotFound
-AddressInUse
+example.com:53 -> host not found
+1.2.3.4 -> host not found
+:70000 -> host not found
+address in use

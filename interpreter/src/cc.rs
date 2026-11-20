@@ -1,5 +1,5 @@
 //! The C compiler a program is built with, and what it is given on each system besides the C:
-//! on Linux and macOS the system's `cc` with C's math library and threads; on Windows Clang with
+//! on Linux and macOS the one `CC` names, else the system's `cc`, with C's math library and threads; on Windows Clang with
 //! LLVM's linker, C's library linked into the program (`/MT`), a stack of 8 MB for the main thread
 //! and a manifest (see `MANIFEST`). The back end's tests build with the same.
 
@@ -9,15 +9,15 @@ use std::path::Path;
 #[cfg(windows)]
 const LLVM_CLANG: &str = r"C:\Program Files\LLVM\bin\clang.exe";
 
-/// The C compiler: `cc` on Linux and macOS. On Windows the one `CC` names, else `clang` on the
-/// `PATH`, else the one LLVM's installer puts in its folder; none of them is an error that says
-/// what to install.
+/// The C compiler: the one `CC` names, as C's builds have it (1533); else `cc` on Linux and macOS,
+/// and on Windows `clang` on the `PATH`, else the one LLVM's installer puts in its folder; none of
+/// them is an error that says what to install.
 pub fn compiler() -> Result<String, String> {
+    if let Some(cc) = std::env::var("CC").ok().filter(|cc| !cc.is_empty()) {
+        return Ok(cc);
+    }
     #[cfg(windows)]
     {
-        if let Some(cc) = std::env::var("CC").ok().filter(|cc| !cc.is_empty()) {
-            return Ok(cc);
-        }
         if std::process::Command::new("clang").arg("--version").output().is_ok_and(|out| out.status.success()) {
             return Ok("clang".to_string());
         }

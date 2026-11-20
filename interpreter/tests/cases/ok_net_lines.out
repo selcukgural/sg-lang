@@ -3,11 +3,11 @@
 3: 5 third
 3 lines
 line: eight ch true
-error: LineTooLong
-error: LineTooLong
+error: line too long
+error: line too long
 size 11
 4: hell
 4: o wo
 3: rld
-error: Cancelled(Cancelled)
+error: cancelled
 half and the rest

@@ -1,6 +1,6 @@
-accept: Cancelled(Cancelled)
-receive: Cancelled(Cancelled)
-receive: Cancelled(Cancelled)
-send: Cancelled(Cancelled)
-connect: Cancelled(Cancelled)
+accept: cancelled
+receive: cancelled
+receive: cancelled
+send: cancelled
+connect: cancelled
 kept

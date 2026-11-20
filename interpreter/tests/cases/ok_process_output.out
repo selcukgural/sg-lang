@@ -4,7 +4,7 @@ cat gave back 4194304 bytes, the same: true
 deaf: [] 0 bytes
 head: [01234] 5 bytes
 failed: the program exited with code 4
-bytes: InvalidText(2)
+bytes: invalid text at byte 2
 counted 5
 apple
 fig

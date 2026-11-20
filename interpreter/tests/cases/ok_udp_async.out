@@ -5,15 +5,15 @@ ping 3
 ping 4
 ping 5
 6
-receive: Cancelled(Cancelled)
-receiveFrom: Cancelled(Cancelled)
+receive: cancelled
+receiveFrom: cancelled
 kept
 true
-send: Cancelled(Cancelled)
-sendTo: Cancelled(Cancelled)
-receiveFrom: Cancelled(Cancelled)
-lookup: Cancelled(Cancelled)
+send: cancelled
+sendTo: cancelled
+receiveFrom: cancelled
+lookup: cancelled
 true
 9
-lookup: HostNotFound
-receive: ConnectionRefused
+lookup: host not found
+receive: connection refused

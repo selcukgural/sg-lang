@@ -1,5 +1,5 @@
 true [good]
-error: InvalidText(7) []
+error: invalid text at byte 7 []
 true [fine]
-error: InvalidText(20) []
+error: invalid text at byte 20 []
 

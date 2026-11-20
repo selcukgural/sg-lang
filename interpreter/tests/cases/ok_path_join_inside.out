@@ -3,34 +3,34 @@ ok  [report.txt] -> files/report.txt
 ok  [2026/report.txt] -> files/2026/report.txt
 ok  [.profile] -> files/.profile
 ok  [a..b] -> files/a..b
-bad [] InvalidInput
-bad [a//b] InvalidInput
-bad [a/] InvalidInput
-bad [/etc] InvalidInput
-bad [../x] InvalidInput
-bad [a/../b] InvalidInput
-bad [a/./b] InvalidInput
-bad [..] InvalidInput
-bad [.] InvalidInput
-bad [x.] InvalidInput
-bad [x ] InvalidInput
-bad [C:x] InvalidInput
-bad [a\b] InvalidInput
-bad [CON] InvalidInput
-bad [con.txt] InvalidInput
-bad [Nul] InvalidInput
-bad [nul .txt] InvalidInput
-bad [COM1] InvalidInput
-bad [lpt9.log] InvalidInput
-bad [COM0] InvalidInput
+bad [] invalid input
+bad [a//b] invalid input
+bad [a/] invalid input
+bad [/etc] invalid input
+bad [../x] invalid input
+bad [a/../b] invalid input
+bad [a/./b] invalid input
+bad [..] invalid input
+bad [.] invalid input
+bad [x.] invalid input
+bad [x ] invalid input
+bad [C:x] invalid input
+bad [a\b] invalid input
+bad [CON] invalid input
+bad [con.txt] invalid input
+bad [Nul] invalid input
+bad [nul .txt] invalid input
+bad [COM1] invalid input
+bad [lpt9.log] invalid input
+bad [COM0] invalid input
 ok  [COM10] -> files/COM10
-bad [COM¹] InvalidInput
-bad [CONOUT$] InvalidInput
+bad [COM¹] invalid input
+bad [CONOUT$] invalid input
 ok  [console] -> files/console
-bad [tab	here] InvalidInput
+bad [tab	here] invalid input
 ok  [ünlü.txt] -> files/ünlü.txt
 ok  [ğğ] -> files/ğğ
 ok  [😀] -> files/😀
 ok  [çom1] -> files/çom1
 ok  [COMé] -> files/COMé
-bad [LPT³.txt] InvalidInput
+bad [LPT³.txt] invalid input
