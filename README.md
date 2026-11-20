@@ -185,10 +185,10 @@ are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is writt
   bytes, and zip archives that refuse Zip Slip and bombs before they are read.
 - **No operating system needed**: a program can be built freestanding, and a small kernel for RISC-V boots
   in QEMU.
-- **Tools**: `sg test`, a debug build that reports leaks, and `sg lsp` with an extension for VS Code.
+- **Tools**: `sg test`, a debug build that reports leaks, `sg lsp` with an extension for VS Code, and packages
+  without a registry: `sg add` fetches them by `git`, pinned by the SHA-256 of their files in `sg.lock`.
 
-Not yet: generics of your own, fetching packages (a program's `sg.project` takes them from folders for now)
-and a full standard library. Left out on purpose:
+Not yet: generics of your own and a full standard library. Left out on purpose:
 closures; a function value is the address of a named function.
 
 Every test program runs in the interpreter and compiled, under the sanitizers, and the two must print the

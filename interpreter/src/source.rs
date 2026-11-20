@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::ast::ModuleMap;
+use crate::fetch;
 use crate::project::{self, Project};
 
 use crate::diag::{snippet, Span};
@@ -100,12 +101,18 @@ pub struct SourceFile {
     pub map: Arc<ModuleMap>,
 }
 
-/// A package the program uses (choice 1552), taken from a folder by a `local` line.
+/// A package the program uses (choice 1552): from a folder a `local` line gives, or from the
+/// cache at the version the lock holds (choice 1571).
 pub struct Package {
-    /// The name the program's `sg.project` gives it, which is the module of its root files.
+    /// The name the program's `sg.project` gives it, which is the module of its root files; for
+    /// a package only another uses, a name no file can reach (choice 1576).
     pub name: String,
     pub address: String,
+    /// The version the lock holds; for one from a folder, the version its line asks for.
+    pub version: project::Version,
     pub folder: PathBuf,
+    /// The program names it on a `require` line of its own.
+    pub named: bool,
     /// The program allows it `unsafe` code (choice 1562).
     pub allows_unsafe: bool,
     pub map: Arc<ModuleMap>,
@@ -363,7 +370,7 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
     if let Some(project) = project::read(&root)? {
         sources.packages = packages(&project, &base)?;
         let every: Arc<Vec<String>> = Arc::new(sources.packages.iter().map(|package| package.name.clone()).collect());
-        sources.map = Arc::new(ModuleMap { prefix: String::new(), packages: sources.packages.iter().map(|package| (package.name.clone(), package.name.clone())).collect(), every_package: every.clone() });
+        sources.map = Arc::new(ModuleMap { prefix: String::new(), packages: sources.packages.iter().filter(|package| package.named).map(|package| (package.name.clone(), package.name.clone())).collect(), every_package: every.clone() });
         for package in &mut sources.packages {
             Arc::get_mut(&mut package.map).expect("not shared yet").every_package = every.clone();
         }
@@ -444,65 +451,126 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
     Ok(sources)
 }
 
-/// The packages the program's `sg.project` names, each from the folder its `local` line gives
-/// (fetching them is not here yet). A package's own `sg.project` says its address and the
-/// packages it uses, which the program names too.
+/// The packages the program uses: those its `sg.project` names, each from the folder its
+/// `local` line gives or from the cache at the version `sg.lock` holds, and those they use in
+/// turn, which the program need not name (choice 1576). The lock is only read here: one that
+/// does not fit `sg.project` stops the program, and `sg lock` writes it again (choice 1580).
 fn packages(project: &Project, base: &Path) -> Result<Vec<Package>, String> {
+    struct Found {
+        name: String,
+        address: String,
+        version: project::Version,
+        from_lock: bool,
+        named: bool,
+        allows_unsafe: bool,
+        folder: PathBuf,
+        own: Project,
+    }
     let at = |line: usize| format!("{}:{line}", project.path.display());
     let project_folder = project.path.parent().map(Path::to_path_buf).unwrap_or_default();
-    let mut found = Vec::new();
+    let lock = fetch::read_lock(&project_folder)?;
+    let lock_path = project_folder.join(fetch::LOCK);
+    let locked = |address: &str, major: u64| lock.iter().find(|entry| entry.address == address && entry.version.major == major);
+    // The `sg.project` of a package, which says its address (choice 1565).
+    let own_project = |folder: &Path, address: &str, place: &str| -> Result<Project, String> {
+        let Some(own) = project::read(folder)? else {
+            return Err(format!("{place}: {} has no `{}`, which every package has, with its `package` line", folder.display(), project::FILE));
+        };
+        match &own.package {
+            Some(said) if *said == address => Ok(own),
+            Some(said) => Err(format!("{place}: the package in {} is {said}, and the line asks for {address}", folder.display())),
+            None => Err(format!("{}: the `{}` of a package says where it is fetched from: `package {address}`", own.path.display(), project::FILE)),
+        }
+    };
+    let mut found: Vec<Found> = Vec::new();
     for require in &project.requires {
         if holds_modules(base, &require.name) {
             return Err(format!("{}: the folder `{}` beside the program has the name of the package `{}`: one of them is named otherwise", at(require.line), require.name, require.name));
         }
-        let Some(local) = project.locals.iter().find(|local| local.name == require.name) else {
-            return Err(format!(
-                "{}: the package `{}` has no `local` line, and packages are not fetched yet: `local {} ../{}` takes it from a folder",
-                at(require.line),
-                require.name,
-                require.name,
-                require.name
-            ));
+        let (folder, version, from_lock, place) = match project.locals.iter().find(|local| local.name == require.name) {
+            Some(local) => {
+                let folder = cleaned(&project_folder.join(&local.folder));
+                if !folder.is_dir() {
+                    return Err(format!("{}: there is no folder {} for the package `{}`", at(local.line), folder.display(), require.name));
+                }
+                (folder, require.version, false, at(local.line))
+            }
+            None => {
+                let Some(entry) = locked(&require.address, require.version.major) else {
+                    return Err(format!("{}: {} has no {} {}: {}", at(require.line), lock_path.display(), require.address, require.version, fetch::LOCK_AGAIN));
+                };
+                if entry.version < require.version {
+                    return Err(format!("{}: {} has {} {}, older than the {} the line asks for: {}", at(require.line), lock_path.display(), entry.address, entry.version, require.version, fetch::LOCK_AGAIN));
+                }
+                let (_, folder) = fetch::fetched(&entry.address, entry.version, Some(&entry.sum)).map_err(|error| format!("{}: {error}", at(require.line)))?;
+                (folder, entry.version, true, at(require.line))
+            }
         };
-        let folder = cleaned(&project_folder.join(&local.folder));
-        if !folder.is_dir() {
-            return Err(format!("{}: there is no folder {} for the package `{}`", at(local.line), folder.display(), require.name));
+        let own = own_project(&folder, &require.address, &place)?;
+        found.push(Found { name: require.name.clone(), address: require.address.clone(), version, from_lock, named: true, allows_unsafe: require.allows_unsafe, folder, own });
+    }
+    // The packages they use, which the program does not name: from the lock, under a name no
+    // file can reach, as `utf_1`.
+    let mut taken: Vec<String> = found.iter().map(|package| package.name.clone()).collect();
+    let mut next = 0;
+    while next < found.len() {
+        let user = found[next].name.clone();
+        let own_path = found[next].own.path.clone();
+        let wanted: Vec<(String, project::Version, usize)> = found[next].own.requires.iter().map(|needed| (needed.address.clone(), needed.version, needed.line)).collect();
+        for (address, version, line) in wanted {
+            let place = format!("{}:{line}", own_path.display());
+            let too_old = |have: project::Version| format!("{place}: the package `{user}` uses {address} {version}, and {} has {have}: {}", lock_path.display(), fetch::LOCK_AGAIN);
+            if let Some(other) = found.iter().find(|other| other.address == address && other.version.major == version.major) {
+                if other.from_lock && other.version < version {
+                    return Err(too_old(other.version));
+                }
+                continue;
+            }
+            let Some(entry) = locked(&address, version.major) else {
+                return Err(format!("{place}: the package `{user}` uses {address} {version}, which {} does not have: {}", lock_path.display(), fetch::LOCK_AGAIN));
+            };
+            if entry.version < version {
+                return Err(too_old(entry.version));
+            }
+            let (_, folder) = fetch::fetched(&entry.address, entry.version, Some(&entry.sum)).map_err(|error| format!("{place}: {error}"))?;
+            let own = own_project(&folder, &address, &place)?;
+            let stem = format!("{}_{}", project::suggested(address.rsplit('/').next().unwrap_or(&address)), version.major);
+            let mut name = stem.clone();
+            let mut count = 2;
+            while taken.contains(&name) || holds_modules(base, &name) {
+                name = format!("{stem}_{count}");
+                count += 1;
+            }
+            taken.push(name.clone());
+            found.push(Found { name, address, version: entry.version, from_lock: true, named: false, allows_unsafe: false, folder, own });
         }
-        let Some(own) = project::read(&folder)? else {
-            return Err(format!("{}: {} has no `{}`, which every package has, with its `package` line", at(local.line), folder.display(), project::FILE));
-        };
-        match &own.package {
-            Some(address) if *address == require.address => {}
-            Some(address) => return Err(format!("{}: the package in {} is {address}, and the line asks for {}", at(local.line), folder.display(), require.address)),
-            None => return Err(format!("{}: the `{}` of a package says where it is fetched from: `package {}`", own.path.display(), project::FILE, require.address)),
+        next += 1;
+    }
+    for entry in &lock {
+        if !found.iter().any(|package| package.address == entry.address && package.version.major == entry.version.major) {
+            return Err(format!("{}: {} {} is used by nothing: {}", lock_path.display(), entry.address, entry.version, fetch::LOCK_AGAIN));
         }
-        found.push((require, folder, own));
     }
     let mut packages = Vec::new();
-    for (require, folder, own) in &found {
+    for package in &found {
         let mut names = Vec::new();
-        for needed in &own.requires {
-            let Some(given) = project.requires.iter().find(|other| other.address == needed.address && other.version.major == needed.version.major) else {
-                return Err(format!(
-                    "{}:{}: the package `{}` uses {} {}, which the program's `{}` does not name; packages are not fetched yet, so it is given there with a `local` line: `require {} {} {}`",
-                    own.path.display(),
-                    needed.line,
-                    require.name,
-                    needed.address,
-                    needed.version,
-                    project::FILE,
-                    needed.name,
-                    needed.address,
-                    needed.version
-                ));
-            };
-            if holds_modules(folder, &needed.name) {
-                return Err(format!("{}:{}: the folder `{}` of the package has the name of the package it uses: one of them is named otherwise", own.path.display(), needed.line, needed.name));
+        for needed in &package.own.requires {
+            let given = found.iter().find(|other| other.address == needed.address && other.version.major == needed.version.major).expect("every package used is found");
+            if holds_modules(&package.folder, &needed.name) {
+                return Err(format!("{}:{}: the folder `{}` of the package has the name of the package it uses: one of them is named otherwise", package.own.path.display(), needed.line, needed.name));
             }
             names.push((needed.name.clone(), given.name.clone()));
         }
-        let map = Arc::new(ModuleMap { prefix: require.name.clone(), packages: names, every_package: Arc::default() });
-        packages.push(Package { name: require.name.clone(), address: require.address.clone(), folder: folder.clone(), allows_unsafe: require.allows_unsafe, map });
+        let map = Arc::new(ModuleMap { prefix: package.name.clone(), packages: names, every_package: Arc::default() });
+        packages.push(Package {
+            name: package.name.clone(),
+            address: package.address.clone(),
+            version: package.version,
+            folder: package.folder.clone(),
+            named: package.named,
+            allows_unsafe: package.allows_unsafe,
+            map,
+        });
     }
     Ok(packages)
 }
@@ -520,7 +588,7 @@ fn holds_modules(base: &Path, name: &str) -> bool {
 
 /// A path with `.` and the `..` that follow a name taken away, as Go's `filepath.Clean` does:
 /// `shop/../lib/xml` is `lib/xml`, so the files of a package are named as the reader sees them.
-fn cleaned(path: &Path) -> PathBuf {
+pub(crate) fn cleaned(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out: Vec<Component> = Vec::new();
     for part in path.components() {

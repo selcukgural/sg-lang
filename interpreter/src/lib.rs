@@ -27,6 +27,8 @@ pub mod signals;
 pub mod signals;
 pub mod source;
 pub mod project;
+pub mod fetch;
+pub mod sha256;
 pub mod opening;
 pub mod json;
 pub mod lsp;
@@ -55,10 +57,33 @@ fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     let mut prog = parser::parse_files(&sources.text, &files)?;
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
     c_files(&mut prog, sources)?;
+    unsafe_in_packages(sources)?;
     embeds(&mut prog, sources)?;
     prog.lib_dirs = sources.lib_dirs.clone();
     prog.home = sources.files.first().and_then(|file| std::path::Path::new(&file.path).parent()).and_then(|folder| std::path::absolute(if folder.as_os_str().is_empty() { std::path::Path::new(".") } else { folder }).ok());
     Ok(prog)
+}
+
+/// `unsafe` and `extern` in a package the program does not allow them (choice 1562): found in
+/// the source of each file of a package the program reads, from a folder or from the cache, so
+/// what the lock says is not trusted for it (choice 1578).
+fn unsafe_in_packages(sources: &Sources) -> Result<(), Diag> {
+    for file in &sources.files {
+        let Some(package) = sources.packages.iter().find(|package| !file.map.prefix.is_empty() && package.name == file.map.prefix) else { continue };
+        if package.allows_unsafe {
+            continue;
+        }
+        let Some((span, word, _)) = fetch::unsafe_words(&sources.text, crate::diag::Span::new(file.start, file.end)).into_iter().next() else { continue };
+        let last = package.address.rsplit('/').next().unwrap_or(&package.address);
+        let name = if package.named { package.name.clone() } else if project::is_name(last) { last.to_string() } else { project::suggested(last) };
+        let line = format!("require {name} {} {} unsafe", package.address, package.version);
+        let hint = match package.named {
+            true => format!("the program allows it by ending the package's `require` line in `unsafe`: `{line}`"),
+            false => format!("the program uses it through another package, and allows it on a `require` line of its own that ends in `unsafe`: `{line}`"),
+        };
+        return Err(Diag::error(span, format!("`{word}` is in the package {}, and the program's `sg.project` does not allow it", package.address)).hint(hint));
+    }
+    Ok(())
 }
 
 /// Finds the C file each `extern "./native.c"` block names, beside the file of SG it is

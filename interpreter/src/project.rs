@@ -42,7 +42,7 @@ pub struct Local {
     pub line: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Version {
     pub major: u64,
     pub minor: u64,
@@ -155,7 +155,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Project, String> {
 }
 
 /// A name to suggest for a package whose address ends in one that cannot be written.
-fn suggested(name: &str) -> String {
+pub fn suggested(name: &str) -> String {
     let mut out: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     if let Some(rest) = out.strip_prefix("sg_") {
         out = rest.to_string();
@@ -168,7 +168,7 @@ fn suggested(name: &str) -> String {
 
 /// An address is a host and a path, as Go writes them: `github.com/ada/xml`. It is fetched over
 /// HTTPS (choice 1558), so no scheme is written, and nothing in it can lead the fetch elsewhere.
-fn address_ok(address: &str) -> Result<(), String> {
+pub fn address_ok(address: &str) -> Result<(), String> {
     let bad = |why: &str| Err(format!("`{address}` is not the address of a package: {why}; it is written as `github.com/ada/xml`"));
     if address.contains("://") || address.starts_with("git@") {
         return bad("the address is written without a scheme or a user");
@@ -191,7 +191,7 @@ fn address_ok(address: &str) -> Result<(), String> {
 
 /// `1.4.0`: three numbers, without a `v` and without zeros in front, as semantic versioning
 /// writes them; the tag of the version is `v1.4.0`.
-fn version_of(written: &str) -> Result<Version, String> {
+pub fn version_of(written: &str) -> Result<Version, String> {
     let bad = || format!("`{written}` is not a version: a version is three numbers, `1.4.0`, and its tag is `v1.4.0`");
     let numbers: Vec<&str> = written.split('.').collect();
     let [major, minor, patch] = numbers[..] else { return Err(bad()) };

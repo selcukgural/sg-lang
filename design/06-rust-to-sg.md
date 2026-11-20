@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-seventh slice (packages taken from folders by `sg.project`, 1555-1570; the folder `internal`, 1561).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-eighth slice (packages fetched by `git`, `sg.lock`, the cache, `sg add`, `sg update`, `sg remove` and `sg lock`, 1571-1588).
 
 ## Functions and variables
 
@@ -639,7 +639,9 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-seventh slice 
 | a suggestion marked `MachineApplicable` | an error with a fix (`Diag::fix`) | built | Given only where the code it writes is certain to check; the risky way (`_ =` on a `Result`) is never one |
 | `Cargo.toml`, `[dependencies] xml = "1.4"` | `sg.project`, `require xml example.com/ada/xml 1.4.0` | built | A line for each thing, as Go's `go.mod` (1556); the name is the one written after `use` (1555) |
 | `[patch]`, `path = "../xml"` | `local xml ../xml` | built | Read only in the program's own `sg.project`, as Go's `replace` |
-| `Cargo.lock` | `sg.lock` | designed | The SHA-256 of each package's files (1558), its `unsafe` and its libraries of C (1560, 1562) |
-| crates.io, `cargo add`, `cargo update` | a repository and a tag, `sg add`, `sg update` | designed | No registry: a package is where its author keeps it (1552); versions chosen as Go chooses them, so a new release changes no build |
+| `Cargo.lock` | `sg.lock` | built | A line for each package, the ones used through others too: its address, version and the SHA-256 of its files (1571, 1572), its `unsafe` and its libraries of C; checked, not chosen again, when a program runs (1587) |
+| crates.io, `cargo add`, `cargo update`, `cargo remove` | a repository and a tag, `sg add`, `sg update`, `sg remove`, `sg lock` | built | No registry: a package is where its author keeps it (1552), fetched by `git` (1558); versions chosen as Go chooses them, so a new release changes no build (1577); `sg lock` makes the lock fit `sg.project` without raising a version (1580) |
+| `~/.cargo/registry`, `CARGO_HOME` | the cache, `SG_CACHE` | built | A read-only folder for each SHA-256, written by `sg` from git's objects, so no filter of git runs (1573, 1579) |
+| `[source]` replacement, `cargo vendor` | `SG_MIRROR` | built | A folder of bare repositories, for a closed network, as Go's `GOPROXY=file://` (1582) |
 | `build.rs` | none | not in SG | No code of a package runs while it is fetched or built (1559); a package calls a C library of the system, and gives no C to compile (1560) |
-| `cargo-geiger` | the `unsafe` of a `require` line | designed | A package with `unsafe` is compiled only when the program's line says `unsafe` (1562) |
+| `cargo-geiger` | the `unsafe` of a `require` line | built | A package with `unsafe` or `extern` is compiled only when the program's line for it says `unsafe`, found in its source (1562, 1578); one used through another is allowed on a line of its own (1583); `sg update` stops at a version that starts to use it |

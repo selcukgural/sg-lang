@@ -968,11 +968,11 @@ fn refuses_a_project_that_cannot_be_followed() {
     write(&lib.join("bare"), "bare.sg", "public int one() {\n    return 1\n}\n");
     let cases: &[(&str, &str)] = &[
         ("requires xml example.com/ada/xml 1.4.0\n", "sg.project:1: `requires` is not a line of `sg.project`"),
-        ("require xml example.com/ada/xml 1.4.0\n", "sg.project:1: the package `xml` has no `local` line, and packages are not fetched yet"),
+        ("require xml example.com/ada/xml 1.4.0\n", "sg.lock has no example.com/ada/xml 1.4.0: `sg lock` writes it again"),
         ("require xml example.com/ada/xml 1.4.0\nlocal xml lib/nothing\n", "sg.project:2: there is no folder"),
         ("require bare example.com/ada/bare 1.0.0\nlocal bare lib/bare\n", "has no `sg.project`, which every package has"),
         ("require xml example.com/ada/other 1.4.0\nlocal xml lib/xml\n", "sg.project:2: the package in"),
-        ("require xml example.com/ada/xml 1.4.0\nlocal xml lib/xml\n", "the package `xml` uses example.com/bob/utf 1.0.0, which the program's `sg.project` does not name"),
+        ("require xml example.com/ada/xml 1.4.0\nlocal xml lib/xml\n", "sg.lock does not have: `sg lock` writes it again"),
         ("require lib example.com/ada/xml 1.4.0\nlocal lib lib/xml\n", "sg.project:1: the folder `lib` beside the program has the name of the package `lib`"),
     ];
     write(&dir, "main.sg", "void main() {\n    print(1)\n}\n");
@@ -1009,4 +1009,277 @@ fn a_package_inside_the_program_is_not_its_module() {
     let (code, _, err) = ran(&sg(&dir, &["main.sg"]));
     assert_eq!(code, 1);
     assert!(err.starts_with("error: there is no module named `vendor.xml`"), "{err}");
+}
+
+/// `git` for the repositories of the tests, without the settings of the user or of the system.
+fn git(dir: &Path, words: &[&str], index: Option<&Path>, input: &[u8]) -> String {
+    use std::io::Write;
+    let empty = dir.parent().unwrap().join("empty-gitconfig");
+    if !empty.exists() {
+        std::fs::write(&empty, "").unwrap();
+    }
+    let mut command = Command::new("git");
+    // Git for Windows keeps names such as `con.sg` out of its index; the tests make them on purpose.
+    command.arg("-C").arg(dir).args(["-c", "user.name=SG", "-c", "user.email=sg@example.com", "-c", "commit.gpgsign=false", "-c", "core.protectNTFS=false"]).args(words);
+    command.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", &empty).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let mut child = command.spawn().expect("git is installed where the tests run");
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "git {words:?}: {}", text(&out.stderr));
+    text(&out.stdout).trim().to_string()
+}
+
+/// A version of a package in the mirror (choice 1582): a bare repository at `mirror/<address>`
+/// whose tag `v<version>` is a commit of these files, each with the mode git writes. The files
+/// are put in by git's plumbing, with no folder of files, so a tree no system could check out
+/// can be made too; a tag given again is moved.
+fn publish(mirror: &Path, address: &str, version: &str, files: &[(&str, &str, &[u8])]) {
+    let repository = mirror.join(address);
+    if !repository.exists() {
+        std::fs::create_dir_all(&repository).unwrap();
+        git(&repository, &["init", "-q", "--bare"], None, b"");
+    }
+    let index = mirror.join("index");
+    let _ = std::fs::remove_file(&index);
+    for (mode, path, bytes) in files {
+        let object = git(&repository, &["hash-object", "-w", "--stdin", "--no-filters"], None, bytes);
+        git(&repository, &["update-index", "--add", "--cacheinfo", &format!("{mode},{object},{path}")], Some(&index), b"");
+    }
+    let tree = git(&repository, &["write-tree"], Some(&index), b"");
+    let commit = git(&repository, &["commit-tree", &tree, "-m", version], None, b"");
+    git(&repository, &["update-ref", &format!("refs/tags/v{version}"), &commit], None, b"");
+}
+
+/// A package of one file of SG beside its `sg.project`.
+fn publish_sg(mirror: &Path, address: &str, version: &str, requires: &str, name: &str, code: &str) {
+    let project = format!("package {address}\n{requires}");
+    publish(mirror, address, version, &[("100644", "sg.project", project.as_bytes()), ("100644", &format!("{name}.sg"), code.as_bytes())]);
+}
+
+/// `sg` in `dir`, taking packages from `mirror` into `cache`.
+fn sg_with(dir: &Path, mirror: &Path, cache: &Path, words: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("SG_MIRROR", mirror).env("SG_CACHE", cache).stdin(Stdio::null()).output().unwrap()
+}
+
+/// The folders of packages in the cache.
+fn cached(cache: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(cache).map(|read| read.flatten().map(|entry| entry.path()).collect()).unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// A program that names one package, which uses another the program does not name (choice
+/// 1576), fetched from a mirror (1582) at the versions `sg add` and `sg update` choose (1577),
+/// kept in the cache (1579) and pinned by the lock (1571); fetched again when the cache has it
+/// not, refused when its tag was moved (1558), and taken away by `sg remove`.
+#[test]
+fn fetches_packages_from_a_mirror() {
+    let dir = work("fetches_packages_from_a_mirror");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("shop"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    let utf = |said: &str| format!("public string name() {{\n    return \"{said}\"\n}}\n");
+    publish_sg(&mirror, "example.com/bob/utf", "1.0.0", "", "utf", &utf("utf 1.0"));
+    publish_sg(&mirror, "example.com/bob/utf", "1.1.0", "", "utf", &utf("utf 1.1"));
+    let xml = |said: &str| format!("use text\n\npublic string describe() {{\n    return $\"{said} on {{text.name()}}\".toString()\n}}\n");
+    let xml_files = |requires: &str, code: &str| -> Vec<(String, String)> {
+        vec![
+            ("sg.project".into(), format!("package example.com/ada/xml\nrequire text example.com/bob/utf {requires}\n")),
+            ("xml.sg".into(), code.to_string()),
+            ("README.md".into(), "# xml\n".into()),
+            // Another package kept in the repository is not this one's (choice 1581).
+            ("examples/demo/sg.project".into(), "package example.com/ada/demo\n".into()),
+            ("examples/demo/demo.sg".into(), "void main() {\n}\n".into()),
+        ]
+    };
+    let put = |version: &str, files: Vec<(String, String)>| {
+        let files: Vec<(&str, &str, &[u8])> = files.iter().map(|(path, code)| ("100644", path.as_str(), code.as_bytes())).collect();
+        publish(&mirror, "example.com/ada/xml", version, &files);
+    };
+    put("1.4.0", xml_files("1.0.0", &xml("xml 1.4")));
+    put("1.5.0", xml_files("1.1.0", &xml("xml 1.5")));
+    write(&program_dir, "main.sg", "use xml\n\nvoid main() {\n    print(xml.describe())\n}\n");
+    let run = |words: &[&str]| ran(&sg_with(&program_dir, &mirror, &cache, words));
+
+    let (code, out, err) = run(&["add", "example.com/ada/xml@1.4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "example.com/ada/xml 1.4.0 (added)\nexample.com/bob/utf 1.0.0 (added)\n");
+    assert_eq!(std::fs::read_to_string(program_dir.join("sg.project")).unwrap(), "require xml example.com/ada/xml 1.4.0\n");
+    let lock = std::fs::read_to_string(program_dir.join("sg.lock")).unwrap();
+    let lines: Vec<&str> = lock.lines().collect();
+    assert!(lines.len() == 3 && lines[0].starts_with("//") && lines[1].starts_with("example.com/ada/xml 1.4.0 sha256-") && lines[2].starts_with("example.com/bob/utf 1.0.0 sha256-"), "{lock}");
+    assert_eq!(run(&["main.sg"]), (0, "xml 1.4 on utf 1.0\n".into(), String::new()));
+    if has_compiler() {
+        let out = dir.join("shop-built");
+        assert_eq!(run(&["build", "main.sg", "-o", &out.to_string_lossy()]), (0, String::new(), String::new()));
+        assert_eq!(ran(&Command::new(program(&dir, "shop-built")).output().unwrap()), (0, "xml 1.4 on utf 1.0\n".into(), String::new()));
+    }
+
+    // The files of the tag, read only, in a folder named by their SHA-256; the other package
+    // kept in the repository is left out.
+    let folders = cached(&cache);
+    let xml_folder = folders.iter().find(|folder| folder.join("xml.sg").exists()).expect("xml is in the cache");
+    assert!(lines[1].ends_with(&*xml_folder.file_name().unwrap().to_string_lossy()));
+    assert!(xml_folder.join("README.md").exists() && !xml_folder.join("examples").exists());
+    assert!(std::fs::metadata(xml_folder.join("xml.sg")).unwrap().permissions().readonly());
+    assert_eq!(folders.len(), 2, "{folders:?}");
+
+    // The package the program does not name cannot be reached from it, by any name.
+    write(&program_dir, "other.sg", "use utf_1\n\nvoid main() {\n    print(utf_1.name())\n}\n");
+    assert_eq!(run(&["other.sg"]).0, 1);
+    std::fs::remove_file(program_dir.join("other.sg")).unwrap();
+
+    // Without the cache, what the lock holds is fetched again.
+    std::fs::remove_dir_all(&cache).unwrap();
+    assert_eq!(run(&["main.sg"]), (0, "xml 1.4 on utf 1.0\n".into(), String::new()));
+
+    let (code, out, err) = run(&["update", "xml"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "example.com/ada/xml 1.5.0 (1.4.0 before)\nexample.com/bob/utf 1.1.0 (1.0.0 before)\n");
+    assert_eq!(std::fs::read_to_string(program_dir.join("sg.project")).unwrap(), "require xml example.com/ada/xml 1.5.0\n");
+    assert_eq!(run(&["main.sg"]), (0, "xml 1.5 on utf 1.1\n".into(), String::new()));
+    assert_eq!(run(&["update"]), (0, "every package is at its newest version\n".into(), String::new()));
+
+    // A tag moved to other files no longer has the SHA-256 the lock holds.
+    put("1.5.0", xml_files("1.1.0", &xml("xml 1.5, moved")));
+    std::fs::remove_dir_all(&cache).unwrap();
+    let (code, _, err) = run(&["main.sg"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("the tag v1.5.0 of example.com/ada/xml has other files than sg.lock holds") && err.contains("the tag was moved"), "{err}");
+
+    let (code, out, err) = run(&["remove", "xml"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "example.com/ada/xml 1.5.0 (taken away)\nexample.com/bob/utf 1.1.0 (taken away)\n");
+    assert_eq!(std::fs::read_to_string(program_dir.join("sg.project")).unwrap(), "");
+    assert!(!program_dir.join("sg.lock").exists());
+}
+
+/// The lock is only read when a program runs, and one that does not fit `sg.project` stops it
+/// with 2 and the line; `sg lock` makes it fit without raising a version (choice 1580).
+#[test]
+fn the_lock_fits_the_project() {
+    let dir = work("the_lock_fits_the_project");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    for version in ["1.0.0", "1.1.0"] {
+        publish_sg(&mirror, "example.com/bob/utf", version, "", "utf", &format!("public string name() {{\n    return \"utf {version}\"\n}}\n"));
+    }
+    write(&program_dir, "main.sg", "use utf\n\nvoid main() {\n    print(utf.name())\n}\n");
+    let run = |words: &[&str]| ran(&sg_with(&program_dir, &mirror, &cache, words));
+    let stops = |said: &str| {
+        let (code, out, err) = run(&["main.sg"]);
+        assert!(code == 2 && out.is_empty() && err.contains(said) && err.contains("`sg lock` writes it again from `sg.project`"), "{said}: {err}");
+    };
+    write(&program_dir, "sg.project", "require utf example.com/bob/utf 1.0.0\n");
+    stops("sg.lock has no example.com/bob/utf 1.0.0");
+    assert_eq!(run(&["lock"]), (0, "example.com/bob/utf 1.0.0 (added)\n".into(), String::new()));
+    assert_eq!(run(&["main.sg"]), (0, "utf 1.0.0\n".into(), String::new()));
+    write(&program_dir, "sg.project", "require utf example.com/bob/utf 1.1.0\n");
+    stops("sg.lock has example.com/bob/utf 1.0.0, older than the 1.1.0 the line asks for");
+    assert_eq!(run(&["lock"]), (0, "example.com/bob/utf 1.1.0 (1.0.0 before)\n".into(), String::new()));
+    assert_eq!(run(&["main.sg"]), (0, "utf 1.1.0\n".into(), String::new()));
+    write(&program_dir, "sg.project", "// nothing\n");
+    write(&program_dir, "main.sg", "void main() {\n    print(1)\n}\n");
+    stops("example.com/bob/utf 1.1.0 is used by nothing");
+    write(&program_dir, "sg.lock", "example.com/bob/utf 1.1.0 sha256-12\n");
+    stops("sg.lock:1: `sha256-12` is not a SHA-256");
+    // The commands that are not usages, and a version no tag has.
+    assert_eq!(run(&["lock", "x"]).0, 2);
+    assert_eq!(run(&["add"]).0, 2);
+    let (code, _, err) = run(&["add", "example.com/bob/utf@2"]);
+    assert!(code == 1 && err.contains("example.com/bob/utf has no version that fits `example.com/bob/utf@2`: its versions are 1.0.0, 1.1.0"), "{err}");
+    let (code, _, err) = run(&["add", "example.com/bob/nothing"]);
+    assert!(code == 1 && err.contains("example.com/bob/nothing is not in the mirror SG_MIRROR names"), "{err}");
+}
+
+/// What git lists is checked before a file is written (choices 1573, 1574): a link, a
+/// submodule, two names that differ only in case, a name Windows keeps and a file too large are
+/// refused, and nothing is written.
+#[test]
+fn refuses_a_package_not_every_system_can_hold() {
+    let dir = work("refuses_a_package_not_every_system_can_hold");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    let project = b"package example.com/eve/bad\n".as_slice();
+    let code = b"public int one() {\n    return 1\n}\n".as_slice();
+    let large = vec![b'x'; (16 << 20) + 1];
+    // The version, its files (mode, path, bytes) and what the message says.
+    type Case<'a> = (&'a str, Vec<(&'a str, &'a str, &'a [u8])>, &'a str);
+    let cases: &[Case] = &[
+        ("1.0.0", vec![("120000", "bad.sg", b"/etc/passwd".as_slice())], "bad.sg is a link, and a package has none"),
+        ("1.1.0", vec![("160000", "inner", b"".as_slice())], "inner is a submodule, and a package has none"),
+        ("1.2.0", vec![("100644", "Bad.sg", code), ("100644", "bad.sg", code)], "Bad.sg and bad.sg differ only in case"),
+        ("1.3.0", vec![("100644", "lib/con.sg", code)], "has a name Windows keeps for a device"),
+        ("1.4.0", vec![("100644", "data.bin", large.as_slice())], "data.bin has 16777217 bytes, more than the 16 MB a file of a package may have"),
+    ];
+    for (version, files, said) in cases {
+        let mut files = files.clone();
+        files.push(("100644", "sg.project", project));
+        // A submodule's line names a commit, which need not be in the repository.
+        let files: Vec<(&str, &str, Vec<u8>)> =
+            files.iter().map(|(mode, path, bytes)| (*mode, *path, if *mode == "160000" { Vec::new() } else { bytes.to_vec() })).collect();
+        let repository = mirror.join("example.com/eve/bad");
+        if !repository.exists() {
+            std::fs::create_dir_all(&repository).unwrap();
+            git(&repository, &["init", "-q", "--bare"], None, b"");
+        }
+        let index = mirror.join("index");
+        let _ = std::fs::remove_file(&index);
+        for (mode, path, bytes) in &files {
+            let object = match *mode {
+                "160000" => "1111111111111111111111111111111111111111".to_string(),
+                _ => git(&repository, &["hash-object", "-w", "--stdin", "--no-filters"], None, bytes),
+            };
+            git(&repository, &["update-index", "--add", "--cacheinfo", &format!("{mode},{object},{path}")], Some(&index), b"");
+        }
+        let tree = git(&repository, &["write-tree"], Some(&index), b"");
+        let commit = git(&repository, &["commit-tree", &tree, "-m", version], None, b"");
+        git(&repository, &["update-ref", &format!("refs/tags/v{version}"), &commit], None, b"");
+        let (code, out, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", &format!("example.com/eve/bad@{version}")]));
+        assert!(code == 1 && out.is_empty() && err.contains(&format!("example.com/eve/bad {version} is refused: ")) && err.contains(said), "{version}: {err}");
+        assert!(!program_dir.join("sg.project").exists() && !program_dir.join("sg.lock").exists());
+        assert_eq!(cached(&cache), Vec::<PathBuf>::new(), "{version}");
+    }
+}
+
+/// `unsafe` in a package is allowed only by the program (choices 1562, 1578, 1583): on the
+/// package's own `require` line, also for one the program uses through another; a new version
+/// that starts to use it stops `sg update`.
+#[test]
+fn unsafe_in_a_package_is_the_programs_to_allow() {
+    let dir = work("unsafe_in_a_package_is_the_programs_to_allow");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    publish_sg(&mirror, "example.com/bo/zlib", "1.0.0", "", "zlib", "public int seven() {\n    return 7\n}\n");
+    let raw = "public int seven() {\n    var cells = Memory.allocate<int>(1)\n    var seen = 0\n    unsafe {\n        cells[0] = 7\n        seen = cells[0]\n        Memory.free(cells)\n    }\n    return seen\n}\n";
+    publish_sg(&mirror, "example.com/bo/zlib", "1.1.0", "", "zlib", raw);
+    publish_sg(&mirror, "example.com/ada/wrap", "1.0.0", "require zlib example.com/bo/zlib 1.1.0\n", "wrap", "use zlib\n\npublic int eight() {\n    return zlib.seven() + 1\n}\n");
+    let run = |words: &[&str]| ran(&sg_with(&program_dir, &mirror, &cache, words));
+    write(&program_dir, "main.sg", "use zlib\n\nvoid main() {\n    print(zlib.seven())\n}\n");
+    assert_eq!(run(&["add", "example.com/bo/zlib@1.0"]).0, 0);
+    assert_eq!(run(&["main.sg"]), (0, "7\n".into(), String::new()));
+    let (code, _, err) = run(&["update", "zlib"]);
+    assert!(code == 1 && err.contains("example.com/bo/zlib 1.1.0 uses `unsafe`, which the version before did not, and nothing is written"), "{err}");
+    assert_eq!(std::fs::read_to_string(program_dir.join("sg.project")).unwrap(), "require zlib example.com/bo/zlib 1.0.0\n");
+
+    write(&program_dir, "sg.project", "require zlib example.com/bo/zlib 1.1.0\n");
+    let (code, out, _) = run(&["lock"]);
+    assert_eq!((code, out.as_str()), (0, "example.com/bo/zlib 1.1.0 (1.0.0 before, uses `unsafe`)\n    the program builds with it once a `require` line of it ends in `unsafe`: `require zlib example.com/bo/zlib 1.1.0 unsafe`\n"));
+    assert!(std::fs::read_to_string(program_dir.join("sg.lock")).unwrap().contains(" unsafe\n"));
+    let (code, _, err) = run(&["main.sg"]);
+    assert!(code == 1 && err.contains("`unsafe` is in the package example.com/bo/zlib, and the program's `sg.project` does not allow it"), "{err}");
+    assert!(err.contains("by ending the package's `require` line in `unsafe`: `require zlib example.com/bo/zlib 1.1.0 unsafe`"), "{err}");
+    write(&program_dir, "sg.project", "require zlib example.com/bo/zlib 1.1.0 unsafe\n");
+    assert_eq!(run(&["main.sg"]), (0, "7\n".into(), String::new()));
+
+    // Through another package: the program names it on a line of its own.
+    write(&program_dir, "sg.project", "require wrap example.com/ada/wrap 1.0.0\n");
+    write(&program_dir, "main.sg", "use wrap\n\nvoid main() {\n    print(wrap.eight())\n}\n");
+    assert_eq!(run(&["lock"]).0, 0);
+    let (code, _, err) = run(&["main.sg"]);
+    assert!(code == 1 && err.contains("through another package, and allows it on a `require` line of its own that ends in `unsafe`: `require zlib example.com/bo/zlib 1.1.0 unsafe`"), "{err}");
+    write(&program_dir, "sg.project", "require wrap example.com/ada/wrap 1.0.0\nrequire zlib example.com/bo/zlib 1.1.0 unsafe\n");
+    assert_eq!(run(&["main.sg"]), (0, "8\n".into(), String::new()));
 }

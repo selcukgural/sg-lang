@@ -319,8 +319,24 @@ require letters example.com/bob/utf 1.1.0
 ```
 
 The word after `require` is the name the program writes after `use`; without it, the last part of the address
-is the name. Fetching packages is the next step of the language. Until then, a `local` line takes a package
-from a folder, written from the folder of `sg.project`:
+is the name. `sg add` writes such a line, with the newest version that fits, and fetches the package:
+
+```text
+$ sg add example.com/ada/xml@1.4
+example.com/ada/xml 1.4.0 (added)
+example.com/bob/utf 1.0.0 (added)
+```
+
+A package is fetched with `git` from `https://` and its address, and no code of it runs while it is fetched
+or built. Its files are kept once for you, read only, in a cache (`SG_CACHE` names another folder), and
+`sg.lock` beside `sg.project` holds the SHA-256 of each package's files: the program builds from the same
+files on every machine, and a tag moved to other files is refused. The versions are chosen as Go chooses
+them, the least each `require` asks for, so a new release of a package changes no build until you run
+`sg update`. `sg remove xml` takes a package away, and `sg lock` writes `sg.lock` again after you change
+`sg.project` by hand. A package another package uses is fetched too, and the program need not name it.
+
+A `local` line takes a package from a folder instead, written from the folder of `sg.project`, while you
+work on both:
 
 ```text
 local xml ../lib/xml
@@ -347,6 +363,16 @@ names its own `sg.project` gives them. A package sees nothing of the program tha
 it does not find the program's folder `stock`. Its `internal` folder is its own. A folder beside the program
 cannot have the name of a package, and a package kept inside the program's folder is read only as the
 package.
+
+A package with `unsafe` or `extern` in it is built only when the program allows it, with `unsafe` at the end
+of the package's line, also for a package it uses through another:
+
+```text
+require zlib example.com/bo/zlib 1.2.0 unsafe
+```
+
+`sg add` and `sg update` show which packages use `unsafe` and which libraries of C they link, and an update
+to a version that starts to use `unsafe` stops until you allow it.
 
 ## Type aliases: `using`
 

@@ -392,7 +392,7 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
         eprintln!("{USAGE}");
         ExitCode::from(2)
@@ -405,6 +405,17 @@ fn main() -> ExitCode {
             _ if word.starts_with("-L") => lead += 1,
             _ => break,
         }
+    }
+    // The commands of packages, on the `sg.project` of the current folder (choices 1564, 1580).
+    if args.first().is_some_and(|word| matches!(word.as_str(), "add" | "update" | "remove" | "lock")) {
+        return match sg::fetch::command(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(sg::fetch::Failure::Usage) => usage(),
+            Err(sg::fetch::Failure::Error(message)) => {
+                eprintln!("error: {message}");
+                ExitCode::from(1)
+            }
+        };
     }
     // The language server an editor starts: it talks on the input and the output (choice 1370).
     if args.first().is_some_and(|word| word == "lsp") {

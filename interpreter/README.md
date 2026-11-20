@@ -36,7 +36,7 @@ of `tests/Containerfile` has them.
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
-| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program. Packages: an `sg.project` beside the program names them, `require xml example.com/ada/xml 1.4.0`, and until they are fetched `local xml ../xml` takes one from a folder; `use xml` and `use xml.reader` name its modules, and inside it `use reader` names its own. A folder `internal` is named only from inside the folder that holds it |
+| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program. Packages: an `sg.project` beside the program names them, `require xml example.com/ada/xml 1.4.0`; `sg add`, `sg update`, `sg remove` and `sg lock` fetch them with `git` into a cache and pin each by the SHA-256 of its files in `sg.lock`, and `local xml ../xml` takes one from a folder; `use xml` and `use xml.reader` name its modules, and inside it `use reader` names its own. `unsafe` in a package is allowed only by the program's `require` line. A folder `internal` is named only from inside the folder that holds it |
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `CLong` and `CULong` (C's `long` and `unsigned long`), `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, pointers to functions of C `CFunc<A, R>`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
@@ -9602,6 +9602,91 @@ seven ways an `sg.project` cannot be followed, each stopping with 2 and the line
 the program's folder; in `project.rs`, the lines and thirteen wrong ones. The whole of the tests passes on macOS, with 483 of the 1853 programs
 compiled as before; the back end is unchanged, so it was not run again on Linux, and Windows runs it in CI.
 
+Choices made in the hundred-and-thirty-eighth slice (packages, second: fetching them, the lock, the cache and
+the commands), approved on 20 November 2026; they build 1558, 1559 and 1562-1564:
+
+1571. **The lock `sg.lock` has a line for each package the program uses**, the ones it uses through others
+     too, sorted by address so a change shows as its own lines: the address, the version chosen, the
+     SHA-256 and, after them, `unsafe` and `c=z,m` for the libraries of C it links. The `sg.lock` of a
+     package is not read, as Go reads no `go.sum` but the main module's. Cargo writes TOML; `go.sum` has two
+     hashes for each module.
+1572. **The SHA-256 is of the tree of files, as Zig's**: the files are put in the byte order of their paths,
+     and each gives its path, a byte 0, its length and its bytes. Whether a file may be run is not in it:
+     no file of a package runs (1559).
+1573. **`sg` writes the files of a package, not git**: `git clone --bare --depth 1 --branch v1.4.0 -- URL`,
+     then `git ls-tree -r -l` gives each path, its kind and its size, a link (120000) or a submodule (160000)
+     is refused, the sizes are checked before anything is written, and `git cat-file --batch` gives the
+     bytes. A checkout would run the filters of the user's git (a smudge filter is code that runs) and turn
+     the ends of lines on Windows (`core.autocrlf`), giving one package two hashes. Git runs with
+     `GIT_ALLOW_PROTOCOL=https:ssh`, `GIT_TERMINAL_PROMPT=0` (an error, not a question that never ends) and a
+     limit of slow transfer; the user's credentials and `insteadOf` are kept. Without `git` the message
+     says so.
+1574. **The limits of a package**: 64 MB in all, 16 MB a file, 10,000 files, and the names Go allows on every
+     system: no `..`, `\`, `:` or control characters, no `CON`, `NUL` and the other names Windows keeps, no
+     name ending in a dot or a space, and no two paths that differ only in case. Git cannot limit what it
+     downloads, so the limit is on what is written.
+1575. **An address is a repository**: it is fetched from `https://` and the address, and its package is at
+     the root of the repository. Go's packages in a folder of a repository (tags `sub/v1.0.0`) and its
+     lookup of other addresses through `?go-get=1` come later, if they are asked for.
+1576. **A program names only the packages it uses**, in place of 1568: a package that only another uses is
+     kept under a name nobody can write (its address and major version) and read from the cache. To take
+     such a package from a folder the program writes a `require` line for it and its `local` line; a
+     `require` line nothing uses is not an error, it raises the least version, as in Go.
+1577. **Versions**: `sg add` and `sg update` read the tags with `git ls-remote --tags --refs`, and only
+     `vX.Y.Z` counts, no versions before a release; `@1.4` is the newest 1.4.x, `@1` the newest 1.x, `@1.4.2`
+     that one. Minimal version selection reads the `sg.project` of each package at the version reached.
+     `sg.project` keeps the least version the program asks for, `sg.lock` the version chosen.
+1578. **`unsafe` is found in the source when a program is built**, in every package, `local` ones too, which
+     have no line in the lock; the word in the lock is there to be read in a diff and shown by `sg add`.
+1579. **The cache**: a folder `sha256-<hex>` for each package, read only, written in a folder of its own and
+     renamed into place, so two `sg` at once do not spoil it; it is not hashed again at each build, as Go's
+     is not.
+1580. **`sg lock` makes the lock fit `sg.project`**, raising no version, as Go's `go mod tidy`; `sg`,
+     `sg build` and `sg test` stop on a lock that does not fit and name it, and `sg update` is for newer
+     versions.
+1581. **A package is every file of its tag**, but the folders with an `sg.project` of their own (1567):
+     the licence and the README stay with it, and its size is kept by 1574.
+1582. **`SG_MIRROR` names a folder of bare repositories**, `folder/<address>`, and packages are taken from it
+     alone, never from the network: for a network that is closed, as Go's `GOPROXY=file://`, and for the
+     tests. `file://` is allowed for that folder and nothing else.
+
+Found while it was written, approved the same day:
+
+1583. **A package the program uses through another is allowed `unsafe` on a `require` line of its own**:
+     `require zlib example.com/bo/zlib 1.2.0 unsafe` beside `require wrap ...`, a line nothing in the
+     program uses, which 1576 allows. The `unsafe` of each package is then said once, on its own line,
+     whichever package brings it; the `unsafe` of the package that brings it does not cover it.
+1584. **A package only another uses is kept under the last part of its address and its major version**,
+     `utf_1`, then `utf_1_2` when the program has that name already: a name no file can reach, since a file
+     reaches only the packages its own `sg.project` names, and which a message about one of its types
+     shows (`utf_1.Text`).
+1585. **`sg update` without a name raises the packages the program names**, each to the newest version of
+     its major version; those it uses through them rise only as far as the new versions ask. Go's `go get
+     -u` raises them too, and a newer version nobody asked for is a change nobody read.
+1586. **`sg add` writes the name on the line**, `require xml example.com/ada/xml 1.4.0`, the last part of
+     the address or, when that cannot be written after `use`, the one 1555's message suggests; a name the
+     program has already stops it, with the line to write by hand.
+1587. **The lock is checked, not chosen again, when a program runs**: each `require` has a line of the
+     lock at its version or newer, each package's own `require` too, and each line of the lock is used;
+     the versions minimal version selection would choose are found only by `sg lock`, which reads every
+     version reached, and a line for a package a `local` line takes from a folder is left alone.
+1588. **What `sg add`, `sg update`, `sg remove` and `sg lock` print** is a line for each package that came,
+     changed or went, `example.com/ada/xml 1.5.0 (1.4.0 before, uses `unsafe`, links the C libraries z)`,
+     with the `require` line to write under a package whose `unsafe` the program does not allow yet; git
+     runs in English (`LC_ALL=C`) so its words in a message are the same on every machine.
+
+Tested in `cli.rs` against repositories made in a mirror by git's plumbing: a program that names `xml`,
+which uses `utf` under a name the program cannot reach, added, run, compiled, fetched again without the
+cache, updated, refused when its tag is moved and removed; a lock that does not fit `sg.project` in each
+of four ways and made to fit by `sg lock` without raising a version; a link, a submodule, two names that
+differ only in case, a name Windows keeps and a file of 16 MB and a byte, each refused with nothing
+written; and `unsafe` allowed on the package's own line, also for one used through another, and an update
+that starts to use it stopped. In `fetch.rs`, the lock read and written, the hash of a tree, the names
+refused, the lines edited and `unsafe` found only in code; in `sha256.rs`, the values of FIPS 180-4.
+The whole of the tests passes on macOS, with 483 of the 1853 programs compiled as before (the back end is
+unchanged); on Linux the tests of `cli.rs` and of the library, and on Windows on Arm the tests of packages,
+pass too, where Git for Windows is told to take the name `con.sg` into the tests' repositories.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9768,10 +9853,12 @@ check off.
 
 ## Not here yet
 
-- **Of packages (1552, 1555-1570)**: fetching them, the lock, the cache, `sg add`, `sg update` and `sg
-  remove`, and the check of `unsafe` (1558, 1559, 1562-1564) come in the next slice; until then a package is
-  taken from a folder by a `local` line, and every package is named in the program's `sg.project`.
-  Versions are read and checked as written, and nothing is chosen among them yet.
+- **Of packages (1552, 1555-1583)**: a package in a folder of a repository (Go's `sub/v1.0.0` tags), an
+  address that leads to another through `?go-get=1`, versions before a release, branches and commits, a
+  mirror on the network and a page of packages (1575, 1577, 1552); `vcpkg` and `pkg-config` for the
+  libraries of C (1560). Git cannot limit what it downloads, so a repository that is too large is found
+  only once it is down (1574). A folder `tmp-` that an `sg` stopped while fetching leaves in the cache is
+  not cleaned, and nothing takes old packages out of the cache yet.
 
 - **Of the output (1543-1547)**: on Windows, the message of an output that cannot be written is C's text of
   the error compiled and Windows' interpreted (1547). The padding inside a struct of
@@ -10287,10 +10374,10 @@ compiler `CC` names and an `IoError` written as a sentence (1525-1539). What the
 the next trial (1543): `print` first, which writes into a block of the program's own, its lines put
 together where they are printed (1544-1546), and ends compiled code where it cannot write, as it ends the
 interpreter (1547); then reading lines and a search for a plain text, found by its two rarest bytes, and
-UTF-8 checked faster (1549, 1550). Packages have begun (1552, 1555-1570): a program's `sg.project` names
-them, a package is taken from a folder for now, and a folder `internal` keeps a library's own modules to
-itself; fetching them by `git`, pinned by the SHA-256 of their files in `sg.lock`, with no registry, comes
-next. Then every module of `std` is measured against
+UTF-8 checked faster (1549, 1550). Packages are here (1552, 1555-1583): a program's `sg.project` names
+them, `sg add` fetches them by `git`, with no registry, pinned by the SHA-256 of their files in `sg.lock`
+and kept in a cache, the versions chosen by minimal version selection, the `unsafe` of each allowed only
+by the program, and a folder `internal` keeps a library's own modules to itself. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

@@ -41,8 +41,7 @@ the first; the
 
 ## Not yet
 
-Generics of your own, fetching packages (a program's `sg.project` takes them from folders for now) and a full
-standard library. Closures are left out on purpose: a
+Generics of your own and a full standard library. Closures are left out on purpose: a
 function value is the address of a named function. On this site, the reference of
 the language is still to be written, and the pages of the library are written by hand until `sg doc` makes them
 from the source. The repository keeps the full list:
