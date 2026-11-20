@@ -5,6 +5,31 @@ use std::path::PathBuf;
 
 use sg::Stop;
 
+/// A line of the tool's own on the standard error: its usage, a check's error, what it could not
+/// do. A pipe whose reader is gone ends the tool by `SIGPIPE` on Linux and macOS, as its output
+/// does (1330, 1604); any other failure loses the line, and the tool ends with the code it would
+/// have, 1 or 2.
+macro_rules! tell {
+    ($($arg:tt)*) => {
+        told(writeln!(std::io::stderr(), $($arg)*))
+    };
+}
+
+/// The same without the end of the line.
+macro_rules! tell_part {
+    ($($arg:tt)*) => {
+        told(write!(std::io::stderr(), $($arg)*))
+    };
+}
+
+fn told(written: std::io::Result<()>) {
+    if let Err(error) = written {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            sg::signals::end_by_closed_output();
+        }
+    }
+}
+
 /// Takes the folders `-L` names out of the words (`-L folder` or `-Lfolder`), each checked and
 /// made absolute. `None` after the error is written.
 fn take_folders(words_left: &mut Vec<String>) -> Option<Vec<PathBuf>> {
@@ -16,7 +41,7 @@ fn take_folders(words_left: &mut Vec<String>) -> Option<Vec<PathBuf>> {
             Some("") => match words.next() {
                 Some(folder) => folder,
                 None => {
-                    eprintln!("error: -L names a folder: `-L folder`");
+                    tell!("error: -L names a folder: `-L folder`");
                     return None;
                 }
             },
@@ -29,7 +54,7 @@ fn take_folders(words_left: &mut Vec<String>) -> Option<Vec<PathBuf>> {
         match sg::link::folder(&written) {
             Ok(dir) => dirs.push(dir),
             Err(error) => {
-                eprintln!("error: {error}");
+                tell!("error: {error}");
                 return None;
             }
         }
@@ -68,7 +93,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let mut sources = match sg::load(std::path::Path::new(path), made == Made::Tests) {
         Ok(sources) => sources,
         Err(error) => {
-            eprintln!("error: {error}");
+            tell!("error: {error}");
             return ExitCode::from(2);
         }
     };
@@ -83,7 +108,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let (code, header) = match emitted {
         Ok(code) => code,
         Err(diag) => {
-            eprint!("{}", diag.render_in(&sources));
+            tell_part!("{}", diag.render_in(&sources));
             return ExitCode::FAILURE;
         }
     };
@@ -91,7 +116,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let work = match sg::cc::Work::new() {
         Ok(work) => work,
         Err(error) => {
-            eprintln!("error: cannot make a folder for the build in the temporary folder: {error}");
+            tell!("error: cannot make a folder for the build in the temporary folder: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -99,7 +124,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     // The libraries the `extern` blocks of the program name.
     let libs = sg::emit_c::link_flags(&code);
     if let Err(error) = std::fs::write(&c_file, code) {
-        eprintln!("error: cannot write {}: {error}", c_file.display());
+        tell!("error: cannot write {}: {error}", c_file.display());
         return ExitCode::FAILURE;
     }
     let level = if release { "-O2" } else { "-O0" };
@@ -113,7 +138,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         _ => match sg::cc::compiler() {
             Ok(compiler) => compiler,
             Err(error) => {
-                eprintln!("error: {error}");
+                tell!("error: {error}");
                 return ExitCode::FAILURE;
             }
         },
@@ -127,7 +152,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         Made::Program | Made::Tests | Made::Shared => match sg::cc::link_flags(work.path()) {
             Ok(flags) => flags,
             Err(error) => {
-                eprintln!("error: cannot write the manifest of the program: {error}");
+                tell!("error: cannot write the manifest of the program: {error}");
                 return ExitCode::FAILURE;
             }
         },
@@ -193,11 +218,11 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             match archived {
                 Ok(archived) if archived.success() => Ok(archived),
                 Ok(_) => {
-                    eprintln!("error: `{archiver}` could not make {out}");
+                    tell!("error: `{archiver}` could not make {out}");
                     return ExitCode::FAILURE;
                 }
                 Err(error) => {
-                    eprintln!("error: cannot run `{archiver}`: {error}");
+                    tell!("error: cannot run `{archiver}`: {error}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -218,13 +243,13 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             // Windows has no `rpath`: the DLLs of the libraries of `-L` go beside the program.
             if cfg!(windows) && matches!(made, Made::Program | Made::Tests | Made::Shared) {
                 for line in sg::link::copy_dlls(&libs, dirs, std::path::Path::new(&out)) {
-                    eprintln!("{line}");
+                    tell!("{line}");
                 }
             }
             let Some(header) = header else { return ExitCode::SUCCESS };
             let header_path = std::path::Path::new(&out).with_file_name(format!("{name}.h"));
             if let Err(error) = std::fs::write(&header_path, header) {
-                eprintln!("error: cannot write {}: {error}", header_path.display());
+                tell!("error: cannot write {}: {error}", header_path.display());
                 return ExitCode::FAILURE;
             }
             let linked = match made {
@@ -245,23 +270,23 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         }
         Ok(_) if !libs.is_empty() => {
             if let Some(diag) = sg::missing_library(&sources, made == Made::Tests, matches!(made, Made::Static | Made::Shared)) {
-                eprint!("{}", diag.render_in(&sources));
+                tell_part!("{}", diag.render_in(&sources));
                 return ExitCode::FAILURE;
             }
-            eprintln!("error: the C compiler could not build the program; is every library it links ({}) installed where the C compiler looks?", libs.join(" "));
+            tell!("error: the C compiler could not build the program; is every library it links ({}) installed where the C compiler looks?", libs.join(" "));
             ExitCode::FAILURE
         }
         Ok(_) if machine.target.is_some() => {
             let target = machine.target.as_deref().unwrap_or_default();
-            eprintln!("error: `{compiler}` did not build the program for `{target}`; if it does not know that machine (Apple's Clang knows only its own), `CC` names a Clang that does");
+            tell!("error: `{compiler}` did not build the program for `{target}`; if it does not know that machine (Apple's Clang knows only its own), `CC` names a Clang that does");
             ExitCode::FAILURE
         }
         Ok(_) => {
-            eprintln!("error: the C compiler did not accept the program; this is a mistake in sg");
+            tell!("error: the C compiler did not accept the program; this is a mistake in sg");
             ExitCode::FAILURE
         }
         Err(error) => {
-            eprintln!("error: cannot run the C compiler `{compiler}`: {error}");
+            tell!("error: cannot run the C compiler `{compiler}`: {error}");
             ExitCode::FAILURE
         }
     }
@@ -280,7 +305,7 @@ fn say(text: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("error: cannot write output: {error}");
+            tell!("error: cannot write output: {error}");
             ExitCode::FAILURE
         }
     }
@@ -299,7 +324,7 @@ fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
     let work = match sg::cc::Work::new() {
         Ok(work) => work,
         Err(error) => {
-            eprintln!("error: cannot make a folder for the tests in the temporary folder: {error}");
+            tell!("error: cannot make a folder for the tests in the temporary folder: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -314,7 +339,7 @@ fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(error) => {
-            eprintln!("error: cannot run the compiled tests: {error}");
+            tell!("error: cannot run the compiled tests: {error}");
             ExitCode::FAILURE
         }
     }
@@ -394,7 +419,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
     const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
-        eprintln!("{USAGE}");
+        tell!("{USAGE}");
         ExitCode::from(2)
     };
     // The folders `-L` names before the program, whose own words come after it.
@@ -412,7 +437,7 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(sg::fetch::Failure::Usage) => usage(),
             Err(sg::fetch::Failure::Error(message)) => {
-                eprintln!("error: {message}");
+                tell!("error: {message}");
                 ExitCode::from(1)
             }
         };
@@ -512,7 +537,7 @@ fn main() -> ExitCode {
             if let Some(out) = &out {
                 let folder = std::path::Path::new(out).parent().filter(|folder| !folder.as_os_str().is_empty());
                 if let Some(folder) = folder.filter(|folder| !folder.is_dir()) {
-                    eprintln!("error: cannot write {out}: there is no folder {}", folder.display());
+                    tell!("error: cannot write {out}: there is no folder {}", folder.display());
                     return ExitCode::from(2);
                 }
                 let file = match made {
@@ -521,8 +546,8 @@ fn main() -> ExitCode {
                 };
                 if std::path::Path::new(&file).is_dir() {
                     match named {
-                        true => eprintln!("error: cannot write {file}: it is a folder"),
-                        false => eprintln!("error: `{file}` is a folder; name the program with -o"),
+                        true => tell!("error: cannot write {file}: it is a folder"),
+                        false => tell!("error: `{file}` is a folder; name the program with -o"),
                     }
                     return ExitCode::from(2);
                 }
@@ -548,7 +573,7 @@ fn main() -> ExitCode {
     let mut sources = match sg::load(std::path::Path::new(&path), tests) {
         Ok(sources) => sources,
         Err(error) => {
-            eprintln!("error: {error}");
+            tell!("error: {error}");
             return ExitCode::from(2);
         }
     };
@@ -587,21 +612,21 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => closed(),
             Err(error) => {
-                eprintln!("error: cannot write output: {error}");
+                tell!("error: cannot write output: {error}");
                 ExitCode::FAILURE
             }
         },
-        Err(Stop::Diag(diag)) => {
-            eprint!("{}", diag.render_in(&sources));
+        Err(stop @ Stop::Diag(_)) => {
+            sg::tell_at_end(&stop, &sources);
             ExitCode::FAILURE
         }
         // The program's error, and then the output's, if it could not be written (1603); a
         // pipe whose reader is gone is not told.
-        Err(Stop::Failed(text)) => {
-            eprintln!("error: {text}");
+        Err(stop @ Stop::Failed(_)) => {
+            sg::tell_at_end(&stop, &sources);
             if let Err(error) = &flushed {
                 if error.kind() != std::io::ErrorKind::BrokenPipe {
-                    eprintln!("error: cannot write output: {error}");
+                    tell!("error: cannot write output: {error}");
                 }
             }
             ExitCode::FAILURE
@@ -612,14 +637,14 @@ fn main() -> ExitCode {
         Err(Stop::Exit(code)) => match flushed {
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => closed(),
             Err(error) => {
-                eprintln!("error: cannot write output: {error}");
+                tell!("error: cannot write output: {error}");
                 ExitCode::FAILURE
             }
             Ok(()) => ExitCode::from(code),
         },
         Err(Stop::OutputClosed) => closed(),
         Err(Stop::OutputFailed(error)) => {
-            eprintln!("error: cannot write output: {error}");
+            tell!("error: cannot write output: {error}");
             ExitCode::FAILURE
         }
     }

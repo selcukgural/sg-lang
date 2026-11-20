@@ -1,0 +1,6 @@
+// A struct that holds itself through a `Result` has no finite size (1596): the tool's stack ran out.
+struct A {
+    Result<A, int> r
+}
+void main() {
+}

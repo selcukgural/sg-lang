@@ -1,0 +1,5 @@
+error: there is no file `a`ş `.bin` beside this file
+  it is looked for at a`ş `.bin
+  --> error_embed_name_any_letter.sg:2:21
+ 2 | const byte[] Logo = embed("a`ş `.bin")
+   |                     ^^^^^^^^^^^^^^^^^^

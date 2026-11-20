@@ -1,0 +1,5 @@
+error: struct `A` contains itself, so it has no finite size
+  --> error_self_through_result.sg:3:5
+ 3 |     Result<A, int> r
+   |     ^^^^^^^^^^^^^^
+  hint: put it behind a pointer: `Result<A*, int> r`

@@ -1,0 +1,5 @@
+panic: key "a `apple` from std.IoError" is not in the map
+  `map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in
+  --> panic_map_key_as_written.sg:6:11
+ 6 |     print(prices[read wanted])
+   |           ^^^^^^^^^^^^^^^^^^^

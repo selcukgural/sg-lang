@@ -8,7 +8,9 @@
 //! folder of `-L` that is not there, a program that cannot be read, an output into a folder that
 //! is not there, and an output that is a folder. An output closed before the end (`sg x.sg | head`,
 //! `sg emit-c x.sg | head`) ends the program or the tool by `SIGPIPE` on Linux and macOS, with 0 on
-//! Windows; an output that cannot be written (a full disk) ends a program with a message and 1.
+//! Windows; an output that cannot be written (a full disk) ends a program with a message and 1. A
+//! standard error closed before the end ends the tool's message the same way (1604), and a
+//! program's as compiled code ends it: a panic with 1, `main`'s error by `SIGPIPE`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -330,6 +332,70 @@ fn a_panic_into_a_closed_output() {
         assert!(err.starts_with("panic: index 5 is out of range"), "{way}: {err}");
         assert_eq!(out.status.code(), Some(1), "{way}");
     }
+}
+
+/// A standard error no one reads (a pipe whose reader is gone) ends the tool by `SIGPIPE`, as
+/// its output does (1604): a check's error and a command line that is not a usage ended with
+/// 101, a Rust panic. A program ends as compiled code ends: a panic with 1, the message lost
+/// (1602), and `main`'s error by `SIGPIPE`, as a line of `printError` (1601).
+#[cfg(unix)]
+#[test]
+fn a_standard_error_no_one_reads() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = work("a_standard_error_no_one_reads");
+    write(&dir, "wrong.sg", WRONG);
+    let ended = |command: &mut Command| {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let status = command.stdout(Stdio::null()).stderr(writer).status().unwrap();
+        (status.code(), status.signal())
+    };
+    let tool = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+        command.current_dir(&dir);
+        command
+    };
+    assert_eq!(ended(tool().arg("wrong.sg")), (None, Some(13)), "a check's error");
+    assert_eq!(ended(tool().args(["nonsense", "x", "y"])), (None, Some(13)), "not a usage");
+    assert_eq!(ended(tool().arg("run")), (None, Some(13)), "no program");
+    let failing = "Result<void, string> main() {\n    return Error(\"no one reads this\")\n}\n";
+    for (mut command, way) in both_ways(&dir, &[("panics", PANICS), ("fails", failing)]) {
+        let expected = if way.starts_with("panics") { (Some(1), None) } else { (None, Some(13)) };
+        assert_eq!(ended(&mut command), expected, "{way}");
+    }
+}
+
+/// Folders whose links lead back into the folder of the program are walked once (1596): the
+/// tool walked them for ever, when it looked for what a missing name could be and when it ran
+/// the tests of every module.
+#[cfg(unix)]
+#[test]
+fn walks_a_folder_whose_links_go_round() {
+    let dir = work("walks_a_folder_whose_links_go_round");
+    for name in ["a", "b", "c"] {
+        std::os::unix::fs::symlink(".", dir.join(name)).unwrap();
+    }
+    write(&dir, "main.sg", "void main() {\n    var x = Missing()\n}\n");
+    for words in [&["main.sg"][..], &["test", "."][..]] {
+        let (code, _, err) = ran(&sg(&dir, words));
+        assert_eq!(code, 1, "{words:?}");
+        assert!(err.contains("there is no function named `Missing`"), "{words:?}: {err}");
+    }
+}
+
+/// Texts nested deeper than the parser takes are an error (1596): the tool looked for the names
+/// in each before it parsed, nested as deep as they were, and its stack ran out.
+#[test]
+fn refuses_texts_nested_too_deep() {
+    let dir = work("refuses_texts_nested_too_deep");
+    let mut body = "1".to_string();
+    for _ in 0..32_000 {
+        body = format!("$\"{{{body}}}\"");
+    }
+    write(&dir, "deep.sg", &format!("void main() {{\n    print({body})\n}}\n"));
+    let (code, _, err) = ran(&sg(&dir, &["deep.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: this is nested more than 1000 deep"), "{}", &err[..err.len().min(300)]);
 }
 
 #[test]

@@ -1,0 +1,19 @@
+// `A?` inside a `Result` is held by value too (1596): the interpreter ran it, and the back end's
+// stack ran out.
+struct A {
+    Result<A?, int> r
+    int n
+}
+void main() {
+    var inner = A { r = Ok(null), n = 1 }
+    var outer = A { r = Ok(inner), n = 2 }
+    match outer.r {
+        Ok(a) => {
+            if a is not null {
+                print(a.n)
+            }
+        }
+        Error(e) => print(e)
+    }
+    print(outer.n)
+}

@@ -1,0 +1,5 @@
+// An assert's code and the values it compared are shown as written (1596).
+void main() {
+    var name = "müşteri `ş` a `apple`"
+    assert(name == "a `apple` from std.IoError")
+}

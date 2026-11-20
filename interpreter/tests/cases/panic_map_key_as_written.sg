@@ -1,0 +1,7 @@
+// A key that is not in the map is shown as written (1596).
+void main() {
+    var prices = HashMap<string, int>()
+    prices.add("çay", 5)
+    var wanted = "a `apple` from std.IoError"
+    print(prices[read wanted])
+}

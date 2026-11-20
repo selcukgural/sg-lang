@@ -1,0 +1,6 @@
+// A panic's text is the program's own: it is shown as written, in any letters, with its
+// backticks and articles untouched (1596). It stopped the interpreter where a word before a
+// backtick ended in a letter of more than one byte, and `a` before code was made `an`.
+void main() {
+    panic("değer `x` bulunamadı: got a `int` from std.IoError, a `apple`")
+}

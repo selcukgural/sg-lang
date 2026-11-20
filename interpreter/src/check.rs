@@ -2196,20 +2196,8 @@ fn value_layouts(prog: &Program, structs: &HashMap<String, StructInfo>, enums: &
             _ => Vec::new(),
         };
         for field in &fields {
-            let mut inner = *field;
-            while let Ty::Array(item, _) | Ty::Atomic(item) | Ty::Nullable(item) | Ty::Locked(item) = inner {
-                inner = item;
-            }
-            if let Ty::Struct(other) | Ty::Enum(other) = inner {
+            for other in by_value(field) {
                 measure(other, prog, structs, enums, layouts)?;
-            }
-            for part in match inner {
-                Ty::Result(ok, error) | Ty::Entry(ok, error) => vec![&**ok, &**error],
-                _ => Vec::new(),
-            } {
-                if let Ty::Struct(other) | Ty::Enum(other) = part.strip_borrow() {
-                    measure(other, prog, structs, enums, layouts)?;
-                }
             }
         }
         let round = |size: u64, align: u64| size.checked_next_multiple_of(align.max(1));
@@ -4004,6 +3992,18 @@ fn unformattable<'t>(ty: &'t Ty, formattable: &HashSet<String>) -> Option<&'t st
     }
 }
 
+/// The structs and enums a value of `ty` holds in itself, those of both sides of a `Result` too
+/// (1596): what its size is measured from (`value_layout`). A borrow, a pointer and what lies on
+/// the heap are not held so.
+fn by_value(ty: &Ty) -> Vec<&str> {
+    match ty {
+        Ty::Struct(name) | Ty::Enum(name) => vec![name],
+        Ty::Nullable(inner) | Ty::Array(inner, _) | Ty::Atomic(inner) | Ty::Locked(inner) => by_value(inner),
+        Ty::Result(ok, error) | Ty::Entry(ok, error) => [by_value(ok), by_value(error)].concat(),
+        _ => Vec::new(),
+    }
+}
+
 /// A type that holds itself by value would have no finite size.
 fn contains_itself<'d>(
     kind: &str,
@@ -4016,22 +4016,11 @@ fn contains_itself<'d>(
             return false;
         }
         seen.push(from.to_string());
-        members[from].iter().any(|ty| match by_value(ty) {
-            Some(inner) => inner == target || reaches(inner, target, members, seen),
-            None => false,
-        })
+        members[from].iter().any(|ty| by_value(ty).into_iter().any(|inner| inner == target || reaches(inner, target, members, seen)))
     }
-    fn by_value(ty: &Ty) -> Option<&str> {
-        match ty {
-            Ty::Struct(name) | Ty::Enum(name) => Some(name),
-            Ty::Nullable(inner) | Ty::Array(inner, _) => by_value(inner),
-            _ => None,
-        }
-    }
-
     for (field, (_, ty)) in fields {
-        let Some(inner) = by_value(ty) else { continue };
-        if inner == name || reaches(inner, name, members, &mut Vec::new()) {
+        let Some(inner) = by_value(ty).into_iter().find(|inner| *inner == name || reaches(inner, name, members, &mut Vec::new())) else { continue };
+        {
             let written = ty.to_string();
             let pointer = written.replacen(inner, &format!("{inner}*"), 1);
             return Err(Diag::error(field.ty.span, format!("{kind} `{name}` contains itself, so it has no finite size"))

@@ -283,3 +283,89 @@ fn fetches_no_package() {
     assert!(!cache.exists(), "nothing is made in the cache");
     assert_eq!(client.finish(), 0);
 }
+
+/// A message in any letters is shown, and the server goes on checking (1596): a word of more
+/// than one byte before a backtick stopped the thread that checks, and what it showed last
+/// stayed for ever.
+#[test]
+fn shows_a_message_in_any_letters() {
+    let dir = folder("any_letters");
+    let path = dir.join("main.sg");
+    std::fs::write(&path, "void main() {\n}\n").unwrap();
+    let uri = sg::lsp::path_to_uri(&path);
+    let mut client = Client::start();
+    client.open(&uri, "const byte[] Logo = embed(\"a`ş `.bin\")\n\nvoid main() {\n    print(Logo.length())\n}\n");
+    let found = client.diagnostics(&uri);
+    let message = found.first().and_then(|diagnostic| diagnostic.get("message").as_str()).unwrap_or_default().to_string();
+    assert!(message.contains("there is no file `a`ş `.bin`"), "{found:?}");
+    client.change(&uri, "void main() {\n    print(1)\n}\n");
+    assert!(client.diagnostics(&uri).is_empty());
+    assert_eq!(client.finish(), 0);
+}
+
+/// Texts nested deeper than the parser takes are an error, not the end of the server (1596).
+#[test]
+fn refuses_texts_nested_too_deep() {
+    let dir = folder("nested_too_deep");
+    let path = dir.join("main.sg");
+    std::fs::write(&path, "void main() {\n}\n").unwrap();
+    let uri = sg::lsp::path_to_uri(&path);
+    let mut body = "1".to_string();
+    for _ in 0..8000 {
+        body = format!("$\"{{{body}}}\"");
+    }
+    let mut client = Client::start();
+    client.open(&uri, &format!("void main() {{\n    print({body})\n}}\n"));
+    let found = client.diagnostics(&uri);
+    let message = found.first().and_then(|diagnostic| diagnostic.get("message").as_str()).unwrap_or_default().to_string();
+    assert!(message.contains("nested more than 1000 deep"), "{message}");
+    assert_eq!(client.finish(), 0);
+}
+
+/// A folder whose links lead back into it is walked once (1596): the server checked it for ever,
+/// published nothing and did not end when told.
+#[cfg(unix)]
+#[test]
+fn checks_a_folder_whose_links_go_round() {
+    let dir = folder("links_go_round");
+    for name in ["a", "b", "c"] {
+        std::os::unix::fs::symlink(".", dir.join(name)).unwrap();
+    }
+    let path = dir.join("main.sg");
+    let text = "void main() {\n    var x = Missing()\n}\n";
+    std::fs::write(&path, text).unwrap();
+    let uri = sg::lsp::path_to_uri(&path);
+    let mut client = Client::start();
+    client.open(&uri, text);
+    let found = client.diagnostics(&uri);
+    let message = found.first().and_then(|diagnostic| diagnostic.get("message").as_str()).unwrap_or_default().to_string();
+    assert!(message.contains("there is no function named `Missing`"), "{message}");
+    assert_eq!(client.finish(), 0);
+}
+
+/// A line of a header is read only as far as its limit (1596): one without an end was kept
+/// whole in memory, however long, and the server waited for its end.
+#[test]
+fn refuses_a_header_line_without_an_end() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sg")).arg("lsp").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    // More than the limit, and the input left open: the server ends without waiting for more.
+    let _ = input.write_all(&vec![b'A'; 100_000]);
+    let _ = input.flush();
+    let started = std::time::Instant::now();
+    let code = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status.code();
+        }
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            let _ = child.kill();
+            panic!("the server waited for the end of the line");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    drop(input);
+    let mut err = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert_eq!(code, Some(1));
+    assert!(err.contains("a line of a header longer than 8192 bytes"), "{err}");
+}

@@ -1,0 +1,6 @@
+// A message that names a file in any letters, with a backtick in its name (1596).
+const byte[] Logo = embed("a`ş `.bin")
+
+void main() {
+    print(Logo.length())
+}

@@ -24,6 +24,9 @@ const QUIET: Duration = Duration::from_millis(300);
 
 /// The most bytes one message may have.
 const MAX_MESSAGE: usize = 64 << 20;
+/// The longest line of a header, its end included: `Content-Length` and `Content-Type` take
+/// far less.
+const MAX_HEADER_LINE: usize = 8192;
 
 /// How many folders up a `main.sg` is looked for.
 const MAX_UP: usize = 32;
@@ -65,8 +68,11 @@ fn read_message(input: &mut impl BufRead) -> Result<Option<String>, String> {
     let mut length = None;
     loop {
         let mut line = String::new();
-        match input.read_line(&mut line) {
+        // A line of a header is read only as far as its limit (1596): one without an end would
+        // be kept whole in memory, however long.
+        match std::io::Read::take(&mut *input, MAX_HEADER_LINE as u64).read_line(&mut line) {
             Ok(0) => return Ok(None),
+            Ok(_) if !line.ends_with('\n') && line.len() == MAX_HEADER_LINE => return Err(format!("a line of a header longer than {MAX_HEADER_LINE} bytes")),
             Ok(_) => {}
             Err(error) => return Err(error.to_string()),
         }
@@ -119,7 +125,7 @@ pub fn serve(mut input: impl BufRead, output: impl Write + Send + 'static) -> i3
             Ok(Some(message)) => message,
             Ok(None) => break if shut_down { 0 } else { 1 },
             Err(error) => {
-                eprintln!("sg lsp: {error}");
+                let _ = writeln!(std::io::stderr(), "sg lsp: {error}");
                 break 1;
             }
         };
@@ -238,16 +244,20 @@ fn check_open(state: &Arc<Mutex<State>>, out: &Out) {
         first.sort();
         let fallback = uri_of(first[0]);
         checked.extend(files.iter().map(|file| uri_of(file)));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match crate::load_over(root, false, &open) {
-            Ok(sources) => crate::check_sources(&sources).err().map(|diag| (Some(sources), diag)),
-            Err(message) => Some((None, Diag::error(Span::new(0, 0), message))),
+        // What the error is shown as is made inside the guard too: a mistake there must not end
+        // the thread that checks, which would leave what it showed last for ever (1596).
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (diag, sources) = match crate::load_over(root, false, &open) {
+                Ok(sources) => (crate::check_sources(&sources).err()?, Some(sources)),
+                Err(message) => (Diag::error(Span::new(0, 0), message), None),
+            };
+            Some(diagnostic_of(&diag, sources.as_ref(), &fallback, &uri_of))
         }));
-        let (sources, diag) = match outcome {
+        let (uri, diagnostic, fix) = match outcome {
             Ok(None) => continue,
-            Ok(Some(found)) => found,
-            Err(_) => (None, Diag::error(Span::new(0, 0), "the checker stopped: this is a mistake in sg").note("please report it, with the program it was checking")),
+            Ok(Some(shown)) => shown,
+            Err(_) => diagnostic_of(&Diag::error(Span::new(0, 0), "the checker stopped: this is a mistake in sg").note("please report it, with the program it was checking"), None, &fallback, &uri_of),
         };
-        let (uri, diagnostic, fix) = diagnostic_of(&diag, sources.as_ref(), &fallback, &uri_of);
         found.entry(uri).or_default().push((diagnostic, fix));
     }
     let mut state = lock(state);
@@ -305,10 +315,10 @@ pub fn position(text: &str, offset: usize) -> (u64, u64) {
 
 fn diagnostic_of(diag: &Diag, sources: Option<&Sources>, fallback: &str, uri_of: &dyn Fn(&Path) -> String) -> (String, Json, Option<Fixable>) {
     let (uri, range) = place_of(diag.span, sources, fallback, uri_of);
-    let mut message = crate::diag::worded(&diag.msg);
+    let mut message = diag.shown_msg();
     for note in &diag.notes {
         message.push('\n');
-        message.push_str(&crate::diag::worded(note));
+        message.push_str(&diag.shown(note));
     }
     if let Some(hint) = &diag.hint {
         message.push_str("\nhint: ");

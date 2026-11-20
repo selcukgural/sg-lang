@@ -38,6 +38,9 @@ pub struct Diag {
     /// The hint as an edit an editor applies with one click (choice 1371): only where the code it
     /// gives is certain to be what the hint says.
     pub fix: Option<Box<Fix>>,
+    /// The message and its notes are the program's own text (a panic's, an assert's, a key's):
+    /// shown as written, never worded (1596). Its hint is still the tool's.
+    pub as_written: bool,
 }
 
 /// An edit of the source: the text at `span` becomes `text` (an empty span inserts it).
@@ -49,15 +52,15 @@ pub struct Fix {
 
 impl Diag {
     pub fn error(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Error, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
+        Diag { kind: Kind::Error, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None, as_written: false }
     }
 
     pub fn panic(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Panic, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
+        Diag { kind: Kind::Panic, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None, as_written: false }
     }
 
     pub fn leak(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Leak, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
+        Diag { kind: Kind::Leak, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None, as_written: false }
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Diag {
@@ -80,6 +83,22 @@ impl Diag {
         self
     }
 
+    /// The message and the notes are the program's own text, shown as written.
+    pub fn as_written(mut self) -> Diag {
+        self.as_written = true;
+        self
+    }
+
+    /// The message as it is shown.
+    pub fn shown_msg(&self) -> String {
+        self.shown(&self.msg)
+    }
+
+    /// A note as it is shown.
+    pub fn shown(&self, text: &str) -> String {
+        if self.as_written { text.to_string() } else { worded(text) }
+    }
+
     /// Renders the message with the source line and a marker under the span.
     pub fn render(&self, src: &str, path: &str) -> String {
         self.render_in(&crate::source::Sources::single(src, path))
@@ -92,9 +111,9 @@ impl Diag {
             Kind::Panic => "panic",
             Kind::Leak => "leak",
         };
-        let mut text = format!("{label}: {}\n", worded(&self.msg));
+        let mut text = format!("{label}: {}\n", self.shown_msg());
         for note in &self.notes {
-            text.push_str(&format!("  {}\n", worded(note)));
+            text.push_str(&format!("  {}\n", self.shown(note)));
         }
         text.push_str(&sources.snippet(self.span));
         if let Some((span, note)) = self.related.as_deref() {
@@ -141,7 +160,9 @@ fn articled(text: &str) -> String {
 /// starts `code`.
 fn with_article(before: &str, code: &str) -> String {
     let Some(head) = before.strip_suffix(' ') else { return before.to_string() };
-    let word_start = head.rfind(|c: char| !c.is_ascii_alphabetic()).map_or(0, |at| at + 1);
+    // The word starts after the last character that is not a letter of ASCII, which may take
+    // more than one byte (`değer `x``).
+    let word_start = head.char_indices().rev().find(|(_, c)| !c.is_ascii_alphabetic()).map_or(0, |(at, c)| at + c.len_utf8());
     let word = &head[word_start..];
     if !matches!(word, "a" | "an" | "A" | "An") {
         return before.to_string();

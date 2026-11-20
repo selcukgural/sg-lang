@@ -1,0 +1,5 @@
+error: enum `E` contains itself, so it has no finite size
+  --> error_enum_self_through_result.sg:3:7
+ 3 |     A(Result<E, int> r)
+   |       ^^^^^^^^^^^^^^
+  hint: put it behind a pointer: `Result<E*, int> r`

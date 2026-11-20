@@ -1,0 +1,4 @@
+panic: değer `x` bulunamadı: got a `int` from std.IoError, a `apple`
+  --> panic_text_as_written.sg:5:5
+ 5 |     panic("değer `x` bulunamadı: got a `int` from std.IoError, a `apple`")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

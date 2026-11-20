@@ -1,0 +1,8 @@
+// An enum that holds itself through a `Result` (1596).
+enum E {
+    A(Result<E, int> r)
+    B
+}
+void main() {
+    print(1)
+}

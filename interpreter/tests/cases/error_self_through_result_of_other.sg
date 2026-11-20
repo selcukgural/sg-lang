@@ -1,0 +1,9 @@
+// A struct that holds itself through a `Result` of another struct (1596).
+struct A {
+    Result<B, int> r
+}
+struct B {
+    A a
+}
+void main() {
+}

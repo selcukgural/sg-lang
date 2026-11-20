@@ -233,14 +233,37 @@ fn missing_use(sources: &Sources, diag: &Diag) -> Option<String> {
     modules.first().map(|module| module.to_string())
 }
 
-/// Parses, checks and runs a program that is one text. `print` output goes to `out`. The
-/// `test` blocks are left out, as in a normal build.
 /// Whether the standard error, a terminal, shows the colours `Log` gives its levels (choice
 /// 1455): on Windows the console is asked to take the escape sequences.
 pub fn colour_console() -> bool {
     sys::colour_console()
 }
 
+/// What the tool or a program tells on the standard error as it ends: a check's error, a panic,
+/// `main`'s error, as compiled code tells them (1596). Nothing can be told when the standard
+/// error cannot be written, so the code is the same; but a pipe whose reader is gone ends the
+/// tool by `SIGPIPE` on Linux and macOS for a check's error (1604), and the program for `main`'s
+/// error, as a line of `printError` does (1601), where a panic has left the signal out (1602).
+pub fn tell_at_end(stop: &Stop, sources: &Sources) {
+    let mut err = std::io::stderr().lock();
+    let broken = |written: std::io::Result<()>| matches!(written, Err(error) if cfg!(unix) && error.kind() == std::io::ErrorKind::BrokenPipe);
+    let into_a_pipe_no_one_reads = match stop {
+        Stop::Diag(diag) => broken(err.write_all(diag.render_in(sources).as_bytes())) && diag.kind == diag::Kind::Error,
+        Stop::Failed(text) => broken(writeln!(err, "error: {text}")),
+        Stop::OutputFailed(error) => {
+            let _ = writeln!(err, "error: cannot write output: {error}");
+            false
+        }
+        Stop::OutputClosed | Stop::TestsFailed | Stop::Exit(_) => false,
+    };
+    drop(err);
+    if into_a_pipe_no_one_reads {
+        signals::end_by_closed_output();
+    }
+}
+
+/// Parses, checks and runs a program that is one text. `print` output goes to `out`. The
+/// `test` blocks are left out, as in a normal build.
 pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
     run_sources(&Sources::single(src, ""), out)
 }

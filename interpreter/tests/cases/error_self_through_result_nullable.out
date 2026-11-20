@@ -1,0 +1,5 @@
+error: struct `A` contains itself, so it has no finite size
+  --> error_self_through_result_nullable.sg:4:5
+ 4 |     Result<A?, int> r
+   |     ^^^^^^^^^^^^^^^
+  hint: put it behind a pointer: `Result<A*?, int> r`

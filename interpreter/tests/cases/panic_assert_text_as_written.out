@@ -1,0 +1,6 @@
+panic: assert failed: name == "a `apple` from std.IoError"
+  left: "müşteri `ş` a `apple`"
+  right: "a `apple` from std.IoError"
+  --> panic_assert_text_as_written.sg:4:5
+ 4 |     assert(name == "a `apple` from std.IoError")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

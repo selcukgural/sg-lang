@@ -685,8 +685,7 @@ pub(crate) unsafe extern "C" fn enter(number: std::ffi::c_int, name: *const std:
     if me.is_null() {
         // SAFETY: the stub gives its name as a text that ends in a zero byte.
         let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
-        eprintln!("error: C called `{name}` on a thread where the interpreter is in no call of C");
-        eprintln!("  = note: the interpreter runs a function C calls only during a call of C on the same thread; compiled code (`sg build`) takes it on any thread");
+        let _ = writeln!(std::io::stderr(), "error: C called `{name}` on a thread where the interpreter is in no call of C\n  = note: the interpreter runs a function C calls only during a call of C on the same thread; compiled code (`sg build`) takes it on any thread");
         std::process::exit(1);
     }
     // SAFETY: `ENTERED` holds the interpreter that is in a call of C on this thread, and it
@@ -1279,7 +1278,7 @@ fn key_of(value: &Value) -> Key {
 fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span: Span) -> Result<(), Diag> {
     let under = key_of(&key);
     if entries.contains_key(&under) {
-        return Err(Diag::panic(span, format!("key {shown} is already in the map"))
+        return Err(Diag::panic(span, format!("key {shown} is already in the map")).as_written()
             .note("to change what is kept under a key, write `map[key] = value`"));
     }
     entries.insert(under, (key, cell(value)));
@@ -2785,19 +2784,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         if let Ok(mut out) = self.io.out.try_borrow_mut() {
             let _ = out.flush();
         }
+        crate::tell_at_end(&stop, self.io.sources);
         let code = match stop {
-            Stop::Diag(diag) => {
-                eprint!("{}", diag.render_in(self.io.sources));
-                1
-            }
-            Stop::Failed(text) => {
-                eprintln!("error: {text}");
-                1
-            }
-            Stop::OutputFailed(error) => {
-                eprintln!("error: cannot write output: {error}");
-                1
-            }
+            Stop::Diag(_) | Stop::Failed(_) | Stop::OutputFailed(_) => 1,
             Stop::Exit(code) => i32::from(code),
             Stop::OutputClosed => 0,
             Stop::TestsFailed => 1,
@@ -4117,7 +4106,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Some((_, value)) => Ok(value.clone()),
                         None => {
                             let shown = self.show(key, true, expr.span)?;
-                            Err(Diag::panic(expr.span, format!("key {shown} is not in the map"))
+                            Err(Diag::panic(expr.span, format!("key {shown} is not in the map")).as_written()
                                 .note("`map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in")
                                 .into())
                         }
@@ -5749,7 +5738,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             "panic" => {
                 let text = strip(self.expr(&args[0], frame)?).format();
-                Err(Diag::panic(expr.span, text).into())
+                Err(Diag::panic(expr.span, text).as_written().into())
             }
             "exit" => {
                 let code = self.int(&args[0], frame)? as u8;
@@ -5779,7 +5768,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn assert(&mut self, call: &'a Expr, cond: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let text = &self.src[cond.span.start..cond.span.end];
         let failed = |sides: Option<(String, String)>| {
-            let mut diag = Diag::panic(call.span, format!("assert failed: {text}"));
+            let mut diag = Diag::panic(call.span, format!("assert failed: {text}")).as_written();
             if let Some((left, right)) = sides {
                 diag = diag.note(format!("left: {left}")).note(format!("right: {right}"));
             }

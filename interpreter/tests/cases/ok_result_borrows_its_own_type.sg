@@ -1,0 +1,8 @@
+// A borrow of a struct's own type inside a `Result` is no part of its size (1596): the tool
+// measured the type while it measured it, and its stack ran out.
+struct A<from source> {
+    Result<read A, int> r
+}
+void main() {
+    print(1)
+}

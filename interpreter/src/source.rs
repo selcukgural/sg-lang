@@ -65,20 +65,23 @@ pub fn std_types() -> impl Iterator<Item = &'static str> {
 
 /// The names written in `text` from `start` on, those in the code of a `$"..."` too (choice 1400).
 fn names_in(text: &str, start: usize, named: &mut HashSet<String>) {
-    names_within(text, Span::new(start, text.len()), false, named);
+    names_within(text, Span::new(start, text.len()), 0, named);
 }
 
-fn names_within(text: &str, span: Span, nested: bool, named: &mut HashSet<String>) {
-    let Ok(toks) = lex(text, span, nested) else { return };
+/// The names of the code at `span`, inside `depth` texts. Texts nested deeper than the parser
+/// takes are not looked into (1596): the parser refuses them, and each level lexed again would
+/// cost the time of all those inside it and a frame of the stack.
+fn names_within(text: &str, span: Span, depth: usize, named: &mut HashSet<String>) {
+    let Ok(toks) = lex(text, span, depth > 0) else { return };
     for tok in toks {
         match tok.tok {
             Tok::Ident(name) => {
                 named.insert(name);
             }
-            Tok::Interp(parts) => {
+            Tok::Interp(parts) if depth < crate::parser::MAX_NESTING => {
                 for part in parts {
                     if let Part::Code(code, _) = part {
-                        names_within(text, code, true, named);
+                        names_within(text, code, depth + 1, named);
                     }
                 }
             }
@@ -252,14 +255,24 @@ fn sg_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The folders under `dir` that hold source files, as module names, with the folders inside
-/// them.
+/// them. A folder reached again through a link (`a` -> `.`) is passed over: it is walked once,
+/// by the first name it is found by (1596).
 fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+    let mut walked = HashSet::new();
+    walked.extend(std::fs::canonicalize(dir));
+    modules_walk(dir, prefix, found, &mut walked);
+}
+
+fn modules_walk(dir: &Path, prefix: &str, found: &mut Vec<String>, walked: &mut HashSet<PathBuf>) {
     let mut folders: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect(),
         Err(_) => return,
     };
     folders.sort();
     for folder in folders {
+        if !std::fs::canonicalize(&folder).is_ok_and(|real| walked.insert(real)) {
+            continue;
+        }
         let Some(name) = folder.file_name().and_then(|name| name.to_str()) else { continue };
         if !is_module_name(name) || is_project(&folder) {
             continue;
@@ -268,7 +281,7 @@ fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
         if !sg_files(&folder).is_empty() {
             found.push(module.clone());
         }
-        modules_under(&folder, &module, found);
+        modules_walk(&folder, &module, found, walked);
     }
 }
 

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-forty-third slice (compiled code and its runtime fixed where the second review found them wrong, 1595, with 1601-1603: `printError` and `Log` into a closed standard error, a panic into a closed output, `main`'s error with an output that cannot be written; Two-Way under `indexOf`).
+Last brought up to date: 21 November 2026, the hundred-and-forty-fourth slice (the tool holds on what it is given, 1596, with 1604: a standard error no one reads ends `sg` by `SIGPIPE`; a type that holds itself through a `Result` is refused; nothing in the table changed).
 
 ## Functions and variables
 

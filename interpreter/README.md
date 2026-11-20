@@ -31,7 +31,7 @@ macOS, whose own Clang knows only its own processor: `brew install llvm lld qemu
 `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`. On Linux the image
 of `tests/Containerfile` has them.
 
-## What runs today (20 November 2026)
+## What runs today (21 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -9971,6 +9971,54 @@ Clang that knows RISC-V, on Linux alone), with 489 of the 1895 programs compiled
 under the sanitizers, 108 of them under the thread sanitizer; the two new cases print on Windows (Arm64,
 Clang) what the interpreter prints.
 
+Choices made in the hundred-and-forty-fourth slice (fixing what the second review found, sixth: the tool
+itself, `sg` and `sg lsp`, where a program or a folder stopped it, held it for ever or took its stack).
+Each was shown red first, with the review's own programs:
+
+1596. **The tool holds on what it is given.**
+     - **A message in any letters**: the article before code (`a` or `an`, `diag::worded`) looked for the
+       start of the word before it by bytes, and a word that ended in a letter of more than one byte
+       (`değer `x``) stopped the tool, in `sg` and in `sg lsp`, where it stopped the thread that checks and
+       the editor kept what it showed last for ever. The word is found by characters. What `sg lsp` shows of
+       an error is made inside the guard that catches a mistake of the checker, so such a mistake is shown
+       as one and the server goes on.
+     - **The program's own text is shown as written**: the text of a `panic`, the code of an `assert` and the
+       values it compared, and a key that is not in the map are the program's, so the article before code is
+       not chosen in them (`panic("got a `int`")` was shown as "got an `int`"); the notes and the hint of the
+       tool still are.
+     - **Texts nested deeper than the parser takes** (`$"{ $"{ ... }" }"`, past 1000): the names in the code
+       of a `$"..."` were looked for before the parser ran, each level lexed again inside the one around it,
+       so the time grew with the square of the depth and the stack ran out. They are looked into as deep as
+       the parser takes, and the parser's error says the rest.
+     - **Folders whose links lead back** (`a` -> `.`): the folders under a program were walked for ever, when
+       the tool looked for the module a missing name could be in, when `sg test` ran the tests of every
+       module of a folder, and in `sg lsp`, which then published nothing and did not end when told. Each
+       folder is walked once, by the first name it is found by.
+     - **A line of a header to `sg lsp`** is read up to 8 KB: a line without an end was kept whole in memory,
+       however long (a message was already bounded at 64 MB).
+     - **A struct or an enum that holds itself through a `Result`** (`Result<A, int> r`, `Result<A?, int>`,
+       `Result<B, int>` where `B` holds an `A`) is the error of a type that contains itself, with the hint of a
+       pointer: the tool's stack ran out measuring it, or, for `A?`, the interpreter ran it and the back end's
+       stack ran out. A borrow of the type's own kind inside a `Result` (`Result<read A, int>`) is no part of
+       its size, and the tool no longer measures it while it measures it. The two sides of a `Result` and an
+       `Entry` are one rule now, in the measure of a size and in the search for a type that contains itself.
+1604. **A standard error no one reads ends the tool by `SIGPIPE`** on Linux and macOS, as its output does
+     (1330): a check's error, its usage and what it could not do. Rust's `eprintln!` panicked, and the tool
+     ended with 101. Any other failure of the standard error (a full disk) loses the line, and the tool ends
+     with the code it would have, 1 or 2. A program run by the interpreter ends as compiled code does: a
+     panic with 1 and its message lost (1602), `main`'s error by `SIGPIPE`, as a line of `printError` (1601).
+
+Tested by `panic_text_as_written`, `panic_assert_text_as_written`, `panic_map_key_as_written`,
+`error_embed_name_any_letter`, `error_self_through_result`, `error_self_through_result_nullable`,
+`error_self_through_result_of_other`, `error_enum_self_through_result` and `ok_result_borrows_its_own_type`
+(new), by `a_standard_error_no_one_reads` (Linux and macOS), `walks_a_folder_whose_links_go_round` and
+`refuses_texts_nested_too_deep` of the command, and by `shows_a_message_in_any_letters`,
+`refuses_texts_nested_too_deep`, `checks_a_folder_whose_links_go_round` and
+`refuses_a_header_line_without_an_end` of the language server, each of them red on the code before this
+slice. The whole of the tests passes on macOS and on Linux (the kernel's test, which needs a Clang that
+knows RISC-V, on Linux alone), with 493 of the 1904 programs compiled through C and run clean under the
+sanitizers, 108 of them under the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10666,7 +10714,9 @@ by the program, and a folder `internal` keeps a library's own modules to itself.
 never run or followed, and a package is kept only as itself (1591); the rules of borrowing are made rules,
 not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
 what others write hold on what they are given (1594); compiled code does what the interpreter does where
-it did not (1595, 1601-1603); the tool is next. Then every module of `std` is measured against
+it did not (1595, 1601-1603); and the tool holds on what a program or a folder gives it (1596, 1604).
+A const is made next of constant expressions alone, with no calls, as in C# and Go (1606). Then every
+module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
