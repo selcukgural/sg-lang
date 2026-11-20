@@ -193,7 +193,8 @@ fn both_ways(dir: &Path, programs: &[(&str, &str)]) -> Vec<(Command, String)> {
 /// An output that cannot be written, as a full disk (`/dev/full`), ends the program with a
 /// message and 1, interpreted and compiled (1547): at `print`, before `printError`, and at the
 /// end, where what is shorter than the block of the output is written first, after `exit` too.
-/// `Stdout` gives its error in its `Result`, and the program goes on.
+/// `Stdout` gives its error in its `Result`, and the program goes on. A `main` that ends with an
+/// error has it told first, then the output's (1603).
 #[cfg(target_os = "linux")]
 #[test]
 fn an_output_that_cannot_be_written() {
@@ -204,14 +205,16 @@ fn an_output_that_cannot_be_written() {
         ("long", "void main() {\n    for i in 0..20000 {\n        print($\"line {i} of many\")\n    }\n    printError(\"never\")\n}\n"),
         ("exits", "void main() {\n    print(\"short\")\n    exit(3)\n}\n"),
         ("error", "void main() {\n    print(\"before\")\n    printError(\"never\")\n}\n"),
+        ("fails", "Result<void, string> main() {\n    print(\"before\")\n    return Error(\"it failed\")\n}\n"),
         ("result", "void main() {\n    if Stdout.writeLine(\"x\".repeat(70000)) is Error(cause) {\n        printError($\"write: {cause}\")\n    }\n    if Stdout.flush() is Error(cause) {\n        printError($\"flush: {cause}\")\n    }\n    printError(\"goes on\")\n}\n"),
     ];
     for (mut command, way) in both_ways(&dir, &programs) {
         let out = command.stdout(std::fs::File::options().write(true).open("/dev/full").unwrap()).output().unwrap();
         let (code, _, err) = ran(&out);
-        match way.starts_with("result") {
-            true => assert_eq!((code, err.as_str()), (0, "write: no space left\nflush: no space left\ngoes on\n"), "{way}"),
-            false => assert_eq!((code, err.as_str()), (1, full), "{way}"),
+        match way.split(' ').next() {
+            Some("result") => assert_eq!((code, err.as_str()), (0, "write: no space left\nflush: no space left\ngoes on\n"), "{way}"),
+            Some("fails") => assert_eq!((code, err), (1, format!("error: it failed\n{full}")), "{way}"),
+            _ => assert_eq!((code, err.as_str()), (1, full), "{way}"),
         }
     }
 }
@@ -246,6 +249,86 @@ fn an_output_closed_early_with_the_signal_ignored() {
         let out = child.wait_with_output().unwrap();
         assert_eq!(text(&out.stderr), "", "{way}");
         assert_eq!((out.status.code(), out.status.signal()), (None, Some(13)), "{way}");
+    }
+}
+
+/// A program started with its output or its standard error closed (`program >&-`) does not write
+/// what it prints into the first file it opens, which would take the number of the closed stream:
+/// compiled code opens `/dev/null` there first, as Rust's runtime does for the interpreter (1595).
+#[cfg(unix)]
+#[test]
+fn closed_standard_streams() {
+    let dir = work("closed_standard_streams");
+    let source = "Result<void, IoError> main() {\n    var writer = try File.createText(\"data.txt\")\n    try writer.writeLine(\"the data\")\n    print(\"a line for the output\")\n    printError(\"a line for the standard error\")\n    try writer.close()\n    return Ok()\n}\n";
+    for (command, way) in both_ways(&dir, &[("streams", source)]) {
+        for closed in [">&-", "2>&-", "<&- >&- 2>&-"] {
+            let _ = std::fs::remove_file(dir.join("data.txt"));
+            let out = Command::new("sh").args(["-c", &format!("exec \"$0\" \"$@\" {closed}")]).arg(command.get_program()).args(command.get_args()).current_dir(&dir).output().unwrap();
+            assert_eq!(out.status.code(), Some(0), "{way} {closed}");
+            assert_eq!(std::fs::read_to_string(dir.join("data.txt")).unwrap(), "the data\n", "{way} {closed}");
+        }
+    }
+}
+
+/// A line of `printError` (and so of `Log`) is one write, however long it is: four programs that
+/// write their lines into one file opened for appending never mix them (1595). Before, compiled
+/// code wrote a line longer than 512 bytes in pieces, and the interpreter wrote the end of the
+/// line apart.
+#[cfg(unix)]
+#[test]
+fn error_lines_are_whole() {
+    let dir = work("error_lines_are_whole");
+    let source = "void main(List<string> args) {\n    var payload = \"x\".repeat(2000)\n    for _ in 0..500 {\n        printError($\"{args[0]} {payload} END\")\n    }\n}\n";
+    for (command, way) in both_ways(&dir, &[("lines", source)]) {
+        let _ = std::fs::remove_file(dir.join("lines.txt"));
+        let script = "for tag in A B C D; do \"$0\" \"$@\" $tag 2>>lines.txt & done; wait";
+        let out = Command::new("sh").args(["-c", script]).arg(command.get_program()).args(command.get_args()).current_dir(&dir).output().unwrap();
+        assert!(out.status.success(), "{way}");
+        let written = std::fs::read_to_string(dir.join("lines.txt")).unwrap();
+        let payload = "x".repeat(2000);
+        let whole = written.lines().filter(|line| ["A", "B", "C", "D"].iter().any(|tag| *line == format!("{tag} {payload} END"))).count();
+        assert_eq!((written.lines().count(), whole), (2000, 2000), "{way}");
+    }
+}
+
+/// A standard error whose reader is gone ends the program by `SIGPIPE`, as the output does
+/// (1601), interpreted and compiled, also when the program was started with the signal ignored:
+/// a line of `Log` or `printError` that no one can read does not let it go on as if it were read.
+#[cfg(unix)]
+#[test]
+fn an_error_output_closed_early() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = work("an_error_output_closed_early");
+    let source = "void main(List<string> args) {\n    var line = \"\"\n    _ = Stdin.readLine(ref line)\n    if args[0] == \"log\" {\n        Log.error(\"no one reads this\")\n    } else {\n        printError(\"no one reads this\")\n    }\n    print(\"went on\")\n}\n";
+    for (command, way) in both_ways(&dir, &[("closed", source)]) {
+        for (kind, ignored) in [("log", false), ("printError", false), ("printError", true)] {
+            let trap = if ignored { "trap '' PIPE; " } else { "" };
+            let mut child = Command::new("sh").args(["-c", &format!("{trap}exec \"$0\" \"$@\"")]).arg(command.get_program()).args(command.get_args()).arg(kind).current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            // The reader of the standard error is gone before the program writes to it.
+            drop(child.stderr.take());
+            std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"go\n").unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert_eq!((text(&out.stdout), out.status.code(), out.status.signal()), (String::new(), None, Some(13)), "{way} {kind} {ignored}");
+        }
+    }
+}
+
+/// A panic in a program whose output was closed early is told, and ends the program with 1,
+/// interpreted and compiled (1602): compiled code ended by `SIGPIPE` while it gave out what was
+/// printed, before it wrote the panic.
+#[cfg(unix)]
+#[test]
+fn a_panic_into_a_closed_output() {
+    let dir = work("a_panic_into_a_closed_output");
+    let source = "void main() {\n    var line = \"\"\n    _ = Stdin.readLine(ref line)\n    print(\"one short line\")\n    var xs = List<int>()\n    var k = 5\n    print(xs[k])\n}\n";
+    for (mut command, way) in both_ways(&dir, &[("panics", source)]) {
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        drop(child.stdout.take());
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"go\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        let err = text(&out.stderr);
+        assert!(err.starts_with("panic: index 5 is out of range"), "{way}: {err}");
+        assert_eq!(out.status.code(), Some(1), "{way}");
     }
 }
 

@@ -1,0 +1,103 @@
+// An assignment whose place is reached through a call makes the call once, also where the place
+// is read and written (`+=`) or its old value dropped; and a field that borrows is pointed at
+// something else, as a `read` variable is (choice 1595). The compiled program did both wrong.
+struct Item {
+    string name
+    int n
+}
+
+struct Bag {
+    List<Item> items
+    int at
+
+    ref Item next(ref this) {
+        this.at += 1
+        return ref this.items[this.at - 1]
+    }
+}
+
+struct Word<from source> : Copyable {
+    read string text
+}
+
+struct Slot<from source> {
+    Word w
+    int calls
+
+    ref Word me(ref this) {
+        this.calls += 1
+        return ref this.w
+    }
+}
+
+struct View<from source> {
+    read Item it
+}
+
+struct Edit<from source> {
+    ref Item it
+}
+
+struct Maybe<from source> {
+    read Item? it
+    read string? text
+}
+
+struct Bytes<from source> {
+    read byte[] data
+}
+
+void main() {
+    // The old name is dropped and the new one written in the same item.
+    var b = Bag { items = List<Item>(), at = 0 }
+    b.items.add(Item { name = "a long text that lives on the heap, one".clone(), n = 0 })
+    b.items.add(Item { name = "a long text that lives on the heap, two".clone(), n = 0 })
+    b.next().name = "a new long text that lives on the heap, three".clone()
+    b.next().n += 5
+    print(b.at)
+    print(b.items[0].name)
+    print(b.items[1].n)
+
+    // A field that borrows, reached through a call and directly.
+    var first = "first text, a long text that lives on the heap".clone()
+    var text = "hello world, a long text that lives on the heap".clone()
+    var s = Slot { w = Word { text = read first }, calls = 0 }
+    s.me().text = read text
+    print(s.calls)
+    print(s.w.text)
+    s.w.text = read first
+    print(s.w.text)
+
+    var x = Item { name = "x".clone(), n = 1 }
+    var y = Item { name = "y".clone(), n = 2 }
+    var v = View { it = read x }
+    v.it = read y
+    print(v.it.name)
+
+    var c = Item { name = "c".clone(), n = 3 }
+    var d = Item { name = "d".clone(), n = 4 }
+    var e = Edit { it = ref c }
+    e.it = ref d
+    e.it.n += 5
+    print($"{c.n} {d.n}")
+
+    var m = Maybe { it = read x, text = "abc" }
+    m.it = null
+    m.text = null
+    print(m.it?.n ?? -1)
+    print(m.text ?? "none")
+    var ms = List<Maybe>()
+    ms.add(Maybe { it = null, text = null })
+    ms[0].text = read text
+    ms[0].it = read y
+    print(ms[0].text ?? "none")
+    print(ms[0].it?.n ?? -1)
+
+    var bytes = byte[3] { 1, 2, 3 }
+    var more = byte[2] { 4, 5 }
+    var w = Bytes { data = read bytes }
+    w.data = read more
+    print(w.data.length())
+    w.data = bytes[1..]
+    print(w.data[0])
+}

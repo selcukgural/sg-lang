@@ -1,0 +1,40 @@
+// A long text that repeats, looked for in a text that repeats it (choice 1595): compiled code
+// compared the whole of it at every other place, which took time that grew with the square of
+// the text; past a budget it now searches by Two-Way, as Rust's `memchr::memmem` does. Both
+// directions, found and not, at the start, inside and at the end.
+void main() {
+    var hay = "ab".repeat(100000)
+    var missing = "ab".repeat(25000)
+    missing.write("aa")
+    print(hay.indexOf(read missing) ?? -1)
+    print(hay.lastIndexOf(read missing) ?? -1)
+    print(hay.contains(read missing))
+
+    var half = "ab".repeat(25000)
+    print(hay.indexOf(read half) ?? -1)
+    print(hay.lastIndexOf(read half) ?? -1)
+
+    // The text once, at a place that is not a multiple of its period.
+    var marked = "ab".repeat(60000)
+    marked.write("abX")
+    marked.write("ab".repeat(40000))
+    var needle = "ab".repeat(20000)
+    needle.write("abX")
+    print(marked.indexOf(read needle) ?? -1)
+    print(marked.lastIndexOf(read needle) ?? -1)
+
+    var tail = "ba".repeat(20000)
+    tail.write("bX")
+    print(marked.indexOf(read tail) ?? -1)
+
+    // A text with no period: Two-Way's other way of shifting.
+    var words = "abcabd".repeat(30000)
+    words.write("abcabe")
+    var odd = "abcabd".repeat(5000)
+    odd.write("abcabe")
+    print(words.indexOf(read odd) ?? -1)
+    print(words.lastIndexOf(read odd) ?? -1)
+    var first = "abcabd".repeat(5000)
+    print(words.indexOf(read first) ?? -1)
+    print(words.lastIndexOf(read first) ?? -1)
+}

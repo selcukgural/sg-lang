@@ -963,6 +963,19 @@ static void sg_start(int* argc, char*** argv) {
     *argc = n;
     *argv = utf8;
 }
+#elif !SG_FREESTANDING
+#include <fcntl.h>
+#include <unistd.h>
+/* What a program does first on Linux and macOS: a standard stream that was closed when it
+   started (`program >&-`) is opened on `/dev/null`, as Rust's runtime does, so that the first
+   file the program opens does not take its number and get what `print` writes. With no
+   `/dev/null` to open, the program stops before it does anything. */
+static void sg_start_streams(void) {
+    for (int fd = 0; fd < 3; fd++) {
+        if (fcntl(fd, F_GETFD) == -1 && errno == EBADF && open("/dev/null", O_RDWR) != fd) abort();
+    }
+}
+#define sg_start(argc, argv) sg_start_streams()
 #else
 #define sg_start(argc, argv) ((void)0)
 #endif
@@ -1197,6 +1210,23 @@ static void sg_out_flush(void) {
     if (__builtin_expect(code != 0, 0)) sg_out_failed(code, false);
     sg_out_unlock();
 }
+/* `main` ended with an error (choice 1603). What was printed goes out first, with `SIGPIPE` left
+   out, so that the error is told whatever became of the output (`sg_main_failing`); an error of
+   the output other than a pipe whose reader is gone is told after it (`sg_main_failed`), and the
+   output is not written again at the end. */
+static int sg_main_failing(void) {
+#if !defined(_WIN32)
+    signal(SIGPIPE, SIG_IGN);
+#endif
+    return sg_out_flushed();
+}
+static void sg_main_failed(int code) {
+    __atomic_store_n(&sg_out_ended, true, __ATOMIC_RELEASE);
+    if (code && code != EPIPE) {
+        fprintf(stderr, "error: cannot write output: %s (os error %d)\n", strerror(code), code);
+        fflush(stderr);
+    }
+}
 /* Before C is called, and when C's call of SG returns: what the block holds goes into C's
    `stdout` first, so that it comes before what C writes there; an error ends the program. */
 static inline void sg_out_give(void) {
@@ -1207,9 +1237,14 @@ static inline void sg_out_give(void) {
         sg_out_unlock();
     }
 }
-/* A panic: the lock is taken and kept, the block given. */
+/* A panic: the lock is taken and kept, the block given. A pipe whose reader is gone does not end
+   the program by `SIGPIPE` before the panic is told (choice 1602): it is left out from here on,
+   as the interpreter has it, and the panic ends the program with 1. */
 static void sg_out_end(void) {
     if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) return;
+#if !defined(_WIN32)
+    signal(SIGPIPE, SIG_IGN);
+#endif
     sg_out_lock();
     (void)sg_out_drain();
     __atomic_store_n(&sg_out_ended, true, __ATOMIC_RELEASE);
@@ -2586,30 +2621,65 @@ static sg_string sg_format(const char* format, ...) {
     va_end(write);
     return text;
 }
-/* A line into a stream, gathered in a buffer on the stack, so that most lines are one write;
-   where several threads run, the stream is held for the whole line. */
-typedef struct { FILE* f; int64_t n; char b[512]; } sg_file_sink;
+/* A line into a stream, gathered whole before it is written (on the stack while it is short), so
+   that it is one write of the system: lines that several programs write into one file at once
+   (`Log` into an appended file) do not mix. Where several threads run, the stream is held for
+   the whole line. With no memory for a long line, it is written as it comes. */
+typedef struct { FILE* f; int64_t n, cap; char* p; char b[512]; } sg_file_sink;
+static void sg_sink_start(sg_file_sink* s, FILE* f) {
+    s->f = f;
+    s->n = 0;
+    s->cap = (int64_t)sizeof s->b;
+    s->p = s->b;
+}
 static void sg_sink_file(void* to, const char* bytes, int64_t n) {
     sg_file_sink* s = (sg_file_sink*)to;
-    if (s->n + n > (int64_t)sizeof s->b) {
-        if (s->n) fwrite(s->b, 1, (size_t)s->n, s->f);
-        s->n = 0;
-        if (n > (int64_t)sizeof s->b) { fwrite(bytes, 1, (size_t)n, s->f); return; }
+    if (s->n + n > s->cap) {
+        int64_t cap = s->cap;
+        while (cap < s->n + n) cap *= 2;
+        char* p = s->p == s->b ? malloc((size_t)cap) : realloc(s->p, (size_t)cap);
+        if (!p) {
+            if (s->n) fwrite(s->p, 1, (size_t)s->n, s->f);
+            fwrite(bytes, 1, (size_t)n, s->f);
+            s->n = 0;
+            return;
+        }
+        if (s->p == s->b) memcpy(p, s->b, (size_t)s->n);
+        s->p = p;
+        s->cap = cap;
     }
-    memcpy(s->b + s->n, bytes, (size_t)n);
+    memcpy(s->p + s->n, bytes, (size_t)n);
     s->n += n;
 }
+static void sg_sink_end(sg_file_sink* s) {
+    if (s->n) fwrite(s->p, 1, (size_t)s->n, s->f);
+    if (s->p != s->b) free(s->p);
+}
+/* A line of `printError`. On Linux and macOS a standard error whose reader is gone ends the
+   program by `SIGPIPE`, as `print` does (choice 1601), also where the signal was ignored when the
+   program started; on Windows the line is lost and the program goes on. A panic, which has left
+   the signal out, is not ended so (choice 1602). */
 static void sg_vprint(FILE* f, const char* format, va_list args) {
     sg_file_sink s;
-    s.f = f;
-    s.n = 0;
+    sg_sink_start(&s, f);
 #if SG_THREADS && defined(_WIN32)
     _lock_file(f);
 #elif SG_THREADS
     flockfile(f);
 #endif
     sg_vlines(sg_sink_file, &s, format, args);
-    if (s.n) fwrite(s.b, 1, (size_t)s.n, f);
+#if !SG_FREESTANDING && !defined(_WIN32)
+    int kept = errno;
+    errno = 0;
+    sg_sink_end(&s);
+    if (errno == EPIPE && ferror(f) && !__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) {
+        signal(SIGPIPE, SIG_DFL);
+        raise(SIGPIPE);
+    }
+    errno = kept;
+#else
+    sg_sink_end(&s);
+#endif
 #if SG_THREADS && defined(_WIN32)
     _unlock_file(f);
 #elif SG_THREADS
@@ -2640,14 +2710,13 @@ SG_COLD static _Noreturn void sg_panic_line(const char* loc, const char* format,
     va_list args;
     va_start(args, format);
     SG_PANIC_START();
-    fputs("panic: ", stderr);
     sg_file_sink s;
-    s.f = stderr;
-    s.n = 0;
+    sg_sink_start(&s, stderr);
+    sg_sink_file(&s, "panic: ", 7);
     sg_vlines(sg_sink_file, &s, format, args);
-    if (s.n) fwrite(s.b, 1, (size_t)s.n, stderr);
     va_end(args);
-    fputc('\n', stderr);
+    sg_sink_file(&s, "\n", 1);
+    sg_sink_end(&s);
     sg_die(loc);
 }
 /* How many spaces a value of `n` bytes needs in front of it or after it to take `width`
@@ -2888,14 +2957,69 @@ static const uint8_t sg_byte_rank[256] = {
      76, 118, 151,  77,  99, 112, 148,  55, 100, 103,  87,  56,  57,  78,  58, 127,
     146,  59,  60,  61,  88,  62,  63,  64,  65,  66,  79,  67,  89,  68,  80, 101,
 };
+/* Two-Way (Crochemore and Perrin, as Rust's `memchr::memmem` and glibc have it): where `n` first
+   lies in `h`, or -1, in time that grows with the lengths of the two alone, whatever they hold;
+   with `back`, where it last lies, both read from their ends. What the searches below turn to
+   when comparing the text at each place its rarest bytes are found costs too much (a long text
+   that repeats, in a text that repeats it: choice 1595). */
+static inline uint8_t sg_tw_byte(const uint8_t* p, int64_t len, int64_t i, bool back) { return back ? p[len - 1 - i] : p[i]; }
+/* Where the greatest suffix of `x` starts, by the order of bytes or (`tilde`) its reverse, less
+   one, and its period. */
+static int64_t sg_tw_suffix(const uint8_t* x, int64_t m, bool back, bool tilde, int64_t* period) {
+    int64_t ms = -1, j = 0, k = 1, p = 1;
+    while (j + k < m) {
+        uint8_t a = sg_tw_byte(x, m, j + k, back), b = sg_tw_byte(x, m, ms + k, back);
+        if (tilde ? a > b : a < b) { j += k; k = 1; p = j - ms; }
+        else if (a == b) { if (k != p) k++; else { j += p; k = 1; } }
+        else { ms = j; j = ms + 1; k = p = 1; }
+    }
+    *period = p;
+    return ms;
+}
+static int64_t sg_two_way(sg_str h, sg_str n, bool back) {
+    const uint8_t* x = n.ptr;
+    const uint8_t* y = h.ptr;
+    int64_t m = n.len, len = h.len, p, q;
+    if (m == 0) return back ? len : 0;
+    int64_t i = sg_tw_suffix(x, m, back, false, &p), j = sg_tw_suffix(x, m, back, true, &q);
+    int64_t ell = i > j ? i : j, per = i > j ? p : q;
+    /* Is the part before the cut a repetition of the period? Then a shift keeps what matched. */
+    bool periodic = true;
+    for (int64_t k = 0; k <= ell; k++) {
+        if (sg_tw_byte(x, m, k, back) != sg_tw_byte(x, m, k + per, back)) { periodic = false; break; }
+    }
+    if (!periodic) per = (ell + 1 > m - ell - 1 ? ell + 1 : m - ell - 1) + 1;
+    int64_t at = 0, memory = -1;
+    while (at <= len - m) {
+        int64_t k = (memory > ell ? memory : ell) + 1;
+        while (k < m && sg_tw_byte(x, m, k, back) == sg_tw_byte(y, len, k + at, back)) k++;
+        if (k < m) { at += k - ell; memory = -1; continue; }
+        k = ell;
+        while (k > memory && sg_tw_byte(x, m, k, back) == sg_tw_byte(y, len, k + at, back)) k--;
+        if (k <= memory) return back ? len - m - at : at;
+        at += per;
+        if (periodic) memory = m - per - 1;
+    }
+    return -1;
+}
+/* What a search may spend comparing the whole text before it turns to Two-Way: sixteen bytes for
+   each start passed, and 64 KB more, so a text of up to sixteen bytes never turns. */
+#define SG_FIND_BUDGET(passed) (16 * (passed) + 65536)
+/* Where `n` first lies in `h` from `from` on, by Two-Way. */
+__attribute__((noinline)) static int64_t sg_find_rest(sg_str h, sg_str n, int64_t from) {
+    int64_t at = sg_two_way((sg_str){ h.ptr + from, h.len - from }, n, false);
+    return at < 0 ? -1 : from + at;
+}
 /* Where the bytes of `n` at `i1` and `i2` are both found, for the sixteen starts of `h` from `s`,
    each a byte of all ones in `w` (the low eight starts in `w[0]`): the first start of them that
-   `n` is found at, or -1. */
-static inline int64_t sg_find_hits(sg_str h, sg_str n, int64_t s, const uint64_t w[2]) {
+   `n` is found at, or -1; or -2 less the start where comparing went past its budget. */
+static inline int64_t sg_find_hits(sg_str h, sg_str n, int64_t s, const uint64_t w[2], int64_t* spent) {
     for (int half = 0; half < 2; half++) {
         uint64_t bits = SG_LE64(w[half]) & 0x0101010101010101ULL;
         while (bits) {
             int64_t at = s + half * 8 + (__builtin_ctzll(bits) >> 3);
+            if (*spent > SG_FIND_BUDGET(at)) return -2 - at;
+            *spent += n.len;
             if (memcmp(h.ptr + at, n.ptr, (size_t)n.len) == 0) return at;
             bits &= bits - 1;
         }
@@ -2909,7 +3033,8 @@ static inline int64_t sg_find_hits(sg_str h, sg_str n, int64_t s, const uint64_t
    whose first byte is common in `h` is no longer looked for at each place that byte is. The search
    of one byte stays where it is called (`split(',')`); the longer one is a call the C compiler is told
    not to put in its caller, whose loop it would otherwise no longer put in its own (`fields` took 1.2
-   times as long). */
+   times as long). Where the two bytes are found so often that comparing costs more than its budget,
+   the rest is searched by Two-Way. */
 __attribute__((noinline)) static int64_t sg_find_long(sg_str h, sg_str n) {
     int64_t i1 = 0, i2 = 1;
     if (sg_byte_rank[n.ptr[1]] < sg_byte_rank[n.ptr[0]]) { i1 = 1; i2 = 0; }
@@ -2919,7 +3044,7 @@ __attribute__((noinline)) static int64_t sg_find_long(sg_str h, sg_str n) {
         else if (r < sg_byte_rank[n.ptr[i2]] && n.ptr[i] != n.ptr[i1]) i2 = i;
     }
     uint8_t b1 = n.ptr[i1], b2 = n.ptr[i2];
-    int64_t starts = h.len - n.len + 1, s = 0;
+    int64_t starts = h.len - n.len + 1, s = 0, spent = 0;
 #if (defined(__SSE2__) || defined(__ARM_NEON)) && (defined(__GNUC__) || defined(__clang__))
     if (starts >= 16) {
         typedef uint8_t sg_v16 __attribute__((vector_size(16)));
@@ -2937,11 +3062,12 @@ __attribute__((noinline)) static int64_t sg_find_long(sg_str h, sg_str n) {
             memcpy(w, &any, 16);
             if (w[0] | w[1]) {
                 memcpy(w, &m, 16);
-                int64_t at = sg_find_hits(h, n, s, w);
-                if (at >= 0) return at;
-                memcpy(w, &m2, 16);
-                at = sg_find_hits(h, n, s + 16, w);
-                if (at >= 0) return at;
+                int64_t at = sg_find_hits(h, n, s, w, &spent);
+                if (at == -1) {
+                    memcpy(w, &m2, 16);
+                    at = sg_find_hits(h, n, s + 16, w, &spent);
+                }
+                if (at != -1) return at >= 0 ? at : sg_find_rest(h, n, -2 - at);
             }
         }
         /* The last starts, sixteen at a time, the last sixteen over some already passed. */
@@ -2953,16 +3079,20 @@ __attribute__((noinline)) static int64_t sg_find_long(sg_str h, sg_str n) {
             sg_v16 m = (x == v1) & (y == v2);
             memcpy(w, &m, 16);
             if (w[0] | w[1]) {
-                int64_t at = sg_find_hits(h, n, s, w);
-                if (at >= 0) return at;
+                int64_t at = sg_find_hits(h, n, s, w, &spent);
+                if (at != -1) return at >= 0 ? at : sg_find_rest(h, n, -2 - at);
             }
             s += 16;
         }
         return -1;
     }
 #endif
-    for (; s < starts; s++)
-        if (h.ptr[s + i1] == b1 && h.ptr[s + i2] == b2 && memcmp(h.ptr + s, n.ptr, (size_t)n.len) == 0) return s;
+    for (; s < starts; s++) {
+        if (h.ptr[s + i1] != b1 || h.ptr[s + i2] != b2) continue;
+        if (spent > SG_FIND_BUDGET(s)) return sg_find_rest(h, n, s);
+        spent += n.len;
+        if (memcmp(h.ptr + s, n.ptr, (size_t)n.len) == 0) return s;
+    }
     return -1;
 }
 static inline int64_t sg_find(sg_str h, sg_str n) {
@@ -2974,9 +3104,17 @@ static inline int64_t sg_find(sg_str h, sg_str n) {
     }
     return sg_find_long(h, n);
 }
+/* Where `n` last lies in `h`: compared where its first byte is, and by Two-Way, from the end, past
+   the budget of that. */
 static int64_t sg_find_last(sg_str h, sg_str n) {
-    for (int64_t at = h.len - n.len; at >= 0; at--)
-        if (n.len == 0 || memcmp(h.ptr + at, n.ptr, (size_t)n.len) == 0) return at;
+    if (n.len == 0) return h.len;
+    int64_t spent = 0;
+    for (int64_t at = h.len - n.len; at >= 0; at--) {
+        if (h.ptr[at] != n.ptr[0]) continue;
+        if (spent > SG_FIND_BUDGET(h.len - n.len - at)) return sg_two_way((sg_str){ h.ptr, at + n.len }, n, true);
+        spent += n.len;
+        if (memcmp(h.ptr + at, n.ptr, (size_t)n.len) == 0) return at;
+    }
     return -1;
 }
 static inline bool sg_starts(sg_str h, sg_str n) { return n.len <= h.len && (n.len == 0 || memcmp(h.ptr, n.ptr, (size_t)n.len) == 0); }
@@ -14325,8 +14463,8 @@ impl<'a> Emitter<'a> {
                     }
                 };
                 format!(
-                    "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        sg_out_flush();\n        {shown}\
-                     sg_eprint(\"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
+                    "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        int out_code = sg_main_failing();\n        {shown}\
+                     sg_eprint(\"error: {format}\\n\", {values});\n        sg_main_failed(out_code);\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
                 )
             }
             _ => format!("{head}    {call};\n{LEAKS}    return 0;\n}}\n"),
@@ -15150,12 +15288,19 @@ impl<'a> Emitter<'a> {
                     ExprKind::Var(name) if !through => Some(self.local(name)).filter(|local| local.ty.is_borrow()).map(|local| (local.cname.clone(), local.ty.clone())),
                     _ => None,
                 };
-                let rebinds = rebound.is_some();
+                // A field that borrows is pointed at something else, as a `read` variable is
+                // (`slot.text = read other`): the field itself is written, not what it points at.
+                let field = match &target.kind {
+                    ExprKind::Field { recv, name, .. } if target.ty.is_borrow() => Some((recv, name)),
+                    _ => None,
+                };
+                let rebinds = rebound.is_some() || field.is_some();
                 // The right side is computed first, then the place is found (Rust's order): the
                 // address of an item is taken only once the right side, which may grow the list,
                 // is done.
                 let held = match (&rebound, &target.kind) {
                     (Some((_, ty)), _) => ty.clone(),
+                    _ if field.is_some() => target.ty.clone(),
                     (None, ExprKind::Var(name)) => self.local(name).ty.strip_borrow().clone(),
                     (None, _) => target.ty.strip_borrow().clone(),
                 };
@@ -15175,9 +15320,10 @@ impl<'a> Emitter<'a> {
                         }
                     }
                 };
-                let (place, held) = match rebound {
-                    Some(variable) => variable,
-                    None => self.slot(target)?,
+                let (place, held) = match (rebound, field) {
+                    (Some(variable), _) => variable,
+                    (None, Some((recv, name))) => (self.field_place(recv, name)?, held),
+                    (None, None) => self.slot(target)?,
                 };
                 // A bit field takes only what fits its bits, in a debug build.
                 let fits = |emitter: &mut Self, value: String| match emitter.bit_field(target) {
@@ -18432,16 +18578,8 @@ impl<'a> Emitter<'a> {
             }
             // A field is reached through any number of `T*` on its own.
             ExprKind::Field { recv, name, .. } => {
-                // A field of a value that has no name (`longer(a, b).text`): the value is kept
-                // for the statement.
-                let mut place = self.look(recv)?;
-                let mut ty = recv.ty.strip_borrow();
-                while let Some(inner) = pointee(ty) {
-                    place = format!("(*{place})");
-                    ty = inner;
-                }
                 // A field that borrows stands for what it points at, as a borrowed variable does.
-                let field = format!("{place}.m_{name}");
+                let field = self.field_place(recv, name)?;
                 if let Some(option) = lent_option(&expr.ty) {
                     return self.boxed(&field, option, expr.span);
                 }
@@ -18541,6 +18679,20 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// The field itself, as the struct holds it: a field that borrows is the pointer (or the
+    /// view), not what it points at.
+    fn field_place(&mut self, recv: &'a Expr, name: &str) -> Res<String> {
+        // A field of a value that has no name (`longer(a, b).text`): the value is kept for the
+        // statement.
+        let mut place = self.look(recv)?;
+        let mut ty = recv.ty.strip_borrow();
+        while let Some(inner) = pointee(ty) {
+            place = format!("(*{place})");
+            ty = inner;
+        }
+        Ok(format!("{place}.m_{name}"))
+    }
+
     /// A place that is written to as a whole (`x = v`, `x.take()`, `x.replace(v)`) and the type
     /// it was declared with: a variable known to hold a value is still a `T?` slot.
     fn slot(&mut self, expr: &'a Expr) -> Res<(String, Ty)> {
@@ -18568,6 +18720,14 @@ impl<'a> Emitter<'a> {
         let before = (self.pre.len(), self.post.len());
         let value = self.value(expr)?;
         if expr.ty.is_borrow() && !is_window(&expr.ty) {
+            self.late = late;
+            // A call that gives a borrow (`b.next().name`) is made once, however often the
+            // place is named (`b.next().n += 1` reads and writes it).
+            if self.effect(expr) >= Effect::Acts {
+                let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                self.pre.push(format!("{ctype} {temp} = {value};"));
+                return Ok(format!("(*{temp})"));
+            }
             return Ok(format!("(*{value})"));
         }
         let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());

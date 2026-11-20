@@ -9920,6 +9920,57 @@ The whole of the tests passes on macOS and on Linux (the kernel's test, which ne
 RISC-V, on Linux alone), with 487 of the 1893 programs compiled through C and run clean under the
 sanitizers, 108 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-third slice (fixing what the second review found, fifth: compiled
+code and its runtime, where they did not do what the interpreter does). Each was shown red first, with the
+review's own programs:
+
+1595. **Compiled code does what the interpreter does.**
+     - **An assignment whose place is reached through a call** (`b.next().name = text`, `b.me().n += 5`)
+       made the call twice, once to drop the old value or read it and once to write: the borrow the call
+       gives is now kept in a temporary, so the call is made once (it freed the wrong item's name, a use
+       after free under the address sanitizer).
+     - **A field that borrows is pointed at something else**, as a `read` variable is: `slot.text = read
+       other`, `view.it = read b`, `edit.it = ref d`, `maybe.it = null`, `bytes.data = more[1..]`. The C of
+       each did not compile; the back end wrote what the field points at, as the type it points at.
+     - **A standard stream closed when the program started** (`program >&-`) is opened on `/dev/null`
+       first, on Linux and macOS, as Rust's runtime does for the interpreter: the first file the program
+       opened took the number of the closed stream, and what `print` wrote went into it.
+     - **A line of `printError`, and so of `Log`, is one write of the system**, however long: compiled code
+       wrote a line past 512 bytes in pieces, and the interpreter wrote its `\n` apart, so four programs
+       appending to one file mixed their lines (1,625 of 2,000 lines of 2 KB compiled, 39 interpreted;
+       none now). A line is gathered on the stack and, past 512 bytes, in memory of its own; a panic's
+       message is one write too.
+     - **A long text that repeats, looked for in a text that repeats it** (`indexOf`, `contains`,
+       `lastIndexOf`), was compared whole at every place its two rarest bytes were found, which took time
+       that grew with the square of the text (1.6 MB: 6.4 s). Past a budget of comparing, sixteen bytes
+       for each start passed and 64 KB more, the rest of the search is Two-Way (Crochemore and Perrin), as
+       Rust's `memchr::memmem` turns to; `lastIndexOf` runs it from the end. The same 1.6 MB: 0.01 s. An
+       ordinary search costs one addition and one comparison more for each place found, which did not
+       show in a measurement.
+     - **The header of a library** named a plain struct in the type of a pointer to a function before it
+       declared the struct (`struct Leaf { CFunc<raw Leaf, int> get }`), and C did not compile it: every
+       plain struct such a type names is declared first.
+1601. **A standard error whose reader is gone ends the program by `SIGPIPE`** on Linux and macOS, as
+     `print` does (1330) and as C's and Go's programs end, also when it was started with the signal
+     ignored; on Windows the line is lost and the program goes on. The interpreter went on and compiled
+     code ended: the two did not agree.
+1602. **A panic in a program whose output was closed early is told**, and the program ends with 1:
+     compiled code ended by `SIGPIPE` while it gave out what was printed, before it wrote the panic, where
+     the interpreter told it. A panic leaves the signal out from its first line.
+1603. **`main`'s error comes first**: a `main` that ends with an error when the output cannot be written
+     either (a full disk) tells its error, then the output's, and ends with 1. Compiled code told only the
+     output's and the interpreter only the program's; a pipe whose reader is gone is not told.
+
+Tested by `ok_assign_place_once` and `ok_text_search_repeats` (new), by `closed_standard_streams`,
+`error_lines_are_whole`, `an_error_output_closed_early` and `a_panic_into_a_closed_output` (new, Linux and
+macOS), a program that ends with an error into `/dev/full` (Linux) and a library whose plain struct holds a
+pointer to a function that names it. The search was also compared with a plain one on 400,000 random texts
+of up to three letters, with its budget at its own and at nearly nothing, through the vector loop and
+without it, under the sanitizers. The whole of the tests passes on macOS and on Linux (the kernel's test, which needs a
+Clang that knows RISC-V, on Linux alone), with 489 of the 1895 programs compiled through C and run clean
+under the sanitizers, 108 of them under the thread sanitizer; the two new cases print on Windows (Arm64,
+Clang) what the interpreter prints.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10614,7 +10665,8 @@ by the program, and a folder `internal` keeps a library's own modules to itself.
 (1589) came after them, and what it found is fixed first (1590): what a package or a project brings is
 never run or followed, and a package is kept only as itself (1591); the rules of borrowing are made rules,
 not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
-what others write hold on what they are given (1594); compiled code and the tool are next. Then every module of `std` is measured against
+what others write hold on what they are given (1594); compiled code does what the interpreter does where
+it did not (1595, 1601-1603); the tool is next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

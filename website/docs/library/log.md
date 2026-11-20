@@ -126,8 +126,10 @@ It prints `written`, and on the standard error:
 2026-11-19T20:15:03.123Z WARN  ${jndi:ldap://example.com/a}
 ```
 
-Each line is made whole and written at once, so the lines of tasks never mix, with each other or with
-`printError`. A line goes out when it is written: nothing waits in a buffer to be lost when the program
+Each line is made whole and written at once, in one write of the system however long it is, so the lines
+of tasks never mix, with each other or with `printError`, nor do the lines of programs that append to one
+file. A standard error whose reader is gone ends the program by `SIGPIPE` on Linux and macOS, as `print`
+does; on Windows the line is lost. A line goes out when it is written: nothing waits in a buffer to be lost when the program
 stops.
 
 ## Colours

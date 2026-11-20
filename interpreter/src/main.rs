@@ -595,8 +595,15 @@ fn main() -> ExitCode {
             eprint!("{}", diag.render_in(&sources));
             ExitCode::FAILURE
         }
+        // The program's error, and then the output's, if it could not be written (1603); a
+        // pipe whose reader is gone is not told.
         Err(Stop::Failed(text)) => {
             eprintln!("error: {text}");
+            if let Err(error) = &flushed {
+                if error.kind() != std::io::ErrorKind::BrokenPipe {
+                    eprintln!("error: cannot write output: {error}");
+                }
+            }
             ExitCode::FAILURE
         }
         Err(Stop::TestsFailed) => ExitCode::FAILURE,

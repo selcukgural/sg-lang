@@ -1978,17 +1978,18 @@ fn libraries() {
     }
 
     // Plain structs that point at themselves and at each other, one held by value in the
-    // other: the header names first those a struct before them points at, and C compiles it.
+    // other, and a pointer to a function that names both: the header names first those a
+    // struct before them or the function points at, and C compiles it.
     let linked = work.join("linked");
     std::fs::create_dir_all(&linked).unwrap();
     std::fs::write(
         linked.join("nodes.sg"),
-        "struct Node {\n    raw Node next\n    raw Owner owner\n    int value\n}\n\nstruct Owner {\n    raw Node first\n    Node spare\n}\n\nunion Cell {\n    raw Cell next\n    int value\n}\n\n// Adds up the values of a list.\nexport int nodes_sum(raw Node list, Cell cell) {\n    var sum = 0\n    var at = list\n    while at != null {\n        sum += unsafe at[0].value\n        at = unsafe at[0].next\n    }\n    return sum\n}\n",
+        "struct Node {\n    raw Node next\n    raw Owner owner\n    int value\n    CFunc<raw Node, raw Owner, int> visit\n}\n\nstruct Owner {\n    raw Node first\n    Node spare\n}\n\nunion Cell {\n    raw Cell next\n    int value\n}\n\n// Adds up the values of a list.\nexport int nodes_sum(raw Node list, Cell cell) {\n    var sum = 0\n    var at = list\n    while at != null {\n        sum += unsafe at[0].value\n        at = unsafe at[0].next\n    }\n    return sum\n}\n",
     )
     .unwrap();
     std::fs::write(
         linked.join("nodes.c"),
-        "#include <stdio.h>\n#include \"nodes.h\"\nint main(void) {\n    Owner owner = {0};\n    Node last = { NULL, &owner, 2 };\n    Node first = { &last, &owner, 40 };\n    Cell cell = { NULL };\n    printf(\"%d\\n\", (int)nodes_sum(&first, cell));\n    return 0;\n}\n",
+        "#include <stdio.h>\n#include \"nodes.h\"\nint main(void) {\n    Owner owner = {0};\n    Node last = { NULL, &owner, 2, NULL };\n    Node first = { &last, &owner, 40, NULL };\n    Cell cell = { NULL };\n    printf(\"%d\\n\", (int)nodes_sum(&first, cell));\n    return 0;\n}\n",
     )
     .unwrap();
     let nodes_lib = if cfg!(windows) { "nodes.lib" } else { "libnodes.a" };

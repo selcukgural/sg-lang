@@ -25,7 +25,7 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
         }
     }
     let Named { handles, plain, .. } = found;
-    let (plain, ahead) = in_order(&plain, prog);
+    let (plain, mut ahead) = in_order(&plain, prog);
     // A pointer to a function as a field of a plain struct is named by its struct and field.
     let mut callbacks: Callbacks = Vec::new();
     let mut callback_text = String::new();
@@ -40,6 +40,14 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
                 let typedef = format!("{}_{}", short_name(full), field.name);
                 let _ = writeln!(callback_text, "typedef {};", declare(ty, &typedef, &callbacks));
                 callbacks.push((ty.clone(), typedef));
+                // The plain structs it names are named before it.
+                let mut named = Vec::new();
+                structs_named(ty, prog, &mut named);
+                for full in named {
+                    if !ahead.contains(&full) {
+                        ahead.push(full);
+                    }
+                }
             }
         }
     }
@@ -69,15 +77,18 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
         }
         text.push('\n');
     }
-    text.push_str(&callback_text);
     if !plain.is_empty() {
         text.push_str("/* Plain data, laid out as SG lays it out. */\n");
-        // A struct that a struct before it points at is named before the first of them.
+        // A struct that a struct before it or a pointer to a function points at is named before
+        // the first of them.
         for full in &ahead {
             let kind = if prog.plain[full].union { "union" } else { "struct" };
             let short = short_name(full);
             let _ = writeln!(text, "typedef {kind} {short} {short};");
         }
+    }
+    text.push_str(&callback_text);
+    if !plain.is_empty() {
         for full in &plain {
             let decl = prog.structs.iter().find(|decl| decl.name == *full).expect("a plain struct is declared");
             let names: Vec<&str> = decl.fields.iter().map(|field| field.name.as_str()).collect();
@@ -106,6 +117,24 @@ type Callbacks = Vec<(Ty, String)>;
 
 fn callback<'c>(callbacks: &'c Callbacks, ty: &Ty) -> Option<&'c str> {
     callbacks.iter().find(|(known, _)| known == ty).map(|(_, name)| name.as_str())
+}
+
+/// The plain structs a pointer to a function names, in its parameters or what it gives.
+fn structs_named(ty: &Ty, prog: &Program, out: &mut Vec<String>) {
+    match ty {
+        Ty::Struct(name) if prog.plain.contains_key(name) => {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) | Ty::Raw(inner) | Ty::Array(inner, _) | Ty::Atomic(inner) => structs_named(inner, prog, out),
+        Ty::CFunc(params, ret) => {
+            for inner in params.iter().chain([&**ret]) {
+                structs_named(inner, prog, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The name of the macros of a library: `calc-lib` gives `CALC_LIB`.

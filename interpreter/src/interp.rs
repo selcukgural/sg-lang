@@ -5727,7 +5727,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let value = self.expr(&args[0], frame)?;
                 let text = self.show(&value, false, args[0].span)?;
                 // What was printed before comes first, as it does on a terminal. Nothing can
-                // be told when the standard error cannot be written, so that is not an error.
+                // be told when the standard error cannot be written, so that is not an error;
+                // but a pipe whose reader is gone ends the program as one of `print` does
+                // (1601), on a system that has `SIGPIPE`.
                 if self.in_test {
                     let mut written = self.io.test_err.borrow_mut();
                     written.push_str(&text);
@@ -5735,8 +5737,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                     return Ok(Value::Void);
                 }
                 self.flush_out()?;
-                let _ = writeln!(self.io.world.borrow_mut().err, "{text}");
-                Ok(Value::Void)
+                // The line is one write, as compiled code makes it: lines that several programs
+                // write into one file at once do not mix.
+                let mut line = text;
+                line.push('\n');
+                let written = self.io.world.borrow_mut().err.write_all(line.as_bytes());
+                match written {
+                    Err(error) if cfg!(unix) && error.kind() == std::io::ErrorKind::BrokenPipe => Err(output_failed(error)),
+                    _ => Ok(Value::Void),
+                }
             }
             "panic" => {
                 let text = strip(self.expr(&args[0], frame)?).format();

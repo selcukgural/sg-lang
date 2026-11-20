@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-forty-second slice (the readers of the library made to hold on what an untrusted input gives them, 1594: names of zip archives by `Path.joinInside`'s rule, C1 refused by `joinInside`).
+Last brought up to date: 20 November 2026, the hundred-and-forty-third slice (compiled code and its runtime fixed where the second review found them wrong, 1595, with 1601-1603: `printError` and `Log` into a closed standard error, a panic into a closed output, `main`'s error with an output that cannot be written; Two-Way under `indexOf`).
 
 ## Functions and variables
 
@@ -23,7 +23,7 @@ Last brought up to date: 20 November 2026, the hundred-and-forty-second slice (t
 |---|---|---|---|
 | `fn add(a: i32, b: i32) -> i32 { a + b }` | `int add(int a, int b) { return a + b }` | built | The type comes first, as in C#; the last line is not the value, `return` is written |
 | `fn main()` | `void main()` | built | |
-| `fn main() -> Result<(), E>` | `Result<void, E> main()` | built | The error it ends with is printed (`E : Formattable`), exit code 1 |
+| `fn main() -> Result<(), E>` | `Result<void, E> main()` | built | The error it ends with is printed (`E : Formattable`), exit code 1; an output that cannot be written either is told after it (1603), where Rust drops that error |
 | `std::env::args()` | `void main(List<string> args)` | built | The words after the program's name, checked to be UTF-8 |
 | `let x = 1;` | `var x = 1` | built | No `;` at the end of a line |
 | `let x: i64 = 1;` | `long x = 1` | built | |
@@ -54,7 +54,7 @@ Last brought up to date: 20 November 2026, the hundred-and-forty-second slice (t
 | `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |
 | `assert!(a == b)`, `assert_eq!(a, b)` | `assert(a == b)` | built | The message shows the expression and both sides |
 | `println!("{}", x)` | `print(x)` | built | Into an output that was closed (`program \| head`) Rust panics (exit code 101); SG ends by `SIGPIPE` on Linux and macOS, as C and Go do, and with 0 on Windows. Rust's `stdout` is a `LineWriter` behind a lock, written line by line; SG's compiled `print` gathers its lines in a block of 64 KB, as a `BufWriter` does, given on before `printError`, a call of C and the end, and line by line to a terminal (1545). Where it cannot write (a full disk) Rust panics, but drops silently what its block still holds at the end; SG ends with a message and 1 there too, interpreted and compiled (1547) |
-| `eprintln!("{}", x)` | `printError(x)` | built | |
+| `eprintln!("{}", x)` | `printError(x)` | built | A line is one write of the system, however long. Into a standard error that was closed, Rust's `eprintln!` panics; SG ends by `SIGPIPE` on Linux and macOS, as `print` does, and goes on without the line on Windows (1601) |
 | closures `\|x\| x + 1` | a named function | not in SG | A `Func` is the address of a named function |
 | macros (`macro_rules!`, `#[derive]`) | none | not in SG | What `#[derive]` gives is an interface after `:` (below) |
 
@@ -117,7 +117,7 @@ Last brought up to date: 20 November 2026, the hundred-and-forty-second slice (t
 | `&s[a..b]` | `s[a..b]` | built | `read string` |
 | `s.as_bytes()[i]` | `s[i]` | built | One byte |
 | `s.chars()`, `s.split(',')`, `s.split_whitespace()`, `s.lines()` | the same, in camelCase | built | Parts look at the text, nothing copied |
-| `s.trim()`, `s.find(x)`, `s.rfind(x)`, `s.contains(x)`, `s.starts_with(x)` | `s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.contains(x)`, `s.startsWith(x)` | built | `indexOf` gives a `nint?`. Compiled, a text is looked for by its two rarest bytes with vector instructions, as `memchr::memmem` under Rust's `find` (1549) |
+| `s.trim()`, `s.find(x)`, `s.rfind(x)`, `s.contains(x)`, `s.starts_with(x)` | `s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.contains(x)`, `s.startsWith(x)` | built | `indexOf` gives a `nint?`. Compiled, a text is looked for by its two rarest bytes with vector instructions, as `memchr::memmem` under Rust's `find` (1549), and by Two-Way, as `memmem` turns to, where comparing at the places those bytes are found costs too much (a long text that repeats: 1595) |
 | `s.replace(a, b)`, `s.repeat(n)` | `s.replaceAll(a, b)`, `s.repeat(n)` | built | `replace` is taken by `slot.replace(value)` |
 | `s.eq_ignore_ascii_case(t)` | `s.equalsIgnoreAsciiCase(t)` | built | |
 | `names.join(", ")` | `string.join(", ", read names)` | built | |
