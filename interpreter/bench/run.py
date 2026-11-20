@@ -2,8 +2,9 @@
 """Compiles each program three ways and prints the best of five runs of each: SG as a release
 build (overflow wraps), SG with overflow checked, and the C written by hand. All three go through
 the C compiler `sg build` uses (`cc` on Linux and macOS, Clang on Windows) with `-O2`, without
-fused multiply-add (SG's rule for fractional numbers). Run from the `interpreter` folder, on any of
-the three systems:
+fused multiply-add (SG's rule for fractional numbers). The measurements are fair (choice 1554, the rules
+in `trials/README.md`): the C is the ordinary program a C programmer writes, and every program is shown,
+also where SG loses. Run from the `interpreter` folder, on any of the three systems:
 
     python3 bench/run.py                  every program
     python3 bench/run.py fib nbody        only these

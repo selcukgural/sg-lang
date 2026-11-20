@@ -1,0 +1,92 @@
+// A plain text is found where it first lies (choice 1549): compiled code looks for its two rarest
+// bytes sixteen starts at a time, so texts of every length up to past 64 bytes are searched, with
+// the text found at the start, in the middle, across the end of each block of sixteen and at the
+// end, and texts that are not there; each answer is held to a search byte by byte.
+
+// Where `needle` first lies in `text`, compared byte by byte.
+nint? slowFind(read string text, read string needle) {
+    if needle.length() > text.length() {
+        return null
+    }
+    for at in 0..text.length() - needle.length() + 1 {
+        bool same = true
+        for i in 0..needle.length() {
+            if text[at + i] != needle[i] {
+                same = false
+                break
+            }
+        }
+        if same {
+            return at
+        }
+    }
+    return null
+}
+
+// The next number of a fixed sequence.
+long next(ref long seed) {
+    seed = seed.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407) & 0x7FFFFFFFFFFFFFFF
+    return seed >> 33
+}
+
+void main() {
+    List<string> pieces = List<string> { "a", "b", "t", "o", "é", "日", "E", " " }
+    long seed = 1549
+    long checks = 0
+    long found = 0
+    long wrong = 0
+    for _ in 0..4000 {
+        // Few pieces make texts that repeat, where the two bytes are found often.
+        long kinds = 2 + next(ref seed) % 7
+        long count = next(ref seed) % 80
+        string text = ""
+        var parts = List<string>()
+        for _ in 0..count {
+            var piece = pieces[(nint)(next(ref seed) % kinds)].clone()
+            text.write(read piece)
+            parts.add(piece)
+        }
+        for j in 0..4 {
+            string needle = ""
+            long want = 1 + next(ref seed) % 20
+            if j < 2 && parts.length() > 0 {
+                // A run of the text itself.
+                nint from = (nint)(next(ref seed) % (long)parts.length())
+                nint until = (from + (nint)want).min(parts.length())
+                for p in from..until {
+                    needle.write(read parts[p])
+                }
+            } else {
+                for _ in 0..want {
+                    needle.write(read pieces[(nint)(next(ref seed) % kinds)])
+                }
+            }
+            nint expected = slowFind(read text, read needle) ?? -1
+            nint got = text.indexOf(read needle) ?? -1
+            checks += 1
+            if got >= 0 {
+                found += 1
+            }
+            if got != expected || text.contains(read needle) != (expected >= 0) {
+                wrong += 1
+                if wrong <= 3 {
+                    print($"wrong: \"{needle}\" in \"{text}\": {got}, not {expected}")
+                }
+            }
+        }
+    }
+    print($"{checks} searches, {found} found, {wrong} wrong")
+
+    // A long text whose first byte is everywhere, found only at the end.
+    string many = ""
+    for _ in 0..100 {
+        many.write("t")
+    }
+    many.write("timeout")
+    print(many.indexOf("timeout") ?? -1)
+    print(many.indexOf("tttttttttttttttttu") ?? -1)
+    print(many.replaceAll("tim", "T").length())
+    for part in many.split("tim") {
+        print(part.length())
+    }
+}

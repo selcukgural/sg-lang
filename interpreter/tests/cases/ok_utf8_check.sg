@@ -1,0 +1,111 @@
+// Where bytes stop being UTF-8 (choice 1550): compiled code passes sixteen ASCII bytes at a time
+// and goes straight to the first byte past ASCII among them, so bytes of every length up to past
+// 64 are checked, with characters of two, three and four bytes, bytes that are never UTF-8, an
+// encoding too long, a surrogate and a character the end cuts off, at every place of a block of
+// sixteen; each answer is held to a check byte by byte.
+
+// The place of the first byte that is not part of a character, or the length when there is none.
+nint slowValid(read List<byte> b) {
+    nint at = 0
+    while at < b.length() {
+        int c = b[at]
+        if c < 0x80 {
+            at += 1
+            continue
+        }
+        nint more = 0
+        int low = 0x80
+        int high = 0xBF
+        if c >= 0xC2 && c <= 0xDF {
+            more = 1
+        } else if c >= 0xE0 && c <= 0xEF {
+            more = 2
+            if c == 0xE0 {
+                low = 0xA0
+            }
+            if c == 0xED {
+                high = 0x9F
+            }
+        } else if c >= 0xF0 && c <= 0xF4 {
+            more = 3
+            if c == 0xF0 {
+                low = 0x90
+            }
+            if c == 0xF4 {
+                high = 0x8F
+            }
+        } else {
+            return at
+        }
+        if at + more >= b.length() {
+            return at
+        }
+        if (int)b[at + 1] < low || (int)b[at + 1] > high {
+            return at
+        }
+        for i in 2..more + 1 {
+            if (b[at + i] & 0xC0) != 0x80 {
+                return at
+            }
+        }
+        at += more + 1
+    }
+    return b.length()
+}
+
+long next(ref long seed) {
+    seed = seed.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407) & 0x7FFFFFFFFFFFFFFF
+    return seed >> 33
+}
+
+void main() {
+    // ASCII, é, 日, 😀, then bytes that are not text: 0xFF, an é cut off, an overlong `/`, a surrogate.
+    var pieces = List<List<byte>> {
+        List<byte> { 97 }, List<byte> { 98, 99, 100, 101, 102, 103, 104 },
+        List<byte> { 0xC3, 0xA9 }, List<byte> { 0xE6, 0x97, 0xA5 }, List<byte> { 0xF0, 0x9F, 0x98, 0x80 },
+        List<byte> { 0xFF }, List<byte> { 0xC3 }, List<byte> { 0xC0, 0xAF }, List<byte> { 0xED, 0xA0, 0x80 },
+    }
+    long seed = 1550
+    long checks = 0
+    long text = 0
+    long wrong = 0
+    for _ in 0..6000 {
+        // Mostly ASCII and characters; now and then a byte that is not text.
+        long count = next(ref seed) % 40
+        var bytes = List<byte>()
+        for _ in 0..count {
+            long pick = next(ref seed) % 60
+            nint kind = (nint)(5 + pick % 4)
+            if pick < 30 {
+                kind = 0
+            } else if pick < 45 {
+                kind = 1
+            } else if pick < 50 {
+                kind = 2
+            } else if pick < 54 {
+                kind = 3
+            } else if pick < 56 {
+                kind = 4
+            }
+            for b in read pieces[kind] {
+                bytes.add(b)
+            }
+        }
+        nint expected = slowValid(read bytes)
+        nint got = match string.fromUtf8(read bytes) {
+            Ok(_) => bytes.length()
+            Error(cause) => cause.position
+        }
+        checks += 1
+        if got == bytes.length() {
+            text += 1
+        }
+        if got != expected {
+            wrong += 1
+            if wrong <= 3 {
+                print($"wrong: {bytes}: {got}, not {expected}")
+            }
+        }
+    }
+    print($"{checks} checks, {text} text, {wrong} wrong")
+}

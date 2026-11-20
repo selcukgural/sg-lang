@@ -26,6 +26,28 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
   same bytes on every machine.
 
+## Fairness (1554)
+
+No measurement is made, chosen or reported so that it favours SG. In particular:
+
+- **The other languages are written as their own people write them.** Rust and Zig get the idiomatic
+  program and the library people use for the job, in their fastest ordinary build (`--release`,
+  `ReleaseFast`); nothing is slowed down, left unbuffered or written the long way. When a faster ordinary way
+  is shown for Rust or Zig, it is taken and everything is measured again, also when SG loses by it.
+- **The same work.** The same algorithm where one is named, the same input, the same output byte for byte,
+  checked before anything is timed; a case where the programs do different work (a check one skips, a
+  Unicode rule one ignores) is said beside the numbers or made the same.
+- **Every case is published.** The cases are chosen before the numbers are seen, and none is dropped,
+  changed or put out of sight because SG loses it; a case where SG loses stays in the table, and the
+  difference goes into "Slower than C" in the interpreter's README with what would fix it.
+- **SG as it ships.** SG is measured in its release build with every check of safety it has by default, and
+  once more with its arithmetic checked. Nothing is turned off, and nothing is tuned for a measurement alone
+  (1543): a change counts only where it serves every program.
+- **Said plainly.** The machine, the compilers and their versions, the build flags, how time, memory and
+  size are taken, and what is left out (a shared library Zig loads) are written beside every table, and a
+  difference that comes from the tools rather than the language (another C compiler, another LLVM) is
+  named as such.
+
 ## Measuring
 
 From the repository's root, with Rust, Zig 0.17, PCRE2 and a C compiler installed:
@@ -60,27 +82,32 @@ the system's `cc` (Apple clang 21), Rust by its own LLVM (23.1), Zig 0.17.1 (LLV
 The difference with Rust is the C compiler, not SG: the same C built through Homebrew's clang 23.1
 (`CC=... sg build`, which 1533 made possible on Linux and macOS) takes 0.043 s.
 
-Measured again after 1543-1546 (the slice after the first), which changed nothing of `wc`'s work: the
-numbers above are of that run.
+Measured again after 1543-1546 (the slice after the first), and after 1549-1550, which changed nothing of
+`wc`'s work (it reads blocks, not lines): the numbers above are of those runs, the same within a
+millisecond.
 
 ### grep
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |
 |---|---|---|---|---|---|
-| `-c ERROR` | 0.062 s, 2.0 MB | 0.061 s, 2.0 MB | 0.066 s, 2.8 MB | 0.060 s, 3.4 MB | 0.060 s, 3.6 MB |
-| `-n timeout` | 0.078 s, 2.1 MB | 0.078 s, 2.1 MB | 0.071 s, 2.8 MB | 0.071 s, 3.5 MB | 0.071 s, 3.6 MB |
-| `-c -i error` | 0.156 s, 2.0 MB | 0.162 s, 2.0 MB | 0.087 s, 3.0 MB | 0.070 s, 3.5 MB | 0.071 s, 3.6 MB |
-| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.227 s, 2.0 MB | 0.234 s, 2.0 MB | 0.149 s, 3.1 MB | 0.128 s, 3.5 MB | 0.129 s, 3.6 MB |
-| `'in [0-9]{4} ms: .*日本'` | 0.064 s, 2.2 MB | 0.066 s, 2.2 MB | 0.108 s, 3.2 MB | 0.072 s, 3.5 MB | 0.073 s, 3.6 MB |
-| `-v -c INFO` | 0.050 s, 2.0 MB | 0.050 s, 2.0 MB | 0.069 s, 2.8 MB | 0.062 s, 3.4 MB | 0.064 s, 3.6 MB |
+| `-c ERROR` | 0.046 s, 2.0 MB | 0.046 s, 2.0 MB | 0.066 s, 2.8 MB | 0.060 s, 3.4 MB | 0.061 s, 3.6 MB |
+| `-n timeout` | 0.052 s, 2.1 MB | 0.054 s, 2.1 MB | 0.072 s, 2.8 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
+| `-c -i error` | 0.150 s, 2.0 MB | 0.159 s, 2.0 MB | 0.086 s, 3.0 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
+| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.228 s, 2.1 MB | 0.236 s, 2.1 MB | 0.146 s, 3.2 MB | 0.129 s, 3.5 MB | 0.130 s, 3.6 MB |
+| `'in [0-9]{4} ms: .*日本'` | 0.064 s, 2.2 MB | 0.064 s, 2.1 MB | 0.106 s, 3.2 MB | 0.072 s, 3.5 MB | 0.072 s, 3.6 MB |
+| `-v -c INFO` | 0.049 s, 2.0 MB | 0.048 s, 2.0 MB | 0.068 s, 2.8 MB | 0.062 s, 3.4 MB | 0.063 s, 3.6 MB |
 | Size, stripped | 164 KB | 164 KB | 1684 KB | 362 KB | 442 KB |
 | Lines | 101 | 101 | 145 | 137 | 137 |
 
 `-n timeout` prints 136,194 lines: it took 0.086 s, against Rust's and Zig's 0.072 s, until the slice that
 followed this one. A line is now written into a block of 64 KB of the program's own, piece by piece where
 it is printed, and no longer through C's `fwrite` and its lock with its format read at run time
-(1544-1546): printing costs SG 4 ms over the search, as it costs Rust; what is left is the search
-(`-c timeout` 0.072 s, Rust 0.065 s).
+(1544-1546): printing costs SG 4 ms over the search, as it costs Rust. The search was what was left
+(`-c timeout` 0.072 s, Rust 0.065 s), until the slice after that: a plain text is now looked for by its two
+rarest bytes, sixteen places at a time (1549), where `memchr` stopped at every `t`, and UTF-8 is checked by
+going straight to the first byte past ASCII (1550). `-c timeout` takes 0.049 s (Rust 0.066 s, Zig 0.066 s,
+the best of seven, not a case of the table), `-n timeout` 0.052 s and `-c ERROR` 0.046 s; reading the lines
+is 0.033 s of them. `-i` and the address are still behind, for the reasons below.
 
 Before the first slice of the trials, `Regex` ran Pike's machine on every line: `-i error` took 1.16 s, the address 2.06 s and
 `日本` 0.83 s. An inner text every match holds (1535), a lazy DFA (1536) with its cache kept in the `Regex`

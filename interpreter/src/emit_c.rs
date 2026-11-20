@@ -2259,8 +2259,9 @@ SG_COLD static _Noreturn void sg_bytes_fail(const char* what, int64_t want, int6
 }
 /* How many of the bytes, from the first, are whole characters of UTF-8: all of them when they are
    text, otherwise where the first byte lies that is not part of a character, or the first byte of a
-   character the end cuts off. Sixteen bytes, then eight, are passed at a time while they are ASCII,
-   and the ASCII after a character byte by byte. */
+   character the end cuts off. Sixteen bytes are passed at a time while they are ASCII; in the
+   sixteen that hold a byte past ASCII, the count of the zero bits below its high bit goes straight
+   to it (choice 1550), and the last fifteen bytes are read one by one. */
 static int64_t sg_utf8_valid(const uint8_t* b, int64_t len) {
     int64_t at = 0;
     for (;;) {
@@ -2268,13 +2269,14 @@ static int64_t sg_utf8_valid(const uint8_t* b, int64_t len) {
             uint64_t x, y;
             memcpy(&x, b + at, 8);
             memcpy(&y, b + at + 8, 8);
-            if ((x | y) & 0x8080808080808080ULL) break;
-            at += 16;
-        }
-        if (at + 8 <= len) {
-            uint64_t x;
-            memcpy(&x, b + at, 8);
-            if (!(x & 0x8080808080808080ULL)) at += 8;
+            uint64_t high = SG_LE64(x) & 0x8080808080808080ULL;
+            if (!high) {
+                high = SG_LE64(y) & 0x8080808080808080ULL;
+                if (!high) { at += 16; continue; }
+                at += 8;
+            }
+            at += __builtin_ctzll(high) >> 3;
+            break;
         }
         while (at < len && b[at] < 0x80) at++;
         if (at >= len) return len;
@@ -2865,19 +2867,112 @@ static inline uint32_t sg_decode(const uint8_t* p, int* n) {
     return ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
 }
 static inline sg_str sg_char_str(uint8_t* buffer, uint32_t c) { return (sg_str){ buffer, sg_utf8((char*)buffer, c) }; }
-/* Where `n` first lies in `h`, in bytes, or -1. */
-static int64_t sg_find(sg_str h, sg_str n) {
-    if (n.len == 0) return 0;
-    if (n.len > h.len) return -1;
-    const uint8_t* p = h.ptr;
-    const uint8_t* end = h.ptr + (h.len - n.len + 1);
-    while (p < end) {
-        p = memchr(p, n.ptr[0], (size_t)(end - p));
-        if (!p) return -1;
-        if (memcmp(p, n.ptr, (size_t)n.len) == 0) return p - h.ptr;
-        p++;
+/* How common each byte is in text and code, 0 for the rarest and 255 for the commonest: made by
+   `tools/byte_rank.py` from the text the repository keeps. Only a guess at what is rare, so any
+   table finds the same places, sooner or later. */
+static const uint8_t sg_byte_rank[256] = {
+    135,   0,   1,   2,   3,   4,   5,   6,   7,  90, 244,  69,  70,   8,   9,  10,
+     11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,
+    255, 186, 246, 169, 162, 161, 203, 187, 237, 236, 204, 183, 238, 214, 234, 221,
+    219, 217, 212, 202, 205, 201, 199, 184, 194, 193, 239, 215, 191, 224, 211, 179,
+    163, 206, 180, 207, 189, 208, 190, 175, 172, 197, 165, 171, 198, 185, 195, 196,
+    182, 167, 200, 210, 213, 176, 177, 181, 166, 164, 168, 242, 174, 192, 170, 222,
+    229, 252, 225, 240, 243, 254, 232, 228, 241, 248, 178, 218, 245, 233, 251, 247,
+    231, 173, 250, 249, 253, 235, 223, 227, 216, 226, 188, 230, 209, 220, 159,  81,
+    152, 113, 149, 116,  91, 119, 120,  97,  92, 104,  27,  28,  71,  93,  29, 105,
+     94, 114, 131,  82, 122,  98,  30, 138, 139,  31,  32,  72, 128,  95, 132, 158,
+     96,  33,  34, 154,  83, 136,  73, 121,  84, 156, 108, 109, 147, 106,  74, 115,
+    145, 143, 117, 102, 107, 123, 129, 111, 133, 130, 124, 125, 144, 134,  35, 150,
+     75,  36, 153, 160, 155, 140,  37, 110,  38,  39,  85,  40,  41,  42, 157, 141,
+    142, 126,  43,  44,  45,  46,  47,  86,  48, 137,  49,  50,  51,  52,  53,  54,
+     76, 118, 151,  77,  99, 112, 148,  55, 100, 103,  87,  56,  57,  78,  58, 127,
+    146,  59,  60,  61,  88,  62,  63,  64,  65,  66,  79,  67,  89,  68,  80, 101,
+};
+/* Where the bytes of `n` at `i1` and `i2` are both found, for the sixteen starts of `h` from `s`,
+   each a byte of all ones in `w` (the low eight starts in `w[0]`): the first start of them that
+   `n` is found at, or -1. */
+static inline int64_t sg_find_hits(sg_str h, sg_str n, int64_t s, const uint64_t w[2]) {
+    for (int half = 0; half < 2; half++) {
+        uint64_t bits = SG_LE64(w[half]) & 0x0101010101010101ULL;
+        while (bits) {
+            int64_t at = s + half * 8 + (__builtin_ctzll(bits) >> 3);
+            if (memcmp(h.ptr + at, n.ptr, (size_t)n.len) == 0) return at;
+            bits &= bits - 1;
+        }
     }
     return -1;
+}
+/* Where `n` first lies in `h`, in bytes, or -1. A single byte is looked for by `memchr`; a longer
+   text by its two rarest bytes (`sg_byte_rank`), both compared at sixteen starts at a time with
+   the processor's vector instructions where there are some (SSE2, NEON), and the text itself
+   compared only where the two are found, as Rust's `memchr::memmem` does (choice 1549). A text
+   whose first byte is common in `h` is no longer looked for at each place that byte is. The search
+   of one byte stays where it is called (`split(',')`); the longer one is a call the C compiler is told
+   not to put in its caller, whose loop it would otherwise no longer put in its own (`fields` took 1.2
+   times as long). */
+__attribute__((noinline)) static int64_t sg_find_long(sg_str h, sg_str n) {
+    int64_t i1 = 0, i2 = 1;
+    if (sg_byte_rank[n.ptr[1]] < sg_byte_rank[n.ptr[0]]) { i1 = 1; i2 = 0; }
+    for (int64_t i = 2; i < n.len; i++) {
+        uint8_t r = sg_byte_rank[n.ptr[i]];
+        if (r < sg_byte_rank[n.ptr[i1]]) { i2 = i1; i1 = i; }
+        else if (r < sg_byte_rank[n.ptr[i2]] && n.ptr[i] != n.ptr[i1]) i2 = i;
+    }
+    uint8_t b1 = n.ptr[i1], b2 = n.ptr[i2];
+    int64_t starts = h.len - n.len + 1, s = 0;
+#if (defined(__SSE2__) || defined(__ARM_NEON)) && (defined(__GNUC__) || defined(__clang__))
+    if (starts >= 16) {
+        typedef uint8_t sg_v16 __attribute__((vector_size(16)));
+        sg_v16 v1 = (sg_v16){0} + b1, v2 = (sg_v16){0} + b2;
+        const uint8_t* p1 = h.ptr + i1;
+        const uint8_t* p2 = h.ptr + i2;
+        uint64_t w[2];
+        for (; s + 32 <= starts; s += 32) {
+            sg_v16 x, y, x2, y2;
+            memcpy(&x, p1 + s, 16);
+            memcpy(&y, p2 + s, 16);
+            memcpy(&x2, p1 + s + 16, 16);
+            memcpy(&y2, p2 + s + 16, 16);
+            sg_v16 m = (x == v1) & (y == v2), m2 = (x2 == v1) & (y2 == v2), any = m | m2;
+            memcpy(w, &any, 16);
+            if (w[0] | w[1]) {
+                memcpy(w, &m, 16);
+                int64_t at = sg_find_hits(h, n, s, w);
+                if (at >= 0) return at;
+                memcpy(w, &m2, 16);
+                at = sg_find_hits(h, n, s + 16, w);
+                if (at >= 0) return at;
+            }
+        }
+        /* The last starts, sixteen at a time, the last sixteen over some already passed. */
+        while (s < starts) {
+            if (s + 16 > starts) s = starts - 16;
+            sg_v16 x, y;
+            memcpy(&x, p1 + s, 16);
+            memcpy(&y, p2 + s, 16);
+            sg_v16 m = (x == v1) & (y == v2);
+            memcpy(w, &m, 16);
+            if (w[0] | w[1]) {
+                int64_t at = sg_find_hits(h, n, s, w);
+                if (at >= 0) return at;
+            }
+            s += 16;
+        }
+        return -1;
+    }
+#endif
+    for (; s < starts; s++)
+        if (h.ptr[s + i1] == b1 && h.ptr[s + i2] == b2 && memcmp(h.ptr + s, n.ptr, (size_t)n.len) == 0) return s;
+    return -1;
+}
+static inline int64_t sg_find(sg_str h, sg_str n) {
+    if (n.len == 0) return 0;
+    if (n.len > h.len) return -1;
+    if (n.len == 1) {
+        const uint8_t* p = memchr(h.ptr, n.ptr[0], (size_t)h.len);
+        return p ? p - h.ptr : -1;
+    }
+    return sg_find_long(h, n);
 }
 static int64_t sg_find_last(sg_str h, sg_str n) {
     for (int64_t at = h.len - n.len; at >= 0; at--)

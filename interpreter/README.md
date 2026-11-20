@@ -460,6 +460,10 @@ A debug build (`sg build file.sg`) checks integer overflow and is not optimised;
 debug build; a cast that does not fit follows the same rule. An index or a range outside a text, division by
 zero, `assert` and `panic` stop the program in every build.
 
+Measured fairly, by the rules of [`trials/README.md`](../trials/README.md#fairness-1554) (1554): the C is the
+ordinary program a C programmer writes, every program measured is shown, also where SG loses, and SG keeps
+every check it has by default.
+
 Measured (`python3 bench/run.py`, Apple clang 21 on arm64, best of five, `-O2` for all three; the C is written by
 hand with no checks):
 
@@ -483,24 +487,24 @@ hand with no checks):
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `floats`: a million fractional numbers, every other one of seventeen digits, written into a text with `$"{x}\n"` three times over and read back once (the C writes each with `%.17g`, always seventeen digits) | 0.176 s | 0.179 s | 0.777 s | 0.23 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
-| `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.075 s | 0.077 s | 0.091 s | 0.82 |
+| `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.070 s | 0.070 s | 0.089 s | 0.79 |
 | `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.155 s | 0.160 s | 0.285 s | 0.54 |
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
 | `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.287 s | 0.296 s | 0.547 s | 0.52 |
 | `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
 | `keywords`: a million words sorted forty times into twelve keywords and the rest by a `match` on text | 0.199 s | 0.200 s | 0.194 s | 1.03 |
 | `classes`: ten million bytes sorted twenty times into the classes of a lexer by a `match` of ranges and `or` (`'a'..='z' or 'A'..='Z' or '_'`) | 0.239 s | 0.299 s | 0.274 s | 0.87 |
-| `rewrite`: two hundred thousand lines gone over twenty times, the tabs replaced by four spaces and a word by another with `replaceAll`, and an indent made with `repeat` | 0.588 s | 0.597 s | 0.625 s | 0.94 |
+| `rewrite`: two hundred thousand lines gone over twenty times, the tabs replaced by four spaces and a word by another with `replaceAll`, and an indent made with `repeat` | 0.529 s | 0.525 s | 0.614 s | 0.86 |
 | `tree`: the design's folder tree, 111,111 `shared checked` folders that look at their parent with `weak`, each adding a size to every folder above it, built and freed twenty times | 0.095 s | 0.102 s | 0.062 s | 1.53 |
 | `tasks`: four tasks at a time over the numbers below 400,000, ten times; each adds up Collatz lengths and adds them to a `shared locked` total every 100 numbers | 0.115 s | 0.188 s | 0.115 s | 1.00 |
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
-| `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.113 s | 0.114 s | 0.088 s | 1.28 |
+| `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.104 s | 0.105 s | 0.088 s | 1.18 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
 | `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.283 s | 0.284 s | 0.271 s | 1.04 |
 | `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 1.004 s | 1.009 s | 1.129 s | 0.89 |
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 | `echowork`: `echo` with work in it, the server going through 300,000 steps of arithmetic for each message before it sends it back, and each client sending 300 (the C is that of `echo`, with the same work) | 0.376 s | 0.372 s | 0.369 s | 1.02 |
-| `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
+| `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.088 s | 0.088 s | 0.081 s | 1.09 |
 | `ring`: a ring buffer of its own over raw memory (`raw long`, `unsafe`), four hundred million numbers in at one end and out at the other through 4096 items (the C is the same over `calloc`) | 0.328 s | 0.326 s | 0.328 s | 1.00 |
 | `crc`: sixteen gigabytes through zlib's `crc32`, 64 KB of an array at a time, handed over with `block.pointer()` (the C calls zlib through its header) | 0.418 s | 0.417 s | 0.421 s | 0.99 |
 | `deflate`: a gigabyte at level 1 through zlib's stream, 64 KB at a time, behind the safe `Deflater` of `examples/zlib` (the C calls zlib through its header) | 1.001 s | 1.001 s | 0.962 s | 1.04 |
@@ -8608,7 +8612,8 @@ Choices made in the hundred-and-twenty-fourth slice (the library: hex and Base64
 
 1406. **The library grows before the reference**: five slices go into `std`, the language's own module written in
      SG: hex and Base64, CRC-32 and SHA-256 (1407-1409); the command line (1410); JSON (1411); a log (1412); and,
-     approved the same day, XML without a DTD (1413: elements, attributes, text and CDATA, the five entities
+     approved the same day, XML without a DTD (1413, replaced on 20 November 2026 by 1551, which keeps XML out of
+     `std`: elements, attributes, text and CDATA, the five entities
      XML defines and numeric references, a DTD an error, so no outside file or growing entity is ever read;
      YAML is left out, whose anchors and tags carry the same dangers, and a program that needs it wraps
      libyaml). Each runs the same in the interpreter and compiled, is tested on Windows, and gets a page of the
@@ -9450,6 +9455,75 @@ failed compiled before, where the program wrote on to its end and ended with 0).
 the 1851 programs are compiled on macOS and on Linux (107 under the thread sanitizer); on the Windows Arm VM
 `an_output_closed_early` passes, the closed pipe ending compiled code silently with 0.
 
+Choices made in the hundred-and-thirty-sixth slice (what the trials found, second: reading lines and
+searching for a plain text, `grep -c timeout`), approved on 20 November 2026:
+
+1549. **A plain text is looked for by its two rarest bytes**, sixteen starts at a time: `indexOf`,
+     `contains`, `split` and `replaceAll` with a text, and a regular expression that is a plain text or
+     holds one (1535). Compiled code looked for the text's first byte with `memchr` and compared the rest
+     wherever it was, so a text whose first byte is common stopped at each one: `timeout` at every `t`,
+     one byte in 38 of the trial's log. The bytes of the text are now ranked by a table of how common each
+     byte is (`sg_byte_rank`, made by `tools/byte_rank.py` from the text and code the repository keeps),
+     and its two rarest are compared at sixteen starts at once with the processor's vector instructions
+     (the C compiler's vectors, SSE2 on x64 and NEON on Arm; a start at a time where it has none); only
+     where both are found is the text compared. A single byte is still `memchr`'s. As Rust's
+     `memchr::memmem`, which its `str::find` and `regex` use, with a table of its own. Measured on the 100
+     MB of the trial, the time the search adds to splitting the lines: `timeout` 29 ms to 10.5,
+     `connection` 27 to 13, `in 1234 ms` 39 to 9, `ERROR` 16 to 8.5; a text whose first byte is already
+     rare and found early in the line takes a little longer, `INFO` 6 ms to 11 and `@example.com` 2 to 7.
+     `grep -c timeout` takes 0.049 s, where it took 0.073 (Rust and Zig 0.066). Cost: the table, 256 bytes.
+1550. **UTF-8 is checked by going straight to the first byte past ASCII**: of sixteen bytes that hold one,
+     the count of the zero bits below its high bit gives its place, where the bytes before it were read one
+     by one. The trial's log, with a character past ASCII every forty bytes, is checked in 10 ms per 100 MB
+     where it took 15 (Rust's `str::from_utf8` 14 ms): every `readLine`, `readText`, `string.fromUtf8` and
+     reader of text has it. No vector instructions, so nothing to look for when the program starts (the
+     candidate of "Slower than C").
+
+The programs of `bench/` were all measured again on macOS after both: `lines` 0.077 s to 0.070, `rewrite` 0.58 to
+0.53, `asynclines` 0.113 to 0.104, `netlines` 0.095 to 0.088; the others as before. `fields` first took 1.2
+times as long, since the longer search, put inside `split`'s step by the C compiler, kept that step out of
+the loop; the longer search is now a call the compiler keeps apart, and `fields` takes its time again.
+
+Tested besides: `ok_find_text`, 16,000 searches in texts of up to 80 pieces of one to three bytes, a few
+kinds of piece at a time so that the two bytes are found often, held to a search byte by byte, and a text
+of a hundred `t`s; `ok_utf8_check`, 6,000 runs of bytes with characters of two, three and four bytes, `0xFF`,
+a character cut off, an encoding too long and a surrogate at every place of a block, held to a check byte by
+byte. Both run interpreted and compiled. The new `sg_find` and `sg_utf8_valid` were held besides, in a
+program of C, to a search and a check byte by byte on twenty million texts, under the address and undefined
+behaviour sanitizers, with the vector instructions and without them (`-mgeneral-regs-only`). With 1549 and
+1550, 483 of the 1853 programs are compiled on Linux, all clean under the sanitizers (107 under the thread
+sanitizer), and the whole of the tests passes on macOS and on Linux.
+
+Approved the same day, for what comes next:
+
+1551. **XML is not in `std`**, in place of 1413. A format few programs need, with a large surface for
+     attacks, goes into a package of the language's own, kept outside `std` and given versions apart from
+     the language, as Go keeps `golang.org/x/`. JSON, compression and regular expressions stay in `std`; each
+     new library of a format or a protocol is asked the same question before it is written.
+1552. **Packages without a registry, as Zig's and Go's, and next**: a package is the URL of a repository and
+     a version tag, pinned by the SHA-256 of its contents in a file of locks; the versions are chosen by Go's
+     minimal version selection, so a new release changes no build; they are fetched by the system's `git`,
+     `curl` and `tar`, so `sg` stays without dependencies, and kept where their authors keep them (a public
+     repository on GitHub costs nothing). Nobody owns a name, so no name can be taken first, and nothing is
+     served by the language at first; a mirror and a page of packages on the site may come later. Crates.io
+     is a registry with names, which a foundation runs. The choices beneath it are asked in the next slice.
+1553. **Every module of `std` is measured against Rust and Zig, and a new one comes in with its measurement**:
+     time, the most memory held and the size of the program, against Rust with the crates people use for the
+     job (`serde_json`, `flate2`, `sha2`, `base64`, `zip`, pinned in `Cargo.lock`) and against Zig's own
+     library, as the trials are (1525); `bench/` keeps its comparison with C. The modules are gone through
+     after packages (1552), those on hot paths first (JSON, compression, zip, SHA-256 and CRC-32, hex and
+     Base64, Unicode, time, random numbers, the network, the log); the command line, the environment and paths
+     are measured for size and memory only. Each difference is made right as 1543 has it, where it serves
+     every program, with no limit or check of safety taken away; what cannot be is written under "Slower than
+     C". From now on a module of `std`, and later an official package, is not done before its table is in this
+     file.
+1554. **Measurements are fair, never made to favour SG** (the rules are in `trials/README.md`, "Fairness"): Rust,
+     Zig and C are written as their own people write them, in their fastest ordinary build, and a faster
+     ordinary way shown for them is taken; the programs do the same work, checked byte for byte; every case
+     is chosen before the numbers are seen and published, also those SG loses, which go into "Slower than C";
+     SG is measured as it ships, with its checks on; the machine, the tools, the flags and what is left out
+     are written beside every table.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9546,7 +9620,7 @@ check off.
   still takes its allocation and the atomic steps of a task that might be woken from another thread.
   Candidates: a task that ends before it first waits could skip those steps, and its block could come
   from a list of freed ones.
-- **Reading the input the async way** (`asynclines`, 1.28 times C, choice 439; 1.37 before choice 491): a line the block holds
+- **Reading the input the async way** (`asynclines`, 1.18 times C, choice 439; 1.37 before choice 491, 1.28 before 1550): a line the block holds
   is read in place, but each block of 64 KB is filled on a thread of input and output, and the task is
   woken through the pool after it: about 12 µs a block, 0.023 s of the 0.035 s. Candidates: the thread
   fills the next block while the task reads this one (reading ahead), a larger block for a reader read
@@ -9581,10 +9655,11 @@ check off.
   raw memory a byte at a time, and copies what zlib wrote back the same way. Candidates: `Memory.copy`
   between a slice and raw memory, which compiles to `memcpy`, and a buffer lent to a value for as long as
   the value lives (a `raw` view that carries a borrow).
-- **Checking that a line is UTF-8** (`netlines`, 1.14 times `getline`, which checks nothing, 0.89 without
-  the check, choice 493; `lines` takes 0.82 times with it): the reader checks its block at once (491), with
-  sixteen bytes at a time while they are ASCII and one byte at a time inside a character (492), about
-  6 GB/s; the check is still some 0.02 s of the 0.09 s. The output a program keeps of another (`capture`,
+- **Checking that a line is UTF-8** (`netlines`, 1.09 times `getline`, which checks nothing, 0.89 without
+  the check, choice 493; 1.14 before 1550; `lines` takes 0.79 times with it): the reader checks its block at
+  once (491), with sixteen bytes at a time while they are ASCII (492), and goes straight to the first byte
+  past ASCII among them (1550), about 10 GB/s on a log with a character past ASCII every forty bytes; the
+  check is still some 0.01 s of the 0.09 s. The output a program keeps of another (`capture`,
   1.49 times reading the pipe in C, 1.02 without the check, choice 612) has the same check, 0.1 s for 626
   MB. Candidates: a check with vector instructions (as
   `simdutf` does), measured at 8.8 GB/s with NEON on arm64; on x86 it needs SSSE3, which a program has to
@@ -10128,9 +10203,12 @@ difference a choice (1418, `trials/`): `grep` and `wc` first, which brought a la
 compiler `CC` names and an `IoError` written as a sentence (1525-1539). What they found is made right before
 the next trial (1543): `print` first, which writes into a block of the program's own, its lines put
 together where they are printed (1544-1546), and ends compiled code where it cannot write, as it ends the
-interpreter (1547); then reading lines and a search for a plain text, the checks
-of the DFA's reads, and a search in any case with vector instructions. A `jq` of JSON is next, then a
-key-value store with a write-ahead log, a pool of workers, an HTTP/1.1 file server, a GIF tool and an
-interpreter of Lox. After them come XML without a DTD (1413), the reference of the language on the site
+interpreter (1547); then reading lines and a search for a plain text, found by its two rarest bytes, and
+UTF-8 checked faster (1549, 1550). Packages come next (1552): a package is a repository and a version,
+pinned by the SHA-256 of its contents, with no registry. Then every module of `std` is measured against
+Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
+with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
+an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
+and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

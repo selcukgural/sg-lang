@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-fifth slice (compiled `print` ends the program where it cannot write, 1547).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-sixth slice (a plain text looked for by its two rarest bytes, 1549; UTF-8 checked faster, 1550).
 
 ## Functions and variables
 
@@ -117,7 +117,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-fifth slice (c
 | `&s[a..b]` | `s[a..b]` | built | `read string` |
 | `s.as_bytes()[i]` | `s[i]` | built | One byte |
 | `s.chars()`, `s.split(',')`, `s.split_whitespace()`, `s.lines()` | the same, in camelCase | built | Parts look at the text, nothing copied |
-| `s.trim()`, `s.find(x)`, `s.rfind(x)`, `s.contains(x)`, `s.starts_with(x)` | `s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.contains(x)`, `s.startsWith(x)` | built | `indexOf` gives a `nint?` |
+| `s.trim()`, `s.find(x)`, `s.rfind(x)`, `s.contains(x)`, `s.starts_with(x)` | `s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.contains(x)`, `s.startsWith(x)` | built | `indexOf` gives a `nint?`. Compiled, a text is looked for by its two rarest bytes with vector instructions, as `memchr::memmem` under Rust's `find` (1549) |
 | `s.replace(a, b)`, `s.repeat(n)` | `s.replaceAll(a, b)`, `s.repeat(n)` | built | `replace` is taken by `slot.replace(value)` |
 | `s.eq_ignore_ascii_case(t)` | `s.equalsIgnoreAsciiCase(t)` | built | |
 | `names.join(", ")` | `string.join(", ", read names)` | built | |
