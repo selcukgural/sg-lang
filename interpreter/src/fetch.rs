@@ -32,8 +32,7 @@ pub const MAX_FILE_BYTES: u64 = 16 << 20;
 pub const MAX_FILES: usize = 10_000;
 /// The most files and the most bytes git may list for a tag, the packages kept in its folders
 /// too, before `sg` stops it (choice 1591): a tree of a few kilobytes can name billions of files.
-/// Git for Windows writes a listing slowly (100,000 files took 34 seconds), so the bound is twice
-/// the files a package may have.
+/// The bound is twice the files a package may have.
 const MAX_LISTED: usize = 20_000;
 const MAX_LISTING_BYTES: usize = 8 << 20;
 
@@ -315,8 +314,11 @@ pub fn fetched(address: &str, version: Version, sum: Option<&str>) -> Result<(St
     let repository = scratch.0.join("git");
     run(git(origin.protocols, &scratch.0).args(["init", "--bare", "-q", "--"]).arg(&repository), "cannot make a repository in the cache")?;
     let reference = format!("refs/tags/{tag}");
+    // The objects are kept in their pack, never unpacked into a file each: `ls-tree -l` reads
+    // the size of every file it lists, and opening a loose object for each is slow on Windows
+    // (18,000 names of one loose file took 38 seconds there, of one packed 0.8).
     run(
-        git_on(origin.protocols, &repository).args(["fetch", "-q", "--depth", "1", "--no-tags", "--", &origin.url, &format!("+{reference}:{reference}")]),
+        git_on(origin.protocols, &repository).args(["-c", "fetch.unpackLimit=1", "fetch", "-q", "--depth", "1", "--no-tags", "--", &origin.url, &format!("+{reference}:{reference}")]),
         &format!("cannot fetch the tag {tag} of {address}"),
     )?;
     let listing = listed(&repository, origin.protocols, &reference).map_err(|why| format!("cannot list the files of {what}: {why}"))?;
