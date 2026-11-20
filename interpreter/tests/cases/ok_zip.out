@@ -1,6 +1,6 @@
-../evil: the name "../evil" could lead out of the folder it is unpacked in
-C:\evil: the name "C:\\evil" could lead out of the folder it is unpacked in
-nul.txt: the name "docs/nul.txt" could lead out of the folder it is unpacked in
+../evil: the name "../evil" could lead out of the folder it is unpacked in, or name another file on another system
+C:\evil: the name "C:\\evil" could lead out of the folder it is unpacked in, or name another file on another system
+nul.txt: the name "docs/nul.txt" could lead out of the folder it is unpacked in, or name another file on another system
 twice: two entries are named "docs/stored.txt"
 a file named as a folder: two entries are named "docs"
 a file ending in /: invalid input

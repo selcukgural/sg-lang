@@ -39,14 +39,37 @@ def deflated(name, data):
 
 hello = b"hello, zip\n"
 
-# Names that could lead out of a folder (1502).
+# Names that could lead out of a folder (1502), or that a system would read another way: the rule
+# of Path.joinInside, part by part.
 for i, bad in enumerate([b"../evil.txt", b"a/../../evil.txt", b"/etc/passwd", b"a\\b.txt", b"C:evil.txt", b"c:/evil.txt",
-                         b"file.txt:stream", b"aux.txt", b"dir/NUL", b"lpt9", b"Com1 .txt", b"", b"a\x00b"]):
+                         b"file.txt:stream", b"aux.txt", b"dir/NUL", b"lpt9", b"Com1 .txt", b"", b"a\x00b",
+                         b"a/.../b", b"./x", b"lpt0", b"x.txt.", b"x.txt ", b"a//b", b"a\x1bb", b"a\xc2\x85b",
+                         b"CONIN$", b"dir./f"]):
     write(f"insecure-{i:02}.zip", archive([stored(b"ok.txt", hello), stored(bad, hello)]))
 # Names that are fine though they look close.
-write("secure-names.zip", archive([stored(name, hello) for name in [b"a..b", b"..a", b"a/.../b", b"console.txt", b"com10", b"lpt0", b"aux_", b"./x"]]))
-# Two entries of one name, and a file and a folder of one name (1491).
+write("secure-names.zip", archive([stored(name, hello) for name in [b"a..b", b"..a", b".x", b"console.txt", b"com10", b"aux_", b"a/b..c/d"]]))
+# Two entries of one name, also in another case, and a file and a folder of one name (1491).
 write("duplicate.zip", archive([stored(b"same.txt", hello), stored(b"same.txt", b"other\n")]))
+write("duplicate-case.zip", archive([stored(b"Readme.txt", hello), stored(b"README.TXT", b"other\n")]))
+
+# The time of NTFS (tenths of a microsecond since 1601) in the extra field of the directory: one a
+# DateTime holds, one before 1677 (0: 1601) and one past 2^63; the last two leave the time of DOS.
+def ntfs(ticks):
+    field = struct.pack("<HHIHHQQQ", 0x000A, 32, 0, 1, 24, ticks, ticks, ticks)
+    body = local(b"t.txt", 0, zlib.crc32(hello), len(hello), len(hello)) + hello
+    cd = central(b"t.txt", 0, zlib.crc32(hello), len(hello), len(hello), 0, extra=field)
+    return body + cd + end(1, len(cd), len(body))
+write("time-ntfs.zip", ntfs(133_000_000_000_000_000))
+write("time-ntfs-1601.zip", ntfs(0))
+write("time-ntfs-high.zip", ntfs(1 << 63))
+# A locator of zip64 that points past 2^63.
+def far_locator():
+    body = local(b"a", 0, zlib.crc32(hello), len(hello), len(hello)) + hello
+    cd = central(b"a", 0, zlib.crc32(hello), len(hello), len(hello), 0)
+    locator = struct.pack("<IIQI", 0x07064B50, 0, (1 << 63) + 5, 1)
+    record = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 0xFFFF, 0xFFFF, len(cd), len(body), 0)
+    return body + cd + locator + record
+write("zip64-locator-far.zip", far_locator())
 write("duplicate-folder.zip", archive([stored(b"a", hello), stored(b"a/", b"")]))
 # The name of the local header is not the central one's (1491).
 good = archive([stored(b"good.txt", hello)])

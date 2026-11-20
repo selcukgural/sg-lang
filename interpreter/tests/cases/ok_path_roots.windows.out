@@ -9,6 +9,9 @@
 [\\.\COM1] name [] parent [\\.\COM1] joined [\\.\COM1\x]
 [/a/b] name [b] parent [/a] joined [/a/b\x]
 [a\b/c] name [c] parent [a\b] joined [a\b/c\x]
+[//?/ééx.txt] name [] parent [//?/ééx.txt] joined [//?/ééx.txt\x]
+[\\?\€UN\x.txt] name [x.txt] parent [\\?\€UN\] joined [\\?\€UN\x.txt\x]
+[\\?\uNc\srv\share\a.txt] name [a.txt] parent [\\?\uNc\srv\share\] joined [\\?\uNc\srv\share\a.txt\x]
 logs\etc
 logs\etc
 true

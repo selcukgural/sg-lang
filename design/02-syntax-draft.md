@@ -2097,7 +2097,7 @@ parts of a path, `Path.join` writes `\` (`logs\today.txt`), and a path may start
 (`C:\`, `C:`, `\\server\share\`), which `Path.parent` keeps whole. A name from outside the program (a request, an archive) goes through
 `Path.joinInside`, which gives an `InvalidInput`, the same on every system, for a name that could lead out of
 the folder on any of them: an empty part, a root, a `\` or a `:`, a part that ends with `.` or a space (`..`
-among them), a control character, the name of a device of Windows (`CON`, `nul.txt`). A link inside the
+among them), a control character (C0, DEL or C1), the name of a device of Windows (`CON`, `nul.txt`). A link inside the
 folder is still followed.
 
 ```

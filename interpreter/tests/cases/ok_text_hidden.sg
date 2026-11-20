@@ -1,0 +1,32 @@
+// Characters a reader does not see, or that turn or drive the text around them, are escaped where
+// a text from outside is shown to a person: a line of `Log`, a key of JSON in an error, the name of
+// an entry of a zip archive. Those of format (the Arabic letter mark, the tags, the marks of
+// direction, the soft hyphen, the annotations), the fillers, and the control characters of C1; the
+// selector of an emoji's look stays. The folder is the first word of the command line.
+Result<void, ZipError> main(List<string> args) {
+    var key = "a\u{61c}b\u{e0041}c\u{206a}d\u{ad}e\u{180e}f\u{fff9}g\u{34f}h\u{3164}i\u{2066}j\u{85}k\u{2028}l\u{263a}\u{fe0f}"
+    var text = $"{key}\u{1b}[2J".toString()
+    Log.info(read text)
+
+    // A key of JSON holds no control character of C0 unescaped; the others it may.
+    var json = $"{{\"{key}\": 1, \"{key}\": 2}}".toString()
+    match Json.parse(read json) {
+        Ok(_) => print("parsed")
+        Error(e) => print(e)
+    }
+    match Json.parse("\u{2067}1") {
+        Ok(_) => print("parsed")
+        Error(e) => print(e)
+    }
+
+    var path = Path.join(read args[0], "hidden.zip")
+    var zip = ZipWriter.create(File.createText(read path) ?? panic("cannot write the archive"))
+    var when = DateTime.fromUnixSeconds(0)
+    var name = $"x{text}".toString()
+    match zip.add(read name, "x".asBytes(), ZipMethod.Stored, when) {
+        Ok => print("added")
+        Error(e) => print(e)
+    }
+    try zip.close()
+    return Ok()
+}

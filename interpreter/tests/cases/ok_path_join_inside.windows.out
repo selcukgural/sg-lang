@@ -34,3 +34,6 @@ ok  [😀] -> files\😀
 ok  [çom1] -> files\çom1
 ok  [COMé] -> files\COMé
 bad [LPT³.txt] invalid input
+bad [ab] invalid input
+bad [ab] invalid input
+ok  [a b] -> files\a b

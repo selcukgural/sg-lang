@@ -101,11 +101,13 @@ arguments, so a text from outside cannot make the log do anything (Log4Shell, CV
 lookup in a message). It takes a finished `string`; `$"..."` is put together when the program is compiled,
 and a value put into it is never read again.
 
-Each line comes from one call. A line break and every other control character in a message is escaped when
-it is written (`\n`, `\r`, `\t`, the others as `\u001b`), and so are the characters that cannot be seen or
-that turn the text around them: the marks of direction, the characters of no width and the byte order mark
-(`‮`). A backslash is written `\\`, so a `\n` that was in the text is not taken for an escaped line
-break. A user who sends a line break cannot add a line of their own, and a log shown in a terminal cannot be
+Each line comes from one call. A line break and every other control character in a message (C0, DEL and
+C1) is escaped when it is written (`\n`, `\r`, `\t`, the others as `\u001b`, or `\u{e0041}` past U+FFFF),
+and so are the characters that cannot be seen or that turn the text around them: every character of format
+(the marks of direction, the characters of no width, the soft hyphen, the byte order mark, the tags), the
+separators of lines and paragraphs, and the fillers that show nothing (`U+3164`). The selector that asks for
+an emoji's look (`U+FE0F`) stays. A backslash is written `\\`, so a `\n` that was in the text is not taken for
+an escaped line break. A user who sends a line break cannot add a line of their own, and a log shown in a terminal cannot be
 driven by escape sequences.
 
 ```sg

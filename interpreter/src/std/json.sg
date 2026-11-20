@@ -360,8 +360,8 @@ public enum JsonErrorKind : Equatable, Formattable {
             UnexpectedEnd => f.write("the text ends before the value")
             UnexpectedCharacter(found) => {
                 // A character that cannot be seen, or that turns the text around it (a byte
-                // order mark, the marks of direction), is named by its code.
-                if jsonHidden((int)found) {
+                // order mark, the marks of direction: `UnicodeCategory.hides`), is named by its code.
+                if UnicodeCategory.hides((int)found) {
                     f.write($"unexpected character U+{jsonHex4((int)found)}")
                 } else {
                     f.write($"unexpected character '{found}'")
@@ -798,28 +798,34 @@ JsonFault jsonBadNumber(read byte[] bytes, nint position) {
     return jsonFault(position, JsonErrorKind.InvalidNumber)
 }
 
-// Four hex digits of a code, upper case as Unicode writes them: `FEFF`.
+// The hex digits of a code, four at least, upper case as Unicode writes them: `FEFF`, `E0041`.
 string jsonHex4(int code) {
-    var text = string.withCapacity(4)
-    for k in 0..4 {
-        text.write(JsonHexDigits[(nint)(code >> (12 - 4 * k) & 15)].toAsciiUpper())
+    var text = string.withCapacity(6)
+    int digits = 4
+    while digits < 6 && code >> (4 * digits) != 0 {
+        digits += 1
+    }
+    for k in 0..digits {
+        text.write(JsonHexDigits[(nint)(code >> (4 * (digits - 1 - k)) & 15)].toAsciiUpper())
     }
     return text
-}
-
-// A character that cannot be seen or that turns the text around it: a control character, a mark
-// of direction, a byte order mark.
-bool jsonHidden(int code) {
-    if code < 32 || (code >= 127 && code < 160) || code == 0xFEFF {
-        return true
-    }
-    return (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069)
 }
 
 // `text` as a JSON string, in quotes.
 string jsonQuoted(read string text) {
     var quoted = string.withCapacity(text.length() + 2)
-    writeJsonString(ref quoted, text)
+    quoted.write('"')
+    for c in text.chars() {
+        if c == '"' || c == '\\' {
+            quoted.write('\\')
+            quoted.write(c)
+        } else if UnicodeCategory.hides((int)c) {
+            UnicodeCategory.escape(ref quoted, (int)c)
+        } else {
+            quoted.write(c)
+        }
+    }
+    quoted.write('"')
     return quoted
 }
 

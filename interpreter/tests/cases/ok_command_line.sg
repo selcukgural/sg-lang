@@ -155,4 +155,23 @@ void main() {
     }
     var nearest = CommandLineError.UnknownOption("--verbos", "verbose")
     print(nearest == CommandLineError.UnknownOption("--verbos", "verbose"))
+
+    // A word that drives the terminal or breaks the line is shown escaped; the error keeps it as
+    // it was given.
+    var forged = List<string> { "--a'\nprog: all checks passed", "\u{1b}[2J", "--\u{202e}txt.exe" }
+    match copy.parse(read forged) {
+        Error(cause) => print($"{cause} {cause == CommandLineError.UnknownOption("--a'\nprog: all checks passed", null)}")
+        Ok(_) => print("read")
+    }
+    match copy.parse(read List<string> { "a", "b", "\u{1b}[2J" }) {
+        Error(cause) => print(cause)
+        Ok(_) => print("read")
+    }
+    // A long word is compared only with names of about its length.
+    var longWord = List<string> { $"--{"x".repeat(200000)}".toString() }
+    match copy.parse(read longWord) {
+        Error(UnknownOption(word, suggestion)) => print($"{word.length()} {suggestion is null}")
+        Error(cause) => print(cause)
+        Ok(_) => print("read")
+    }
 }

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-forty-first slice (a generator of programs that borrow tries the rules of 1592, as rustlantis and Csmith try their compilers, 1593).
+Last brought up to date: 20 November 2026, the hundred-and-forty-second slice (the readers of the library made to hold on what an untrusted input gives them, 1594: names of zip archives by `Path.joinInside`'s rule, C1 refused by `joinInside`).
 
 ## Functions and variables
 
@@ -407,7 +407,7 @@ Last brought up to date: 20 November 2026, the hundred-and-forty-first slice (a 
 | `tempfile::NamedTempFile::new()` | `File.createTemp()` | built | `mkstemp`, a file only the user can open; it gives the path, and removing the file is the program's work: nothing deletes it when it ends |
 | `path.join(name)`, `path.file_name()`, `path.extension()`, `path.parent()` | `Path.join(read path, name)`, `Path.fileName(read path)`, `Path.extension(read path)`, `Path.parent(read path)` | built | A path is a `string`. A second path that starts with a root is put after the first, the root left out, where Rust's `join` puts it in its place; the extension keeps its `.`, as in C#. On Windows `/` and `\` both separate, `join` writes `\`, and `C:\`, `C:` and `\\server\share\` are roots, as Rust reads them |
 | `cfg!(windows)`, `cfg!(target_os = "linux")`, `cfg!(target_os = "macos")` | `OperatingSystem.isWindows()`, `isLinux()`, `isMacOS()` | built | Known when the program is built, as `cfg!` is: both branches are checked on every system and only one is compiled. There is no `#[cfg]` that leaves code unchecked |
-| a check of each component of a name from outside before `path.join(name)` (Go's `filepath.IsLocal`) | `try Path.joinInside(read folder, name)` | built | An `InvalidInput`, the same on every system, for `..`, a root, a `\`, a `:`, a part that ends with `.` or a space, a control character and the devices of Windows; a link inside the folder is still followed |
+| a check of each component of a name from outside before `path.join(name)` (Go's `filepath.IsLocal`) | `try Path.joinInside(read folder, name)` | built | An `InvalidInput`, the same on every system, for `..`, a root, a `\`, a `:`, a part that ends with `.` or a space, a control character (C0, DEL, C1) and the devices of Windows; a link inside the folder is still followed |
 | `env::var("HOME")` | `Environment.get("HOME")` | built | A `Result<string, VariableError>` with `Missing` and `InvalidText(position)`, as Rust's `VarError` |
 | `env::set_var`, `env::remove_var` | none | not in SG | Unsafe in Rust 2024 for the same reason: another thread may be reading. A program that starts another gives it an environment of its own |
 
@@ -612,7 +612,7 @@ Last brought up to date: 20 November 2026, the hundred-and-forty-first slice (a 
 | `flate2::Error` / `io::Error` | `CompressError` | built | `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TooLarge`, `TrailingData`, `Io(error)` |
 | `GzBuilder::filename(...)`, `GzDecoder::header()` | none yet | | The header holds no name or time; a header read is not given |
 | `Compress::compress(..., FlushCompress::Sync)`, a preset dictionary | none yet | | |
-| `zip::ZipArchive::new(File::open(path)?)` | `ZipReader.open(read path)`, `ZipReader.of(reader)` | built | The directory is checked when it is opened: `InsecurePath`, `DuplicateName`, `Overlap` refuse the archive |
+| `zip::ZipArchive::new(File::open(path)?)` | `ZipReader.open(read path)`, `ZipReader.of(reader)` | built | The directory is checked when it is opened: `InsecurePath` (the rule of `Path.joinInside`, part by part), `DuplicateName` (in any case), `Overlap` refuse the archive |
 | `for i in 0..archive.len() { archive.by_index(i)? }`, `file.name()`, `file.size()` | `for entry in zip.entries()`, `entry.name`, `entry.size` | built | `compressedSize`, `modified` (a `DateTime` in UTC), `isDirectory`, `method` too; the list is the program's own |
 | `io::copy(&mut archive.by_index(i)?, &mut out)` | `zip.copyTo(read entry, ref writer, limit)` | built | Always a limit (`TooLarge`); an entry that opens into another size than its own is `SizeMismatch` |
 | `file.read_to_end(&mut bytes)` | `zip.readBytes(read entry, limit)` | built | |

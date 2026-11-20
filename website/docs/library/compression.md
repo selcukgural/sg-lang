@@ -127,7 +127,9 @@ blocks follow the pieces, as zlib's do.
 | `Result<string, CompressError> readText(ref this)` | All that is left, as text |
 
 The limit counts every byte the reader opens; the bytes up to it are given, and asking for one more is
-`TooLarge`. The end of the stream must be the end of the source too.
+`TooLarge`. A limit of `long.MaxValue` is no limit. The end of the stream must be the end of the source too. A
+line, and a character of several bytes, is given whole wherever the blocks of the stream end, and a last line
+with no `\n` is a line.
 
 ```sg
 Result<void, IoError> write(read string path) {

@@ -86,3 +86,6 @@ error: missing <to>
 error: unexpected argument 'c'
 true
 true
+unknown option '--a'\nprog: all checks passed' true
+unexpected argument '\u001b[2J'
+200002 true

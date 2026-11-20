@@ -9864,6 +9864,62 @@ programs (1361-1368) wrote none that borrowed, so a hole beside those shapes wou
 `fuzz/difference` has its first tests: a seed gives one program, and each line of it names the node that
 wrote it.
 
+Choices made in the hundred-and-forty-second slice (fixing what the second review found, fourth: the
+modules of `std` that read what others write). The review gave each of them input made to hurt it; what it
+found that compiled code and the tool must fix (a line of `Log` that is not one write, a search for a long
+text that repeats, `printError` to a pipe that is gone) waits for 1595:
+
+1594. **The readers of `std` hold on what an input gives them.**
+     - **Compression**: `readLine` and `readText` of a `Decompressor` ask for more of the stream when a
+       line or a character is cut by what is ready; they looped for ever on a last line with no `\n`, a
+       line longer than a block of 64 KB and a character cut by one (all ordinary files). A limit of
+       `long.MaxValue` overflowed. And a symbol of codes is begun only with 48 bits held while more input is
+       to come: a valid stream whose long codes (a length of 20 bits and a distance of 28) met the end of
+       the reader's block was `Truncated`, in `Deflate.reader`, `Gzip.reader` and `ZipReader`, though
+       zlib, `gzip` and `unzip` read it. Its test (`ok_compression_streams`) writes such streams with a
+       generator that follows the bits the inflater holds, one for each number it may hold where codes
+       begin, and the code before this slice refuses all five.
+     - **Regular expressions**: `x*` counts its body among the 100,000 steps of the limit, as `x{n}` did
+       (`((a{1000})*){1000}`, a program of a gigabyte, is `TooLarge`, also when it is compiled); each DFA is
+       emptied at about 2 MB counted in the bytes of its states and moves, which its page promised and a
+       count of 4,000 states did not keep (a state of 100,000 steps: 1 GB, now 26 MB); the slots of the
+       groups grow with the threads of Pike's machine that are alive, kept by thread, not with the program
+       (4,000 empty groups: 1 GB, now 4 MB); a `[:` with no `:]` in a class is looked for once, not to the
+       end of the pattern at each; the items of a class with `(?i)` are folded once, when the class is
+       finished (`(?i)[\p{Lu}\p{Lu}...]`: 570 MB, now nothing more than one); and a repetition after
+       `\Q...\E` repeats its last character, or what came before an empty `\Q\E`, as Go and RE2 do (it
+       repeated the whole text). A pattern that keeps many threads alive with many groups, `(a?)` written
+       4,000 times, still takes their product, 520 MB, as Go's 540 MB (Go is 7 times faster there).
+     - **Zip archives**: a name is refused by the rule of `Path.joinInside`, part by part (`./x`, `a//b`,
+       `x.txt.`, `dir./f`, `lpt0`, `CONIN$`, C1), so a name `ZipReader` gives is one `joinInside` takes, and
+       `InsecurePath` says "or name another file on another system"; two names that differ only in case
+       are `DuplicateName`, as macOS and Windows take them for one file. Two names in different Unicode
+       forms of one text are not compared, since `std` has no normalization: written in the library page.
+       An NTFS time before 1684 or past 2255, and a locator of zip64 past 2^63, are no longer panics (41
+       of 6,000 archives changed at random were; none now).
+     - **Paths**: `joinInside` refuses the control characters of C1 too, and on Windows `\\?\UNC\` is
+       read byte by byte, so a character of several bytes there is no panic (135 of 4,000 paths, run on a
+       copy of `path.sg` with the rules of Windows).
+     - **What a person reads**: `UnicodeCategory.hides`, one list for the library, says which characters a
+       reader does not see or that drive the text around them (the control characters, every character of
+       format, the separators of lines and the fillers), and a line of `Log`, a key of JSON in an error,
+       the name of an entry of a zip archive and a word of the command line in an error have them escaped
+       (`\u061c`, `\u{e0041}`); `Log` let through the tags, the soft hyphen and the Arabic letter mark, JSON
+       and the command line wrote them as they were.
+     - **The command line**: the nearest name is looked for only among names of about the length of the
+       unknown word: a word of a megabyte took a minute in the interpreter, now 2 ms.
+     - **Written down, not changed**: `JsonObject.remove` keeps the order, so it is linear, as
+       `IndexMap.shift_remove`; a JSON text takes 50 to 200 bytes a byte once read, as a tree of values
+       does in Go and Rust; `toJson` writes any depth and `Json.parse` reads 128. Each in its page.
+
+Tested by `ok_compression_streams`, `ok_regex_limits`, `ok_text_hidden` (new), and by
+`ok_command_line`, `ok_path_roots` and `ok_path_join_inside` (with their Windows output), the archives
+of the zip suite made by `make.py` (ten more names refused, names in another case, NTFS times and a far
+locator of zip64), each of them red on the code before this slice (the paths of Windows on Windows alone).
+The whole of the tests passes on macOS and on Linux (the kernel's test, which needs a Clang that knows
+RISC-V, on Linux alone), with 487 of the 1893 programs compiled through C and run clean under the
+sanitizers, 108 of them under the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10558,7 +10614,7 @@ by the program, and a folder `internal` keeps a library's own modules to itself.
 (1589) came after them, and what it found is fixed first (1590): what a package or a project brings is
 never run or followed, and a package is kept only as itself (1591); the rules of borrowing are made rules,
 not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
-what others write, compiled code and the tool are next. Then every module of `std` is measured against
+what others write hold on what they are given (1594); compiled code and the tool are next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

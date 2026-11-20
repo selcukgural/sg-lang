@@ -222,7 +222,7 @@ public struct Decompressor {
                 return Ok(true)
             }
             searched = this.ready() - this.given
-            if !try this.more() {
+            if !try this.open() {
                 if this.given == this.ready() {
                     return Ok(false)
                 }
@@ -243,7 +243,7 @@ public struct Decompressor {
             nint cut = utf8Whole(read this.inflater.out, this.given, end)
             try this.text(ref text, this.given, cut)
             this.given = cut
-            if !try this.more() {
+            if !try this.open() {
                 break
             }
         }
@@ -273,12 +273,20 @@ public struct Decompressor {
         return this.inflater.outLen
     }
 
-    // Opens more of the stream: `true` when bytes that were not given are ready, `false` at its
-    // end, `TooLarge` when what is asked for lies past the limit.
+    // Bytes that were not given are ready: those already there, or more of the stream opened;
+    // `false` at its end, `TooLarge` when what is asked for lies past the limit.
     Result<bool, CompressError> more(ref this) {
         if this.given < this.ready() {
             return Ok(true)
         }
+        return this.open()
+    }
+
+    // Opens more of the stream, even when bytes that were not given wait: `true` when more of
+    // them are ready than before, `false` at its end, `TooLarge` when what is asked for lies past
+    // the limit. A line or a character cut by what is ready asks for this.
+    Result<bool, CompressError> open(ref this) {
+        nint waiting = this.ready() - this.given
         if this.inflater.outBase + (long)this.inflater.outLen > this.inflater.limit {
             return Error(CompressError.TooLarge)
         }
@@ -301,12 +309,14 @@ public struct Decompressor {
                 try this.refill()
             }
             nint stop = this.inflater.outLen + 65536
-            long room = this.inflater.limit - this.inflater.outBase + 1
-            if room < (long)stop {
-                stop = (nint)room
+            // One byte past the limit is opened, to tell `TooLarge`; compared without adding it,
+            // as a limit of `long.MaxValue` has no room for it.
+            long allowed = this.inflater.limit - this.inflater.outBase
+            if allowed < (long)stop - 1 {
+                stop = (nint)allowed + 1
             }
             try this.inflater.run(stop)
-            if this.given < this.ready() {
+            if this.ready() - this.given > waiting {
                 return Ok(true)
             }
             if this.inflater.outBase + (long)this.inflater.outLen > this.inflater.limit {
@@ -2364,9 +2374,10 @@ struct Inflater {
             var lengths = this.lenTable[..]
             var distances = this.distTable[..]
             while size < limit {
-                // At least 56 bits after a refill: a literal takes 15 at most, a length 20, and the
-                // distance after it refills on its own.
-                if bits >= 32 {
+                // A whole symbol is held before it is begun: a length with its distance takes 48
+                // bits at most. With more input to come and fewer than 8 bytes of it here, it waits
+                // for them; only at the end of the input is a symbol begun with fewer bits.
+                if bits >= 48 {
                 } else if pos + 8 <= end {
                     hold = hold | (ulong.fromLittleEndian(input[pos..pos + 8]) << bits)
                     pos += (nint)((63 - bits) >> 3)

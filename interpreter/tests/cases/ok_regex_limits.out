@@ -1,0 +1,19 @@
+((a{1000})*){1000}: column 1: the pattern makes a program of more than 100000 steps
+((a{1000}){0,}){1000}: column 1: the pattern makes a program of more than 100000 steps
+((a{1000})+){1000}: column 1: the pattern makes a program of more than 100000 steps
+((a{100})*){1000}: column 1: the pattern makes a program of more than 100000 steps
+\Qab\E* on "abbb": [0..4]
+\Qab\E+ on "abbb abab": [0..4, 5..7, 7..9]
+\Qab\E{2} on "abb abab": [0..3]
+a\Q\E* on "aaa": [0..3]
+a\Q\E\Q\E* on "aaa": [0..3]
+\Qa\E\Q\E{2} on "aaa": [0..2]
+a\Qb on "ab": [0..2]
+\Q\E*: column 5: missing argument to repetition operator
+(?i)\Q\E*: column 9: missing argument to repetition operator
+x|\Q\E*: column 7: missing argument to repetition operator
+posix: true false
+folded: true true
+folded twice: [3..7] false
+groups: 4000 4001 true
+wide: true [3700..4001]

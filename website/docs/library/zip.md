@@ -15,8 +15,8 @@ An archive is a list of names and bytes that someone else made, so reading one i
 land. A name such as `../../.bashrc` writes outside the folder a program unpacks into ("Zip Slip"), and a few
 kilobytes can open into terabytes, the worst of them by giving every entry the same block of compressed data.
 `ZipReader` checks the archive when it is opened, before any entry is given: a name that could lead out of a
-folder, two entries of one name, entries whose data lie over each other, more entries than the directory
-holds. An archive with any of these is refused whole. Each entry is then read with a limit, and gives no
+folder or name another file on another system, two entries of one name, entries whose data lie over each
+other, more entries than the directory holds. An archive with any of these is refused whole. Each entry is then read with a limit, and gives no
 more bytes than the size the archive writes for it. There is no call that unpacks a whole archive to the disk:
 a program reads each entry and decides where it goes.
 
@@ -98,8 +98,8 @@ notes/çay.txt: 11 bytes, 11 in the archive, 2026-11-20T12:00:00Z
 | `NotZip` | No end of a central directory: the bytes are not a zip archive |
 | `Corrupt(long position)` | The archive is not what the format says, at this byte of it |
 | `Truncated` | The archive ends before what it holds does |
-| `InsecurePath(string name)` | A name could lead out of the folder it is unpacked in |
-| `DuplicateName(string name)` | Two entries have this name (a file and a folder of one name too) |
+| `InsecurePath(string name)` | A name could lead out of the folder it is unpacked in, or name another file on another system |
+| `DuplicateName(string name)` | Two entries have this name, in any case (a file and a folder of one name too) |
 | `Overlap(string name)` | The entry's data lies over another entry's |
 | `NameMismatch(string name)` | The header before the entry's data names another entry |
 | `TooLarge` | The entry is larger than the limit |
@@ -109,10 +109,18 @@ notes/çay.txt: 11 bytes, 11 in the archive, 2026-11-20T12:00:00Z
 | `UnsupportedMethod(int code)` | The entry is compressed by another method than stored or deflated |
 | `Io(IoError error)` | Reading or writing the stream failed |
 
-A name could lead out of a folder when it is empty, begins with `/`, holds a `\`, a `:` or a NUL, has a part
-`..`, or has a part that Windows keeps for a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to
-`LPT9`, with an extension or not). The rule is the same on every system, so an archive that is safe on Linux is
-safe on Windows too.
+A name is refused by the rule of [`Path.joinInside`](./files.md), part by part, so a name `ZipReader` gives
+is one `joinInside` takes: it is refused when it is empty, begins with `/`, holds a `\` or a `:`, has an empty
+part (`a//b`), a part `.` or `..`, a part that ends with `.` or a space (Windows would take them away: `x.txt.`
+is `x.txt` there), a control character (C0, DEL and C1), or a part that Windows keeps for a device (`CON`,
+`PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `LPT0` to `LPT9`, with an extension or not). Only
+the `/` at the end of a folder's name is let through. The rule is the same on every system, so an archive
+that is safe on Linux is safe on Windows too. Two names that differ only in case (`README.TXT` and
+`Readme.txt`) are one name, as macOS and Windows take them, and the second is `DuplicateName`. Two names
+written in different Unicode forms of one text (`é` as one character, or as `e` and an accent) are still two
+names, and macOS takes them for one file: a program that unpacks an archive there checks that a file it
+writes is not there yet. A name shown in an error has the characters a reader does not see escaped
+(`\u202e`).
 
 ```sg
 void show(read string what, Result<void, ZipError> result) {
@@ -145,8 +153,8 @@ Result<void, ZipError> main() {
 It prints:
 
 ```text
-../escape: the name "../escape" could lead out of the folder it is unpacked in
-aux.txt: the name "logs/aux.txt" could lead out of the folder it is unpacked in
+../escape: the name "../escape" could lead out of the folder it is unpacked in, or name another file on another system
+aux.txt: the name "logs/aux.txt" could lead out of the folder it is unpacked in, or name another file on another system
 a.txt: written
 a.txt again: two entries are named "a.txt"
 the entry is larger than the limit

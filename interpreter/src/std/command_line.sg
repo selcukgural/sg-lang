@@ -31,17 +31,32 @@ public enum CommandLineError : Equatable, Formattable {
             VersionAsked(text) => f.write(text)
             UnknownOption(word, suggestion) => {
                 if suggestion is not null {
-                    f.write($"unknown option '{word}' (did you mean '--{suggestion}'?)")
+                    f.write($"unknown option '{shown(word)}' (did you mean '--{suggestion}'?)")
                 } else {
-                    f.write($"unknown option '{word}'")
+                    f.write($"unknown option '{shown(word)}'")
                 }
             }
             MissingValue(option) => f.write($"option '{option}' needs a value")
             UnexpectedValue(option) => f.write($"option '{option}' takes no value")
             MissingArgument(name) => f.write($"missing <{name}>")
-            TooManyArguments(word) => f.write($"unexpected argument '{word}'")
+            TooManyArguments(word) => f.write($"unexpected argument '{shown(word)}'")
         }
     }
+}
+
+// A word of the command line as a message shows it: a character a reader does not see, or that
+// drives the terminal, escaped (`UnicodeCategory.hides`), so that a word cannot write lines of
+// its own into the error.
+string shown(read string word) {
+    var out = string.withCapacity(word.length())
+    for c in word.chars() {
+        if UnicodeCategory.hides((int)c) {
+            UnicodeCategory.escape(ref out, (int)c)
+        } else {
+            out.write(c)
+        }
+    }
+    return out
 }
 
 // What a declared name is.
@@ -364,18 +379,19 @@ public struct CommandLine {
         nint bestDistance = 3
         for k in 0..this.names.length() {
             if this.kinds[k] == ArgumentKind.Flag || this.kinds[k] == ArgumentKind.Option {
-                nint d = editDistance(name, this.names[k])
+                nint d = nearDistance(name, this.names[k])
                 if d < bestDistance {
                     best = this.names[k].clone()
                     bestDistance = d
                 }
             }
         }
-        if editDistance(name, "help") < bestDistance {
+        nint help = nearDistance(name, "help")
+        if help < bestDistance {
             best = "help"
-            bestDistance = editDistance(name, "help")
+            bestDistance = help
         }
-        if this.versionText.length() > 0 && editDistance(name, "version") < bestDistance {
+        if this.versionText.length() > 0 && nearDistance(name, "version") < bestDistance {
             best = "version"
         }
         return best
@@ -427,7 +443,7 @@ public struct Arguments {
         nint? at = this.names.indexOf(name)
         if at is null {
             for k in 0..this.names.length() {
-                if this.kinds[k] == kind && editDistance(name, this.names[k]) <= 2 {
+                if this.kinds[k] == kind && nearDistance(name, this.names[k]) <= 2 {
                     panic($"`{asked}(\"{name}\")` asks a name that was not declared: did you mean `{asked}(\"{this.names[k]}\")`?")
                 }
             }
@@ -491,6 +507,15 @@ void writeRows(ref string text, read List<string> rows, read List<string> helps,
             text.write(helps[i])
         }
     }
+}
+
+// `editDistance` when it is 2 or less, else 3 or more: names whose lengths are 3 apart are not
+// compared, so that a long word written by mistake costs no more than its length.
+nint nearDistance(read string a, read string b) {
+    if a.length() > b.length() + 2 || b.length() > a.length() + 2 {
+        return 3
+    }
+    return editDistance(a, b)
 }
 
 // How many bytes must be put in, taken out or changed to make `a` into `b` (Levenshtein).

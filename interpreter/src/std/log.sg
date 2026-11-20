@@ -116,47 +116,29 @@ void logLine(LogLevel level, read string message) {
 }
 
 // The text with a backslash and every character that is not seen or that drives a terminal
-// escaped: the control characters (C0, DEL, C1), the marks of direction and the characters of no
-// width (U+200B-U+200F, U+2028-U+202E, U+2060-U+2069) and the byte order mark. `\n`, `\r` and
-// `\t` by their letter, `\\` for the backslash, the others as `\u001b`.
+// escaped (`UnicodeCategory.hides`: the control characters, those of format such as the marks of
+// direction, of no width and the tags, the separators of lines and the fillers): `\n`, `\r` and
+// `\t` by their letter, `\\` for the backslash, the others as `\u001b` (`\u{e0041}` past U+FFFF).
 void logEscaped(ref string line, read string text) {
     var bytes = text.asBytes()
     nint run = 0
     nint at = 0
     while at < bytes.length() {
         byte c = bytes[at]
-        int code = -1
+        int code = (int)c
         nint size = 1
-        if c < 32 || c == 127 || c == '\\' {
-            code = (int)c
-        } else if c == 0xC2 && at + 1 < bytes.length() && bytes[at + 1] < 0xA0 {
-            code = (int)bytes[at + 1]
-            size = 2
-        } else if (c == 0xE2 || c == 0xEF) && at + 2 < bytes.length() {
-            int found = ((int)(c & 15) << 12) | ((int)(bytes[at + 1] & 63) << 6) | (int)(bytes[at + 2] & 63)
-            if logHidden(found) {
-                code = found
-                size = 3
-            }
+        if c >= 0x80 {
+            size = logCharAt(bytes, at, ref code)
         }
-        if code < 0 {
-            at += 1
+        if code != '\\' && !UnicodeCategory.hides(code) {
+            at += size
             continue
         }
         line.write(text[run..at])
-        if code == '\n' {
-            line.write("\\n")
-        } else if code == '\r' {
-            line.write("\\r")
-        } else if code == '\t' {
-            line.write("\\t")
-        } else if code == '\\' {
+        if code == '\\' {
             line.write("\\\\")
         } else {
-            line.write("\\u")
-            for k in 0..4 {
-                line.write(LogHexDigits[(nint)(code >> (12 - 4 * k) & 15)])
-            }
+            UnicodeCategory.escape(ref line, code)
         }
         at += size
         run = at
@@ -164,11 +146,19 @@ void logEscaped(ref string line, read string text) {
     line.write(text[run..])
 }
 
-const char[16] LogHexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
-
-// A character of three bytes that is not seen or that turns the text around it.
-bool logHidden(int code) {
-    return code == 0xFEFF || (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069)
+// The character whose first byte is at `at` of UTF-8, into `code`; how many bytes it takes.
+nint logCharAt(read byte[] bytes, nint at, ref int code) {
+    byte c = bytes[at]
+    if c >= 0xF0 {
+        code = ((int)(c & 7) << 18) | ((int)(bytes[at + 1] & 63) << 12) | ((int)(bytes[at + 2] & 63) << 6) | (int)(bytes[at + 3] & 63)
+        return 4
+    }
+    if c >= 0xE0 {
+        code = ((int)(c & 15) << 12) | ((int)(bytes[at + 1] & 63) << 6) | (int)(bytes[at + 2] & 63)
+        return 3
+    }
+    code = ((int)(c & 31) << 6) | (int)(bytes[at + 1] & 63)
+    return 2
 }
 
 // The level `SG_LOG` names, any case; `Info` when it is not set or empty. A value that names no

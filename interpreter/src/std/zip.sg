@@ -3,7 +3,8 @@
 // along by the language, over the DEFLATE of `compression.sg`.
 //
 // Reading checks what an archive says before anything of it is given (1503): a name that could
-// lead out of a folder is `InsecurePath`, two entries of one name `DuplicateName`, entries whose
+// lead out of a folder, or be read another way on another system, is `InsecurePath`, two entries
+// of one name (in any case: `README` and `readme`) `DuplicateName`, entries whose
 // data lie over each other `Overlap` (the bomb that makes one block of compressed data the data of
 // every entry), and the number of entries must fit in the central directory. An entry is read with
 // a limit, as compressed data is opened, and gives no more bytes than its size written in the
@@ -22,8 +23,9 @@ public enum ZipError : Equatable, Formattable {
     Encrypted
     // The entry is compressed by a method other than stored (0) and deflated (8).
     UnsupportedMethod(int code)
-    // The name could lead out of the folder the entry is unpacked in: `..`, a root, a `\`, a `:`,
-    // a name Windows keeps for a device.
+    // The name could lead out of the folder the entry is unpacked in, or name another file on
+    // another system: the rule of `Path.joinInside` (`..`, `.`, a root, an empty part, a `\`, a
+    // `:`, a part that ends with `.` or a space, a control character, a device of Windows).
     InsecurePath(string name)
     // Two entries have this name.
     DuplicateName(string name)
@@ -47,7 +49,7 @@ public enum ZipError : Equatable, Formattable {
             Truncated => f.write("the zip archive ends before what it holds does")
             Encrypted => f.write("the entry is encrypted")
             UnsupportedMethod(code) => f.write($"the entry is compressed by method {code}, which is not read (0 stored, 8 deflated)")
-            InsecurePath(name) => f.write($"the name {quoted(name)} could lead out of the folder it is unpacked in")
+            InsecurePath(name) => f.write($"the name {quoted(name)} could lead out of the folder it is unpacked in, or name another file on another system")
             DuplicateName(name) => f.write($"two entries are named {quoted(name)}")
             NameMismatch(name) => f.write($"the header of {quoted(name)} names another entry")
             Overlap(name) => f.write($"the data of {quoted(name)} lies over another entry's")
@@ -388,10 +390,12 @@ public struct ZipReader {
                 try this.seekTo(endAt - 20)
                 try this.fill(ref locator)
                 if uint.fromLittleEndian(locator[0..4]) == 0x0706_4B50 {
-                    long record = (long)ulong.fromLittleEndian(locator[8..16])
-                    if record < 0 || record > endAt - 56 {
+                    // Compared as written, so that an offset past `long.MaxValue` is refused, not cast.
+                    ulong written = ulong.fromLittleEndian(locator[8..16])
+                    if endAt < 56 || written > (ulong)(endAt - 56) {
                         return Error(ZipError.Corrupt(endAt - 20))
                     }
+                    long record = (long)written
                     var wideEnd = byte[56]
                     try this.seekTo(record)
                     try this.fill(ref wideEnd)
@@ -453,7 +457,7 @@ public struct ZipReader {
             if insecure(read entry.name) {
                 return Error(ZipError.InsecurePath(entry.name.clone()))
             }
-            if !names.add(withoutSlash(read entry.name).clone()) {
+            if !names.add(nameKey(read entry.name)) {
                 return Error(ZipError.DuplicateName(entry.name.clone()))
             }
             if entry.offset < 0 || entry.offset > directoryAt - 30 {
@@ -562,10 +566,13 @@ Result<ZipEntry, ZipError> entryAt(read List<byte> d, nint p, long position, lon
                     break
                 }
                 if attribute == 1 && attributeLength == 24 {
-                    long ticks = (long)ulong.fromLittleEndian(d[a + 4..a + 12])
-                    if ticks >= 0 && ticks / 10000000 < 11644473600 + 9000000000 {
-                        seconds = ticks / 10000000 - 11644473600
-                        nanoseconds = ticks % 10000000 * 100
+                    // Only a time a `DateTime` holds, about 1684 to 2255; another is left for the
+                    // time of DOS. Compared as written, before it is a `long`.
+                    ulong ticks = ulong.fromLittleEndian(d[a + 4..a + 12])
+                    ulong whole = ticks / 10000000
+                    if whole >= 11644473600 - 9000000000 && whole < 11644473600 + 9000000000 {
+                        seconds = (long)whole - 11644473600
+                        nanoseconds = (long)(ticks % 10000000) * 100
                     }
                 }
                 a += 4 + attributeLength
@@ -735,8 +742,8 @@ string quoted(read string name) {
     text.write('"')
     for c in name.chars() {
         int code = (int)c
-        if code < 32 || code == 127 || (code >= 0x80 && code < 0xA0) || code == 0xFEFF || (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069) {
-            text.write($"\\u{code:x4}")
+        if UnicodeCategory.hides(code) {
+            UnicodeCategory.escape(ref text, code)
         } else if c == '"' || c == '\\' {
             text.write('\\')
             text.write(c)
@@ -756,44 +763,31 @@ DateTime dosTimeOf(int date, int time) {
     }
 }
 
-// Whether a name could lead out of the folder it is unpacked in, on any system (1502): empty, a
-// root, a `\`, a `:`, a NUL, a part `..`, or a part that Windows keeps for a device.
+// Whether a name of the archive could lead out of a folder or be read another way on another
+// system: the rule of `Path.joinInside` part by part (no empty part, no `.` or `..`, no part that
+// ends with `.` or a space, no control character, no device of Windows, no `\\` or `:`), the `/`
+// at the end of a folder's name aside. So a name a reader takes is one each system writes alike.
 bool insecure(read string name) {
-    if name.length() == 0 || name.startsWith('/') || name.contains('\\') || name.contains(':') || name.contains('\0') {
+    var path = withoutSlash(name)
+    if path.length() == 0 || path.contains('\\') || path.contains(':') {
         return true
     }
-    nint from = 0
-    while from <= name.length() {
-        nint end = name.length()
-        nint? slash = name[from..].indexOf('/')
-        if slash is not null {
-            end = from + slash
-        }
-        var part = name[from..end]
-        if part == ".." || reservedOnWindows(part) {
+    for part in path.split('/') {
+        if !Path.staysInside(part) {
             return true
         }
-        from = end + 1
     }
     return false
 }
 
-// CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9, in any case, with or without an extension or
-// spaces after them.
-bool reservedOnWindows(read string part) {
-    nint end = part.length()
-    nint? dot = part.indexOf('.')
-    if dot is not null {
-        end = dot
+// What tells two names apart: the name without a folder's `/`, each character folded as
+// `(?i)` folds it, since macOS and Windows take `README.TXT` and `Readme.txt` for one file.
+string nameKey(read string name) {
+    var key = string.withCapacity(name.length())
+    for c in withoutSlash(name).chars() {
+        key.write(System.charFold(c))
     }
-    var base = part[..end].trimEnd()
-    if base.length() == 3 {
-        return base.equalsIgnoreAsciiCase("CON") || base.equalsIgnoreAsciiCase("PRN") || base.equalsIgnoreAsciiCase("AUX") || base.equalsIgnoreAsciiCase("NUL")
-    }
-    if base.length() == 4 && base[3] >= '1' && base[3] <= '9' {
-        return base[..3].equalsIgnoreAsciiCase("COM") || base[..3].equalsIgnoreAsciiCase("LPT")
-    }
-    return false
+    return key
 }
 
 // A name with the `/` of a folder taken off: a file and a folder of one name are two entries of
@@ -962,7 +956,7 @@ public struct ZipWriter : Closable {
         if insecure(name) {
             return Error(ZipError.InsecurePath(name.clone()))
         }
-        if !this.names.add(withoutSlash(name).clone()) {
+        if !this.names.add(nameKey(name)) {
             return Error(ZipError.DuplicateName(name.clone()))
         }
         return Ok()

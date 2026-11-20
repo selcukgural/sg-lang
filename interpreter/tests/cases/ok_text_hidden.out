@@ -1,0 +1,4 @@
+line 1, column 34: duplicate key "a\u061cb\u{e0041}c\u206ad\u00ade\u180ef\ufff9g\u034fh\u3164i\u2066j\u0085k\u2028l☺️"
+line 1, column 1: unexpected character U+2067
+the name "xa\u061cb\u{e0041}c\u206ad\u00ade\u180ef\ufff9g\u034fh\u3164i\u2066j\u0085k\u2028l☺️\u001b[2J" could lead out of the folder it is unpacked in, or name another file on another system
+<time> INFO  a\u061cb\u{e0041}c\u206ad\u00ade\u180ef\ufff9g\u034fh\u3164i\u2066j\u0085k\u2028l☺️\u001b[2J

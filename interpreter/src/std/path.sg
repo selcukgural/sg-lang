@@ -37,7 +37,8 @@ public struct Path {
     // `name` may name a folder inside it too (`2026/report.txt`). It is an `InvalidInput`, the
     // same on Linux, macOS and Windows, when it is empty or has an empty part (`a//b`), starts at
     // a root (`/etc`), holds a `\` or a `:` (`C:`, `\\server`), has a part that ends with `.` or a
-    // space (`..` among them, which Windows would take away), holds a control character, or has
+    // space (`..` among them, which Windows would take away), holds a control character (C0, DEL
+    // or C1), or has
     // a part that is the name of a device on Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to
     // `COM9`, `LPT0` to `LPT9`, also with an extension: `nul.txt`). A link inside `folder` that
     // points out of it is still followed when the path is opened.
@@ -60,7 +61,8 @@ public struct Path {
             return false
         }
         for c in part.chars() {
-            if (int)c < 32 || (int)c == 127 {
+            // The control characters: C0, DEL and C1 (U+0080 to U+009F).
+            if (int)c < 32 || ((int)c >= 127 && (int)c < 160) {
                 return false
             }
         }
@@ -139,7 +141,10 @@ public struct Path {
         }
         if n >= 2 && Path.isSeparator(path[0]) && Path.isSeparator(path[1]) {
             if n >= 4 && (path[2] == '?' || path[2] == '.') && Path.isSeparator(path[3]) {
-                if n >= 8 && path[4..7].equalsIgnoreAsciiCase("UNC") && Path.isSeparator(path[7]) {
+                // `UNC` is looked at byte by byte: a window of three bytes could cut a character
+                // of several.
+                bool unc = n >= 8 && (path[4] | 0x20) == 'u' && (path[5] | 0x20) == 'n' && (path[6] | 0x20) == 'c'
+                if unc && Path.isSeparator(path[7]) {
                     return Path.pastSeparator(path, Path.pastPart(path, Path.pastSeparator(path, Path.pastPart(path, 8))))
                 }
                 return Path.pastSeparator(path, Path.pastPart(path, 4))

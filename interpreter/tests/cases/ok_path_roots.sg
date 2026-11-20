@@ -1,8 +1,9 @@
 // The roots of paths: `/` on every system; on Windows also a drive (`C:\`, `C:`), a share
 // (`\\server\share\`) and a path Windows takes as it is (`\\?\C:\`), whose parts are `\` or `/`.
-// On Linux and macOS a `\` is part of a name, so the same texts give other parts there.
+// On Linux and macOS a `\` is part of a name, so the same texts give other parts there. A
+// character of several bytes where `UNC` may stand is looked at byte by byte, never cut.
 void main() {
-    var paths = List<string> { "C:\\logs\\report.txt", "C:report.txt", "C:\\", "C:", "\\\\server\\share\\report.txt", "\\\\server\\share", "\\\\?\\C:\\report.txt", "\\\\?\\UNC\\server\\share\\a.txt", "\\\\.\\COM1", "/a/b", "a\\b/c" }
+    var paths = List<string> { "C:\\logs\\report.txt", "C:report.txt", "C:\\", "C:", "\\\\server\\share\\report.txt", "\\\\server\\share", "\\\\?\\C:\\report.txt", "\\\\?\\UNC\\server\\share\\a.txt", "\\\\.\\COM1", "/a/b", "a\\b/c", "//?/ééx.txt", "\\\\?\\€UN\\x.txt", "\\\\?\\uNc\\srv\\share\\a.txt" }
     for path in read paths {
         print($"[{path}] name [{Path.fileName(path)}] parent [{Path.parent(path)}] joined [{Path.join(path, "x")}]")
     }

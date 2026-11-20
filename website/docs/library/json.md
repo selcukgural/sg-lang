@@ -223,4 +223,12 @@ panic, since no JSON reader would take it.
 
 The reader is tested with every parsing case of [JSONTestSuite](https://github.com/nst/JSONTestSuite). It is
 about 1.15 times as slow as cJSON on a document of 34 MB. There is no reader of a stream yet: the whole text
-is read first.
+is read first, and the values take far more room than the text: about 50 to 200 bytes for each byte of it (a
+`JsonValue` takes 96 bytes, and each array and object is a block of its own), so 10 MB of zeros in an array
+take about 500 MB, as a tree of values does in Go or Rust too. A program that reads JSON from outside bounds
+the length of the text before it reads it.
+
+A key in an error is shown with the characters a reader does not see escaped (`duplicate key "a\u202eb"`).
+`remove` keeps the order of the others, so it takes a time that grows with the members after the one taken
+out, as `shift_remove` of Rust's `IndexMap` does. `toJson` writes a value nested at any depth, and `Json.parse`
+reads 128 levels: a value made in the program deeper than that is written, but not read back.

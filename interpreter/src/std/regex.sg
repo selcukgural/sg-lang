@@ -207,13 +207,19 @@ struct RegexNode : Copyable {
 // holds there, the opposite already taken; past it, a folding changes nothing and the ranges and
 // the categories say. So `(?i)\P{Lu}` is every character whose folding is no upper case
 // letter's, as Go has it: not `a`, since `A` folds to it, but `ı`, which has no upper case of
-// its own.
+// its own. The items that are not turned around are folded once, when the class is finished:
+// their ranges and categories wait in `pending` and `pendingMask`, so that an item written many
+// times is folded once (each folding of a category or a wide range is thousands of keys). An
+// item turned around is folded as it comes, a category of them once (`otherMasks`).
 struct RegexClass {
     List<int> ranges
     int categories
     bool negated
     bool fold
     List<int> keys
+    List<int> pending
+    int pendingMask
+    List<int> otherMasks
 }
 
 // A step of the program.
@@ -251,7 +257,13 @@ struct RegexMachine {
     nint slotCount
     List<nint> dense
     List<nint> sparse
+    // The slots of thread `t` of list `side`, one that reads a character or matches, start at
+    // `(2 * t + side) * slotCount`; `threadOf` gives the thread of each place of a list. They grow
+    // with the threads alive, not with the program: a pattern of many groups would ask for its
+    // size times their number at once.
     List<nint> caps
+    List<nint> threadOf
+    List<nint> threads
     List<nint> counts
     List<RegexFrame> stack
     List<nint> scratch
@@ -612,6 +624,25 @@ Result<nint, RegexError> regexAlternation(ref RegexParser p, read string pattern
 Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
     var items = List<nint>()
     while at < pattern.length() && pattern[at] != '|' && pattern[at] != ')' {
+        if at + 1 < pattern.length() && pattern[at] == '\\' && pattern[at + 1] == 'Q' {
+            // A literal for each character of the text; a repetition after it repeats its last
+            // character, or what came before an empty `\Q\E`, as in Go and RE2.
+            var quoted = regexQuoted(ref p, pattern, ref at, flags)
+            var last = quoted.removeLast()
+            if last is null {
+                if !try regexRepeatAt(pattern, at) {
+                    continue
+                }
+                last = items.removeLast()
+            }
+            if last is null {
+                return Error(regexErrorAt(pattern, at, RegexErrorKind.MissingRepeatArgument))
+            }
+            items.addAll(read quoted)
+            var repeated = try regexRepeats(ref p, pattern, ref at, flags, last)
+            items.add(repeated)
+            continue
+        }
         var item = try regexRepetition(ref p, pattern, ref at, ref flags, depth)
         if item is not null {
             items.add(item)
@@ -620,12 +651,52 @@ Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string patte
     return Ok(regexJoin(ref p, RegexConcat, read items))
 }
 
+// Plain text from `\Q` up to `\E` or the end, a literal for each character.
+List<nint> regexQuoted(ref RegexParser p, read string pattern, ref nint at, int flags) {
+    at += 2
+    var items = List<nint>()
+    var bytes = pattern.asBytes()
+    while at < pattern.length() {
+        if pattern[at] == '\\' && at + 1 < pattern.length() && pattern[at + 1] == 'E' {
+            at += 2
+            break
+        }
+        int code = regexCodeAt(bytes, at)
+        at += regexWidth(pattern[at])
+        items.add(regexLiteral(ref p, code, flags))
+    }
+    return items
+}
+
+// Whether a repetition starts at `at`.
+Result<bool, RegexError> regexRepeatAt(read string pattern, nint at) {
+    if at >= pattern.length() {
+        return Ok(false)
+    }
+    byte c = pattern[at]
+    if c == '*' || c == '+' || c == '?' {
+        return Ok(true)
+    }
+    if c != '{' {
+        return Ok(false)
+    }
+    nint probe = at
+    var counted = try regexCounted(pattern, ref probe)
+    return Ok(counted is not null)
+}
+
 // An atom and the repetitions after it; `null` for a group of flags alone, `(?i)`.
 Result<nint?, RegexError> regexRepetition(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
     var atom = try regexAtom(ref p, pattern, ref at, ref flags, depth)
     if atom is null {
         return Ok(null)
     }
+    var node = try regexRepeats(ref p, pattern, ref at, flags, atom)
+    return Ok(node)
+}
+
+// `node` with the repetitions at `at` around it.
+Result<nint, RegexError> regexRepeats(ref RegexParser p, read string pattern, ref nint at, int flags, nint atom) {
     nint node = atom
     bool repeated = false
     while at < pattern.length() {
@@ -893,23 +964,7 @@ Result<nint, RegexError> regexEscape(ref RegexParser p, read string pattern, ref
         }
         return Ok(regexAdd(ref p, RegexAssertNode, kind, 0, 0, 0, 0))
     }
-    if e == 'Q' {
-        // Plain text up to `\E` or the end.
-        at += 2
-        var items = List<nint>()
-        var bytes = pattern.asBytes()
-        while at < pattern.length() {
-            if pattern[at] == '\\' && at + 1 < pattern.length() && pattern[at + 1] == 'E' {
-                at += 2
-                break
-            }
-            int code = regexCodeAt(bytes, at)
-            at += regexWidth(pattern[at])
-            items.add(regexLiteral(ref p, code, flags))
-        }
-        return Ok(regexJoin(ref p, RegexConcat, read items))
-    }
-    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>() }
+    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>(), pending = List<int>(), pendingMask = 0, otherMasks = List<int>() }
     if try regexClassEscape(pattern, ref at, ref set) {
         p.classes.add(set)
         return Ok(regexAdd(ref p, RegexClassNode, (int)(p.classes.length() - 1), 0, 0, 0, 0))
@@ -1103,12 +1158,14 @@ Result<nint, RegexError> regexBracket(ref RegexParser p, read string pattern, re
     nint open = at
     var bytes = pattern.asBytes()
     at += 1
-    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>() }
+    var set = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = flags & RegexFold != 0 && !p.checking, keys = List<int>(), pending = List<int>(), pendingMask = 0, otherMasks = List<int>() }
     if at < pattern.length() && pattern[at] == '^' {
         set.negated = true
         at += 1
     }
     bool first = true
+    // A `[:` before this place starts no class of POSIX: a search for its `:]` stopped here.
+    nint noClose = -1
     while true {
         if at >= pattern.length() {
             return Error(regexErrorAt(pattern, open, RegexErrorKind.MissingBracket))
@@ -1120,7 +1177,7 @@ Result<nint, RegexError> regexBracket(ref RegexParser p, read string pattern, re
         }
         first = false
         if c == '[' && at + 1 < pattern.length() && pattern[at + 1] == ':' {
-            if try regexPosixClass(pattern, ref at, ref set) {
+            if try regexPosixClass(pattern, ref at, ref set, ref noClose) {
                 continue
             }
         }
@@ -1139,7 +1196,7 @@ Result<nint, RegexError> regexBracket(ref RegexParser p, read string pattern, re
             at += 1
             if pattern[at] == '\\' && at + 1 < pattern.length() {
                 nint probe = at
-                var probeSet = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = false, keys = List<int>() }
+                var probeSet = RegexClass { ranges = List<int>(), categories = 0, negated = false, fold = false, keys = List<int>(), pending = List<int>(), pendingMask = 0, otherMasks = List<int>() }
                 if try regexClassEscape(pattern, ref probe, ref probeSet) {
                     return Error(regexErrorAt(pattern, itemAt, RegexErrorKind.InvalidRange))
                 }
@@ -1167,17 +1224,24 @@ Result<int, RegexError> regexClassChar(read string pattern, read byte[] bytes, r
 }
 
 // `[:alpha:]` and the other classes of POSIX at `at`, inside a class, added to `set`; `false`, with
-// `at` where it was, when `[:` starts none (it is then a `[` of the class).
-Result<bool, RegexError> regexPosixClass(read string pattern, ref nint at, ref RegexClass set) {
+// `at` where it was, when `[:` starts none (it is then a `[` of the class). A search for `:]` that
+// fails says where it stopped in `noClose`, so that a later `[:` before there is not searched
+// again (`[[:[:[:...` would be searched to its end at each).
+Result<bool, RegexError> regexPosixClass(read string pattern, ref nint at, ref RegexClass set, ref nint noClose) {
     nint start = at
     nint close = at + 2
+    if close <= noClose {
+        return Ok(false)
+    }
     while close + 1 < pattern.length() && !(pattern[close] == ':' && pattern[close + 1] == ']') {
         if pattern[close] == ']' {
+            noClose = close
             return Ok(false)
         }
         close += 1
     }
     if close + 1 >= pattern.length() {
+        noClose = close
         return Ok(false)
     }
     var name = pattern[at + 2..close]
@@ -1285,11 +1349,14 @@ List<int> regexComplement(read List<int> ranges) {
 // An item of a class: the characters of `ranges`, or of the categories of `mask`, or (`negated`)
 // every other one. With `(?i)` the item is folded before it is turned around (as Go).
 void regexAddItem(ref RegexClass set, read List<int> ranges, int mask, bool negated) {
-    if set.fold {
-        var keys = regexFoldKeys(ranges, mask)
-        if negated {
-            keys = regexComplementBelow(read keys, RegexLastFolded)
+    if set.fold && !negated {
+        set.pending.addAll(ranges)
+        set.pendingMask = set.pendingMask | mask
+    } else if set.fold && !(mask != 0 && set.otherMasks.contains(mask)) {
+        if mask != 0 {
+            set.otherMasks.add(mask)
         }
+        var keys = regexComplementBelow(read regexFoldKeys(ranges, mask), RegexLastFolded)
         set.keys.addAll(read keys)
     }
     if mask != 0 {
@@ -1387,6 +1454,8 @@ List<int> regexComplementBelow(read List<int> sorted, int top) {
 void regexFinishClass(ref RegexClass set) {
     set.ranges = regexNormal(read set.ranges)
     if set.fold {
+        set.keys.addAll(read regexFoldKeys(read regexNormal(read set.pending), set.pendingMask))
+        set.pending.clear()
         set.keys = regexNormal(read set.keys)
         if set.negated {
             set.keys = regexComplementBelow(read set.keys, RegexLastFolded)
@@ -1427,7 +1496,8 @@ nint regexSize(read RegexParser p, nint node) {
         nint one = regexSize(p, n.first)
         nint min = n.a
         nint max = n.b
-        nint copies = min
+        // An open repetition writes `min - 1` copies and one that repeats, at least one in all.
+        nint copies = min.max(1)
         nint extra = 2
         if max >= 0 {
             copies = max
@@ -1859,6 +1929,10 @@ bool regexAnchored(read RegexParser p, nint node) {
 const nint RegexDfaWidth = 129
 const nint RegexDfaEnd = 128
 const nint RegexDfaStates = 4000
+// The bytes the states and moves of one DFA may hold, roughly, before it is emptied; a state counts
+// its row, its steps and its key, a move past ASCII its entry in the map.
+const nint RegexDfaBudget = 2 << 20
+const nint RegexDfaWideCost = 32
 const int RegexDfaResets = 8
 const int RegexAtStart = 1
 const int RegexAfterNewline = 2
@@ -1888,6 +1962,8 @@ struct RegexDfa {
     // The row of the state with no step left; -1 if none was made.
     int dead
     int resets
+    // The bytes counted against `RegexDfaBudget`.
+    nint used
     // A sparse set of steps, the stack of the closure, a list and the key of a state.
     List<nint> dense
     List<nint> sparse
@@ -1919,6 +1995,7 @@ RegexDfa regexDfaFor(int kind, nint size) {
         starts = List<int>(),
         dead = -1,
         resets = 0,
+        used = 0,
         dense = List<nint>(),
         sparse = List<nint>(),
         count = 0,
@@ -1959,6 +2036,7 @@ void regexDfaEmpty(ref RegexDfa d) {
         d.starts[i] = -1
     }
     d.dead = -1
+    d.used = 0
     d.resets += 1
 }
 
@@ -2082,9 +2160,11 @@ int regexDfaState(ref RegexDfa d, int flags) {
     if known is not null {
         return known * (int)RegexDfaWidth
     }
-    if d.flags.length() >= RegexDfaStates {
+    nint cost = RegexDfaWidth * 4 + d.list.length() * 8 + d.key.length() + 80
+    if d.flags.length() >= RegexDfaStates || d.used + cost > RegexDfaBudget {
         regexDfaEmpty(ref d)
     }
+    d.used += cost
     int id = (int)d.flags.length()
     for k in 0..d.list.length() {
         d.sets.add(d.list[k])
@@ -2189,8 +2269,11 @@ int regexDfaMove(read Regex re, read List<RegexInst> code, ref RegexDfa d, int s
             d.table[(nint)s + RegexDfaEnd] = t
         } else if ch < 0x80 {
             d.table[(nint)s + ch] = t
-        } else {
+        } else if d.used + RegexDfaWideCost <= RegexDfaBudget {
+            // Past the budget a move past ASCII is made again each time, until a new state
+            // empties the cache.
             d.wide.add((long)s << 21 | ch, t)
+            d.used += RegexDfaWideCost
         }
     }
     return t
@@ -2565,7 +2648,13 @@ void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint
                 }
                 pc += 1
             } else {
-                nint at = (base + count) * m.slotCount
+                nint thread = m.threads[side]
+                m.threads[side] = thread + 1
+                m.threadOf[base + count] = thread
+                nint at = (2 * thread + side) * m.slotCount
+                while m.caps.length() < at + 2 * m.slotCount {
+                    m.caps.add(-1)
+                }
                 for k in 0..m.slotCount {
                     m.caps[at + k] = m.scratch[k]
                 }
@@ -2585,6 +2674,8 @@ RegexMachine regexMachine(read Regex re, nint slotCount) {
         dense = List<nint>(),
         sparse = List<nint>(),
         caps = List<nint>(),
+        threadOf = List<nint>(),
+        threads = List<nint> { 0, 0 },
         counts = List<nint> { 0, 0 },
         stack = List<RegexFrame>(),
         scratch = List<nint>(),
@@ -2593,9 +2684,7 @@ RegexMachine regexMachine(read Regex re, nint slotCount) {
     for _ in 0..2 * size {
         m.dense.add(0)
         m.sparse.add(0)
-    }
-    for _ in 0..2 * size * slotCount {
-        m.caps.add(-1)
+        m.threadOf.add(0)
     }
     for _ in 0..slotCount {
         m.scratch.add(-1)
@@ -2613,6 +2702,8 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
     nint slotCount = m.slotCount
     m.counts[0] = 0
     m.counts[1] = 0
+    m.threads[0] = 0
+    m.threads[1] = 0
     bool matched = false
     nint side = 0
     nint position = start
@@ -2654,6 +2745,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
         }
         nint other = 1 - side
         m.counts[other] = 0
+        m.threads[other] = 0
         nint base = side * size
         nint count = m.counts[side]
         for i in 0..count {
@@ -2661,7 +2753,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
             var inst = re.code[pc]
             int op = inst.op
             if op == RegexOpMatch {
-                nint at = (base + i) * slotCount
+                nint at = (2 * m.threadOf[base + i] + side) * slotCount
                 for k in 0..slotCount {
                     m.found[k] = m.caps[at + k]
                 }
@@ -2687,7 +2779,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
                 }
             }
             if ok {
-                nint at = (base + i) * slotCount
+                nint at = (2 * m.threadOf[base + i] + side) * slotCount
                 for k in 0..slotCount {
                     m.scratch[k] = m.caps[at + k]
                 }

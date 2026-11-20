@@ -134,4 +134,53 @@ public enum UnicodeCategory : Copyable, Equatable, Hashable, Formattable {
             _ => return UnicodeCategory.Unassigned
         }
     }
+
+    // Whether `code` is a character a reader does not see, or that turns or drives the text
+    // around it (`UnicodeHiddenRanges`). A text from outside shown to a person (a line of `Log`,
+    // the name of an entry of a zip archive, a key of JSON in an error) has them escaped.
+    bool hides(int code) {
+        if code < 0x80 {
+            return code < 32 || code == 127
+        }
+        for i in 0..UnicodeHiddenRanges.length() / 2 {
+            if code < UnicodeHiddenRanges[2 * i] {
+                return false
+            }
+            if code <= UnicodeHiddenRanges[2 * i + 1] {
+                return true
+            }
+        }
+        return false
+    }
+
+    // `code` escaped: `\n`, `\r` and `\t` by their letter, others as `\u001b`, or `\u{e0041}`
+    // past U+FFFF.
+    void escape(ref string out, int code) {
+        if code == '\n' {
+            out.write("\\n")
+        } else if code == '\r' {
+            out.write("\\r")
+        } else if code == '\t' {
+            out.write("\\t")
+        } else if code > 0xFFFF {
+            out.write($"\\u{{{code:x}}}")
+        } else {
+            out.write($"\\u{code:x4}")
+        }
+    }
+}
+
+// The characters a reader does not see, or that turn or drive the text around them, as ranges
+// (first, last): the control characters (C0, DEL, C1), the characters of format (Cf: the soft
+// hyphen, the marks of direction and of no width, the tags), the separators of lines and
+// paragraphs, and the fillers that show nothing. The selectors of variation of emoji (U+FE00 to
+// U+FE0F) are left as they are. A text from outside shown to a person (a line of `Log`, the name of
+// an entry of a zip archive, a key of JSON in an error) has them escaped.
+const int[52] UnicodeHiddenRanges = {
+    0x0000, 0x001F, 0x007F, 0x009F, 0x00AD, 0x00AD, 0x034F, 0x034F, 0x0600, 0x0605,
+    0x061C, 0x061C, 0x06DD, 0x06DD, 0x070F, 0x070F, 0x0890, 0x0891, 0x08E2, 0x08E2,
+    0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180F, 0x200B, 0x200F, 0x2028, 0x202E,
+    0x2060, 0x206F, 0x3164, 0x3164, 0xFEFF, 0xFEFF, 0xFFA0, 0xFFA0, 0xFFF0, 0xFFFB,
+    0x110BD, 0x110BD, 0x110CD, 0x110CD, 0x13430, 0x1343F, 0x1BCA0, 0x1BCA3, 0x1D173, 0x1D17A,
+    0xE0000, 0xE0FFF
 }

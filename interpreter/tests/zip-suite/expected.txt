@@ -96,6 +96,8 @@ made/descriptor.zip
   dd.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
 made/directory-past-end.zip
   corrupt zip archive at byte 89
+made/duplicate-case.zip
+  two entries are named "README.TXT"
 made/duplicate-folder.zip
   two entries are named "a/"
 made/duplicate.zip
@@ -104,31 +106,51 @@ made/encrypted.zip
   plain.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   secret.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the entry is encrypted
 made/insecure-00.zip
-  the name "../evil.txt" could lead out of the folder it is unpacked in
+  the name "../evil.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-01.zip
-  the name "a/../../evil.txt" could lead out of the folder it is unpacked in
+  the name "a/../../evil.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-02.zip
-  the name "/etc/passwd" could lead out of the folder it is unpacked in
+  the name "/etc/passwd" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-03.zip
-  the name "a\\b.txt" could lead out of the folder it is unpacked in
+  the name "a\\b.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-04.zip
-  the name "C:evil.txt" could lead out of the folder it is unpacked in
+  the name "C:evil.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-05.zip
-  the name "c:/evil.txt" could lead out of the folder it is unpacked in
+  the name "c:/evil.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-06.zip
-  the name "file.txt:stream" could lead out of the folder it is unpacked in
+  the name "file.txt:stream" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-07.zip
-  the name "aux.txt" could lead out of the folder it is unpacked in
+  the name "aux.txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-08.zip
-  the name "dir/NUL" could lead out of the folder it is unpacked in
+  the name "dir/NUL" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-09.zip
-  the name "lpt9" could lead out of the folder it is unpacked in
+  the name "lpt9" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-10.zip
-  the name "Com1 .txt" could lead out of the folder it is unpacked in
+  the name "Com1 .txt" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-11.zip
-  the name "" could lead out of the folder it is unpacked in
+  the name "" could lead out of the folder it is unpacked in, or name another file on another system
 made/insecure-12.zip
-  the name "a\u0000b" could lead out of the folder it is unpacked in
+  the name "a\u0000b" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-13.zip
+  the name "a/.../b" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-14.zip
+  the name "./x" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-15.zip
+  the name "lpt0" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-16.zip
+  the name "x.txt." could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-17.zip
+  the name "x.txt " could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-18.zip
+  the name "a//b" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-19.zip
+  the name "a\u001bb" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-20.zip
+  the name "a\u0085b" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-21.zip
+  the name "CONIN$" could lead out of the folder it is unpacked in, or name another file on another system
+made/insecure-22.zip
+  the name "dir./f" could lead out of the folder it is unpacked in, or name another file on another system
 made/method.zip
   plain.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   bzip2.bin: file, 4 bytes, 4 in the archive, method 12, 1980-01-01T00:00:00Z: the entry is compressed by method 12, which is not read (0 stored, 8 deflated)
@@ -141,12 +163,11 @@ made/overlap-same.zip
 made/secure-names.zip
   a..b: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   ..a: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
-  a/.../b: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  .x: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   console.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   com10: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
-  lpt0: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
   aux_: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
-  ./x: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  a/b..c/d: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
 made/size-lie.zip
   bomb.bin: file, 1000 bytes, 1033 in the archive, method 8, 1980-01-01T00:00:00Z: "bomb.bin" opens into another size than the one written
 made/size-short.zip
@@ -157,6 +178,14 @@ made/stream-long.zip
   cut.txt: file, 11 bytes, 11 in the archive, method 8, 1980-01-01T00:00:00Z: corrupt zip archive at byte 48
 made/stream-short.zip
   pad.txt: file, 11 bytes, 16 in the archive, method 8, 1980-01-01T00:00:00Z: corrupt zip archive at byte 50
+made/time-ntfs-1601.zip
+  t.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+made/time-ntfs-high.zip
+  t.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+made/time-ntfs.zip
+  t.txt: file, 11 bytes, 11 in the archive, method 0, 2022-06-18T04:26:40Z, CRC cb72381b
+made/zip64-locator-far.zip
+  corrupt zip archive at byte 89
 others/infozip.zip
   infozip/: folder, 0 bytes, 0 in the archive, method 0, 2023-01-02T00:04:05Z, CRC 00000000
   infozip/sub/: folder, 0 bytes, 0 in the archive, method 0, 2023-01-02T00:04:05Z, CRC 00000000

@@ -1,0 +1,90 @@
+// What a pattern costs stays near what it says: an open repetition counts its body among the steps
+// of the limit, a class of POSIX is looked for once, a class with `(?i)` folds each item once, the
+// groups of a search take room for the threads alive, and the states of the DFAs are emptied by
+// the bytes they hold. And a repetition after `\Q...\E` repeats its last character, as in Go.
+
+void show(read string pattern, read string text) {
+    match Regex.compile(read pattern) {
+        Ok(re) => print($"{pattern} on \"{text}\": {re.findAll(read text)}")
+        Error(e) => print($"{pattern}: {e}")
+    }
+}
+
+void main() {
+    // A body under `*` is written at least once: these are too large, as their `{1000}` forms are.
+    var open = List<string> { "((a{1000})*){1000}", "((a{1000}){0,}){1000}", "((a{1000})+){1000}", "((a{100})*){1000}" }
+    for pattern in open {
+        var made = $"{pattern}".toString()
+        match Regex.compile(read made) {
+            Ok(_) => print($"{pattern}: compiled")
+            Error(e) => print($"{pattern}: {e}")
+        }
+    }
+
+    // `\Q...\E` and the repetitions after it.
+    show("""\Qab\E*""", "abbb")
+    show("""\Qab\E+""", "abbb abab")
+    show("""\Qab\E{2}""", "abb abab")
+    show("""a\Q\E*""", "aaa")
+    show("""a\Q\E\Q\E*""", "aaa")
+    show("""\Qa\E\Q\E{2}""", "aaa")
+    show("""a\Qb""", "ab")
+    var empty = List<string> { """\Q\E*""", """(?i)\Q\E*""", """x|\Q\E*""" }
+    for pattern in empty {
+        var made = $"{pattern}".toString()
+        match Regex.compile(read made) {
+            Ok(_) => print($"{pattern}: compiled")
+            Error(e) => print($"{pattern}: {e}")
+        }
+    }
+
+    // `[:` with no `:]` after it, many times in one class.
+    var posix = string.withCapacity(30000)
+    posix.write("[")
+    for _ in 0..10000 {
+        posix.write("[:")
+    }
+    posix.write("x]")
+    match Regex.compile(read posix) {
+        Ok(re) => print($"posix: {re.isMatch(":")} {re.isMatch("a")}")
+        Error(e) => print($"posix: {e}")
+    }
+
+    // A category with `(?i)` written many times in one class, and a wide range.
+    var folded = string.withCapacity(20000)
+    folded.write("(?i)[")
+    for _ in 0..2000 {
+        folded.write("""\p{Lu}""")
+    }
+    folded.write("""\x{0}-\x{10FFFF}\P{Lu}\P{Lu}]""")
+    match Regex.compile(read folded) {
+        Ok(re) => print($"folded: {re.isMatch("a")} {re.isMatch("1")}")
+        Error(e) => print($"folded: {e}")
+    }
+    match Regex.compile("""(?i)[\p{Lu}\p{Lu}0-9]+""") {
+        Ok(re) => print($"folded twice: {re.findAll("-- aBc9 --")} {re.isMatch("ı")}")
+        Error(e) => print($"folded twice: {e}")
+    }
+
+    // 4,000 empty groups: the room for groups grows with the threads alive.
+    var groups = "()".repeat(4000)
+    match Regex.compile(read groups) {
+        Ok(re) => {
+            var found = re.captures("x")
+            if found is not null {
+                print($"groups: {re.groupCount()} {found.length()} {found.get(4000) is not null}")
+            }
+        }
+        Error(e) => print($"groups: {e}")
+    }
+
+    // States of many steps: the DFAs empty their states by the bytes they hold and still find
+    // the match Pike's machine finds.
+    var text = string.withCapacity(5000)
+    for i in 0..4000 {
+        text.write((char)('a' + i % 23))
+    }
+    text.write("x")
+    var wide = Regex.of("""(?s).{300}x""")
+    print($"wide: {wide.isMatch(read text)} {wide.findAll(read text)}")
+}

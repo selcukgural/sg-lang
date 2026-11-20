@@ -285,7 +285,7 @@ and `\` on Windows, where a path may also start with a drive (`C:\`) or a share 
 | `read string Path.parent(read string path)` | What comes before the last separator; a root stays whole |
 
 `joinInside` refuses an empty name or part, a root, `\`, `:`, `..`, a part that ends in `.` or a space, a
-control character, and Windows' device names (`CON`, `NUL`, `COM1`, also `nul.txt`). A name from a request, an
+control character (C0, DEL and C1), and Windows' device names (`CON`, `NUL`, `COM1`, also `nul.txt`). A name from a request, an
 archive or a file goes through it, never through `join`. `fileName`, `extension` and `parent` give views of
 the path, not copies.
 

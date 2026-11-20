@@ -1,0 +1,375 @@
+// A `Decompressor` read as a stream gives what opening it all at once gives: a last line with no
+// `\n`, a line longer than one step of the reader, a character cut by a step, the largest limit,
+// and a valid DEFLATE stream whose long codes meet the end of the reader's block in each way the
+// inflater may hold its bits there. The folder is the first word of the command line.
+
+// Bits written low first, as DEFLATE packs them.
+struct BitWriter {
+    List<byte> out
+    ulong acc
+    int count
+
+    void bits(ref this, ulong value, int count) {
+        this.acc = this.acc | (value << this.count)
+        this.count += count
+        while this.count >= 8 {
+            this.out.add((byte)(this.acc & 255))
+            this.acc = this.acc >> 8
+            this.count -= 8
+        }
+    }
+
+    // A code of Huffman, written high bit first.
+    void code(ref this, ulong code, int length) {
+        ulong reversed = 0
+        for i in 0..length {
+            reversed = reversed | (((code >> (length - 1 - i)) & 1) << i)
+        }
+        this.bits(reversed, length)
+    }
+
+    void align(ref this) {
+        if this.count > 0 {
+            this.bits(0, 8 - this.count)
+        }
+    }
+
+    long written(read this) {
+        return (long)this.out.length() * 8 + (long)this.count
+    }
+}
+
+// The codes of a canonical Huffman code from its lengths.
+List<ulong> canonical(read List<int> lengths) {
+    var counts = List<int>()
+    for _ in 0..16 {
+        counts.add(0)
+    }
+    for length in lengths {
+        if length > 0 {
+            counts[(nint)length] += 1
+        }
+    }
+    var next = List<ulong>()
+    for _ in 0..16 {
+        next.add(0)
+    }
+    ulong code = 0
+    for bits in 1..16 {
+        code = (code + (ulong)counts[(nint)bits - 1]) << 1
+        next[(nint)bits] = code
+    }
+    var codes = List<ulong>()
+    for length in lengths {
+        if length > 0 {
+            codes.add(next[(nint)length])
+            next[(nint)length] += 1
+        } else {
+            codes.add(0)
+        }
+    }
+    return codes
+}
+
+// The place in the input and the bits held, as the inflater keeps them while it opens codes: it
+// takes 8 bytes when it holds fewer than 32 bits and 8 are there, and after a length with fewer
+// than 28 bits, the bytes that are left.
+struct Held {
+    nint pos
+    int bits
+    nint end
+    bool starved
+
+    void start(ref this) {
+        if this.bits >= 32 {
+            return
+        }
+        if this.pos + 8 <= this.end {
+            this.pos += (nint)((63 - this.bits) >> 3)
+            this.bits = this.bits | 56
+        } else {
+            this.starved = true
+        }
+    }
+
+    void afterLength(ref this) {
+        if this.bits >= 28 {
+            return
+        }
+        if this.pos + 8 <= this.end {
+            this.pos += (nint)((63 - this.bits) >> 3)
+            this.bits = this.bits | 56
+            return
+        }
+        while this.bits <= 56 && this.pos < this.end {
+            this.pos += 1
+            this.bits += 8
+        }
+    }
+}
+
+struct Maker {
+    BitWriter w
+    Held held
+    List<ulong> litCodes
+    List<int> litLengths
+    List<ulong> distCodes
+    List<int> distLengths
+    ulong seed
+    long opened
+
+    ulong random(ref this, ulong below) {
+        this.seed = this.seed ^ (this.seed << 13)
+        this.seed = this.seed ^ (this.seed >> 7)
+        this.seed = this.seed ^ (this.seed << 17)
+        return this.seed % below
+    }
+
+    // A literal whose code is `length` bits long: literal 97 + length - 1 has it.
+    void literal(ref this, int length) {
+        this.held.start()
+        nint symbol = 96 + (nint)length
+        this.w.code(this.litCodes[symbol], this.litLengths[symbol])
+        this.held.bits -= length
+        this.opened += 1
+    }
+
+    // A match of 48 bits: length code 284 with 5 extra bits, distance code 29 with 13.
+    void far(ref this) {
+        this.held.start()
+        ulong extra = this.random(30)
+        this.w.code(this.litCodes[284], 15)
+        this.w.bits(extra, 5)
+        this.held.bits -= 20
+        this.held.afterLength()
+        ulong back = this.random(8192).min((ulong)this.opened - 24577)
+        this.w.code(this.distCodes[29], 15)
+        this.w.bits(back, 13)
+        this.held.bits -= 28
+        this.opened += 227 + (long)extra
+    }
+
+    // Literals that take `count` bits in all, each 8 to 14 of them.
+    bool down(ref this, int count) {
+        if count == 0 {
+            return true
+        }
+        if count >= 8 && count <= 14 {
+            this.literal(count)
+            return true
+        }
+        if count >= 16 && count <= 28 {
+            this.literal(count / 2)
+            this.literal(count - count / 2)
+            return true
+        }
+        return false
+    }
+
+    // Literals from just after a refill until the inflater holds `low` to `high` bits, the last of
+    // them begun with 32 or more; `false` when no lengths do it.
+    bool downTo(ref this, int low, int high) {
+        for target in low..high + 1 {
+            for last in 8..15 {
+                if target + last >= 32 && this.down(this.held.bits - target - last) {
+                    this.literal(last)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+}
+
+// Places past the end of the block that are sums of 4 and 5.
+bool sums(nint n) {
+    return n == 0 || n == 4 || n == 5 || n == 8 || n == 9 || n == 10 || n >= 12
+}
+
+// A raw DEFLATE stream of one dynamic block, made for an inflater that holds `whole` bits past
+// the bits of the byte the header ends in, when it begins on codes (0 stands for any number below
+// 32: it then takes 8 bytes at once). Its block of input ends at byte `end`. The stream leads the
+// inflater there with 6 bytes left and 32 to 36 bits held; a match of 48 bits then takes the rest,
+// and another follows it, which the bits held cannot open until more input comes.
+List<byte> made(nint end, int whole, ulong seed) {
+    var litLengths = List<int>()
+    for symbol in 0..286 {
+        if symbol >= 97 && symbol < 111 {
+            litLengths.add(symbol - 96)
+        } else if symbol == 256 || symbol == 284 {
+            litLengths.add(15)
+        } else {
+            litLengths.add(0)
+        }
+    }
+    var distLengths = List<int>()
+    for symbol in 0..30 {
+        if symbol < 14 {
+            distLengths.add(symbol + 1)
+        } else if symbol >= 28 {
+            distLengths.add(15)
+        } else {
+            distLengths.add(0)
+        }
+    }
+    var litCodes = canonical(read litLengths)
+    var distCodes = canonical(read distLengths)
+    var maker = Maker {
+        w = BitWriter { out = List<byte>(), acc = 0, count = 0 },
+        held = Held { pos = 0, bits = 0, end = end, starved = false },
+        litCodes = litCodes,
+        litLengths = litLengths,
+        distCodes = distCodes,
+        distLengths = distLengths,
+        seed = seed,
+        opened = 0,
+    }
+    // The last block, dynamic; 286 literal and length codes, 30 distance codes, 19 code length codes.
+    maker.w.bits(1, 1)
+    maker.w.bits(2, 2)
+    maker.w.bits(29, 5)
+    maker.w.bits(29, 5)
+    maker.w.bits(15, 4)
+    // The code lengths 0 to 15 take 4 bits each; 16, 17 and 18 none.
+    var order = List<int> { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 }
+    for symbol in order {
+        if symbol >= 16 {
+            maker.w.bits(0, 3)
+        } else {
+            maker.w.bits(4, 3)
+        }
+    }
+    for i in 0..maker.litLengths.length() {
+        maker.w.code((ulong)maker.litLengths[i], 4)
+    }
+    for i in 0..maker.distLengths.length() {
+        maker.w.code((ulong)maker.distLengths[i], 4)
+    }
+    long begun = maker.w.written()
+    maker.held.bits = whole + (int)((8 - begun % 8) % 8)
+    long first = (long)maker.held.bits
+    maker.held.pos = (nint)((begun + (long)first) / 8)
+
+    // Literals of every length until the end of the block is near.
+    while maker.held.pos < end - 40 {
+        int length = 8 + (int)maker.random(7)
+        maker.literal(length)
+    }
+    // Literals of 8 bits until the inflater takes bytes.
+    while maker.held.bits >= 32 {
+        maker.literal(8)
+    }
+    maker.held.start()
+    // Then each turn takes 4 or 5 bytes, until 6 are left.
+    while maker.held.pos < end - 6 {
+        nint left = end - 6 - maker.held.pos
+        if sums(left - 5) {
+            _ = maker.downTo(18, 23)
+        } else {
+            _ = maker.downTo(24, 31)
+        }
+        maker.held.start()
+    }
+    bool led = maker.held.pos == end - 6 && maker.downTo(32, 36) && !maker.held.starved
+    if !led || maker.opened < 32768 + 300 {
+        panic($"the stream was not led to the end of the block ({first} bits)")
+    }
+    maker.far()
+    maker.far()
+    // The inflater is not followed past here.
+    for _ in 0..100 {
+        int length = 8 + (int)maker.random(7)
+        nint symbol = 96 + (nint)length
+        maker.w.code(maker.litCodes[symbol], length)
+    }
+    maker.w.code(maker.litCodes[256], 15)
+    maker.w.align()
+    return maker.w.out
+}
+
+Result<void, CompressError> streamed(read string path, ref Crc32 crc) {
+    var reader = Deflate.reader(File.openText(read path) ?? panic("cannot open"), 1 << 30)
+    var buffer = byte[65536]
+    while true {
+        nint count = try reader.readSome(ref buffer)
+        if count == 0 {
+            return Ok()
+        }
+        crc.update(buffer[..count])
+    }
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    // The last line with no `\n`; one longer than a step of the reader; lines around them.
+    var lines = Path.join(read args[0], "lines.gz")
+    var longLine = string.withCapacity(70000)
+    for _ in 0..70000 {
+        longLine.write("x")
+    }
+    var texts = List<string> { "abc", "abc\ndef", $"one\r\n{longLine}\r\nthree".toString(), $"one\n{longLine}".toString() }
+    for text in texts {
+        var writer = Gzip.writer(try File.createText(read lines), 6)
+        try writer.writeBytes(text.asBytes())
+        try writer.close()
+        var reader = Gzip.reader(try File.openText(read lines), 1 << 20)
+        var line = string.withCapacity(16)
+        var lengths = List<nint>()
+        while true {
+            match reader.readLine(ref line) {
+                Ok(more) => {
+                    if !more {
+                        break
+                    }
+                    lengths.add(line.length())
+                }
+                Error(cause) => {
+                    print(cause)
+                    break
+                }
+            }
+        }
+        print(lengths)
+    }
+
+    // Characters cut by the steps of the reader: 3 bytes each, at level 0, whose stored blocks
+    // the steps follow.
+    var cut = string.withCapacity(210000)
+    for _ in 0..70000 {
+        cut.write("€")
+    }
+    var cutPath = Path.join(read args[0], "cut.gz")
+    var cutWriter = Gzip.writer(try File.createText(read cutPath), 0)
+    try cutWriter.writeBytes(cut.asBytes())
+    try cutWriter.close()
+    var cutReader = Gzip.reader(try File.openText(read cutPath), 1 << 20)
+    match cutReader.readText() {
+        Ok(text) => print($"{text.length()} {text == cut}")
+        Error(cause) => print(cause)
+    }
+
+    // The largest limit a long holds.
+    var unbounded = Gzip.reader(try File.openText(read lines), long.MaxValue)
+    match unbounded.readText() {
+        Ok(text) => print(text.length())
+        Error(cause) => print(cause)
+    }
+
+    // Long codes at the end of the reader's block (65,536 bytes), for each number of bits the
+    // inflater may hold when it begins on codes.
+    var path = Path.join(read args[0], "long.deflate")
+    for first in (List<int> { 0, 32, 40, 48, 56 }) {
+        var bytes = made(65536, first, 0x9E3779B97F4A7C15)
+        try File.writeBytes(read path, read bytes)
+        var crc = Crc32()
+        match streamed(read path, ref crc) {
+            Ok => {}
+            Error(cause) => print($"{first}: {cause}")
+        }
+        match Deflate.decompress(read bytes, 1 << 30) {
+            Ok(opened) => print($"{first}: {bytes.length() > 65536} {Crc32.of(read opened) == crc.value()}")
+            Error(cause) => print($"{first}: at once: {cause}")
+        }
+    }
+    return Ok()
+}
