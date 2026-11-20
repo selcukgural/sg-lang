@@ -9362,6 +9362,60 @@ With 1525-1542, 480 of the 1850 programs are compiled on macOS and on Linux (107
 242 programs of the site run as they show; on the Windows Arm VM `ok_regex_dfa`, `ok_net_errors`, `ok_c_errno`,
 `ok_udp_unreachable` and `ok_path_join_inside` print the same interpreted and compiled as their `.out`.
 
+Choices made in the hundred-and-thirty-fourth slice (what the trials found, first: printing). 1543 was
+approved on 20 November 2026, after `grep` and `wc` were measured; 1544-1546 the same day, once the cost of
+`print` had been taken apart:
+
+1543. **The differences the trials found come first**, before the next trial, in this order: printing (the
+     runtime, every program), reading lines and searching for a plain text (`-c timeout`), the reads of the
+     DFA's table checked against its end (to be taken away by the compiler where it can show the read is
+     inside, not by `unsafe` in the standard library), and a search in any case with the processor's vector
+     instructions. Each is made where it serves every program, never as a trick for one, and after each
+     the programs of `bench/` and the whole of the tests run again.
+1544. **A line is written piece by piece where it is printed**: a `$"..."` given to `print` or to
+     `s.write(...)` is taken apart by the compiler into its texts, numbers, characters and `bool`s, each
+     added straight, where `sg_vlines` read the format at run time; a text written alone (`out.write(line)`)
+     is one copy. The values of the line are computed first, from left to right, as they were computed
+     before `printf` ran, so a value that reads the text being written sees it as it was, and one that
+     panics leaves no part of the line written. A width or a count of digits (`{x,8}`, `{n:X4}`) still goes
+     through `sg_vlines`; so does `$"...".toString()`, which counts before it writes.
+1545. **The output has a block of 64 KB of the program's own**: what `print` and `Stdout` write is gathered
+     there and given to C's `stdout` when the block is full, when the program ends (`atexit`, so by
+     returning, by `exit` and by a panic), and before anything else writes where the output may go:
+     `printError` and `Stderr`, another program started, a read of a terminal, a call of C (whose `printf`
+     writes into C's `stdout`) and the return of an `export` function to C. Into a terminal each call is
+     given on at once, as C gives a line. Writing the output keeps `errno` and Windows' last error as the
+     program's own calls of C left them. The interpreter, which wrote its own output in order already,
+     gives C's streams on after each call of C and when an `export` function is entered, and on Windows
+     puts them in binary mode as compiled code does: a `puts` inside a program came out at its end, and
+     with `\r\n` on Windows.
+1546. **One lock of the program's own for the output**, on every program, taken for each call: one atomic
+     operation when nobody else holds it (`os_unfair_lock` on macOS, a slim reader/writer lock on Windows,
+     pthread's elsewhere), where `flockfile` and `fwrite` took C's twice. Not left out where the program
+     has no threads: a thread of C may call SG back. A panic takes it and keeps it, as it keeps C's streams.
+
+Measured on the Apple M3 Max: `grep -n timeout` prints 136,194 lines in 0.078 s, where it took 0.086 s
+(Rust and Zig 0.071 s); printing costs 4 ms over the search, as in Rust, where it cost 11. Of `bench/`,
+`show` takes 0.65 times what it took, `floats` 0.85, `numbers` 0.88, `copy` 0.85 and `asynccopy` 0.86; the
+others are as they were (both compilers measured one after the other). `collatz`, which prints one line,
+measured 3 to 8 per cent slower: its loop is the same machine code, and it now crosses a line of 64 bytes
+of the processor's cache, since the runtime before it grew.
+
+Found while the slice was written: `ok_c_errno` failed on Linux, since asking whether the output is a
+terminal set `errno` (now kept); `ok_extern_libc` compared a struct with padding through `memcmp`, whose
+bytes compiled code leaves as C does (its struct has no padding now; "Not here yet"); `trials/measure.py`
+copied a program over the old one, which macOS then kills when it starts, and now copies it as a new file;
+`bench/run.py` compares only the letters of `letters`, since C's `iswdigit` knows only `0` to `9`.
+
+Tested besides: `the_output_keeps_its_order` in `tests/cli.rs`, interpreted and compiled, with the output
+and the standard error sent into one file: `print`, `printError`, C's `puts`, `Stdout` and `Stderr`, a
+line of 70,000 bytes, lines with widths, a text written with its own length, and `exit`; and
+`panic_print_half_line`. With 1543-1546, 481 of the 1851 programs are compiled on macOS and on Linux (107
+under the thread sanitizer), and the 242 programs of the site run as they show; on the Windows Arm VM
+`the_output_keeps_its_order` passes, and `ok_c_errno`, `ok_extern_libc`, `panic_print_half_line`,
+`ok_std_streams`, `ok_print_long_line`, `ok_print_error` and `ok_print_nested` print the same interpreted
+and compiled as their `.out`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9527,6 +9581,11 @@ check off.
 
 ## Not here yet
 
+- **Of the output (1543-1546)**: a `print` that cannot write still ends nothing in compiled code: its
+  errors are not looked at, where the interpreter stops with a message and exit code 1 as "`print` error"
+  in `design/04` has it (found while 1545 was written; a choice of its own). The padding inside a struct of
+  plain data lent to C is left as C leaves it, whatever the stack held, where the interpreter writes it 0:
+  a `memcmp` over it differs between the two (found by `ok_extern_libc`, whose struct has no padding since).
 - **Of zip archives (1501-1524)**: encryption (ZipCrypto, AES) and the methods other than stored and deflated
   (bzip2, LZMA, Zstandard); a reader of one entry as a stream (1511); the comments of the archive and of its
   entries; the mode of Unix and links (an entry that is a link reads as a file that holds its target); an
@@ -10033,7 +10092,10 @@ meaning, a pattern of the program checked when it is compiled, and the general c
 1482-1500), and zip archives (`ZipReader`, `ZipWriter`, checked before anything is read, 1467, 1490, 1491,
 1501-1524). Real programs are now written in SG, Rust and Zig and measured against each other, each
 difference a choice (1418, `trials/`): `grep` and `wc` first, which brought a lazy DFA to `Regex`, the C
-compiler `CC` names and an `IoError` written as a sentence (1525-1539); a `jq` of JSON is next, then a
+compiler `CC` names and an `IoError` written as a sentence (1525-1539). What they found is made right before
+the next trial (1543): `print` first, which writes into a block of the program's own, its lines put
+together where they are printed (1544-1546); then reading lines and a search for a plain text, the checks
+of the DFA's reads, and a search in any case with vector instructions. A `jq` of JSON is next, then a
 key-value store with a write-ahead log, a pool of workers, an HTTP/1.1 file server, a GIF tool and an
 interpreter of Lox. After them come XML without a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg

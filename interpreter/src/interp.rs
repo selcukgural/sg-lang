@@ -695,6 +695,18 @@ pub(crate) unsafe extern "C" fn enter(number: std::ffi::c_int, name: *const std:
     interp.entered(number as usize, args, ret);
 }
 
+/// What C's library holds for its streams, given on: what a function of C wrote with `printf`
+/// or `puts` goes out before what the program prints next.
+fn c_stdio_flush() {
+    extern "C" {
+        fn fflush(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
+    }
+    // SAFETY: `fflush(NULL)` gives on every stream of C that is open for output.
+    unsafe {
+        fflush(std::ptr::null_mut());
+    }
+}
+
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
     let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false }))));
@@ -2624,7 +2636,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(_) => unreachable!("the turn comes back with a stop or the end of the run"),
             }
         }
+        // What C wrote into its `stdout` comes before what the function prints, and what it
+        // printed before what C writes after it returns (as compiled code has them, 1545).
+        c_stdio_flush();
         self.run_entered(func, &params, &gives, args, ret);
+        let _ = self.flush_out();
         let Some(left) = left else { return };
         {
             let mut state = self.io.sched.lock();
@@ -5407,6 +5423,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         let mut returned: crate::ffi::Slot = 0;
         let mut errno = self.errno;
         let io = self.io;
+        // What the program printed comes before what C writes into its `stdout`, which is given
+        // on when the call returns (as compiled code has them, 1545).
+        self.flush_out()?;
         // C may call an `export` function back, which this interpreter runs: from here until
         // the call returns, nothing of it is touched but through `ENTERED`.
         windows_out(self.plain);
@@ -5425,6 +5444,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         ENTERED.with(|entered| entered.set(before));
+        c_stdio_flush();
         let left = LEFT.with(|cell| cell.replace(left_before));
         self.c_back(left)?;
         windows_in(self.plain, expr.span)?;

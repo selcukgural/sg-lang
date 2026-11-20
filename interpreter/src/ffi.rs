@@ -84,6 +84,24 @@ void sg_set_last_error(unsigned long code) SG_C(\"SetLastError\");\n\
 #define SG_LEAVE_C(e) ((e)[0] = errno)\n\
 #endif\n";
 
+/// On Windows, C's output and standard error in binary mode, as compiled code sets them
+/// (`sg_start`): a `\n` that a function of C writes is written as it is, not as `\r\n`. The
+/// interpreter writes through Windows itself, which this does not touch. Elsewhere nothing.
+fn binary_streams() {
+    #[cfg(windows)]
+    {
+        extern "C" {
+            fn _setmode(fd: std::ffi::c_int, mode: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        const O_BINARY: std::ffi::c_int = 0x8000;
+        // SAFETY: 1 and 2 are the C library's descriptors of the output and the standard error.
+        unsafe {
+            _setmode(1, O_BINARY);
+            _setmode(2, O_BINARY);
+        }
+    }
+}
+
 /// What wraps one function of C (or gives the address of one variable), in the C file of the
 /// wrappers.
 #[allow(clippy::too_many_arguments)]
@@ -347,6 +365,7 @@ impl Library {
             let _ = std::fs::remove_dir_all(&dir);
         }
         let handle = opened.map_err(failed)?;
+        binary_streams();
         let mut library = Library { exports, ..Library::default() };
         let symbol_of = |name: String| -> Result<*mut c_void, Diag> { crate::sys::library_symbol(handle, &name).map_err(failed) };
         for (number, (key, _)) in values.throughs.iter().enumerate() {

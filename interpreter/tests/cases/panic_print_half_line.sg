@@ -1,0 +1,8 @@
+// A line whose value panics is not written in part: the values of a line are computed before
+// any of it is written, so `start` never comes out. What was printed before it does.
+void main() {
+    print("before")
+    var xs = int[2](0)
+    var i = 5
+    print($"start {i} {xs[i]} end")
+}

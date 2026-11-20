@@ -115,8 +115,9 @@ def printed(program, given, env):
 # A program whose C cannot print what SG prints, and what of it is compared instead: `case.c` maps
 # one character to one by the tables of the C library, so how much it writes depends on the system
 # (Windows' C library writes three bytes more each line); the size of the text it starts from is the
-# same.
-FIRST_FIELD_ONLY = {"case"}
+# same. `letters.c` counts digits with `iswdigit`, which C keeps to `0` to `9` (the Arabic-Indic `٣`,
+# a number to Unicode and to SG, is none on Linux and macOS): its letters are compared.
+FIRST_FIELD_ONLY = {"case", "letters"}
 
 
 def same_output(name, outputs):

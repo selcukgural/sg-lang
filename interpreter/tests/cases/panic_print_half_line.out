@@ -1,0 +1,6 @@
+before
+panic: index 5 is out of range: the length is 2
+  --> panic_print_half_line.sg:7:24
+ 7 |     print($"start {i} {xs[i]} end")
+   |                        ^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

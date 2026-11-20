@@ -18,8 +18,10 @@ extern "m" {
     double pow(double base, double power)
 }
 
+// No padding: `memcmp` reads every byte, and compiled code leaves the bytes of padding as C
+// does, whatever the stack held (the interpreter writes them 0).
 struct Pair {
-    int left
+    long left
     long right
 }
 

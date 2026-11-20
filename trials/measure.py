@@ -82,6 +82,13 @@ TRIALS_CASES = {
 }
 
 
+def fresh_copy(source, target):
+    """A program copied as a new file: macOS kills one whose signed bytes were written over in
+    place (the kernel keeps what it checked of the old file), with SIGKILL when it starts."""
+    Path(target).unlink(missing_ok=True)
+    shutil.copy(source, target)
+
+
 def run(command, **kw):
     """Runs a command that must succeed, showing it when it does not."""
     result = subprocess.run(command, capture_output=True, text=True, **kw)
@@ -123,7 +130,7 @@ def build(trial):
          "-o", built["SG checked"], "-lm", "-pthread"])
     run(["cargo", "build", "--release", "--quiet", "--target-dir", out / "cargo"], cwd=folder / "rust")
     built["Rust"] = out / f"{trial}-rust"
-    shutil.copy(out / "cargo" / "release" / trial, built["Rust"])
+    fresh_copy(out / "cargo" / "release" / trial, built["Rust"])
     zig = folder / "zig"
     for mode, name in (("ReleaseFast", "Zig"), ("ReleaseSafe", "Zig safe")):
         built[name] = out / f"{trial}-zig-{mode}"
@@ -131,7 +138,7 @@ def build(trial):
         if (zig / "build.zig").exists():
             prefix = out / f"zig-{mode}"
             run(["zig", "build", f"-Doptimize={mode}", "--prefix", prefix, *cache], cwd=zig)
-            shutil.copy(prefix / "bin" / trial, built[name])
+            fresh_copy(prefix / "bin" / trial, built[name])
         else:
             run(["zig", "build-exe", zig / f"{trial}.zig", "-O", mode, f"-femit-bin={built[name]}", *cache])
     return built
@@ -201,7 +208,7 @@ def measure(trial, built, cases, runs):
 
 def stripped_size(path):
     copy = path.with_name(path.name + "-stripped")
-    shutil.copy(path, copy)
+    fresh_copy(path, copy)
     subprocess.run(["strip", copy], check=True, capture_output=True)
     return copy.stat().st_size
 

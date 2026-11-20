@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 20 November 2026, the hundred-and-thirty-third slice (the first trials of 1418, `grep` and `wc` in SG, Rust and Go: lazy DFAs in `Regex`, `CC`, an `IoError` written as a sentence, 1525-1539).
+Last brought up to date: 20 November 2026, the hundred-and-thirty-fourth slice (`print` into a block of 64 KB of its own, its lines written piece by piece, 1543-1546).
 
 ## Functions and variables
 
@@ -53,7 +53,7 @@ Last brought up to date: 20 November 2026, the hundred-and-thirty-third slice (t
 | `panic!("...")` | `panic("...")` | built | |
 | `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |
 | `assert!(a == b)`, `assert_eq!(a, b)` | `assert(a == b)` | built | The message shows the expression and both sides |
-| `println!("{}", x)` | `print(x)` | built | Into an output that was closed (`program \| head`) Rust panics (exit code 101); SG ends by `SIGPIPE` on Linux and macOS, as C and Go do, and with 0 on Windows |
+| `println!("{}", x)` | `print(x)` | built | Into an output that was closed (`program \| head`) Rust panics (exit code 101); SG ends by `SIGPIPE` on Linux and macOS, as C and Go do, and with 0 on Windows. Rust's `stdout` is a `LineWriter` behind a lock, written line by line; SG's compiled `print` gathers its lines in a block of 64 KB, as a `BufWriter` does, given on before `printError`, a call of C and the end, and line by line to a terminal (1545) |
 | `eprintln!("{}", x)` | `printError(x)` | built | |
 | closures `\|x\| x + 1` | a named function | not in SG | A `Func` is the address of a named function |
 | macros (`macro_rules!`, `#[derive]`) | none | not in SG | What `#[derive]` gives is an interface after `:` (below) |

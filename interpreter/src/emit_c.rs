@@ -967,6 +967,171 @@ static void sg_start(int* argc, char*** argv) {
 #define sg_start(argc, argv) ((void)0)
 #endif
 
+/* The output, as `print` and `Stdout` write it (choice 1545): a block of 64 KB of the program's
+   own, given to C's `stdout` when it is full, when the program ends (`atexit`, set when the
+   first bytes come), and before anything else writes where the output goes: `printError` and
+   the standard error, a panic, another program started, a read of a terminal, a call of C (its
+   `printf` writes into C's `stdout` straight). The output of a terminal is given on at the end of
+   each call, as C's line by line. One lock of the program's own (choice 1546), taken for each
+   call, so that a line of one thread is never cut by another's, a thread of C that calls SG
+   back among them: on macOS `os_unfair_lock`, on Windows a slim reader/writer lock, elsewhere
+   pthread's, each one atomic operation when nobody else holds it. A panic takes the lock and
+   keeps it to the end (`sg_out_end`), as it keeps C's streams. Without an operating system
+   nothing is written to the output (the checker refuses `print`). */
+#if SG_FREESTANDING
+#define sg_out_flush() ((void)0)
+#define sg_out_give() ((void)0)
+#else
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <os/lock.h>
+static os_unfair_lock sg_out_mx = OS_UNFAIR_LOCK_INIT;
+static inline void sg_out_lock(void) { os_unfair_lock_lock(&sg_out_mx); }
+static inline void sg_out_unlock(void) { os_unfair_lock_unlock(&sg_out_mx); }
+#elif defined(_WIN32)
+static SRWLOCK sg_out_mx = SRWLOCK_INIT;
+static inline void sg_out_lock(void) { AcquireSRWLockExclusive(&sg_out_mx); }
+static inline void sg_out_unlock(void) { ReleaseSRWLockExclusive(&sg_out_mx); }
+#else
+#include <pthread.h>
+static pthread_mutex_t sg_out_mx = PTHREAD_MUTEX_INITIALIZER;
+static inline void sg_out_lock(void) { pthread_mutex_lock(&sg_out_mx); }
+static inline void sg_out_unlock(void) { pthread_mutex_unlock(&sg_out_mx); }
+#endif
+#define SG_OUT_ROOM 65536
+static char sg_out_block[SG_OUT_ROOM];
+/* What the block holds; read without the lock (`sg_out_give`) only to learn whether it is 0. */
+static int64_t sg_out_n;
+/* 0 not asked yet, 1 the output is a terminal, 2 it is not. */
+static int sg_out_shown;
+static bool sg_out_hooked;
+/* Set by a panic, which holds the lock to the end: the block is given and is not used again. */
+static bool sg_out_ended;
+/* What the program reads of `errno` (and of Windows' last error, `C.lastError()`) is what its
+   own calls of C left: writing the output, and asking whether it is a terminal, keep both. */
+#if defined(_WIN32)
+typedef struct { int e; DWORD w; } sg_out_errors;
+static inline sg_out_errors sg_out_keep(void) { return (sg_out_errors){ errno, GetLastError() }; }
+static inline void sg_out_back(sg_out_errors kept) { errno = kept.e; SetLastError(kept.w); }
+#else
+typedef struct { int e; } sg_out_errors;
+static inline sg_out_errors sg_out_keep(void) { return (sg_out_errors){ errno }; }
+static inline void sg_out_back(sg_out_errors kept) { errno = kept.e; }
+#endif
+/* Bytes into C's `stdout`: 0, or the error of the system. */
+static int sg_out_write(const void* bytes, int64_t n) {
+    sg_out_errors kept = sg_out_keep();
+    errno = 0;
+    int code = fwrite(bytes, 1, (size_t)n, stdout) == (size_t)n ? 0 : errno ? errno : EIO;
+    sg_out_back(kept);
+    return code;
+}
+/* The block into C's `stdout`, under the lock. */
+static int sg_out_drain(void) {
+    int64_t n = sg_out_n;
+    if (!n) return 0;
+    __atomic_store_n(&sg_out_n, 0, __ATOMIC_RELAXED);
+    return sg_out_write(sg_out_block, n);
+}
+static void sg_out_at_exit(void) {
+    if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) return;
+    sg_out_lock();
+    (void)sg_out_drain();
+    sg_out_unlock();
+}
+/* Taken before a call writes; the first time the block is given at the end, and whether the
+   output is a terminal is asked. */
+static inline void sg_out_begin(void) {
+    sg_out_lock();
+    if (__builtin_expect(!sg_out_hooked, 0)) {
+        sg_out_errors kept = sg_out_keep();
+        sg_out_hooked = true;
+        atexit(sg_out_at_exit);
+#if defined(_WIN32)
+        sg_out_shown = sg_con_is(1) ? 1 : 2;
+#else
+        sg_out_shown = isatty(1) ? 1 : 2;
+#endif
+        sg_out_back(kept);
+    }
+}
+/* After a call wrote: a terminal is given the call's bytes at once. */
+static inline int sg_out_done(void) {
+    int code = sg_out_shown == 1 ? sg_out_drain() : 0;
+    sg_out_unlock();
+    return code;
+}
+/* Bytes into the block, under the lock; those that do not fit are written after it straight. */
+static int sg_out_put(const void* bytes, int64_t count) {
+    if (count <= 0) return 0;
+    if (count > SG_OUT_ROOM - sg_out_n) {
+        int code = sg_out_drain();
+        if (count >= SG_OUT_ROOM) {
+            int wrote = sg_out_write(bytes, count);
+            return code ? code : wrote;
+        }
+        memcpy(sg_out_block, bytes, (size_t)count);
+        __atomic_store_n(&sg_out_n, count, __ATOMIC_RELAXED);
+        return code;
+    }
+    memcpy(sg_out_block + sg_out_n, bytes, (size_t)count);
+    __atomic_store_n(&sg_out_n, sg_out_n + count, __ATOMIC_RELAXED);
+    return 0;
+}
+static inline void sg_out_byte(char c) { (void)sg_out_put(&c, 1); }
+static inline void sg_out_str(const char* text) { (void)sg_out_put(text, (int64_t)strlen(text)); }
+static void sg_out_digits(unsigned long long left, bool negative) {
+    char digits[24];
+    char* at = digits + sizeof digits;
+    do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
+    if (negative) *--at = '-';
+    (void)sg_out_put(at, digits + sizeof digits - at);
+}
+static inline void sg_out_int(long long value) {
+    sg_out_digits(value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0);
+}
+static inline void sg_out_uint(unsigned long long value) { sg_out_digits(value, false); }
+/* Whole calls of their own: bytes (`Stdout.write`), and what the block holds given on with C's
+   own (the old `fflush(stdout)`). */
+static int sg_out_bytes(const void* bytes, int64_t count) {
+    sg_out_begin();
+    int code = sg_out_put(bytes, count);
+    int done = sg_out_done();
+    return code ? code : done;
+}
+static int sg_out_flush(void) {
+    int code = 0;
+    if (!__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) {
+        sg_out_lock();
+        code = sg_out_drain();
+        sg_out_unlock();
+    }
+    sg_out_errors kept = sg_out_keep();
+    errno = 0;
+    if (fflush(stdout) != 0 && !code) code = errno ? errno : EIO;
+    sg_out_back(kept);
+    return code;
+}
+/* Before C is called, and when C's call of SG returns: what the block holds goes into C's
+   `stdout` first, so that it comes before what C writes there. */
+static inline void sg_out_give(void) {
+    if (__builtin_expect(__atomic_load_n(&sg_out_n, __ATOMIC_RELAXED) != 0, 0)) {
+        sg_out_lock();
+        (void)sg_out_drain();
+        sg_out_unlock();
+    }
+}
+/* A panic: the lock is taken and kept, the block given. */
+static void sg_out_end(void) {
+    if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) return;
+    sg_out_lock();
+    (void)sg_out_drain();
+    __atomic_store_n(&sg_out_ended, true, __ATOMIC_RELEASE);
+}
+#endif
+
 /* A debug build counts the blocks it takes for values and gives back, on every system, and a
    program or a test that ends with some still taken is reported (`sg_blocks_left`). Raw memory
    (`Memory.allocate`, `Memory.free`) is not counted, since C's blocks go back that way too and
@@ -1024,7 +1189,7 @@ static inline int64_t sg_blocks_now(void) { return __atomic_load_n(&sg_blocks, _
 static bool sg_blocks_left(const char* ended, int64_t before) {
     int64_t left = sg_blocks_now() - before;
     if (left == 0) return false;
-    fflush(stdout);
+    sg_out_flush();
     if (left > 0) fprintf(stderr, "leak: %s ended with %lld %s of memory never given back\n", ended, (long long)left, left == 1 ? "block" : "blocks");
     else fprintf(stderr, "leak: %s gave back %lld %s of memory more than it took\n", ended, (long long)-left, left == -1 ? "block" : "blocks");
     fputs("  note: safe SG gives back every block it takes, so this is a mistake in sg\n", stderr);
@@ -1333,6 +1498,7 @@ typedef struct sg_task {
 } sg_task;
 static _Thread_local sg_task* sg_task_now = NULL;
 static void sg_panic_start(void) {
+    sg_out_end();
 #if defined(_WIN32)
     _lock_file(stdout);
     _lock_file(stderr);
@@ -1350,7 +1516,7 @@ static void sg_task_note(void) {
 }
 #else
 #ifndef SG_PANIC_START
-#define SG_PANIC_START() fflush(stdout)
+#define SG_PANIC_START() (sg_out_end(), fflush(stdout))
 #endif
 #define sg_task_note() ((void)0)
 #endif
@@ -2056,7 +2222,7 @@ static bool sg_in_tests = false;
 /* `exit(code)`: what was printed goes out, and nothing is freed: the system takes it all. */
 static _Noreturn void sg_exit(uint8_t code, const char* loc) {
     if (sg_in_tests) sg_panicf(loc, "`exit(%d)` in a test: a test cannot end the program", (int)code);
-    fflush(stdout);
+    sg_out_flush();
     exit(code);
 }
 SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...) {
@@ -2364,13 +2530,19 @@ static void sg_vprint(FILE* f, const char* format, va_list args) {
     funlockfile(f);
 #endif
 }
-/* `print(...)` and `printError(...)`. */
+/* `print(...)` of a line with widths, into the block of the output (`sg_out_put`), and
+   `printError(...)`. A line without widths is written piece by piece where it is printed. */
+#if !SG_FREESTANDING
+static void sg_sink_out(void* to, const char* bytes, int64_t n) { (void)to; (void)sg_out_put(bytes, n); }
 static void sg_print(const char* format, ...) {
     va_list args;
     va_start(args, format);
-    sg_vprint(stdout, format, args);
+    sg_out_begin();
+    sg_vlines(sg_sink_out, NULL, format, args);
+    (void)sg_out_done();
     va_end(args);
 }
+#endif
 static void sg_eprint(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -3131,7 +3303,7 @@ const TEST_SUPPORT: &str = r#"
 static int sg_test_error = 0;
 /* A `try` in a test met an error: it is written, and the test has failed. */
 static void sg_test_failed(sg_str text) {
-    fflush(stdout);
+    sg_out_flush();
     sg_eprint("error: %.*s\n", text.len, (const char*)text.ptr);
     sg_test_error = 1;
 }
@@ -3482,7 +3654,7 @@ static void sg_when_wait(sg_when_link* links, void** values, int count, bool cou
    found that owns one of them is named. True if there were any. */
 static bool sg_leaks(const char* ended) {
     if (sg_alive.next == &sg_alive) return false;
-    fflush(stdout);
+    sg_out_flush();
     int64_t count = 0;
     for (sg_live* live = sg_alive.next; live != &sg_alive; live = live->next) count++;
     sg_live** first = malloc(sizeof(sg_live*) * (size_t)count);
@@ -5666,7 +5838,7 @@ static void sg_sig_stop(int64_t id) {
    it returns; then the pipe is handed on here, so the listeners have it. What was printed goes out
    first. */
 static void sg_sig_raise(int32_t kind) {
-    fflush(stdout);
+    sg_out_flush();
 #if defined(_WIN32)
     /* Handed on here when someone listens; otherwise the default of the signal: the program ends
        as Ctrl-C ends it (STATUS_CONTROL_C_EXIT), and `WindowChange` does nothing. */
@@ -7146,7 +7318,7 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
                 code = sg_win_error();
         }
         if (!code) {
-            fflush(stdout);
+            sg_out_flush();
             fflush(stderr);
             PROCESS_INFORMATION child;
             DWORD flags = CREATE_UNICODE_ENVIRONMENT | (listed ? EXTENDED_STARTUPINFO_PRESENT : 0);
@@ -7513,7 +7685,7 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
 #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
         posix_spawn_file_actions_addclosefrom_np(&actions, 3);
 #endif
-        fflush(stdout);
+        sg_out_flush();
         fflush(stderr);
         code = posix_spawn(child, program, &actions, &attr, argv, envp);
         posix_spawn_file_actions_destroy(&actions);
@@ -8868,7 +9040,7 @@ static int sg_reader_fill(sg_reader* r) {
 #endif
     if (r == &sg_stdin) {
         if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
-        if (sg_in_terminal) fflush(stdout);
+        if (sg_in_terminal) sg_out_flush();
     }
     int64_t got = 0;
     int code = sg_sys_read(r->fd, r->block, 65536, &got);
@@ -8988,7 +9160,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
         }
         if (r == &sg_stdin) {
             if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
-            if (sg_in_terminal) fflush(stdout);
+            if (sg_in_terminal) sg_out_flush();
         }
         int64_t put = 0;
         if ((code = sg_sys_read(r->fd, to + n, len - n, &put))) break;
@@ -9082,7 +9254,8 @@ static inline sg_reader sg_move_reader(sg_reader* r) { sg_reader out = *r; r->bl
 typedef struct { sg_reader* r; bool done; } sg_read_lines;
 
 /* A file written through a block of 64 KB, or the output and the standard error (`std` 1 and
-   2), written through C's `stdout` and `stderr` so that they keep their order with `print`.
+   2): the output through the block `print` writes into (`sg_out_bytes`), the standard error
+   through C's `stderr` after that block is given on, so that they keep their order with `print`.
    `failed`: the first error, which every later call gives again. A writer that was moved or
    closed has `fd` -1. `pipe`: the input of another program, written without the signal of a
    pipe nobody reads (see `sg_write_pipe`). `append`: `File.openAppend` opened it, so every write
@@ -9136,6 +9309,15 @@ static int sg_writer_out(sg_writer* w) {
     if (code) w->failed = code;
     return code;
 }
+/* A call's bytes to a standard stream: the output's go into its block (`sg_out_bytes`, choice
+   1545); the standard error's are written after what the output holds. 0, or the error. */
+static int sg_std_write(int std, const void* bytes, int64_t len) {
+    if (len <= 0) return 0;
+    if (std == 1) return sg_out_bytes(bytes, len);
+    sg_out_flush();
+    errno = 0;
+    return fwrite(bytes, 1, (size_t)len, stderr) == (size_t)len ? 0 : sg_os_error();
+}
 /* After something was put into the block: a standard stream writes it at once, a file when the
    block holds 64 KB. */
 static int sg_writer_wrote(sg_writer* w) {
@@ -9146,11 +9328,11 @@ static int sg_writer_wrote(sg_writer* w) {
         static bool kept[3];
         if (w->buf.cap > 0 && !kept[w->std]) { kept[w->std] = true; SG_KEPT(1); }
 #endif
-        if (w->std == 2) fflush(stdout);
-        size_t len = (size_t)w->buf.len;
+        int64_t len = w->buf.len;
         w->buf.len = 0;
-        if (len > 0 && fwrite(w->buf.ptr, 1, len, w->std == 1 ? stdout : stderr) != len) return w->failed = sg_os_error();
-        return 0;
+        int code = sg_std_write(w->std, w->buf.ptr, len);
+        if (code) w->failed = code;
+        return code;
     }
     return w->buf.len >= 65536 ? sg_writer_out(w) : 0;
 }
@@ -9164,16 +9346,16 @@ static inline int sg_fail(sg_writer* w, int code) { __atomic_store_n(&w->failed,
 static int sg_std_put(sg_writer* w, sg_string* block) {
     int code = sg_failed(w);
     if (!code) {
-        if (w->std == 2) fflush(stdout);
-        size_t len = (size_t)block->len;
-        if (len > 0 && fwrite(block->ptr, 1, len, w->std == 1 ? stdout : stderr) != len) code = sg_fail(w, sg_os_error());
+        code = sg_std_write(w->std, block->ptr, block->len);
+        if (code) sg_fail(w, code);
     }
     sg_drop_string(block);
     return code;
 }
 static int sg_writer_flush(sg_writer* w) {
     if (sg_failed(w)) return sg_failed(w);
-    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : sg_fail(w, sg_os_error());
+    if (w->std == 1) { int code = sg_out_flush(); return code ? sg_fail(w, code) : 0; }
+    if (w->std) return fflush(stderr) == 0 ? 0 : sg_fail(w, sg_os_error());
     return sg_writer_out(w);
 }
 /* The block goes out and the file is closed; the first error is given. */
@@ -9243,9 +9425,8 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
     if (sg_failed(w)) return sg_failed(w);
     if (len == 0) return 0;
     if (w->std) {
-        if (w->std == 2) fflush(stdout);
-        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return sg_fail(w, sg_os_error());
-        return 0;
+        int code = sg_std_write(w->std, bytes, len);
+        return code ? sg_fail(w, code) : 0;
     }
     if (len < 65536) {
         sg_put(&w->buf, bytes, len);
@@ -9618,7 +9799,7 @@ static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
         sg_in_filling = f;
         start = true;
         if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
-        if (sg_in_terminal) fflush(stdout);
+        if (sg_in_terminal) sg_out_flush();
     }
     sg_wait_init(w, sg_far_cut);
     w->on.away = &f->away;
@@ -9808,7 +9989,7 @@ static int sg_run_test(const sg_test* test) {
     int64_t before = sg_blocks_now();
 #endif
     test->run();
-    fflush(stdout);
+    sg_out_flush();
 #if defined(SG_STATICS) && (defined(SG_LEAKS) || SG_COUNT)
     sg_statics_end();
 #endif
@@ -9903,7 +10084,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
     }
     int failed = 0;
     for (int i = 0; i < count; i++) {
-        fflush(stdout);
+        sg_out_flush();
         fflush(stderr);
         char* reason = NULL;
         size_t len = 0;
@@ -9915,7 +10096,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         } else {
             failed++;
             printf("FAIL  %s\n", tests[i].name);
-            if (len > 0) sg_print("%.*s\n", (int64_t)len, reason);
+            if (len > 0) { fwrite(reason, 1, len, stdout); fputc('\n', stdout); }
             else printf("the test ended with code 0x%08lX\n", (unsigned long)code);
         }
         free(reason);
@@ -9956,7 +10137,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
     int failed = 0;
     for (int i = 0; i < count; i++) {
         int ends[2];
-        fflush(stdout);
+        sg_out_flush();
         fflush(stderr);
         /* Both ends are closed in the child as it starts; it writes to its copy of one. */
         if (pipe(ends) != 0) { perror("pipe"); return 2; }
@@ -9992,7 +10173,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         } else {
             failed++;
             printf("FAIL  %s\n", tests[i].name);
-            if (len > 0) sg_print("%.*s\n", (int64_t)len, reason);
+            if (len > 0) { fwrite(reason, 1, len, stdout); fputc('\n', stdout); }
             else if (WIFSIGNALED(status)) printf("the test was stopped by signal %d\n", WTERMSIG(status));
         }
         free(reason);
@@ -10897,6 +11078,58 @@ fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// A piece of a line whose format has no width and no least count of digits, as `sg_vlines`
+/// would write it (choice 1544): bytes, a text (its length and its bytes), a word of C (`true`,
+/// `false`), a number with a sign and one without.
+enum Step {
+    Bytes(String),
+    Text(String, String),
+    Word(String),
+    Int(String),
+    Uint(String),
+}
+
+/// The pieces of a format of `sg_vlines` and its values, when each is written as it is: then
+/// the line is written where it is made, and nothing reads its format while it runs. `None`
+/// where something has a width, digits or a letter of hex, which `sg_vlines` writes.
+fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
+    let mut steps = Vec::new();
+    let mut bytes = String::new();
+    let mut values = values.iter();
+    let mut rest = format;
+    while let Some(at) = rest.find('%') {
+        bytes.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        if let Some(after) = rest.strip_prefix('%') {
+            bytes.push('%');
+            rest = after;
+            continue;
+        }
+        let (step, after) = if let Some(after) = rest.strip_prefix(".*s") {
+            (Step::Text(values.next()?.clone(), values.next()?.clone()), after)
+        } else if let Some(after) = rest.strip_prefix("lld") {
+            (Step::Int(values.next()?.clone()), after)
+        } else if let Some(after) = rest.strip_prefix("llu") {
+            (Step::Uint(values.next()?.clone()), after)
+        } else {
+            (Step::Word(values.next()?.clone()), rest.strip_prefix('s')?)
+        };
+        if !bytes.is_empty() {
+            steps.push(Step::Bytes(std::mem::take(&mut bytes)));
+        }
+        steps.push(step);
+        rest = after;
+    }
+    bytes.push_str(rest);
+    if !bytes.is_empty() {
+        steps.push(Step::Bytes(bytes));
+    }
+    match values.next() {
+        Some(_) => None,
+        None => Some(steps),
+    }
+}
+
 /// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a format of
 /// `sg_vlines`, which counts it in characters: `%8lld`, `%-10.*s`.
 fn widen(format: &mut String, width: i32) {
@@ -11259,8 +11492,8 @@ struct IndexSum<'a> {
 
 /// One piece of a line that is being written.
 enum Piece {
-    /// A `printf` format and the values for it, each with its comma in front.
-    Text(String, String),
+    /// A `printf` format and the values for it.
+    Text(String, Vec<String>),
     /// A value written by the helper of its type: the helper, a pointer to the value, and the
     /// width it takes (`{p,20}`; 0 when none is written).
     Show(String, String, i32),
@@ -11604,7 +11837,7 @@ impl<'a> Emitter<'a> {
     fn live_c_func(&mut self, place: &str, name: &str, span: Span) -> String {
         let loc = self.loc(span);
         let text = c_string(&format!("`{name}` is called, and it is a `CFunc` that is `null`"));
-        format!("(({place}) ? (void)0 : sg_panic({text}, {loc}), {place})")
+        format!("(({place}) ? (void)0 : sg_panic({text}, {loc}), sg_out_give(), {place})")
     }
 
     /// Where the function of C named `name` is declared, if it is one.
@@ -11662,7 +11895,8 @@ impl<'a> Emitter<'a> {
         };
         let head = format!("{gives} {c_name}({list})");
         let call = format!("f_{}({})", cname(&func.name), passed.join(", "));
-        let body = if *ret == Ty::Void { format!("{checks}{call};") } else { format!("{checks}return {call};") };
+        // What SG printed comes before what C writes after the call (`sg_out_give`).
+        let body = if *ret == Ty::Void { format!("{checks}{call}; sg_out_give();") } else { format!("{checks}{gives} sg_r = {call}; sg_out_give(); return sg_r;") };
         let _ = writeln!(protos, "SG_EXPORT {head};");
         let _ = writeln!(bodies, "{head} {{ {body} }}\n");
         Ok(())
@@ -11726,7 +11960,7 @@ impl<'a> Emitter<'a> {
                 let (_, sg_types, passed) = self.c_params(&params, func.name_span)?;
                 let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
                 let call = format!("{callee}({})", passed.join(", "));
-                let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
+                let body = if *ret == Ty::Void { format!("sg_out_give(); {call};") } else { format!("sg_out_give(); return {call};") };
                 let adapter = format!("static inline {ret_type} sg_x_{}_v{number}({list})", cname(&func.name));
                 match in_file {
                     true => {
@@ -11742,7 +11976,8 @@ impl<'a> Emitter<'a> {
         }
         let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
         let call = format!("{callee}({})", passed.join(", "));
-        let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
+        // What the program printed goes into C's `stdout` before C can write there.
+        let body = if *ret == Ty::Void { format!("sg_out_give(); {call};") } else { format!("sg_out_give(); return {call};") };
         let adapter = format!("static inline {ret_type} sg_x_{}({list})", cname(&func.name));
         // Its name is a `CFunc`: a function of the C file is reached after the file.
         if in_file && self.addressed.contains(&func.name) {
@@ -13911,7 +14146,7 @@ impl<'a> Emitter<'a> {
                     }
                 };
                 format!(
-                    "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
+                    "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        sg_out_flush();\n        {shown}\
                      sg_eprint(\"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
                 )
             }
@@ -16451,6 +16686,12 @@ impl<'a> Emitter<'a> {
     /// What `printf` is told and what it is given, for `print`, `panic` and `.toString()`: a
     /// number, a `bool`, text, or `$"..."` made of those. The values come with a leading comma.
     fn format(&mut self, arg: &'a Expr) -> Res<(String, String)> {
+        let (format, values) = self.format_values(arg)?;
+        Ok((format, values.iter().map(|value| format!(", {value}")).collect()))
+    }
+
+    /// The same, the values apart.
+    fn format_values(&mut self, arg: &'a Expr) -> Res<(String, Vec<String>)> {
         match self.pieces(arg, false)?.pop() {
             Some(Piece::Text(format, values)) => Ok((format, values)),
             _ => unreachable!("a line that is not written piece by piece is one format"),
@@ -16510,7 +16751,7 @@ impl<'a> Emitter<'a> {
                             }
                             if straight {
                                 if !format.is_empty() {
-                                    done.push(Piece::Text(std::mem::take(&mut format), values.drain(..).map(|value| format!(", {value}")).collect()));
+                                    done.push(Piece::Text(std::mem::take(&mut format), std::mem::take(&mut values)));
                                 }
                                 done.push(Piece::Show(shower, at, width));
                             } else {
@@ -16546,7 +16787,7 @@ impl<'a> Emitter<'a> {
             _ => self.formatted(arg, None, &mut format, &mut values)?,
         }
         if !format.is_empty() || done.is_empty() {
-            done.push(Piece::Text(format, values.iter().map(|value| format!(", {value}")).collect()));
+            done.push(Piece::Text(format, values));
         }
         Ok(done)
     }
@@ -17857,7 +18098,7 @@ impl<'a> Emitter<'a> {
         let (mut format, values) = formatted?;
         format.push('\n');
         self.flush_pre(pad, out);
-        let _ = writeln!(out, "{pad}fflush(stdout); sg_eprint({}{values});", c_string(&format));
+        let _ = writeln!(out, "{pad}sg_out_flush(); sg_eprint({}{values});", c_string(&format));
         self.flush_post(pad, out);
         Ok(())
     }
@@ -17865,12 +18106,52 @@ impl<'a> Emitter<'a> {
     fn print(&mut self, arg: &'a Expr, pad: &str, out: &mut String) -> Res<()> {
         // One value is the whole line: it can be `try ...`.
         self.head = !matches!(arg.kind, ExprKind::Interp(_));
-        let formatted = self.format(arg);
+        let formatted = self.format_values(arg);
         self.head = false;
         let (mut format, values) = formatted?;
         format.push('\n');
         self.flush_pre(pad, out);
-        let _ = writeln!(out, "{pad}sg_print({}{values});", c_string(&format));
+        match steps(&format, &values) {
+            // A line without widths is written piece by piece into the block of the output
+            // (choices 1544, 1545). Its values are computed first, from left to right, before
+            // the lock is taken: one that panics leaves no part of the line written.
+            Some(steps) => {
+                let mut line = String::new();
+                let mut calls = String::new();
+                for step in steps {
+                    match step {
+                        Step::Bytes(text) => {
+                            let _ = write!(calls, " (void)sg_out_put({}, {});", c_string(&text), text.len());
+                        }
+                        Step::Text(len, ptr) => {
+                            let temp = self.temp();
+                            let _ = write!(line, " int64_t {temp}n = {len}; const char* {temp} = {ptr};");
+                            let _ = write!(calls, " (void)sg_out_put({temp}, {temp}n);");
+                        }
+                        Step::Word(word) => {
+                            let temp = self.temp();
+                            let _ = write!(line, " const char* {temp} = {word};");
+                            let _ = write!(calls, " sg_out_str({temp});");
+                        }
+                        Step::Int(value) => {
+                            let temp = self.temp();
+                            let _ = write!(line, " long long {temp} = {value};");
+                            let _ = write!(calls, " sg_out_int({temp});");
+                        }
+                        Step::Uint(value) => {
+                            let temp = self.temp();
+                            let _ = write!(line, " unsigned long long {temp} = {value};");
+                            let _ = write!(calls, " sg_out_uint({temp});");
+                        }
+                    }
+                }
+                let _ = writeln!(out, "{pad}{{{line} sg_out_begin();{calls} (void)sg_out_done(); }}");
+            }
+            None => {
+                let values: String = values.iter().map(|value| format!(", {value}")).collect();
+                let _ = writeln!(out, "{pad}sg_print({}{values});", c_string(&format));
+            }
+        }
         self.flush_post(pad, out);
         Ok(())
     }
@@ -18139,7 +18420,45 @@ impl<'a> Emitter<'a> {
                     let text = format.replace("%%", "%");
                     format!("sg_put({out}, {}, {})", c_string(&text), text.len())
                 }
-                Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
+                Piece::Text(format, values) => match steps(&format, &values) {
+                    // Each value is computed first, from left to right, as `sg_putf` has them
+                    // all before it writes: a value that reads the text sees it as it was.
+                    Some(steps) => {
+                        let mut line = String::new();
+                        let mut calls = Vec::new();
+                        for step in steps {
+                            calls.push(match step {
+                                Step::Bytes(text) => format!("sg_put({out}, {}, {})", c_string(&text), text.len()),
+                                Step::Text(len, ptr) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "int64_t {temp}n = {len}; const char* {temp} = {ptr}; ");
+                                    format!("sg_put({out}, {temp}, {temp}n)")
+                                }
+                                Step::Word(word) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "const char* {temp} = {word}; ");
+                                    format!("sg_puts({out}, {temp})")
+                                }
+                                Step::Int(value) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "long long {temp} = {value}; ");
+                                    format!("sg_put_int({out}, {temp})")
+                                }
+                                Step::Uint(value) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "unsigned long long {temp} = {value}; ");
+                                    format!("sg_put_uint({out}, {temp})")
+                                }
+                            });
+                        }
+                        if line.is_empty() && calls.len() == 1 {
+                            calls.pop().unwrap_or_default()
+                        } else {
+                            format!("({{ {line}{}; }})", calls.join("; "))
+                        }
+                    }
+                    None => format!("sg_putf({out}, {}{})", c_string(&format), values.iter().map(|value| format!(", {value}")).collect::<String>()),
+                },
                 Piece::Show(shower, at, 0) => format!("{shower}({out}, {at})"),
                 Piece::Show(shower, at, width) => {
                     let from = self.temp();

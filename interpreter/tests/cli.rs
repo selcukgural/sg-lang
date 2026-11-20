@@ -794,3 +794,65 @@ fn the_trials() {
     assert_eq!(printed[4].lines().count(), 660);
     assert!(printed[4].lines().all(|line| line.split_once(':').is_some_and(|(n, _)| n.parse::<u32>().is_ok())));
 }
+
+const ORDER: &str = r#"extern {
+    int puts(read CString text)
+}
+
+struct Point : Formattable {
+    int x
+    int y
+
+    void format(read this, ref Formatter f) {
+        f.write($"({this.x}, {this.y})")
+    }
+}
+
+Result<void, IoError> main() {
+    print("one")
+    printError("two")
+    var c = CString.from("three") ?? panic("zero byte")
+    _ = unsafe puts(read c)
+    print($"four {4} {-4} {4.5} {true} {'4'} {Point { x = 4, y = 4 }}")
+    try Stdout.write("five ")
+    try Stdout.writeLine(5)
+    try Stderr.writeLine("six")
+    print("x".repeat(70000))
+    print($"{"seven",6}|{7,-3}|{7:X4}")
+    string line = ""
+    for i in 0..3 {
+        line.write($"{i}:{line.length()};")
+    }
+    print(line)
+    exit(3)
+}
+"#;
+
+/// What the output and the standard error get, sent into one file, comes in the order the
+/// program wrote it (1544-1546): `print` gathers the output in a block of its own, which is
+/// given on before `printError`, `Stderr`, a call of C (whose `puts` writes into C's `stdout`)
+/// and the end of the program by `exit`. A line far longer than the block, and lines with
+/// widths, which `sg_vlines` writes, go into it too. A value written into a text that it reads
+/// sees the text as it was before the line.
+#[test]
+fn the_output_keeps_its_order() {
+    let dir = work("the_output_keeps_its_order");
+    write(&dir, "order.sg", ORDER);
+    let expected = format!(
+        "one\ntwo\nthree\nfour 4 -4 4.5 true 4 (4, 4)\nfive 5\nsix\n{}\n seven|7  |0007\n0:0;1:4;2:8;\n",
+        "x".repeat(70000)
+    );
+    let mut ways = vec![(Command::new(env!("CARGO_BIN_EXE_sg")), "interpreted")];
+    ways[0].0.arg("order.sg");
+    if has_compiler() {
+        assert_eq!(ran(&sg(&dir, &["build", "order.sg"])), (0, String::new(), String::new()));
+        ways.push((Command::new(program(&dir, "order")), "compiled"));
+    }
+    for (mut command, way) in ways {
+        let file = std::fs::File::create(dir.join("both.txt")).unwrap();
+        let status = command.current_dir(&dir).stdin(Stdio::null()).stdout(file.try_clone().unwrap()).stderr(file).status().unwrap();
+        assert_eq!(status.code(), Some(3), "{way}");
+        let both = std::fs::read_to_string(dir.join("both.txt")).unwrap();
+        assert!(both == expected, "{way}: {}", both.replace(&"x".repeat(70000), "x * 70000"));
+    }
+}
