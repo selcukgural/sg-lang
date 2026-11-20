@@ -291,9 +291,10 @@ fn is_project(folder: &Path) -> bool {
     folder.join(project::FILE).is_file()
 }
 
-/// A folder is a module only if its name can be written in the language.
+/// A folder is a module only if its name can be written in the language, and is not the name of
+/// one of its types (choice 1591).
 fn is_module_name(name: &str) -> bool {
-    if name == STD_MODULE {
+    if name == STD_MODULE || crate::check::is_language_type(name) {
         return false;
     }
     let mut chars = name.chars();
@@ -373,6 +374,13 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         sources.map = Arc::new(ModuleMap { prefix: String::new(), packages: sources.packages.iter().filter(|package| package.named).map(|package| (package.name.clone(), package.name.clone())).collect(), every_package: every.clone() });
         for package in &mut sources.packages {
             Arc::get_mut(&mut package.map).expect("not shared yet").every_package = every.clone();
+        }
+    }
+    // A folder of modules named as a type of the language would take the calls of the type
+    // (`Hex.encode`), in the program and inside the language's own module (choice 1591).
+    for folder in std::iter::once(&base).chain(sources.packages.iter().map(|package| &package.folder)) {
+        if let Some(found) = folder_named_as_a_type(folder) {
+            return Err(format!("the folder {} has the name of a type of the language, and a folder of modules cannot have it: name it otherwise", shown(&found)));
         }
     }
     for file in root_files {
@@ -573,6 +581,21 @@ fn packages(project: &Project, base: &Path) -> Result<Vec<Package>, String> {
         });
     }
     Ok(packages)
+}
+
+/// A folder in `base` with source files in it or below it, named as a type of the language.
+fn folder_named_as_a_type(base: &Path) -> Option<PathBuf> {
+    let listed = if base.as_os_str().is_empty() { Path::new(".") } else { base };
+    let mut found: Vec<PathBuf> = std::fs::read_dir(listed).ok()?.flatten().filter(|entry| entry.file_name().to_str().is_some_and(crate::check::is_language_type)).map(|entry| base.join(entry.file_name())).collect();
+    found.sort();
+    found.into_iter().find(|folder| {
+        if !folder.is_dir() || is_project(folder) {
+            return false;
+        }
+        let mut below = Vec::new();
+        modules_under(folder, "x", &mut below);
+        !sg_files(folder).is_empty() || !below.is_empty()
+    })
 }
 
 /// Whether the folder `name` under `base` holds modules: source files, in it or below it.

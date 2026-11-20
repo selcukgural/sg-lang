@@ -328,7 +328,9 @@ example.com/bob/utf 1.0.0 (added)
 ```
 
 A package is fetched with `git` from `https://` and its address, and no code of it runs while it is fetched
-or built. Its files are kept once for you, read only, in a cache (`SG_CACHE` names another folder), and
+or built; git runs in a folder of its own and reads no setting of your project's folder. Its files are kept
+once for you, read only, in a cache under its address and version (`SG_CACHE` names another folder; make it
+writable, `chmod -R u+w`, before you remove it), and
 `sg.lock` beside `sg.project` holds the SHA-256 of each package's files: the program builds from the same
 files on every machine, and a tag moved to other files is refused. The versions are chosen as Go chooses
 them, the least each `require` asks for, so a new release of a package changes no build until you run

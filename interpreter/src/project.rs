@@ -13,10 +13,14 @@
 //! version, whose tag is `v1.4.0`. `local` takes a package from a folder instead of fetching it,
 //! and only the program's own file has it: the `local` lines of a package are not read.
 
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The name of the file.
 pub const FILE: &str = "sg.project";
+/// The most an `sg.project` may have (choice 1591): a package's is read before it is trusted.
+pub const MAX_BYTES: u64 = 1 << 20;
 
 pub struct Project {
     /// Where the file is.
@@ -58,26 +62,65 @@ impl std::fmt::Display for Version {
 /// The `sg.project` in `folder`, if there is one.
 pub fn read(folder: &Path) -> Result<Option<Project>, String> {
     let path = folder.join(FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("cannot read {}: it is not UTF-8", path.display()))?;
     parse(&text, &path).map(Some)
 }
 
 /// A name a package can be given: one a folder of modules can have (letters, digits and `_`,
-/// not starting with a digit), other than `std`.
+/// not starting with a digit), other than `std` and the names of the language's types
+/// (choice 1591).
 pub fn is_name(name: &str) -> bool {
     let mut chars = name.chars();
-    name != crate::source::STD_MODULE && chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    name != crate::source::STD_MODULE
+        && !crate::check::is_language_type(name)
+        && chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A character a terminal does not show as itself: a control character, one that changes the
+/// direction of the text or has no width, or a space other than the space (choice 1591). Text
+/// a package gives is not printed with one in it.
+pub fn is_unseen(c: char) -> bool {
+    (c.is_control() && c != '\t')
+        || (c.is_whitespace() && c != ' ' && c != '\t')
+        || matches!(c, '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// `text` with each character a terminal does not show as itself written as its number,
+/// `\u{202e}`.
+pub fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match is_unseen(c) || c == '\t' {
+            true => out.extend(c.escape_unicode()),
+            false => out.push(c),
+        }
+    }
+    out
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<Project, String> {
     let mut project = Project { path: path.to_path_buf(), package: None, requires: Vec::new(), locals: Vec::new() };
+    if text.len() as u64 > MAX_BYTES {
+        return Err(format!("{}: it has more than the 1 MB an `{FILE}` may have", path.display()));
+    }
+    // The lines that gave each name, and each address with its major version.
+    let mut names: HashMap<String, usize> = HashMap::new();
+    let mut addresses: HashMap<(String, u64), usize> = HashMap::new();
+    let mut local_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (at, line) in text.lines().enumerate() {
         let number = at + 1;
         let fail = |message: String| format!("{}:{number}: {message}", path.display());
+        if line.chars().any(is_unseen) {
+            return Err(fail("the line has a character that is not seen as itself: a control character, a mark of direction or one with no width".into()));
+        }
         // `//` starts a comment where a word may start: at the start of the line or after a
         // space. An address has no `//` in it, so one written into it is not taken away.
         let line = match line.match_indices("//").find(|(at, _)| *at == 0 || line[..*at].ends_with([' ', '\t'])) {
@@ -117,15 +160,16 @@ pub fn parse(text: &str, path: &Path) -> Result<Project, String> {
                 if !is_name(&name) {
                     let message = match name == crate::source::STD_MODULE {
                         true => "`std` is the language's own module, and a package cannot have its name".to_string(),
+                        false if crate::check::is_language_type(&name) => format!("`{name}` is a type of the language, and a package cannot have its name"),
                         false => format!("`{name}` cannot be written after `use`: a name is letters, digits and `_`, and it does not start with a digit"),
                     };
                     return Err(fail(format!("{message}; give the package a name in front of its address: `require {} {address} {version}`", suggested(&name))));
                 }
-                if let Some(other) = project.requires.iter().find(|other| other.name == name) {
-                    return Err(fail(format!("`{name}` is the name of the package of line {} too: give one of them another name", other.line)));
+                if let Some(other) = names.insert(name.clone(), number) {
+                    return Err(fail(format!("`{name}` is the name of the package of line {other} too: give one of them another name")));
                 }
-                if let Some(other) = project.requires.iter().find(|other| other.address == address && other.version.major == version.major) {
-                    return Err(fail(format!("{address} {} is required on line {} too", version.major, other.line)));
+                if let Some(other) = addresses.insert((address.to_string(), version.major), number) {
+                    return Err(fail(format!("{address} {} is required on line {other} too", version.major)));
                 }
                 project.requires.push(Require { name, address: address.to_string(), version, allows_unsafe, line: number });
             }
@@ -137,7 +181,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Project, String> {
                 if folder.is_empty() {
                     return Err(fail(format!("`local {name}` is followed by the folder of the package: `local {name} ../{name}`")));
                 }
-                if project.locals.iter().any(|other| other.name == *name) {
+                if !local_names.insert(name.to_string()) {
                     return Err(fail(format!("`local {name}` is written twice")));
                 }
                 project.locals.push(Local { name: name.to_string(), folder: PathBuf::from(folder), line: number });
@@ -146,7 +190,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Project, String> {
         }
     }
     for local in &project.locals {
-        if !project.requires.iter().any(|require| require.name == local.name) {
+        if !names.contains_key(&local.name) {
             let fail = format!("{}:{}: `local {}` names no package: a `require` line gives the package its name and address", path.display(), local.line, local.name);
             return Err(fail);
         }
@@ -160,7 +204,10 @@ pub fn suggested(name: &str) -> String {
     if let Some(rest) = out.strip_prefix("sg_") {
         out = rest.to_string();
     }
-    if out.is_empty() || out == crate::source::STD_MODULE || out.starts_with(|c: char| c.is_ascii_digit()) {
+    if crate::check::is_language_type(&out) {
+        out = out.to_ascii_lowercase();
+    }
+    if out.is_empty() || out == crate::source::STD_MODULE || out.starts_with(|c: char| c.is_ascii_digit()) || crate::check::is_language_type(&out) {
         out = format!("p{out}");
     }
     out
@@ -239,5 +286,14 @@ mod tests {
         assert!(error("local xml ../xml").contains("names no package"));
         assert!(error("requires xml github.com/ada/xml 1.4.0").contains("is not a line of `sg.project`"));
         assert!(error("package github.com/a/b\npackage github.com/a/c").contains("twice"));
+        // A name of a type of the language is a type's, and the name suggested is not one.
+        assert!(error("require github.com/ada/Hex 1.0.0").contains("`Hex` is a type of the language, and a package cannot have its name; give the package a name in front of its address: `require hex github.com/ada/Hex 1.0.0`"));
+        assert!(error("require string github.com/ada/x 1.0.0").contains("`require pstring github.com/ada/x 1.0.0`"));
+        // A line with a character that is not seen as itself is not printed back.
+        for line in ["require xml github.com/ada/xml 1.4.0 \u{202e}", "requir\u{1b}[2Ke xml", "local xml ../x\u{200b}ml"] {
+            let said = error(line);
+            assert!(said.contains("a character that is not seen as itself") && !said.contains(line), "{said}");
+        }
+        assert!(error(&"// x\n".repeat(300_000)).contains("more than the 1 MB"));
     }
 }

@@ -17,7 +17,16 @@ struct Client {
 
 impl Client {
     fn start() -> Client {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sg")).arg("lsp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        Client::start_with(&[])
+    }
+
+    /// The server with these variables of the environment.
+    fn start_with(variables: &[(&str, &Path)]) -> Client {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+        for (name, value) in variables {
+            command.env(name, value);
+        }
+        let mut child = command.arg("lsp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let input = child.stdin.take().unwrap();
         let output = BufReader::new(child.stdout.take().unwrap());
         let mut client = Client { child, input, output, next_id: 1 };
@@ -251,4 +260,26 @@ fn answers_what_it_does_not_serve_and_ends_as_told() {
     let mut client = Client::start();
     client.notify("exit", Json::Null);
     assert_eq!(client.child.wait().unwrap().code(), Some(1));
+}
+
+/// The server fetches no package (choice 1591): opening a file of a folder whose `sg.lock` names a
+/// package the cache has not is no reason to reach the network, and the message says what does.
+#[test]
+fn fetches_no_package() {
+    let dir = folder("fetches_no_package");
+    let (cache, mirror) = (dir.join("cache"), dir.join("mirror"));
+    std::fs::create_dir_all(mirror.join("example.com/bob/utf")).unwrap();
+    std::fs::write(dir.join("sg.project"), "require utf example.com/bob/utf 1.0.0\n").unwrap();
+    std::fs::write(dir.join("sg.lock"), format!("example.com/bob/utf 1.0.0 sha256-{}\n", "0".repeat(64))).unwrap();
+    let path = dir.join("main.sg");
+    let text = "use utf\n\nvoid main() {\n    print(utf.one())\n}\n";
+    std::fs::write(&path, text).unwrap();
+    let uri = sg::lsp::path_to_uri(&path);
+    let mut client = Client::start_with(&[("SG_CACHE", &cache), ("SG_MIRROR", &mirror)]);
+    client.open(&uri, text);
+    let found = client.diagnostics(&uri);
+    let message = found.first().and_then(|diagnostic| diagnostic.get("message").as_str()).unwrap_or_default().to_string();
+    assert!(message.contains("example.com/bob/utf 1.0.0 is not in the cache, and the language server fetches nothing"), "{found:?}");
+    assert!(!cache.exists(), "nothing is made in the cache");
+    assert_eq!(client.finish(), 0);
 }

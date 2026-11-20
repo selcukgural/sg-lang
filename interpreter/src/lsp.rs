@@ -91,6 +91,9 @@ fn read_message(input: &mut impl BufRead) -> Result<Option<String>, String> {
 
 /// Serves until the editor says `exit` or closes the input. The exit code: 0 after `shutdown`.
 pub fn serve(mut input: impl BufRead, output: impl Write + Send + 'static) -> i32 {
+    // A file opened in an editor is no reason to reach the network: packages come from the
+    // cache alone (choice 1591).
+    crate::fetch::fetch_nothing();
     let out: Out = Arc::new(Mutex::new(Box::new(output)));
     let state = Arc::new(Mutex::new(State::default()));
     let (changed, changes) = mpsc::channel::<()>();

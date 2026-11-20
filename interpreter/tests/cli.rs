@@ -16,9 +16,30 @@ use std::process::{Command, Output, Stdio};
 /// A folder of its own for each test, made new: the tests run at once.
 fn work(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("cli").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
+    removed(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// A folder taken away with what is in it, the folders of packages the cache keeps read only too
+/// (choice 1591) made writable first.
+fn removed(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            let Ok(meta) = std::fs::symlink_metadata(&folder) else { continue };
+            if !meta.is_dir() {
+                continue;
+            }
+            let _ = std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755));
+            if let Ok(read) = std::fs::read_dir(&folder) {
+                folders.extend(read.flatten().map(|entry| entry.path()));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
@@ -1064,9 +1085,21 @@ fn sg_with(dir: &Path, mirror: &Path, cache: &Path, words: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("SG_MIRROR", mirror).env("SG_CACHE", cache).stdin(Stdio::null()).output().unwrap()
 }
 
-/// The folders of packages in the cache.
+/// The folders of packages in the cache, `<address>@<version>/sha256-<hex>` (choice 1591), and
+/// anything else left in it but the folders above them.
 fn cached(cache: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(cache).map(|read| read.flatten().map(|entry| entry.path()).collect()).unwrap_or_default();
+    let mut found = Vec::new();
+    let mut folders = vec![cache.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).map(|read| read.flatten().collect::<Vec<_>>()).unwrap_or_default() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            match entry.file_type().unwrap().is_dir() && !name.starts_with("sha256-") {
+                true => folders.push(path),
+                false => found.push(path),
+            }
+        }
+    }
     found.sort();
     found
 }
@@ -1124,6 +1157,9 @@ fn fetches_packages_from_a_mirror() {
     assert!(lines[1].ends_with(&*xml_folder.file_name().unwrap().to_string_lossy()));
     assert!(xml_folder.join("README.md").exists() && !xml_folder.join("examples").exists());
     assert!(std::fs::metadata(xml_folder.join("xml.sg")).unwrap().permissions().readonly());
+    #[cfg(unix)]
+    assert!(std::fs::metadata(xml_folder).unwrap().permissions().readonly(), "the folder is read only too");
+    assert!(xml_folder.parent().unwrap().ends_with("example.com/ada/xml@1.4.0"), "{xml_folder:?}");
     assert_eq!(folders.len(), 2, "{folders:?}");
 
     // The package the program does not name cannot be reached from it, by any name.
@@ -1132,7 +1168,7 @@ fn fetches_packages_from_a_mirror() {
     std::fs::remove_file(program_dir.join("other.sg")).unwrap();
 
     // Without the cache, what the lock holds is fetched again.
-    std::fs::remove_dir_all(&cache).unwrap();
+    removed(&cache);
     assert_eq!(run(&["main.sg"]), (0, "xml 1.4 on utf 1.0\n".into(), String::new()));
 
     let (code, out, err) = run(&["update", "xml"]);
@@ -1144,7 +1180,7 @@ fn fetches_packages_from_a_mirror() {
 
     // A tag moved to other files no longer has the SHA-256 the lock holds.
     put("1.5.0", xml_files("1.1.0", &xml("xml 1.5, moved")));
-    std::fs::remove_dir_all(&cache).unwrap();
+    removed(&cache);
     let (code, _, err) = run(&["main.sg"]);
     assert_eq!(code, 2);
     assert!(err.contains("the tag v1.5.0 of example.com/ada/xml has other files than sg.lock holds") && err.contains("the tag was moved"), "{err}");
@@ -1282,4 +1318,165 @@ fn unsafe_in_a_package_is_the_programs_to_allow() {
     assert!(code == 1 && err.contains("through another package, and allows it on a `require` line of its own that ends in `unsafe`: `require zlib example.com/bo/zlib 1.1.0 unsafe`"), "{err}");
     write(&program_dir, "sg.project", "require wrap example.com/ada/wrap 1.0.0\nrequire zlib example.com/bo/zlib 1.1.0 unsafe\n");
     assert_eq!(run(&["main.sg"]), (0, "8\n".into(), String::new()));
+}
+
+/// Git runs in a folder of `sg`'s own and finds no repository there (choice 1591): a project
+/// folder that holds the files of a bare repository, its `config` among them, and the `GIT_`
+/// variables of the user's are not read. Both here would send git to a folder that is not there.
+#[test]
+fn git_reads_no_settings_of_the_project_folder() {
+    let dir = work("git_reads_no_settings_of_the_project_folder");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(program_dir.join("objects")).unwrap();
+    std::fs::create_dir_all(program_dir.join("refs")).unwrap();
+    publish_sg(&mirror, "example.com/bob/utf", "1.0.0", "", "utf", "public int one() {\n    return 1\n}\n");
+    let absolute = std::path::absolute(&mirror).unwrap();
+    let elsewhere = format!("[url \"{}/\"]\n\tinsteadOf = {}/\n", dir.join("nowhere").display(), absolute.display()).replace('\\', "/");
+    write(&program_dir, "HEAD", "ref: refs/heads/main\n");
+    write(&program_dir, "config", &format!("[core]\n\trepositoryformatversion = 0\n\tbare = true\n{elsewhere}"));
+    write(&program_dir, "main.sg", "use utf\n\nvoid main() {\n    print(utf.one())\n}\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_sg"))
+        .args(["add", "example.com/bob/utf"])
+        .current_dir(&program_dir)
+        .env("SG_MIRROR", &mirror)
+        .env("SG_CACHE", &cache)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", format!("url.{}/.insteadOf", dir.join("nowhere").display()))
+        .env("GIT_CONFIG_VALUE_0", format!("{}/", absolute.display()))
+        .env("GIT_DIR", dir.join("nowhere"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let (code, out, err) = ran(&output);
+    assert_eq!((code, out.as_str()), (0, "example.com/bob/utf 1.0.0 (added)\n"), "{err}");
+    assert_eq!(ran(&sg_with(&program_dir, &mirror, &cache, &["main.sg"])), (0, "1\n".into(), String::new()));
+}
+
+/// `sg.project` and `sg.lock` are written into a new file put in their place, so a link there is
+/// replaced and not followed (choice 1591); the name of a library a package gives is written in
+/// the lock only when the checker takes it.
+#[cfg(unix)]
+#[test]
+fn writes_the_lock_in_place_of_a_link() {
+    let dir = work("writes_the_lock_in_place_of_a_link");
+    let (mirror, cache, program_dir, outside) = (dir.join("mirror"), dir.join("cache"), dir.join("program"), dir.join("outside"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let code = "extern \"z x\" {\n    int crc(int a)\n}\n\nextern \"z\" {\n    int adler(int a)\n}\n\npublic int one() {\n    return 1\n}\n";
+    publish_sg(&mirror, "example.com/bob/utf", "1.0.0", "", "utf", code);
+    std::os::unix::fs::symlink(outside.join("lock"), program_dir.join("sg.lock")).unwrap();
+    std::os::unix::fs::symlink(outside.join("project"), program_dir.join("sg.project")).unwrap();
+    let (code, out, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/bob/utf"]));
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("example.com/bob/utf 1.0.0 (added, uses `unsafe`, links the C libraries z)\n"), "{out}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing is written through the links");
+    for name in ["sg.lock", "sg.project"] {
+        assert!(std::fs::symlink_metadata(program_dir.join(name)).unwrap().is_file(), "{name}");
+    }
+    assert!(std::fs::read_to_string(program_dir.join("sg.lock")).unwrap().ends_with(" unsafe c=z\n"));
+    assert_eq!(std::fs::read_dir(&program_dir).unwrap().count(), 2, "no file is left beside them");
+}
+
+/// A package goes into the cache only once its SHA-256 is the lock's and its `package` line its
+/// address, and under its address and version (choice 1591): files fetched from another address
+/// are never taken for it.
+#[test]
+fn keeps_a_package_only_under_its_own_address() {
+    let dir = work("keeps_a_package_only_under_its_own_address");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    let files: &[(&str, &str, &[u8])] = &[("100644", "sg.project", b"package example.com/ada/lib\n"), ("100644", "lib.sg", b"public int value() {\n    return 666\n}\n")];
+    publish(&mirror, "example.com/eve/seed", "1.0.0", files);
+    let (code, _, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/eve/seed"]));
+    assert!(code == 1 && err.contains("example.com/eve/seed 1.0.0: sg.project: the package is example.com/ada/lib, and it was asked for as example.com/eve/seed"), "{err}");
+    assert_eq!(cached(&cache), Vec::<PathBuf>::new());
+
+    // The same files under the address they say, and a lock that holds their SHA-256 for it.
+    publish(&mirror, "example.com/ada/lib", "1.0.0", &[("100644", "sg.project", b"package example.com/ada/lib\n"), ("100644", "lib.sg", b"public int value() {\n    return 7\n}\n")]);
+    write(&program_dir, "main.sg", "use lib\n\nvoid main() {\n    print(lib.value())\n}\n");
+    assert_eq!(ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/ada/lib"])).0, 0);
+    let lock = std::fs::read_to_string(program_dir.join("sg.lock")).unwrap();
+    let mut seed = Vec::new();
+    for (_, path, bytes) in files {
+        seed.push((*path, *bytes));
+    }
+    let seeded = sg::fetch::tree_sum(&mut seed);
+    let good = lock.lines().nth(1).unwrap().split(' ').nth(2).unwrap().to_string();
+    write(&program_dir, "sg.lock", &lock.replace(&good, &seeded));
+    let (code, _, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["main.sg"]));
+    assert!(code == 2 && err.contains("the tag v1.0.0 of example.com/ada/lib has other files than sg.lock holds"), "{err}");
+    assert_eq!(cached(&cache).len(), 1);
+}
+
+/// What git lists of a tag is read as it comes and stopped at the first limit passed (choice
+/// 1591): a tree of a few kilobytes that names a million files is refused at once.
+#[test]
+fn stops_reading_a_tree_that_names_too_many_files() {
+    let dir = work("stops_reading_a_tree_that_names_too_many_files");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    let repository = mirror.join("example.com/eve/bomb");
+    std::fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init", "-q", "--bare"], None, b"");
+    let blob = git(&repository, &["hash-object", "-w", "--stdin", "--no-filters"], None, b"x");
+    // Sixteen names for one tree, five times over: 16^5 paths.
+    let mut tree = git(&repository, &["mktree"], None, (0..16).map(|at| format!("100644 blob {blob}\tf{at:x}.sg\n")).collect::<String>().as_bytes());
+    for _ in 0..4 {
+        tree = git(&repository, &["mktree"], None, (0..16).map(|at| format!("040000 tree {tree}\td{at:x}\n")).collect::<String>().as_bytes());
+    }
+    let project = git(&repository, &["hash-object", "-w", "--stdin", "--no-filters"], None, b"package example.com/eve/bomb\n");
+    tree = git(&repository, &["mktree"], None, format!("040000 tree {tree}\tbomb\n100644 blob {project}\tsg.project\n").as_bytes());
+    let commit = git(&repository, &["commit-tree", &tree, "-m", "bomb"], None, b"");
+    git(&repository, &["update-ref", "refs/tags/v1.0.0", &commit], None, b"");
+    let started = std::time::Instant::now();
+    let (code, _, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/eve/bomb"]));
+    assert!(code == 1 && err.contains("git lists more than the 100,000 files `sg` reads of a tag"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
+    assert_eq!(cached(&cache), Vec::<PathBuf>::new());
+}
+
+/// Two names of a package the system takes for one folder are refused when it is kept, whatever
+/// the system folds (choice 1591): `ſtock` is `stock` on macOS, and not on Linux.
+#[test]
+fn refuses_two_names_the_system_takes_for_one() {
+    let dir = work("refuses_two_names_the_system_takes_for_one");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    let probe = dir.join("probe");
+    std::fs::create_dir_all(probe.join("stock")).unwrap();
+    let folds = probe.join("\u{17f}tock").exists();
+    let code = b"public int one() {\n    return 1\n}\n".as_slice();
+    publish(&mirror, "example.com/eve/fold", "1.0.0", &[("100644", "sg.project", b"package example.com/eve/fold\n"), ("100644", "stock/a.sg", code), ("100644", "\u{17f}tock/b.sg", code)]);
+    let (code, _, err) = ran(&sg_with(&program_dir, &mirror, &cache, &["add", "example.com/eve/fold"]));
+    match folds {
+        true => {
+            assert!(code == 1 && err.contains("example.com/eve/fold 1.0.0 cannot be kept on this system: \u{17f}tock is the name of another of its files or folders here"), "{err}");
+            assert_eq!(cached(&cache), Vec::<PathBuf>::new());
+        }
+        false => assert_eq!(code, 0, "{err}"),
+    }
+}
+
+/// A package cannot have the name of a type of the language, nor a folder of modules
+/// (choice 1591): `Hex.encode` is the type's, in the program and inside the language's own module.
+#[test]
+fn a_package_is_not_named_as_a_type() {
+    let dir = work("a_package_is_not_named_as_a_type");
+    let (mirror, cache, program_dir) = (dir.join("mirror"), dir.join("cache"), dir.join("program"));
+    std::fs::create_dir_all(&program_dir).unwrap();
+    publish_sg(&mirror, "example.com/eve/Hex", "1.0.0", "", "hex", "public string encode(read byte[] data) {\n    return \"taken\"\n}\n");
+    write(&program_dir, "main.sg", "void main() {\n    print(Hex.encode(\"Hi\".asBytes()))\n}\n");
+    let run = |words: &[&str]| ran(&sg_with(&program_dir, &mirror, &cache, words));
+    assert_eq!(run(&["add", "example.com/eve/Hex"]).0, 0);
+    assert_eq!(std::fs::read_to_string(program_dir.join("sg.project")).unwrap(), "require hex example.com/eve/Hex 1.0.0\n");
+    assert_eq!(run(&["main.sg"]), (0, "4869\n".into(), String::new()));
+    write(&program_dir, "sg.project", "require Hex example.com/eve/Hex 1.0.0\n");
+    let (code, _, err) = run(&["main.sg"]);
+    assert!(code == 2 && err.contains("`Hex` is a type of the language, and a package cannot have its name; give the package a name in front of its address: `require hex example.com/eve/Hex 1.0.0`"), "{err}");
+    std::fs::remove_file(program_dir.join("sg.project")).unwrap();
+    std::fs::remove_file(program_dir.join("sg.lock")).unwrap();
+    std::fs::create_dir_all(program_dir.join("Hex")).unwrap();
+    write(&program_dir.join("Hex"), "hex.sg", "public string encode(read byte[] data) {\n    return \"taken\"\n}\n");
+    let (code, _, err) = run(&["main.sg"]);
+    assert!(code == 2 && err.contains("the folder Hex has the name of a type of the language, and a folder of modules cannot have it"), "{err}");
 }

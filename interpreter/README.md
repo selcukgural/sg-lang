@@ -9687,6 +9687,80 @@ The whole of the tests passes on macOS, with 483 of the 1853 programs compiled a
 unchanged); on Linux the tests of `cli.rs` and of the library, and on Windows on Arm the tests of packages,
 pass too, where Git for Windows is told to take the name `con.sg` into the tests' repositories.
 
+Choices made in the hundred-and-thirty-ninth slice (fixing what the second review found, first: packages).
+A second review of safety (1589), made as the first was (1319) on the code of 20 November 2026, found 54
+faults, each shown by a program; the fixes were put to the author as choices and approved the same day. Each
+is written here with its fix as it is built, and each fix came after a test that showed the fault:
+
+1590. **The order**: the packages first, then the rules of borrowing with a generator of programs for them,
+     then the modules of `std` that read what others write, then compiled code, then the tool itself; each
+     fix after a test that shows its fault, and each slice tested on Linux too.
+1591. **What a package or a project brings is never run or followed, and a package is kept only as itself**:
+     - **Git runs in a folder of `sg`'s own.** `sg add` and `sg update` ran `git ls-remote` in the folder of
+       the project. A folder that held the files of a bare repository (`HEAD`, `objects`, `refs` and a
+       `config`, files any repository or archive can bring) was taken by git for a repository, and its
+       `config` read: an `insteadOf` that sent `https://` to `ssh://` and a `core.sshCommand` ran a command
+       of the folder's. Now every git `sg` starts runs in an empty folder made for it in the cache, finds
+       no repository there or above it (`GIT_CEILING_DIRECTORIES`), takes a bare repository only where
+       `--git-dir` names it (`safe.bareRepository=explicit`), and is given no `GIT_` variable of the user's,
+       which can hold settings (`GIT_CONFIG_COUNT`) or name other places (`GIT_DIR`). The user's own
+       settings (credentials, `insteadOf`) are read as before. Cargo runs git with an environment of its own
+       too.
+     - **`sg.project` and `sg.lock` are written into a new file put in their place**, so a link there is
+       replaced, not followed: a project whose `sg.lock` was a link made `sg lock` write a file where the
+       link pointed, `.zshenv` for one. And the name of a C library a package gives is written in the lock,
+       and read from it, only when the checker takes it as a name (letters, digits and `_ - . +`); one with
+       a line break in it wrote a line of its own choosing into the lock.
+     - **Text of a package is not printed as it is**: a name of a file, a line of its `sg.project` or a word of
+       git that has a control character, a mark of direction, a character of no width or a space other than
+       the space is refused, or printed as its number (`\u{202e}`), so no package can move the cursor or
+       hide the line that says it uses `unsafe`. These characters are refused in the names of a package's
+       files too, beside `CONIN$`, `CONOUT$`, `CLOCK$` and `COM¹`-`LPT³`, which Windows keeps.
+     - **A package is kept in the cache only as itself**: under its address and version
+       (`example.com/ada/xml@1.4.0/sha256-...`, as Go's `pkg/mod` has it), and only once the SHA-256 of its
+       files is the lock's and its `package` line its address. The cache was found by the SHA-256 alone and
+       written before those were checked, so the files of a refused package, fetched from another address,
+       answered a lock line of another package that named the same SHA-256.
+     - **What git lists of a tag is read as it comes**, and git is stopped once it lists more than 100,000
+       files or 32 MB: a tree of a few kilobytes that names one subtree sixteen times at each of ten levels
+       names a trillion files, and `sg` read them all before it counted (16 million took six minutes and
+       2.4 GB). An `sg.project` is at most 1 MB, and its lines are checked in time that grows with them, not
+       with their square.
+     - **The files of a package are written strictly and read back**: each folder made once, each file made
+       new, and the names read from the disk compared with the package's. macOS folds more than case (`ſ` is
+       `s`, `ß` is `ss`, `é` written in one character or two are one name), so `stock/` and `ſtock/` passed
+       the check of 1574 and became one folder on macOS and two on Linux, one SHA-256 for two programs; now
+       a system that takes two names of a package for one refuses it, whatever it folds.
+     - **A package cannot have the name of a type of the language**, nor can a folder of modules: `sg add
+       example.com/eve/Hex` wrote `require Hex`, and from then on `Hex.encode`, in the program and inside the
+       language's own module, called the package. `sg add` now writes `require hex`, `require Hex` is an
+       error with that line as its hint, and a folder `Hex` beside the program or in a package is an error
+       (built so in place of looking the names of the language's own module up there first: when no module
+       can have the name of a type, there is nothing to look up first).
+     - **The language server fetches nothing**: a package the cache has not is a message on the file,
+       `` `sg` or `sg build` in the folder of the program fetches it ``. It fetched at each edit, from the
+       hosts the `sg.lock` of any folder above the file named.
+     - **The folders of a package in the cache are read only too**, as Go's are (its files were already), so
+       no program changes what every program of the user reads. To remove the cache, make it writable first
+       (`chmod -R u+w`), as with Go's.
+
+Tested in `tests/cli.rs`, each test red before the fix: a project folder with the files of a bare
+repository and a `config` that sends the mirror elsewhere, with `GIT_CONFIG_COUNT` and `GIT_DIR` set the same
+way (`git_reads_no_settings_of_the_project_folder`); `sg.lock` and `sg.project` as links to files that are
+not there, and a library named `z x` (`writes_the_lock_in_place_of_a_link`); a package whose `package` line
+names another address, refused and not kept, and a lock that names its SHA-256 for that address
+(`keeps_a_package_only_under_its_own_address`); a tag of 16^5 paths in five levels of one tree, refused in
+seconds (`stops_reading_a_tree_that_names_too_many_files`); `stock/` and `ſtock/`, refused where the
+system folds them and kept where it does not (`refuses_two_names_the_system_takes_for_one`); a package
+`example.com/eve/Hex` and a folder `Hex` (`a_package_is_not_named_as_a_type`). In `tests/lsp.rs`, a folder
+whose lock names a package the cache has not (`fetches_no_package`). In `fetch.rs`, the names of files
+refused, the words of a lock refused without printing them, the files written once and the place in the
+cache; in `project.rs`, a type's name, a line with a character not seen as itself and a file over 1 MB.
+The whole of the tests passes on macOS, the kernel's test (which needs LLD) on Linux; on Linux the tests
+of the library, `cli.rs`, `lsp.rs` and the kernel pass too. The back end is unchanged. Windows runs them in
+CI: there `sg` gives git the same folder and variables, and the folders of the cache are left writable, as
+Windows' read-only mark does not keep a folder from being written.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10377,7 +10451,10 @@ interpreter (1547); then reading lines and a search for a plain text, found by i
 UTF-8 checked faster (1549, 1550). Packages are here (1552, 1555-1583): a program's `sg.project` names
 them, `sg add` fetches them by `git`, with no registry, pinned by the SHA-256 of their files in `sg.lock`
 and kept in a cache, the versions chosen by minimal version selection, the `unsafe` of each allowed only
-by the program, and a folder `internal` keeps a library's own modules to itself. Then every module of `std` is measured against
+by the program, and a folder `internal` keeps a library's own modules to itself. A second review of safety
+(1589) came after them, and what it found is fixed first (1590): what a package or a project brings is
+never run or followed, and a package is kept only as itself (1591); the rules of borrowing, the modules of
+`std` that read what others write, compiled code and the tool are next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

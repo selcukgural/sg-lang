@@ -14115,12 +14115,23 @@ fn unwrap_unsafe(expr: &mut Expr) {
 }
 
 
+/// Whether `name` is a type of the language: a module cannot have it (choice 1591), so that
+/// `Hex.encode`, in the program and inside the language's own module, is always the type's.
+pub fn is_language_type(name: &str) -> bool {
+    const MORE: &[&str] = &["Channel", "Sender", "Atomic"];
+    Ty::from_name(name).is_some() || BUILTIN_TYPES.contains(&name) || INTERFACES.contains(&name) || MORE.contains(&name) || crate::source::std_types().any(|ty| ty == name)
+}
+
+/// Whether `name` can name a library of C: as the C compiler links it, `-lz`, and nothing else.
+pub fn is_library_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c))
+}
+
 /// The name of a library is a name, so that nothing else reaches the C compiler; a block that
 /// names it more than once names it once.
 fn foreign_lib(foreign: &Foreign) -> Res<()> {
     for (at, lib) in foreign.libs.iter().enumerate() {
-        let fine = !lib.is_empty() && !lib.starts_with('-') && lib.chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c));
-        if !fine {
+        if !is_library_name(lib) {
             return Err(Diag::error(foreign.span, format!("`{lib}` is not the name of a library"))
                 .note("a library is named as the C compiler links it, `extern \"z\"` for `-lz`: letters, digits and `_ - . +`"));
         }
