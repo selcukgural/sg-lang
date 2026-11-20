@@ -75,4 +75,21 @@ compiler without them stops it at once instead of making every program a finding
 What it writes (stages 1 and 2 of choice 1365): the integer types, `bool`, arithmetic, the bit
 operators, conversions, comparisons, `if`, `match`, `for` and `while`, functions, recursion, arrays,
 consts, `print` with a format, `Copyable` structs, enums and `match` on them, `T?`, lists, text, and
-functions that give a `Result`. Borrows and moves, and tasks, come later.
+functions that give a `Result`.
+
+With `--borrow` first (`BORROW=1` for `run.sh`), the programs borrow (stage 3, choice 1593,
+`src/borrow.rs`): `read` and `ref` borrows of texts and lists kept in variables, in struct fields, in
+lists and arrays of structs and in `Disposable` values; given to functions as they are and lent again;
+taken out of what a call returns and beside a call that changes what they borrow in the parts of one
+value; and the texts and lists they borrow from changed, replaced and moved, in `if`, `match`, `for`
+over a range, a list or a `shared` list, and `while` whose condition changes a list, with `break` and
+`continue`. These programs are not written to be right: while the checker refuses one, the statement
+its first error names is taken away, so what is run keeps the borrows and changes nearest the rules.
+Every text is long enough for the heap and every change frees what it replaced, so a borrow the
+checker let live past a change reads freed memory, and the address sanitizer says so.
+
+    cargo run --release -- --borrow once 42      # fitted, then run both ways
+    cargo run --release -- --borrow gen 42       # the program as fitted (with SG), or as written
+
+The first refusal of a program for anything but borrowing or a value never read is the generator's
+mistake, kept in `rejected`. Moves of other values than lists, and tasks, come later.

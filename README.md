@@ -192,7 +192,8 @@ Not yet: generics of your own and a full standard library. Left out on purpose:
 closures; a function value is the address of a named function.
 
 Every test program runs in the interpreter and compiled, under the sanitizers, and the two must print the
-same; the front end was fuzzed and the rules of safety tried with mutants. The [status page](https://sg-lang.org/docs/status)
+same; the front end was fuzzed, generated programs that borrow are run both ways, and the rules of safety
+were tried with mutants. The [status page](https://sg-lang.org/docs/status)
 says where it stands in short; [decisions and open questions](design/04-decisions-and-open-questions.md) and
 [the interpreter's README](interpreter/README.md) keep the full record, slice by slice.
 

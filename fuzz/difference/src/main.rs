@@ -11,30 +11,121 @@
 //!                                              runs seeds one after another, `jobs` at once
 //!     sg-difference reduce <seed> <out.sg>     the smallest program that shows the same
 //!
+//! With `--borrow` first, the programs are those of stage 3 (`borrow.rs`, choice 1593), which
+//! borrow and are not written to be right: the checker refusing one by the rules of borrowing is
+//! counted, not read; what it takes must run the same both ways and without a sanitizer's report.
+//!
 //! `SG` names the `sg` program (`sg` of the path when not set) and `CC` the C compiler (`clang`).
 
+mod borrow;
 mod gen;
 mod rng;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gen::{render, Gen, Node};
+use gen::{render, render_mapped, Gen, Node};
 
 /// How long one run of a program may take: the programs are made to end in far less.
 const LIMIT: Duration = Duration::from_secs(10);
 
+/// The programs are those of stage 3, which borrow (`--borrow`).
+static BORROW: AtomicBool = AtomicBool::new(false);
+
+/// The program of a seed, as a tree, ready to run.
+struct Prepared {
+    nodes: Vec<Node>,
+    /// How many statements were taken away for the checker to take it (stage 3).
+    removed: usize,
+    /// The checker refused the program as written for what the generator should not have
+    /// written: its message.
+    mistake: Option<String>,
+}
+
+/// The program of a seed. One of stage 3 is fitted in `work` first (`fit`).
+fn program_of(seed: u64, work: &Path) -> Prepared {
+    match BORROW.load(Ordering::Relaxed) {
+        true => fit(borrow::Borrow::new(seed).program(), work),
+        false => Prepared { nodes: Gen::new(seed).program(), removed: 0, mistake: None },
+    }
+}
+
+/// A program of stage 3 made one the checker takes: while it refuses it, the statement the
+/// first error names is taken away, so that what is left keeps the borrows and the changes that
+/// came nearest the rules, where a hole in them would be (choice 1593). Where nothing can be
+/// taken away (the error is in the prelude), the program is left as it is, and refused.
+fn fit(mut nodes: Vec<Node>, work: &Path) -> Prepared {
+    let _ = std::fs::create_dir_all(work);
+    for removed in 0..100 {
+        let (text, lines) = render_mapped(&nodes);
+        let left = |nodes| Prepared { nodes, removed, mistake: None };
+        if std::fs::write(work.join("prog.sg"), &text).is_err() {
+            return left(nodes);
+        }
+        let checked = run_limited(Command::new(sg()).current_dir(work).arg("emit-c").arg("prog.sg"));
+        if checked.code == Some(0) || tool_fault(&checked) {
+            return left(nodes);
+        }
+        if removed == 0 && !borrow_refusal(&checked.text) {
+            return Prepared { nodes, removed, mistake: Some(checked.text) };
+        }
+        let Some(Some((way, at))) = error_line(&checked.text).and_then(|line| lines.get(line - 1).cloned()) else {
+            return left(nodes);
+        };
+        if way.is_empty() && at < borrow::prelude_len() {
+            return left(nodes);
+        }
+        match list_at(&mut nodes, &way) {
+            Some(list) if at < list.len() => {
+                list.remove(at);
+            }
+            _ => return left(nodes),
+        }
+    }
+    Prepared { nodes, removed: 100, mistake: None }
+}
+
+/// The line of `prog.sg` the first error of the checker names.
+fn error_line(message: &str) -> Option<usize> {
+    let at = message.lines().find_map(|line| line.trim_start().strip_prefix("--> prog.sg:"))?;
+    at.split(':').next()?.parse().ok().filter(|&line| line > 0)
+}
+
+/// Whether the checker refused a program by the rules of borrowing, which a program of stage 3
+/// may break, or because a value is never read (which the generator does not follow through
+/// branches and loops), rather than for what the generator should not have written.
+fn borrow_refusal(message: &str) -> bool {
+    let first = message.lines().find(|line| line.starts_with("error")).unwrap_or("");
+    ["borrow", "lent", "moved", "is gone", "is closed", "a value with no name", "used again later", "cannot be changed", "cannot be used here", "given to change", "never read", "never used"].iter().any(|word| first.contains(word))
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--borrow") {
+        args.remove(0);
+        BORROW.store(true, Ordering::Relaxed);
+    }
     let seed = |at: usize| -> u64 { args.get(at).and_then(|text| text.parse().ok()).unwrap_or_else(|| usage()) };
     match args.first().map(String::as_str) {
-        Some("gen") => print!("{}", render(&Gen::new(seed(1)).program())),
+        Some("gen") if !BORROW.load(Ordering::Relaxed) => print!("{}", render(&Gen::new(seed(1)).program())),
+        Some("gen") => {
+            let work = std::env::temp_dir().join(format!("sg-difference-{}", std::process::id()));
+            print!("{}", render(&program_of(seed(1), &work).nodes));
+            let _ = std::fs::remove_dir_all(&work);
+        }
         Some("once") => {
             let work = std::env::temp_dir().join(format!("sg-difference-{}", std::process::id()));
-            let outcome = try_program(&render(&Gen::new(seed(1)).program()), &work);
+            let prepared = program_of(seed(1), &work);
+            let outcome = match prepared.mistake {
+                Some(message) => Outcome::Rejected(message),
+                None => try_program(&render(&prepared.nodes), &work),
+            };
+            if prepared.removed > 0 {
+                println!("{} statements taken away for the checker", prepared.removed);
+            }
             println!("{}", outcome.describe());
             let _ = std::fs::remove_dir_all(&work);
         }
@@ -54,7 +145,7 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: sg-difference gen <seed> | once <seed> | run <out> <seconds> [jobs] [first seed] | reduce <seed> <out.sg>");
+    eprintln!("usage: sg-difference [--borrow] gen <seed> | once <seed> | run <out> <seconds> [jobs] [first seed] | reduce <seed> <out.sg>");
     std::process::exit(2)
 }
 
@@ -252,6 +343,10 @@ fn try_program(program: &str, work: &Path) -> Outcome {
 struct Counts {
     programs: u64,
     rejected: u64,
+    /// Of stage 3, refused after it was fitted (the error was in the prelude).
+    refused: u64,
+    /// The statements taken away from programs of stage 3 for the checker to take them.
+    removed: u64,
     panicked: u64,
     found: Vec<(String, u64)>,
 }
@@ -268,7 +363,8 @@ fn run(out: &Path, time: Duration, jobs: usize, first: u64) {
     let next = Arc::new(AtomicU64::new(first));
     let counts = Arc::new(Mutex::new(Counts::default()));
     let start = Instant::now();
-    println!("seeds from {first}, {jobs} at once, {} seconds", time.as_secs());
+    let stage = if BORROW.load(Ordering::Relaxed) { " (borrows)" } else { "" };
+    println!("seeds from {first}{stage}, {jobs} at once, {} seconds", time.as_secs());
     let mut workers = Vec::new();
     for job in 0..jobs {
         let (next, counts, out) = (next.clone(), counts.clone(), out.to_path_buf());
@@ -276,12 +372,27 @@ fn run(out: &Path, time: Duration, jobs: usize, first: u64) {
             let work = out.join("work").join(job.to_string());
             while start.elapsed() < time {
                 let seed = next.fetch_add(1, Ordering::Relaxed);
-                let program = render(&Gen::new(seed).program());
-                let outcome = try_program(&program, &work);
+                let prepared = program_of(seed, &work);
+                let program = render(&prepared.nodes);
+                let (outcome, fitted) = match prepared.mistake {
+                    Some(message) => (Outcome::Rejected(message), false),
+                    None => (try_program(&program, &work), BORROW.load(Ordering::Relaxed)),
+                };
                 let mut counts = counts.lock().unwrap();
                 counts.programs += 1;
+                counts.removed += prepared.removed as u64;
                 match &outcome {
                     Outcome::Same { panicked } => counts.panicked += *panicked as u64,
+                    // A program of stage 3 that could not be fitted.
+                    Outcome::Rejected(message) if fitted => {
+                        counts.refused += 1;
+                        if counts.refused <= 50 {
+                            let dir = out.join("refused");
+                            let _ = std::fs::create_dir_all(&dir);
+                            let _ = std::fs::write(dir.join(format!("{seed}.sg")), &program);
+                            let _ = std::fs::write(dir.join(format!("{seed}.txt")), message);
+                        }
+                    }
                     Outcome::Rejected(message) => {
                         counts.rejected += 1;
                         if counts.rejected <= 200 {
@@ -336,8 +447,12 @@ fn preflight(work: &Path) -> Result<(), String> {
 
 fn report(counts: &Counts, elapsed: Duration) {
     let found: Vec<String> = counts.found.iter().map(|(kind, count)| format!("{kind} {count}")).collect();
+    let refused = match BORROW.load(Ordering::Relaxed) {
+        true => format!(" ({} more could not be fitted, {:.1} statements taken away from each)", counts.refused, counts.removed as f64 / counts.programs.max(1) as f64),
+        false => String::new(),
+    };
     println!(
-        "{}s: {} programs ({:.1}/s), {} refused by the checker, {} ended in a panic; found: {}",
+        "{}s: {} programs ({:.1}/s), {} refused by the checker{refused}, {} ended in a panic; found: {}",
         elapsed.as_secs(),
         counts.programs,
         counts.programs as f64 / elapsed.as_secs_f64().max(1.0),
@@ -379,7 +494,7 @@ fn list_at<'a>(nodes: &'a mut Vec<Node>, way: &[(usize, usize)]) -> Option<&'a m
 /// until nothing more can go.
 fn reduce(seed: u64, out: &Path) {
     let work = std::env::temp_dir().join(format!("sg-difference-reduce-{}", std::process::id()));
-    let mut nodes = Gen::new(seed).program();
+    let mut nodes = program_of(seed, &work).nodes;
     let Some(kind) = try_program(&render(&nodes), &work).kind() else {
         eprintln!("seed {seed} shows nothing to reduce");
         std::process::exit(1);

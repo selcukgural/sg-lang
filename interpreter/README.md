@@ -8389,7 +8389,8 @@ Choices made in the hundred-and-nineteenth slice (fuzzing for differences, 1324)
      comparisons, `if`, `match`, `for` and `while`, functions, recursion, arrays, consts and `print` with a
      format; stage 2, `Copyable` structs, enums with what they carry and `match` on them, `T?` with `??` and
      narrowing, lists, text and functions that give a `Result` with `??`, `match` and `try`. Borrows and moves
-     (stage 3) and tasks with channels (stage 4, compared in any order) come later.
+     (stage 3) and tasks with channels (stage 4, compared in any order) come later. Stage 3's borrows came
+     with the second review (1593).
 1366. **A finding is made smaller** by a reducer of our own: the generator writes a tree of statements, and
      runs of them are taken away, halves first, then blocks replaced by what they hold, while the checker takes
      the program and the finding stays. C-Reduce does not know SG. The program then becomes a test (1321).
@@ -9831,6 +9832,38 @@ now.
 The whole of the tests passes on macOS (the kernel's test, which needs LLD, on Linux in the slice before;
 the back end is unchanged), with the new cases compiled under the sanitizers too.
 
+Choices made in the hundred-and-forty-first slice (fixing what the second review found, third: a generator
+of programs that borrow). Each fix of 1592 was shown by a program a person wrote, and the generator of
+programs (1361-1368) wrote none that borrowed, so a hole beside those shapes would wait for the next review:
+
+1593. **A generator of programs that borrow** (`fuzz/difference/src/borrow.rs`, `--borrow`): programs that
+     take `read` and `ref` borrows of texts and lists and keep them in variables, in fields of structs, in
+     lists and arrays of structs and in `Disposable` values whose `dispose` reads or changes what they
+     borrow; give them to functions as they are and lent again, and to functions written at random that
+     change what they were given; take them out of what a call returns (`wrap(read t).text`, `first(read
+     xs)`) and in the parts of one value beside a call that changes what they borrow; and change, replace
+     and move what they borrow from, in `if`, `match`, `for` over a range, a list or a `shared` list, and
+     `while` whose condition changes a list, with `break` and `continue`. Every text is long enough to be
+     on the heap and every change frees what it replaced, so a borrow the checker let live past a change
+     reads freed memory, which the address sanitizer reports.
+     - **Not written to be right, then fitted**: while the checker refuses a program, the statement its
+       first error names is taken away (four on average), and what is left, run both ways, keeps the
+       borrows and the changes that came nearest the rules, where a hole in them would be. A first refusal
+       for anything but borrowing or a value never read is the generator's mistake, kept to be read.
+     - **A loop's counter is counted in its condition** (`while next(ref n) <= 3`): taking a statement
+       away, to fit a program or to reduce a finding, never leaves a loop without an end.
+     - **Tried on the code before 1592**: in four minutes, 1,674 programs gave 122 that read freed memory,
+       of the shapes 1592 fixed (a part of a struct beside a call that empties its list, a part of what
+       `wrap` returns kept, a `Guard` in an array outliving its text, a helper that changes what a borrow
+       it was given looks at), each reduced to a few lines by the reducer, and one that never ended (a
+       `for` over a list that a `ref` given on as it is grew each round). On the code of this slice, 4,015
+       programs in ten minutes on macOS and 2,432 in five on Linux (`BORROW=1 fuzz/difference/run.sh`)
+       read no freed memory and printed the same both ways; the first refusals
+       that were the generator's own (a `read Holder` given as `ref`) were fixed in it.
+
+`fuzz/difference` has its first tests: a seed gives one program, and each line of it names the node that
+wrote it.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10025,9 +10058,9 @@ check off.
   was written, not kept as a test. `(?i)` with `\p` goes over every code point up to U+1E943 once in a
   program (the table of each category's foldings), which takes 3 ms compiled and a quarter of a second in
   the interpreter.
-- **Of fuzzing for differences (1361-1368)**: the generator writes stages 1 and 2; borrows and moves (stage 3) and
-  tasks with channels, compared in any order (stage 4), are still to come. The reducer takes statements and blocks
-  away, not parts of an expression.
+- **Of fuzzing for differences (1361-1368)**: the generator writes stages 1 and 2, and the borrows of stage 3
+  (1593); moves of other values than lists, and tasks with channels, compared in any order (stage 4), are still
+  to come. The reducer takes statements and blocks away, not parts of an expression.
 - **Of editor support (1369-1376)**: one error at a time, since the checker stops at the first; the type of what
   the pointer is over, going to where a name is defined and the names of a file (part 3), and completion as you
   type, which needs a parser that goes on after an error (part 4). Four hints have a fix so far; the others are
@@ -10524,11 +10557,11 @@ and kept in a cache, the versions chosen by minimal version selection, the `unsa
 by the program, and a folder `internal` keeps a library's own modules to itself. A second review of safety
 (1589) came after them, and what it found is fixed first (1590): what a package or a project brings is
 never run or followed, and a package is kept only as itself (1591); the rules of borrowing are made rules,
-not cases (1592); a generator of programs that borrow (1593), the modules of `std` that read what others
-write, compiled code and the tool are next. Then every module of `std` is measured against
+not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
+what others write, compiled code and the tool are next. Then every module of `std` is measured against
 Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
-(1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
-doc` (1392).
+(1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
+`sg doc` (1392).

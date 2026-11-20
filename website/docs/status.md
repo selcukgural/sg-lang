@@ -31,8 +31,10 @@ are built and tested on Linux, macOS and Windows; what is written here can still
 
 Every program in the repository's tests runs in the interpreter and compiled, under the address,
 undefined-behaviour and thread sanitizers, and the two must print the same. Before the preview, what is built
-was also reviewed for soundness, its front end fuzzed, generated programs run both ways, and the functions
-that make the rules of safety tried with mutants; each finding was fixed after a test that shows it.
+was also reviewed for soundness, its front end fuzzed, generated programs run both ways (programs that
+borrow among them, the checker refusing what breaks a rule and what it takes read under the address
+sanitizer), and the functions that make the rules of safety tried with mutants; each finding was fixed after
+a test that shows it.
 
 Now it is tried on programs people write: each is written in SG, in Rust and in Zig, the three are measured
 against each other, and each difference is a choice that is fixed and measured again. `grep` and `wc` are

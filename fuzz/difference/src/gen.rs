@@ -23,11 +23,11 @@ pub struct Node {
 }
 
 impl Node {
-    fn line(text: String) -> Node {
+    pub(crate) fn line(text: String) -> Node {
         Node { parts: vec![(text, Vec::new())], end: None }
     }
 
-    fn block(head: String, body: Vec<Node>) -> Node {
+    pub(crate) fn block(head: String, body: Vec<Node>) -> Node {
         Node { parts: vec![(head, body)], end: Some("}".to_string()) }
     }
 }
@@ -40,20 +40,42 @@ pub fn render(nodes: &[Node]) -> String {
 }
 
 fn render_in(nodes: &[Node], indent: usize, out: &mut String) {
-    for node in nodes {
-        for (head, body) in &node.parts {
+    render_walk(nodes, indent, out, &mut Vec::new(), &mut Vec::new());
+}
+
+/// Where a node stands in the tree: the way to the list that holds it (each step a node and one
+/// of its parts) and its place in that list.
+pub type Place = (Vec<(usize, usize)>, usize);
+
+/// The program as text, and for each of its lines the node that wrote it (choice 1593: the
+/// line the checker names is taken away).
+pub fn render_mapped(nodes: &[Node]) -> (String, Vec<Option<Place>>) {
+    let (mut out, mut lines) = (String::new(), Vec::new());
+    render_walk(nodes, 0, &mut out, &mut Vec::new(), &mut lines);
+    (out, lines)
+}
+
+fn render_walk(nodes: &[Node], indent: usize, out: &mut String, way: &mut Vec<(usize, usize)>, lines: &mut Vec<Option<Place>>) {
+    for (at, node) in nodes.iter().enumerate() {
+        let place = Some((way.clone(), at));
+        for (part, (head, body)) in node.parts.iter().enumerate() {
             out.push_str(&"    ".repeat(indent));
             out.push_str(head);
             out.push('\n');
-            render_in(body, indent + 1, out);
+            lines.extend(std::iter::repeat_n(place.clone(), head.lines().count().max(1)));
+            way.push((at, part));
+            render_walk(body, indent + 1, out, way, lines);
+            way.pop();
         }
         if let Some(end) = &node.end {
             out.push_str(&"    ".repeat(indent));
             out.push_str(end);
             out.push('\n');
+            lines.push(place.clone());
         }
         if indent == 0 {
             out.push('\n');
+            lines.push(None);
         }
     }
 }
@@ -766,7 +788,8 @@ impl Gen {
 
 /// Stage 2 (choice 1365): structs, enums and `match` on them, an integer that may be `null`,
 /// lists, text, and functions that give a `Result`. Every struct and enum is `Copyable`, and a
-/// list or a text is never given away whole, so no value is moved: moves and borrows are stage 3.
+/// list or a text is never given away whole, so no value is moved: borrows are stage 3
+/// (`borrow.rs`).
 impl Gen {
     fn struct_decl(&mut self) -> Node {
         let name = self.name("S");
