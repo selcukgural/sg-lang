@@ -976,13 +976,16 @@ static void sg_start(int* argc, char*** argv) {
    call, so that a line of one thread is never cut by another's, a thread of C that calls SG
    back among them: on macOS `os_unfair_lock`, on Windows a slim reader/writer lock, elsewhere
    pthread's, each one atomic operation when nobody else holds it. A panic takes the lock and
-   keeps it to the end (`sg_out_end`), as it keeps C's streams. Without an operating system
-   nothing is written to the output (the checker refuses `print`). */
+   keeps it to the end (`sg_out_end`), as it keeps C's streams. Where the block goes out with no
+   `Result` to tell an error to, the error ends the program as the interpreter's (`sg_out_failed`,
+   choice 1547). Without an operating system nothing is written to the output (the checker
+   refuses `print`). */
 #if SG_FREESTANDING
 #define sg_out_flush() ((void)0)
 #define sg_out_give() ((void)0)
 #else
 #if !defined(_WIN32)
+#include <signal.h>
 #include <unistd.h>
 #endif
 #if defined(__APPLE__)
@@ -1020,13 +1023,55 @@ typedef struct { int e; } sg_out_errors;
 static inline sg_out_errors sg_out_keep(void) { return (sg_out_errors){ errno }; }
 static inline void sg_out_back(sg_out_errors kept) { errno = kept.e; }
 #endif
+/* The error of C's `stdout` that just failed. An output that was never open (`>&-`) takes what
+   is written and drops it, as the interpreter's, which is Rust's (choice 1547). A pipe whose
+   reader is gone is `EPIPE` on Windows too, whichever of its two errors the system gave. */
+static int sg_out_error(void) {
+    int code = errno ? errno : EIO;
+#if defined(_WIN32)
+    DWORD system = GetLastError();
+    if (system == ERROR_NO_DATA || system == ERROR_BROKEN_PIPE) code = EPIPE;
+#endif
+    if (code == EBADF) {
+        clearerr(stdout);
+        return 0;
+    }
+    return code;
+}
 /* Bytes into C's `stdout`: 0, or the error of the system. */
 static int sg_out_write(const void* bytes, int64_t n) {
     sg_out_errors kept = sg_out_keep();
     errno = 0;
-    int code = fwrite(bytes, 1, (size_t)n, stdout) == (size_t)n ? 0 : errno ? errno : EIO;
+    int code = fwrite(bytes, 1, (size_t)n, stdout) == (size_t)n ? 0 : sg_out_error();
     sg_out_back(kept);
     return code;
+}
+/* What the block holds went nowhere, and no `Result` is there to tell it to (choice 1547): the
+   program ends as the interpreter's does, under the lock, which it keeps as a panic does. A pipe
+   whose reader is gone ends it silently, by `SIGPIPE` where there is one, set back to its default
+   first as the interpreter sets it (choice 1330), and with 0 where there is not; any other error
+   with its message and 1. At the end of the program (`at_exit`) C's `exit` is not called again. */
+__attribute__((cold, noinline)) static _Noreturn void sg_out_failed(int code, bool at_exit) {
+    __atomic_store_n(&sg_out_ended, true, __ATOMIC_RELEASE);
+    int status = 0;
+    if (code == EPIPE) {
+#if !defined(_WIN32)
+        signal(SIGPIPE, SIG_DFL);
+        raise(SIGPIPE);
+#endif
+    } else {
+        fprintf(stderr, "error: cannot write output: %s (os error %d)\n", strerror(code), code);
+        fflush(stderr);
+        status = 1;
+    }
+#if SG_LIBRARY
+    (void)at_exit;
+    (void)status;
+    abort();
+#else
+    if (at_exit) _exit(status);
+    exit(status);
+#endif
 }
 /* The block into C's `stdout`, under the lock. */
 static int sg_out_drain(void) {
@@ -1035,10 +1080,22 @@ static int sg_out_drain(void) {
     __atomic_store_n(&sg_out_n, 0, __ATOMIC_RELAXED);
     return sg_out_write(sg_out_block, n);
 }
+/* C's `stdout` given on, under the lock: 0, or the error of the system. */
+static int sg_out_push(void) {
+    sg_out_errors kept = sg_out_keep();
+    errno = 0;
+    int code = fflush(stdout) == 0 ? 0 : sg_out_error();
+    sg_out_back(kept);
+    return code;
+}
+/* The end of the program: what the block holds, and what C's `stdout` keeps of it, go out, and
+   an error ends it as one of `print` does. */
 static void sg_out_at_exit(void) {
     if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) return;
     sg_out_lock();
-    (void)sg_out_drain();
+    int code = sg_out_drain();
+    if (!code) code = sg_out_push();
+    if (__builtin_expect(code != 0, 0)) sg_out_failed(code, true);
     sg_out_unlock();
 }
 /* Taken before a call writes; the first time the block is given at the end, and whether the
@@ -1057,69 +1114,96 @@ static inline void sg_out_begin(void) {
         sg_out_back(kept);
     }
 }
-/* After a call wrote: a terminal is given the call's bytes at once. */
+/* The first error of the call that holds the lock, kept by `sg_out_put` and read at its end. */
+static int sg_out_err;
+/* After a call wrote: a terminal is given the call's bytes at once. 0, or the call's error. */
 static inline int sg_out_done(void) {
-    int code = sg_out_shown == 1 ? sg_out_drain() : 0;
+    int code = sg_out_err;
+    sg_out_err = 0;
+    if (sg_out_shown == 1) {
+        int drained = sg_out_drain();
+        if (!code) code = drained;
+    }
     sg_out_unlock();
     return code;
 }
-/* Bytes into the block, under the lock; those that do not fit are written after it straight. */
-static int sg_out_put(const void* bytes, int64_t count) {
-    if (count <= 0) return 0;
+/* After `print` wrote: as `sg_out_done`, and an error ends the program (choice 1547). */
+static inline void sg_out_said(void) {
+    int code = sg_out_err;
+    if (!code && sg_out_shown == 1) code = sg_out_drain();
+    if (__builtin_expect(code != 0, 0)) sg_out_failed(code, false);
+    sg_out_unlock();
+}
+/* Bytes into the block, under the lock; those that do not fit are written after it straight.
+   An error is kept for the end of the call (`sg_out_err`). */
+static void sg_out_put(const void* bytes, int64_t count) {
+    if (count <= 0) return;
     if (count > SG_OUT_ROOM - sg_out_n) {
         int code = sg_out_drain();
         if (count >= SG_OUT_ROOM) {
             int wrote = sg_out_write(bytes, count);
-            return code ? code : wrote;
+            if (!code) code = wrote;
+        } else {
+            memcpy(sg_out_block, bytes, (size_t)count);
+            __atomic_store_n(&sg_out_n, count, __ATOMIC_RELAXED);
         }
-        memcpy(sg_out_block, bytes, (size_t)count);
-        __atomic_store_n(&sg_out_n, count, __ATOMIC_RELAXED);
-        return code;
+        if (code && !sg_out_err) sg_out_err = code;
+        return;
     }
     memcpy(sg_out_block + sg_out_n, bytes, (size_t)count);
     __atomic_store_n(&sg_out_n, sg_out_n + count, __ATOMIC_RELAXED);
-    return 0;
 }
-static inline void sg_out_byte(char c) { (void)sg_out_put(&c, 1); }
-static inline void sg_out_str(const char* text) { (void)sg_out_put(text, (int64_t)strlen(text)); }
+static inline void sg_out_byte(char c) { sg_out_put(&c, 1); }
+static inline void sg_out_str(const char* text) { sg_out_put(text, (int64_t)strlen(text)); }
 static void sg_out_digits(unsigned long long left, bool negative) {
     char digits[24];
     char* at = digits + sizeof digits;
     do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
     if (negative) *--at = '-';
-    (void)sg_out_put(at, digits + sizeof digits - at);
+    sg_out_put(at, digits + sizeof digits - at);
 }
 static inline void sg_out_int(long long value) {
     sg_out_digits(value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0);
 }
 static inline void sg_out_uint(unsigned long long value) { sg_out_digits(value, false); }
 /* Whole calls of their own: bytes (`Stdout.write`), and what the block holds given on with C's
-   own (the old `fflush(stdout)`). */
+   own (the old `fflush(stdout)`): `sg_out_flushed` gives its error to `Stdout.flush`, whose
+   `Result` tells it; `sg_out_flush`, before the standard error, another program or a read of a
+   terminal, ends the program on one as `print` does (choice 1547). */
 static int sg_out_bytes(const void* bytes, int64_t count) {
     sg_out_begin();
-    int code = sg_out_put(bytes, count);
-    int done = sg_out_done();
-    return code ? code : done;
+    sg_out_put(bytes, count);
+    return sg_out_done();
 }
-static int sg_out_flush(void) {
-    int code = 0;
-    if (!__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) {
-        sg_out_lock();
-        code = sg_out_drain();
-        sg_out_unlock();
+static int sg_out_flushed(void) {
+    if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) {
+        (void)fflush(stdout);
+        return 0;
     }
-    sg_out_errors kept = sg_out_keep();
-    errno = 0;
-    if (fflush(stdout) != 0 && !code) code = errno ? errno : EIO;
-    sg_out_back(kept);
-    return code;
+    sg_out_lock();
+    int code = sg_out_drain();
+    int pushed = sg_out_push();
+    sg_out_unlock();
+    return code ? code : pushed;
+}
+static void sg_out_flush(void) {
+    if (__atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) {
+        (void)fflush(stdout);
+        return;
+    }
+    sg_out_lock();
+    int code = sg_out_drain();
+    if (!code) code = sg_out_push();
+    if (__builtin_expect(code != 0, 0)) sg_out_failed(code, false);
+    sg_out_unlock();
 }
 /* Before C is called, and when C's call of SG returns: what the block holds goes into C's
-   `stdout` first, so that it comes before what C writes there. */
+   `stdout` first, so that it comes before what C writes there; an error ends the program. */
 static inline void sg_out_give(void) {
     if (__builtin_expect(__atomic_load_n(&sg_out_n, __ATOMIC_RELAXED) != 0, 0)) {
         sg_out_lock();
-        (void)sg_out_drain();
+        int code = sg_out_drain();
+        if (__builtin_expect(code != 0, 0)) sg_out_failed(code, false);
         sg_out_unlock();
     }
 }
@@ -2533,13 +2617,13 @@ static void sg_vprint(FILE* f, const char* format, va_list args) {
 /* `print(...)` of a line with widths, into the block of the output (`sg_out_put`), and
    `printError(...)`. A line without widths is written piece by piece where it is printed. */
 #if !SG_FREESTANDING
-static void sg_sink_out(void* to, const char* bytes, int64_t n) { (void)to; (void)sg_out_put(bytes, n); }
+static void sg_sink_out(void* to, const char* bytes, int64_t n) { (void)to; sg_out_put(bytes, n); }
 static void sg_print(const char* format, ...) {
     va_list args;
     va_start(args, format);
     sg_out_begin();
     sg_vlines(sg_sink_out, NULL, format, args);
-    (void)sg_out_done();
+    sg_out_said();
     va_end(args);
 }
 #endif
@@ -9354,7 +9438,7 @@ static int sg_std_put(sg_writer* w, sg_string* block) {
 }
 static int sg_writer_flush(sg_writer* w) {
     if (sg_failed(w)) return sg_failed(w);
-    if (w->std == 1) { int code = sg_out_flush(); return code ? sg_fail(w, code) : 0; }
+    if (w->std == 1) { int code = sg_out_flushed(); return code ? sg_fail(w, code) : 0; }
     if (w->std) return fflush(stderr) == 0 ? 0 : sg_fail(w, sg_os_error());
     return sg_writer_out(w);
 }
@@ -18121,12 +18205,12 @@ impl<'a> Emitter<'a> {
                 for step in steps {
                     match step {
                         Step::Bytes(text) => {
-                            let _ = write!(calls, " (void)sg_out_put({}, {});", c_string(&text), text.len());
+                            let _ = write!(calls, " sg_out_put({}, {});", c_string(&text), text.len());
                         }
                         Step::Text(len, ptr) => {
                             let temp = self.temp();
                             let _ = write!(line, " int64_t {temp}n = {len}; const char* {temp} = {ptr};");
-                            let _ = write!(calls, " (void)sg_out_put({temp}, {temp}n);");
+                            let _ = write!(calls, " sg_out_put({temp}, {temp}n);");
                         }
                         Step::Word(word) => {
                             let temp = self.temp();
@@ -18145,7 +18229,7 @@ impl<'a> Emitter<'a> {
                         }
                     }
                 }
-                let _ = writeln!(out, "{pad}{{{line} sg_out_begin();{calls} (void)sg_out_done(); }}");
+                let _ = writeln!(out, "{pad}{{{line} sg_out_begin();{calls} sg_out_said(); }}");
             }
             None => {
                 let values: String = values.iter().map(|value| format!(", {value}")).collect();

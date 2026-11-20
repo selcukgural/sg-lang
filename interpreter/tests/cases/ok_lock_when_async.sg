@@ -1,5 +1,6 @@
 // `await lock ... when` in an async function: the task waits for the condition, and its thread
-// runs other tasks meanwhile. An ordinary `lock` wakes it, from a task or from a thread.
+// runs other tasks meanwhile. An ordinary `lock` wakes it, from a task or from a thread. The
+// list is done once both producers are: one could be a delay behind the other.
 struct Jobs {
     List<int> items
     bool done
@@ -40,9 +41,6 @@ async void produce(shared locked Jobs jobs, int count) {
             await Task.delay(1)
         }
     }
-    lock jobs as q {
-        q.done = true
-    }
 }
 
 // From a thread of its own, which the tasks wait for.
@@ -63,6 +61,9 @@ async void main() {
     await Task.run(open, 2)
     await first
     await second
+    lock jobs as q {
+        q.done = true
+    }
     var total = 0
     for sum in await Task.whenAll(tasks) {
         total += sum

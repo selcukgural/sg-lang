@@ -9416,6 +9416,40 @@ under the thread sanitizer), and the 242 programs of the site run as they show; 
 `ok_std_streams`, `ok_print_long_line`, `ok_print_error` and `ok_print_nested` print the same interpreted
 and compiled as their `.out`.
 
+Choices made in the hundred-and-thirty-fifth slice (a `print` that cannot write), approved on 20 November
+2026:
+
+1547. **Compiled code ends where it cannot write the output, as the interpreter ends**, as "`print` error" in
+     `design/04` has it: compiled, a full disk was silent and the program ended with 0. What the block of
+     the output holds is checked wherever it goes out with no `Result` to tell the error to: at `print`,
+     before `printError` and `Stderr`, another program started, a read of a terminal and a call of C, and
+     at the end of the program, where an output shorter than the block is written for the first time and
+     C's `stdout` is given on too (after `exit` as well). The program ends with `error: cannot write
+     output: ...` and 1, the message the interpreter writes on Linux and macOS (C's text of the error and
+     its number; on Windows C's text, where the interpreter writes Windows'). A pipe whose reader is gone
+     ends it silently: by `SIGPIPE`, set back to its default first as the interpreter sets it (1330), so
+     also when the program was started with the signal ignored, and with 0 on Windows. An output that was
+     never open (`>&-`) takes what is written and drops it, as the interpreter's, which is Rust's, does.
+     `Stdout`'s own calls still give the error in their `Result`, and the program goes on. Rust's `println!`
+     panics where it cannot write, but what is still in its block at the end is dropped silently; C looks
+     at nothing; Zig returns the error. Cost: nothing on the way of the bytes; one branch at the end of
+     each `print`, and one `fflush` more at the end of the program.
+
+Found while the slice was written, by the CI of the slice before it, approved the same day:
+
+1548. **`ok_lock_when_async` waits for both of its producers**: whichever ended first set the list done,
+     and its consumers, seeing it empty, ended before the other's last hundred items were added, which
+     nobody then took (1,001,000 less 95,050, the items 901 to 1000, compiled with a pool of two threads,
+     the pauses and the address sanitizer on Windows x64). The fault was the program's, not the lock's:
+     `main` now marks the list done after both, with an ordinary `lock` from a task, as before.
+
+Tested besides, in `tests/cli.rs`, interpreted and compiled: `an_output_that_cannot_be_written` (Linux,
+into `/dev/full`: a short output, a long one, `exit(3)`, `printError`, and `Stdout`'s `Result`),
+`an_output_never_open` and `an_output_closed_early_with_the_signal_ignored` (Linux and macOS; the last one
+failed compiled before, where the program wrote on to its end and ended with 0). With 1547 and 1548, 481 of
+the 1851 programs are compiled on macOS and on Linux (107 under the thread sanitizer); on the Windows Arm VM
+`an_output_closed_early` passes, the closed pipe ending compiled code silently with 0.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9581,9 +9615,8 @@ check off.
 
 ## Not here yet
 
-- **Of the output (1543-1546)**: a `print` that cannot write still ends nothing in compiled code: its
-  errors are not looked at, where the interpreter stops with a message and exit code 1 as "`print` error"
-  in `design/04` has it (found while 1545 was written; a choice of its own). The padding inside a struct of
+- **Of the output (1543-1547)**: on Windows, the message of an output that cannot be written is C's text of
+  the error compiled and Windows' interpreted (1547). The padding inside a struct of
   plain data lent to C is left as C leaves it, whatever the stack held, where the interpreter writes it 0:
   a `memcmp` over it differs between the two (found by `ok_extern_libc`, whose struct has no padding since).
 - **Of zip archives (1501-1524)**: encryption (ZipCrypto, AES) and the methods other than stored and deflated
@@ -10094,7 +10127,8 @@ meaning, a pattern of the program checked when it is compiled, and the general c
 difference a choice (1418, `trials/`): `grep` and `wc` first, which brought a lazy DFA to `Regex`, the C
 compiler `CC` names and an `IoError` written as a sentence (1525-1539). What they found is made right before
 the next trial (1543): `print` first, which writes into a block of the program's own, its lines put
-together where they are printed (1544-1546); then reading lines and a search for a plain text, the checks
+together where they are printed (1544-1546), and ends compiled code where it cannot write, as it ends the
+interpreter (1547); then reading lines and a search for a plain text, the checks
 of the DFA's reads, and a search in any case with vector instructions. A `jq` of JSON is next, then a
 key-value store with a write-ahead log, a pool of workers, an HTTP/1.1 file server, a GIF tool and an
 interpreter of Lox. After them come XML without a DTD (1413), the reference of the language on the site

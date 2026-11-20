@@ -8,7 +8,7 @@
 //! folder of `-L` that is not there, a program that cannot be read, an output into a folder that
 //! is not there, and an output that is a folder. An output closed before the end (`sg x.sg | head`,
 //! `sg emit-c x.sg | head`) ends the program or the tool by `SIGPIPE` on Linux and macOS, with 0 on
-//! Windows.
+//! Windows; an output that cannot be written (a full disk) ends a program with a message and 1.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -144,6 +144,87 @@ fn an_output_closed_early() {
         }
         #[cfg(windows)]
         assert_eq!(out.status.code(), Some(0), "{way}");
+    }
+}
+
+/// The programs of the tests below, each run interpreted and, with a C compiler, compiled: the
+/// two must end the same way.
+#[cfg(unix)]
+fn both_ways(dir: &Path, programs: &[(&str, &str)]) -> Vec<(Command, String)> {
+    let mut ways = Vec::new();
+    for (stem, source) in programs {
+        write(dir, &format!("{stem}.sg"), source);
+        let mut interpreted = Command::new(env!("CARGO_BIN_EXE_sg"));
+        interpreted.arg(format!("{stem}.sg")).current_dir(dir);
+        ways.push((interpreted, format!("{stem} interpreted")));
+    }
+    if has_compiler() {
+        for (stem, _) in programs {
+            assert_eq!(sg(dir, &["build", &format!("{stem}.sg")]).status.code(), Some(0), "{stem}");
+            let mut compiled = Command::new(program(dir, stem));
+            compiled.current_dir(dir);
+            ways.push((compiled, format!("{stem} compiled")));
+        }
+    }
+    ways
+}
+
+/// An output that cannot be written, as a full disk (`/dev/full`), ends the program with a
+/// message and 1, interpreted and compiled (1547): at `print`, before `printError`, and at the
+/// end, where what is shorter than the block of the output is written first, after `exit` too.
+/// `Stdout` gives its error in its `Result`, and the program goes on.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_output_that_cannot_be_written() {
+    let dir = work("an_output_that_cannot_be_written");
+    let full = "error: cannot write output: No space left on device (os error 28)\n";
+    let programs = [
+        ("short", HELLO),
+        ("long", "void main() {\n    for i in 0..20000 {\n        print($\"line {i} of many\")\n    }\n    printError(\"never\")\n}\n"),
+        ("exits", "void main() {\n    print(\"short\")\n    exit(3)\n}\n"),
+        ("error", "void main() {\n    print(\"before\")\n    printError(\"never\")\n}\n"),
+        ("result", "void main() {\n    if Stdout.writeLine(\"x\".repeat(70000)) is Error(cause) {\n        printError($\"write: {cause}\")\n    }\n    if Stdout.flush() is Error(cause) {\n        printError($\"flush: {cause}\")\n    }\n    printError(\"goes on\")\n}\n"),
+    ];
+    for (mut command, way) in both_ways(&dir, &programs) {
+        let out = command.stdout(std::fs::File::options().write(true).open("/dev/full").unwrap()).output().unwrap();
+        let (code, _, err) = ran(&out);
+        match way.starts_with("result") {
+            true => assert_eq!((code, err.as_str()), (0, "write: no space left\nflush: no space left\ngoes on\n"), "{way}"),
+            false => assert_eq!((code, err.as_str()), (1, full), "{way}"),
+        }
+    }
+}
+
+/// An output that was never open (`>&-`) takes what is written and drops it, interpreted and
+/// compiled (1547), as Rust's own output does: the program goes on to its end.
+#[cfg(unix)]
+#[test]
+fn an_output_never_open() {
+    let dir = work("an_output_never_open");
+    let programs = [("many", "void main() {\n    for i in 0..20000 {\n        print(i)\n    }\n    printError(\"the end\")\n}\n")];
+    for (command, way) in both_ways(&dir, &programs) {
+        let out = Command::new("sh").args(["-c", "exec \"$0\" \"$@\" >&-"]).arg(command.get_program()).args(command.get_args()).current_dir(&dir).output().unwrap();
+        assert_eq!(ran(&out), (0, String::new(), "the end\n".into()), "{way}");
+    }
+}
+
+/// A program started with `SIGPIPE` ignored, as some shells and runners start theirs, still ends
+/// by it when its output is closed early, interpreted and compiled (1330, 1547): the error of
+/// the closed pipe, which it gets instead, ends it as the signal would.
+#[cfg(unix)]
+#[test]
+fn an_output_closed_early_with_the_signal_ignored() {
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+    let dir = work("an_output_closed_early_with_the_signal_ignored");
+    for (command, way) in both_ways(&dir, &[("many", MANY)]) {
+        let mut child = Command::new("sh").args(["-c", "trap '' PIPE; exec \"$0\" \"$@\""]).arg(command.get_program()).args(command.get_args()).current_dir(&dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+        assert_eq!(first, "0\n", "{way}");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(text(&out.stderr), "", "{way}");
+        assert_eq!((out.status.code(), out.status.signal()), (None, Some(13)), "{way}");
     }
 }
 
