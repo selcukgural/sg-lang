@@ -1,6 +1,0 @@
-error: the value of `Drawn` is found when the program is compiled, and what it runs draws random bytes of the system
-  `draw` calls `Random.fromSystem`, which draws random bytes of the system
-  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
-  --> error_comptime_random.sg:2:25
- 2 |     var random = Random.fromSystem()
-   |                         ^^^^^^^^^^

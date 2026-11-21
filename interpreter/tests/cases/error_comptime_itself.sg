@@ -1,9 +1,0 @@
-int twice() {
-    return Value * 2
-}
-
-const int Value = twice()
-
-void main() {
-    print(Value)
-}

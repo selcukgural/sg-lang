@@ -1,4 +1,0 @@
-error: `Count` cannot give the count of an array: its value is found by a call, which runs once the types are known
-  --> error_comptime_type_count.sg:8:9
- 8 |     int[Count] items
-   |         ^^^^^

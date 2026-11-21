@@ -360,8 +360,10 @@ It prints:
 buffer: 64 32 16
 ```
 
-An integer const can give the length of an array, and an overflow while computing a const is an error when
-the program is compiled, not when it runs. A const cannot be assigned:
+A const calls no function: the compiler runs none of the program's code. A value a function finds is a
+`static`, found the first time the program uses it. An integer const can give the length of an array, and an
+overflow while computing a const is an error when the program is compiled, not when it runs. A const cannot be
+assigned:
 
 ```sg error
 const int Size = 64

@@ -1,0 +1,9 @@
+// What a function gives is checked by a test, or by `assert` when the program runs.
+int expected() {
+    return 4
+}
+
+const assert(expected() == 4)
+
+void main() {
+}

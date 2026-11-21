@@ -1,5 +1,5 @@
-error: the number of `Image` is found before any function is checked, so it calls none
-  it is made of numbers, consts that call no function, and operators
-  --> error_enum_number_calls.sg:8:5
- 8 |     Image = Base + 0x0C
-   |     ^^^^^
+error: the number of a variant calls no function
+  a const is made of numbers, texts, other consts, operators and casts, and arrays, structs and enums of them
+  --> error_enum_number_calls.sg:6:13
+ 6 |     Image = base() + 0x0C
+   |             ^^^^

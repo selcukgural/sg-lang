@@ -1,9 +1,0 @@
-string banner() {
-    return "0123456789abcdef".repeat(4500000)
-}
-
-const string Banner = banner()
-
-void main() {
-    print(Banner.length())
-}

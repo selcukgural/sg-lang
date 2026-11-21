@@ -1,3 +1,4 @@
+// The count of an array is a const, and a const calls no function.
 int count() {
     return 4
 }

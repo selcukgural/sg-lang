@@ -1,6 +1,0 @@
-error: the value of `Value` needs itself: `Value` -> `Value`
-  a const reads what another holds, directly or in a function it calls
-  --> error_comptime_itself.sg:5:11
- 5 | const int Value = twice()
-   |           ^^^^^
-  hint: a const is given a value that does not lead back to it

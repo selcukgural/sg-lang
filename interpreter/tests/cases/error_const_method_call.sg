@@ -1,0 +1,6 @@
+// A method of the standard library is a call too.
+const string Line = "-".repeat(40)
+
+void main() {
+    print(Line)
+}

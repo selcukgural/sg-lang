@@ -1,0 +1,6 @@
+error: a `const assert` calls no function
+  a const is made of numbers, texts, other consts, operators and casts, and arrays, structs and enums of them
+  --> error_const_assert_call.sg:6:14
+ 6 | const assert(expected() == 4)
+   |              ^^^^^^^^
+  hint: what a function gives is checked by a `test`, or by `assert` when the program runs

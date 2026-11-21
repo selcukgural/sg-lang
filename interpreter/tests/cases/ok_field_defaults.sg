@@ -10,16 +10,13 @@ struct Point : Copyable, Formattable {
     int y
 }
 
-int twice(int n) {
-    return n * 2
-}
-
 const int BasePort = 8000
+const int Tries = 3
 
 struct Config : Formattable {
     string host = "localhost"
     int port = BasePort + 80
-    int retries = twice(3)            // found when the program is compiled
+    int retries = Tries * 2            // found when the program is compiled
     Mode mode = Mode.Slow
     Point origin = Point { x = 1, y = 2 }
     int? limit = 5                    // a value where a `T?` goes

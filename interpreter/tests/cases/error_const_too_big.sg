@@ -1,0 +1,10 @@
+// A const takes at most 64 MB: it is written into the program.
+struct Huge : Copyable {
+    long[1048576] items
+}
+
+const Huge[9] Many = { Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] }, Huge { items = long[1048576] } }
+
+void main() {
+    print(Many[0].items[0])
+}

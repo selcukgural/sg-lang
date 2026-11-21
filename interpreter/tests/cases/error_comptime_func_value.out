@@ -1,9 +1,0 @@
-error: the value of `Applied` is found when the program is compiled, and what it runs calls a function value
-  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
-  --> error_comptime_func_value.sg:9:21
- 9 | const int Applied = apply(one)
-   |                     ^^^^^
-  `apply` calls a function value here:
-  --> error_comptime_func_value.sg:6:12
- 6 |     return f(2)
-   |            ^

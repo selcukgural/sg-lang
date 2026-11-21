@@ -1,7 +1,0 @@
-// A const takes at most 64 MB, and a text repeated past that stops before the memory for it is
-// taken: here 16 GB.
-const string Big = "ab".repeat(1 << 33)
-
-void main() {
-    print(Big.length())
-}

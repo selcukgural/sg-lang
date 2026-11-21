@@ -8,20 +8,6 @@ public int capacity() {
     return MaxItems * 2 + Spare
 }
 
-// Found when the program is compiled, by functions the other modules do not see.
-public const int[] Powers = powers()
-public const string Label = label(MaxItems)
-
-int[4] powers() {
-    var found = int[4]
-    var power = 1
-    for i in 0..4 {
-        found[i] = power
-        power *= Steps[2]
-    }
-    return found
-}
-
-string label(int count) {
-    return $"up to {count} items".toString()
-}
+// Made of other consts and operators: a const calls no function.
+public const int[] Powers = { 1, Steps[2], Steps[2] * Steps[2], Steps[2] * Steps[2] * Steps[2] }
+public const string Label = "up to 8 items"

@@ -1,6 +1,0 @@
-error: the value of `A` needs itself: `A` -> `B` -> `A`
-  a const reads what another holds, directly or in a function it calls
-  --> error_comptime_cycle.sg:1:11
- 1 | const int A = f()
-   |           ^
-  hint: a const is given a value that does not lead back to it

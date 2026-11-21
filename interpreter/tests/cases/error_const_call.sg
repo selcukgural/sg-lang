@@ -1,3 +1,4 @@
+// A const calls no function (choice 1606): a value a function finds is a `static`.
 double wave(double x) {
     return x.sin()
 }

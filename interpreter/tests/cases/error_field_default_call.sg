@@ -1,0 +1,12 @@
+int twice(int n) {
+    return n * 2
+}
+
+struct Config {
+    int retries = twice(3)
+}
+
+void main() {
+    var config = Config {}
+    print(config.retries)
+}

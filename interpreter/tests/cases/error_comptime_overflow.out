@@ -1,5 +1,0 @@
-error: the value of `Grown` is found when the program is compiled, and this stops it: overflow: 5 * 1000000000 does not fit in int
-  --> error_comptime_overflow.sg:2:12
- 2 |     return n * 1000000000
-   |            ^^^^^^^^^^^^^^
-  hint: `tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around

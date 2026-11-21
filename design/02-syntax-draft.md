@@ -1679,8 +1679,8 @@ const uint[] Masks = { 0x1, 0x3, 0x7, 0xF }              // the items counted: u
 const byte[] Logo = embed("logo.gif")                    // the bytes of the file beside this one
 const string Greeting = "hello"
 const Point Origin = Point { x = 0, y = 0 }              // a Copyable struct of numbers
-const int[256] Crc = crcTable()                          // any function, run when the program is compiled
-const int[] Squares = squares()                          // counted from what it returns: int[5] squares()
+const int Twice = Masks[1] * 2                           // an item of another const
+const int[256] Crc = crcTable()                          // error: a const calls no function (a `static` does)
 
 var buffer = byte[BlockSize]                             // an integer const gives the count of an array
 struct Ring { int[BlockSize] items }
@@ -1698,29 +1698,23 @@ Masks[0] = 1                                             // error: `Masks` is a 
 
 A const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers, `bool` and `char`;
 not a `List`, an owned text or a pointer. Its value is made of numbers, texts, other consts, operators,
-casts, arrays, structs, variants and calls; an overflow there is a compile error. A function called there
-runs when the program is compiled, with no mark on it: it may use a `List`, a `HashMap` or a `string` inside,
-and the checker refuses, with the calls that lead there, what would not give the same value on every machine:
-
-```
-string load() { return File.readText("table.txt") ?? "" }
-int size() { return (int)load().length() }
-const int Size = size()                                  // error: what it runs reads or writes a file
-                                                         //   `size` calls `load`, which reads or writes a file here
-```
+casts, arrays, structs and variants, as in C# and Go; an overflow there is a compile error. A const calls no
+function: the compiler runs none of the program's code. A value a function finds is a static (below), and a
+table the program needs from its start is written out, made by a script beside the code, as zlib's
+`crc32.h` is.
 
 A local never takes the name of a const it sees. In compiled code a number is written where it is used, and
 a table is one `static const`, which nothing copies. The rules are in the decisions file ("Consts", "Consts,
-as built", "Calls in a const").
+as built", "No call in a const").
 
-`const assert` checks a condition when the program is compiled, at the top of a file or in a block; it may
-call functions, as a const may, and leaves nothing in the program. The size and alignment of a type, which
+`const assert` checks a condition when the program is compiled, at the top of a file or in a block; it is
+made as a const is, with no call, and leaves nothing in the program. The size and alignment of a type, which
 differ from machine to machine, are measured only here:
 
 ```
 const assert(BlockSize % 8 == 0)
 const assert(Primes.length() == 4, "four primes")
-const assert(crcTable()[1] == 0x77073096)
+const assert(Masks[3] == 0xF)
 const assert(Memory.sizeOf<Header>() == 8, "a header is eight bytes, as the file has it")
 const nint Size = Memory.sizeOf<Header>()                // error: a const holds the same value on every machine
 const assert(BlockSize == 60)                            // error: const assert failed: BlockSize == 60
@@ -1729,7 +1723,8 @@ const assert(BlockSize == 60)                            // error: const assert 
 ```
 
 One that measures a type is checked for the machine the program is compiled for, and compiled code hands it
-to C's `_Static_assert` as well, so a machine the checker did not run on checks it too; it calls no function.
+to C's `_Static_assert` as well, so a machine the checker did not run on checks it too. What a function gives is
+checked by a `test`, or by `assert` when the program runs.
 C11 writes `static_assert`, Rust `const _: () = assert!(...)`, Zig `comptime assert`.
 
 A static is one value for the whole program, which lives until it ends and is never assigned. Its value

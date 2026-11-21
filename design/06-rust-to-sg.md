@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-fourth slice (the tool holds on what it is given, 1596, with 1604: a standard error no one reads ends `sg` by `SIGPIPE`; a type that holds itself through a `Result` is refused; nothing in the table changed).
+Last brought up to date: 21 November 2026, the hundred-and-forty-fifth slice (a const calls no function, 1606: `const fn` is now "not planned", and a value a function finds is a `static`).
 
 ## Functions and variables
 
@@ -38,9 +38,9 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-fourth slice (t
 | `type Id = u64;` | `using Id = ulong` | built | `public using` from a module |
 | `const BLOCK: usize = 4096;` | `const nint BlockSize = 4096` | built | At the top of a file (`public const` from a module) or in a block. Numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers; the value is found when the program is compiled, an overflow there is a compile error. A name in PascalCase, as C#'s |
 | `const MASKS: [u32; 4] = [1, 3, 7, 15];` | `const uint[] Masks = { 1, 3, 7, 15 }` | built | The items are counted. Used where it lies, as a `read` borrow that lasts for the run; `var copy = Masks` copies it |
-| `const fn` called in a `const` | any function: `const int[256] Crc = crcTable()` | built | No mark on the function. The checker follows the calls and refuses input and output, the clock, the random bytes of the system, the environment, other programs, raw memory, C, tasks, locks, a call through a `Func`, and `sin`, `exp`, `log`, `pow` and their kin, whose last bit the C library of each system finds in its own way. A panic or an overflow is a compile error; at most 100 000 000 steps and 64 MB. Rust's `const fn` cannot allocate; here a function may use a `List`, a `HashMap` or a `string` inside |
+| `const fn` called in a `const` | `static uint[256] Crc = crcTable()`, or the table written out | not planned | A const calls no function, as in C# and Go: the compiler runs none of the program's code (choice 1606; calls were in from the hundred-and-fourth slice to the hundred-and-forty-fifth). A value a function finds is a `static`, found the first time it is used (Rust's `LazyLock`); a table needed from the start is written out by a script, as zlib's `crc32.h` is |
 | `include_bytes!("logo.gif")` | `embed("logo.gif")`, in a const: `const byte[] Logo = embed("logo.gif")` | built | C23's `#embed`; the path from the folder of the source file, a file of at most 64 MB in that folder or below it (no `..`, no root, not through a link that leads out; Rust takes any path) |
-| `const _: () = assert!(size_of::<Header>() == 8);` | `const assert(Memory.sizeOf<Header>() == 8, "eight bytes")` | built | At the top of a file or in a block; the condition is made as a const, calls included, and the error shows both sides of a comparison. One that measures a type calls no function, and compiled code hands it to C's `_Static_assert` too |
+| `const _: () = assert!(size_of::<Header>() == 8);` | `const assert(Memory.sizeOf<Header>() == 8, "eight bytes")` | built | At the top of a file or in a block; the condition is made as a const is, with no call, and the error shows both sides of a comparison. One that measures a type is handed to C's `_Static_assert` too |
 | `match x { MAX => ... }` (a const in a pattern) | `match x { Max => ... }` | built | A const of a number, a `char`, a text or a `bool`; a local never takes the name of a const it sees, so the name means the const |
 | `static X: T = expr;` (a constant expression) | `static T X = expr` | built | Lies in the program's data from its start, with no check; a `static const` in C when it holds no atomic value |
 | `static X: LazyLock<T> = LazyLock::new(f);`, `OnceLock` | `static T X = f()` | built | Found the first time it is used, once, whichever task comes first; the others wait. A later read is an acquire load and a branch. Read as a `read` borrow |

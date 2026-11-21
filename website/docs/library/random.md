@@ -120,8 +120,8 @@ borrow ``), and `print(r)` is an error, since its state is not for showing. A ge
 there what it would have given here, so work split over tasks stays the same from run to run when each task
 gets a generator of its own seed.
 
-A `const` cannot use one: what is found when the program is compiled may not read random bytes, and the
-condition of `lock ... when` may not either.
+A `const` cannot use one, since a const calls no function (a `static` can), and the condition of
+`lock ... when` may not read random bytes.
 
 ## `SecureRandom`
 

@@ -11,17 +11,9 @@ const int[4] Primes = { 2, 3, 5, 7 }
 
 const assert(BlockSize % 8 == 0)
 const assert(Primes.length() == 4, "four primes")
-const assert(sumOf(Primes) == 17)
+const assert(Primes[0] + Primes[1] + Primes[2] + Primes[3] == 17)
 const assert(Memory.sizeOf<Header>() == 8, "a header is eight bytes, as the file has it")
 const assert(Memory.alignOf<Header>() == 4 && nint.MaxValue >= int.MaxValue)
-
-int sumOf(read int[] items) {
-    var total = 0
-    for item in items {
-        total += item
-    }
-    return total
-}
 
 void main() {
     const int Half = BlockSize / 2

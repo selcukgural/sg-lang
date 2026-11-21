@@ -2308,8 +2308,9 @@ impl<'a> Consts<'a> {
     }
 }
 
-/// How many steps finding the value of one const may take when the program is compiled: a
-/// count, not a time, so that every machine finds the same or stops at the same place.
+/// How many steps a check of the language's own module may take when the program is compiled
+/// (`run_std`): a count, not a time, so that every machine finds the same or stops at the same
+/// place.
 #[cfg(not(fuzzing))]
 pub const CONST_STEPS: u64 = 100_000_000;
 /// Fewer when the front end is fuzzed (`fuzz/`, choice 1352): the fuzzer counts a slow input as
@@ -2358,21 +2359,29 @@ fn const_of(found: &Value) -> ConstVal {
 }
 
 /// Finds the value of each const of the program named in `only`, as the checker has checked its
-/// initializer: the interpreter runs it, and a const it names is found first. A panic on the
-/// way (an overflow, an index out of range) is a compile error, which tells the const it was
-/// found for. These consts call no function: they are found before the bodies are checked.
+/// initializer: the interpreter works it out, and a const it names is found first. A panic on
+/// the way (an overflow, an index out of range) is a compile error, which tells the const it
+/// was found for. A const calls no function (choice 1606): they are all found before the
+/// bodies are checked.
 pub fn find_consts(prog: &Program, src: &str, only: &std::collections::HashSet<String>) -> Result<BTreeMap<String, ConstVal>, Diag> {
     let none = BTreeMap::new();
     let decls: Vec<&ConstDecl> = prog.consts.iter().filter(|decl| only.contains(&decl.name)).collect();
     run_consts(prog, src, &none, &decls, false)
 }
 
-/// Finds the value of the const `decl`, whose initializer calls functions, once the checker has
-/// checked every function it reaches and found every const they read (`given`). It may take
-/// `CONST_STEPS` steps.
-pub fn find_called(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decl: &ConstDecl) -> Result<ConstVal, Diag> {
+/// Finds the value of `decl`, made as a const is, once every const is found (`given`): a side
+/// of a `const assert`, the value of a static known when the program is compiled.
+pub fn find_value(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decl: &ConstDecl) -> Result<ConstVal, Diag> {
+    let found = run_consts(prog, src, given, &[decl], false)?;
+    Ok(found.into_values().next().expect("the one value asked for"))
+}
+
+/// Runs `decl`, a call of the language's own module that checks what the program wrote (a
+/// pattern for a `Regex`, choices 1463 and 1607), when the program is compiled: the only
+/// function that runs then. It may take `CONST_STEPS` steps.
+pub fn run_std(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decl: &ConstDecl) -> Result<ConstVal, Diag> {
     let found = run_consts(prog, src, given, &[decl], true)?;
-    Ok(found.into_values().next().expect("the one const asked for"))
+    Ok(found.into_values().next().expect("the one call asked for"))
 }
 
 fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decls: &[&ConstDecl], counted: bool) -> Result<BTreeMap<String, ConstVal>, Diag> {
@@ -2404,18 +2413,10 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
                 Ok(slot) => {
                     found.insert(decl.name.clone(), const_of(&slot.borrow()));
                 }
-                Err(Unwind::Stop(Stop::Diag(_))) if CONST_TOO_BIG.get().is_some() => {
-                    ENDING.with(|ending| ending.set(false));
-                    let (count, items) = CONST_TOO_BIG.take().expect("looked at above");
-                    let least = if items { "at least " } else { "" };
-                    return Err(Diag::error(decl.init.span, format!("the value of `{name}` takes {least}{} MB, and a const takes at most 64 MB", count.div_ceil(1 << 20)))
-                        .note("a const is written into the program; a larger value is a `static`, found when the program first uses it"));
-                }
                 Err(Unwind::Stop(Stop::Diag(_))) if consts.steps.as_ref().is_some_and(|left| left.get() == 0) => {
                     ENDING.with(|ending| ending.set(false));
-                    return Err(Diag::error(decl.init.span, format!("finding the value of `{name}` takes more than {} steps", group_digits(CONST_STEPS)))
-                        .note("a const is found when the program is compiled, in at most that many steps, so that every machine finds the same")
-                        .note("a value that takes longer to find is a `static`, found when the program first uses it: `static T Name = f()`"));
+                    return Err(Diag::error(decl.init.span, format!("checking this takes more than {} steps", group_digits(CONST_STEPS)))
+                        .note("what the language's own module checks when the program is compiled takes at most that many steps, so that every machine finds the same"));
                 }
                 Err(Unwind::Stop(Stop::Diag(mut diag))) => {
                     ENDING.with(|ending| ending.set(false));
@@ -2463,26 +2464,6 @@ fn stack_room(span: Span, what: &str) -> Res<()> {
             .into()),
         false => Ok(()),
     }
-}
-
-/// While a const is found: a value that would hold more than a const may (64 MB) stops before
-/// the memory for it is taken. `unit` says what `count` counts: bytes, or the items of a list,
-/// each of which takes one at least.
-fn const_room(count: u64, unit: &str, span: Span) -> Res<()> {
-    match count > crate::EMBED_LIMIT {
-        true => {
-            // Said at the const, as the checker says a value found too big (`run_consts`).
-            CONST_TOO_BIG.set(Some((count, unit == "items")));
-            Err(Diag::panic(span, format!("a const takes at most 64 MB, and this would hold {} {unit}", group_digits(count))).into())
-        }
-        false => Ok(()),
-    }
-}
-
-thread_local! {
-    /// A const that grew past what a const may hold: the count `const_room` met, and whether it
-    /// counts items.
-    static CONST_TOO_BIG: std::cell::Cell<Option<(u64, bool)>> = const { std::cell::Cell::new(None) };
 }
 
 /// `100000000` as `100 000 000`.
@@ -4119,12 +4100,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     fn expr(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
-        let value = self.expr_value(expr, frame)?;
-        // While a const is found, a text grows only as far as a const may hold.
-        if let (Some(_), Value::Str(text) | Value::Fmt(text)) = (&self.consts.steps, &value) {
-            const_room(text.len() as u64, "bytes", expr.span)?;
-        }
-        Ok(value)
+        self.expr_value(expr, frame)
     }
 
     fn expr_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
@@ -5088,13 +5064,6 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                     let recv = as_list(recv);
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
-                        if let (Some(_), Value::List(items), "add" | "addAll") = (&self.consts.steps, &recv, name.as_str()) {
-                            let added = match name.as_str() {
-                                "add" => 1,
-                                _ => cells_of(&values[0]).len(),
-                            };
-                            const_room(items.borrow().len().saturating_add(added) as u64, "items", expr.span)?;
-                        }
                         return self.collection_method(recv, name, values, expr.span);
                     }
                     // A separator that is empty would split nowhere and everywhere.
@@ -5117,10 +5086,6 @@ impl<'a, 'e> Interp<'a, 'e> {
                             // As in compiled code, a text too big for the memory stops the program
                             // with a panic instead of aborting it.
                             let size = (text.len() as i128).checked_mul(*times).filter(|size| *size <= isize::MAX as i128);
-                            if self.consts.steps.is_some() {
-                                let wanted = (text.len() as i128).saturating_mul(*times);
-                                const_room(u64::try_from(wanted).unwrap_or(u64::MAX), "bytes", expr.span)?;
-                            }
                             let mut repeated = String::new();
                             if size.is_none_or(|size| repeated.try_reserve_exact(size as usize).is_err()) {
                                 return Err(Diag::panic(expr.span, format!("there is no memory for a text of {} bytes repeated {times} times", text.len())).into());

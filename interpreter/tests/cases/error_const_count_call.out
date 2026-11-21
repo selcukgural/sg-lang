@@ -1,0 +1,4 @@
+error: `Count` cannot give the count of an array: a const calls no function
+  --> error_const_count_call.sg:9:9
+ 9 |     int[Count] items
+   |         ^^^^^

@@ -24,8 +24,9 @@ overflow that a release build of `sg` would wrap is one), a stack run out, more 
 memory, or an input that takes more than 10 seconds. A message of `sg` about the program is the
 answer expected. For `regex` a panic of the SG program is a finding as well: a pattern and a text
 end with a match or a `RegexError`; for `inflate` too: any bytes end with what they open into or a
-`CompressError`; and for `zip`: any bytes end with the entries or a `ZipError`. While the targets are built (`cfg(fuzzing)`), a const may take 1 000 000 steps
-instead of 100 000 000 (choice 1352); `sg` itself is built as before.
+`CompressError`; and for `zip`: any bytes end with the entries or a `ZipError`. While the targets are built (`cfg(fuzzing)`), the check of a pattern of `Regex` when
+the program is compiled, the one place the compiler runs code (the `std` module's own, choice 1607), may
+take 1 000 000 steps instead of 100 000 000 (choice 1352); `sg` itself is built as before.
 
 ## Running
 
@@ -74,7 +75,8 @@ compiler without them stops it at once instead of making every program a finding
 
 What it writes (stages 1 and 2 of choice 1365): the integer types, `bool`, arithmetic, the bit
 operators, conversions, comparisons, `if`, `match`, `for` and `while`, functions, recursion, arrays,
-consts, `print` with a format, `Copyable` structs, enums and `match` on them, `T?`, lists, text, and
+consts (made of operators and casts, masked so that none overflows, since a const calls no function),
+`print` with a format, `Copyable` structs, enums and `match` on them, `T?`, lists, text, and
 functions that give a `Result`.
 
 With `--borrow` first (`BORROW=1` for `run.sh`), the programs borrow (stage 3, choice 1593,

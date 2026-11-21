@@ -1,0 +1,6 @@
+error: a const calls no function
+  a const is made of numbers, texts, other consts, operators and casts, and arrays, structs and enums of them
+  --> error_const_method_call.sg:2:25
+ 2 | const string Line = "-".repeat(40)
+   |                         ^^^^^^
+  hint: a value a function finds is a `static`, found when the program first uses it: `static T Name = f()`

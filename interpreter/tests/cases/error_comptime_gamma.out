@@ -1,6 +1,0 @@
-error: the value of `Factorial` is found when the program is compiled, and this calls `gamma`
-  the C library of each system finds the last bit of `gamma` in its own way, and the program could find another value when it runs
-  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
-  --> error_comptime_gamma.sg:3:32
- 3 | const double Factorial = (5.0).gamma()
-   |                                ^^^^^

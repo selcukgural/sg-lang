@@ -1,4 +1,4 @@
-error: the count of the items of `T[]` is taken from `{ ... }`, from `embed` or from the array a function returns
+error: the count of the items of `T[]` is taken from `{ ... }` or from `embed`
   --> error_const_counted.sg:2:7
  2 | const int[] Copy = Masks
    |       ^^^^^

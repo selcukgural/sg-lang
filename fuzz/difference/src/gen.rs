@@ -106,6 +106,32 @@ const INTS: [IntTy; 10] = [
 
 const INT: usize = 4;
 
+/// The largest value of a type on every machine (`nint` has at least 32 bits).
+fn most(t: &IntTy) -> u64 {
+    match t.signed {
+        true => (1u64 << (t.least - 1)) - 1,
+        false => u64::MAX >> (64 - t.least),
+    }
+}
+
+/// A mask that leaves of a `from` a value that fits in `to`, and is itself a `from`.
+fn fitting_mask(from: &IntTy, to: &IntTy) -> u64 {
+    most(from).min(most(to))
+}
+
+/// `a op b` in a const, with the operands masked so that it fits in its type: a const that
+/// overflows is an error, and a const calls no function such as `wrappingAdd`.
+fn const_arithmetic(t: &IntTy, op: &str, a: &str, b: &str) -> String {
+    let half = most(t) >> 1;
+    match (op, t.signed) {
+        ("+", _) => format!("((({a}) & {half}) + (({b}) & {half}))"),
+        ("-", true) => format!("((({a}) & {half}) - (({b}) & {half}))"),
+        // At least `half + 1` less at most `half`.
+        ("-", false) => format!("((({a}) | {}) - (({b}) & {half}))", half + 1),
+        _ => format!("((({a}) & 7) * (({b}) & 7))"),
+    }
+}
+
 /// Whether every value of `from` fits in `to` on every machine, so that it becomes one on its own.
 fn widens(from: usize, to: usize) -> bool {
     let (a, b) = (&INTS[from], &INTS[to]);
@@ -603,8 +629,12 @@ impl Gen {
                 let a = self.typed(a, ty);
                 let b = self.int_expr(ty, d).0;
                 let (word, op) = *self.rng.pick(&[("Add", "+"), ("Subtract", "-"), ("Multiply", "*")]);
+                // A const calls no function (choice 1606) and overflows nowhere: its operands
+                // are masked so that the operator stays within the type on every machine.
+                if self.in_const {
+                    return (const_arithmetic(&INTS[ty], op, &a, &b), true);
+                }
                 match self.rng.below(40) {
-                    _ if self.in_const => (format!("({a}).wrapping{word}({b})"), true),
                     0..=31 => (format!("({a}).wrapping{word}({b})"), true),
                     32..=37 => (format!("({a}).saturating{word}({b})"), true),
                     _ => (format!("({a} {op} {b})"), true),
@@ -656,8 +686,10 @@ impl Gen {
                 if widens(from, ty) {
                     return (format!("({name})({value})"), true);
                 }
+                if self.in_const {
+                    return (format!("({name})(({value}) & {})", fitting_mask(&INTS[from], &INTS[ty])), true);
+                }
                 match self.rng.below(40) {
-                    _ if self.in_const => (format!("({value}).wrappingTo{title}()"), true),
                     0..=31 => (format!("({value}).wrappingTo{title}()"), true),
                     32..=35 => (format!("({value}).saturatingTo{title}()"), true),
                     36..=38 => {
@@ -671,7 +703,7 @@ impl Gen {
                 // Each way writes what it uses: an expression made and left out would mark as
                 // read a variable the program never reads.
                 let way = self.rng.below(4);
-                if way == 3 && ty == INT {
+                if way == 3 && ty == INT && !self.in_const {
                     let from = self.int_ty();
                     let value = self.int_expr(from, d);
                     let value = self.typed(value, from);
@@ -681,7 +713,7 @@ impl Gen {
                 let a = self.int_expr(ty, d);
                 let a = self.typed(a, ty);
                 match way {
-                    0 | 1 => {
+                    0 | 1 if !self.in_const => {
                         // Typed: the two meet as with `+`, so `b.max(300)` with a `byte b` is an `int` (163).
                         let b = self.int_expr(ty, d);
                         let b = self.typed(b, ty);

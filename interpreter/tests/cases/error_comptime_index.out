@@ -1,5 +1,0 @@
-error: the value of `Picked` is found when the program is compiled, and this stops it: index 3 is out of range: the length is 3
-  --> error_comptime_index.sg:4:12
- 4 |     return items[at]
-   |            ^^^^^^^^^
-  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

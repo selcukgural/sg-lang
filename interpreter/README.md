@@ -50,7 +50,7 @@ of `tests/Containerfile` has them.
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.binarySearch(v)`, `xs.lowerBound(v)`, `xs.upperBound(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
-| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const, and calls: `const int[256] Crc = crcTable()` runs any function when the program is compiled, whose body, and those of the functions it calls, may not read or write, look at the clock or the system, use raw memory, C, tasks or a `Func`, or call `sin` and its kin (an error shows the calls that lead there), within 100 000 000 steps and 64 MB; an overflow or a panic there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies. `const assert(cond)` and `const assert(cond, "message")` check a condition made as a const is, at the top of a file or in a block; a failed one says both sides of a comparison. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` are written only there: compiled code hands such an assert to C's `_Static_assert` too, for the machine it is compiled for |
+| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const; an overflow, a division by zero or an index outside there is a compile error. A const calls no function (`a const calls no function`, with the hint of a `static`): the compiler runs none of the program's code. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies. `const assert(cond)` and `const assert(cond, "message")` check a condition made as a const is, at the top of a file or in a block; a failed one says both sides of a comparison. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` are written only there: compiled code hands such an assert to C's `_Static_assert` too, for the machine it is compiled for |
 | Statics | `static uint[256] Crc = crcTable()`, `static atomic long Requests = atomic 0`, `static locked Config Settings = Config.defaults()`: one value for the whole program, never assigned, at the top of a file (`public static` for other modules) or in a function, where its name is seen to the end of the block. A value made as a const's is (numbers, consts, operators, no call; inside `atomic` and `locked` too) lies in the program from its start; any other is found the first time the static is used, once, whichever task comes first, and the others wait. What finds it cannot `lock`, `wait` or `await` through the calls, and one that needs itself is a compile error, or a panic through a `Func`. A number, a `bool`, a `char` or a function is read as a value, anything else lent as `read`; `static atomic` changes by its methods, `static locked` only inside `lock`. What a static holds follows the thread rule and is never closed or disposed of, so no file, stream or socket; each test starts with the statics not used yet, and what they hold is not a leak. In compiled code a static is a global of C, a `static const` when it is known from the start and holds no atomic value; a read of one found later is a load and a branch |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `s.binarySearch(v)`, `s.lowerBound(v)`, `s.upperBound(v)` (on a range the place is counted from its start), `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
@@ -10019,6 +10019,50 @@ slice. The whole of the tests passes on macOS and on Linux (the kernel's test, w
 knows RISC-V, on Linux alone), with 493 of the 1904 programs compiled through C and run clean under the
 sanitizers, 108 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-fifth slice (a const calls no function). 1606 was approved during the
+hundred-and-forty-fourth slice, 1607 and 1608 at the start of this one:
+
+1606. **A const calls no function.** Its value is made of numbers, texts, other consts, operators and casts,
+     and arrays, structs and enums of them, as in C#, Go and C. A call is refused at its name (`a const calls
+     no function`, with the hint of a `static`); the default value of a field, the number of a variant and a
+     `const assert` say it in their own words, and `int[Count]` from a const that calls says it too. This
+     takes back the calls of the hundred-and-fourth slice (1100 to 1108, 1124 to 1134): the rule of what may
+     run and its errors, which showed the calls that lead there; the ban of `sin` and its kin; the budget of
+     100 000 000 steps for a const; the 64 MB at which a growing text or list stopped (1338); a const that
+     reaches itself through the functions it calls; and the bodies that waited for a const and were checked
+     again. With them go 1159 (one rule for a `const assert` that measures a type is now every one's), 1125
+     and 1136, which were the limits of those calls. Every const is found once, before any body, from what is
+     written; of `comptime.rs` only the search for the statics a function reads is left (`static_reads.rs`).
+     A call ran the program inside the compiler: `sg lsp`, the check of a package or a build could be held
+     for seconds and gigabytes by a program it only reads, and the language had a second way, beside
+     `static`, to find a value with a function.
+1607. **The check of a pattern stays.** A pattern written out in the program (`Regex.of("...")`) is checked
+     when the program is compiled by the `std` module's own `Regex.problem`, which the interpreter runs: the
+     one place the compiler runs code, and never the program's. The budget of 100 000 000 steps (1 000 000
+     when the front end is fuzzed) is kept for it alone; past it the error is `checking this takes more than
+     100 000 000 steps`.
+1608. **The tables of `std` are written out.** The table of CRC-32 (4096 entries, `Crc32Tables` in
+     `checksum.sg`) and the four of deflate (`compression.sg`) were consts found by calls. They are written
+     between marked lines by `tools/std_tables.py`, as zlib writes `crc32.h`, with the values the functions
+     found, and `tools/std_tables.py --check` says whether the files hold what it makes. A `static` would
+     have cost every call of `crc32` a load and a branch.
+
+`const_steps_run_out` became `const_that_would_spin_is_refused` (a const that would never end is refused at
+its call, at once). `error_const_method_call` and `error_field_default_call` are new; `error_const_call` (was
+`error_comptime_sin`), `error_const_count_call` (was `error_comptime_type_count`), `error_const_too_big` (was
+`error_comptime_size`, its array written out), `error_const_assert_call` (was
+`error_const_assert_call_measures`), `error_enum_number_calls` (the call in the number itself) and
+`error_const_counted` changed. `ok_comptime`, 14 `error_comptime_*`, `error_static_in_comptime`,
+`error_const_call_sizeof`, `error_const_too_big_repeat` and `error_const_too_big_text` are removed: each
+now says only that a const calls no function, and what they tried through a call (a circle, an overflow, an
+index outside) `error_const_cycle`, `error_const_overflow` and `error_const_index` try without one.
+`ok_const_assert`, `ok_field_defaults` and the module `consts` write out what they called. The generator of
+programs (`fuzz/difference`) writes a const of operators whose operands are masked so that none overflows,
+where it wrote `wrappingAdd` and its kin: 1730 programs, and 421 that borrow, none refused and no
+difference found. The whole of the tests passes on macOS and on Linux (the kernel's
+test, which needs a Clang that knows RISC-V, on Linux alone), with 492 of the 1887 programs compiled through C
+and run clean under the sanitizers, 108 of them under the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10247,11 +10291,8 @@ check off.
 - **Of the hundred-and-sixth slice**: a range goes down only by one (no step, Rust's `step_by`), and only a
   range is gone over backwards: a list is gone over from its end by its positions,
   `for i in (0..xs.length()).reversed()`. C#'s `$$"""`, where a brace is written once, is not taken (1154).
-- **Of `const assert`**: one that measures a type calls no function (1159).
-- **Of consts**: a text inside an array, a struct or an enum (1110); an array of arrays, as anywhere; the
-  count of an array in a type from a const that calls a function (1125).
-- **Of statics**: a static that holds a function is copied to a local to be called (`var f = Double`, 1140); a
-  value given by a call is found when the program runs even when a const could find it (1136); a `static
+- **Of consts**: a text inside an array, a struct or an enum (1110); an array of arrays, as anywhere.
+- **Of statics**: a static that holds a function is copied to a local to be called (`var f = Double`, 1140); a `static
   locked` value aligned to more than 16 bytes is refused by the C compiler (1145). Without an operating
   system a circle through a function value spins instead of panicking (1142).
 - **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
@@ -10715,9 +10756,10 @@ never run or followed, and a package is kept only as itself (1591); the rules of
 not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
 what others write hold on what they are given (1594); compiled code does what the interpreter does where
 it did not (1595, 1601-1603); and the tool holds on what a program or a folder gives it (1596, 1604).
-A const is made next of constant expressions alone, with no calls, as in C# and Go (1606). Then every
-module of `std` is measured against
-Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
+A const is made of constant expressions alone, with no calls, as in C# and Go (1606-1608). Next come
+the copy of a slice into another (`copyFrom`, 1597) and a Pike machine that copies a thread's places once
+(1598), the normal forms of Unicode (1599) and a bound on the depth of the JSON that is written (1600). Then
+every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

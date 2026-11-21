@@ -2,10 +2,8 @@ int base() {
     return 0x20
 }
 
-const int Base = base()
-
 enum Block : int {
-    Image = Base + 0x0C
+    Image = base() + 0x0C
 }
 
 void main() {

@@ -1,5 +1,5 @@
 // Consts of another module, the count of an array from one, the bytes of a file, and consts
-// found by calling functions of another module.
+// of another module made of its other consts.
 
 use limits
 

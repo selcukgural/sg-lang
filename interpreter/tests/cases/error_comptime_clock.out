@@ -1,6 +1,0 @@
-error: the value of `Started` is found when the program is compiled, and what it runs reads the clock
-  `started` calls `Instant.now`, which reads the clock
-  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
-  --> error_comptime_clock.sg:2:23
- 2 |     var now = Instant.now()
-   |                       ^^^
