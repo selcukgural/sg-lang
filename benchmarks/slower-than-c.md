@@ -89,6 +89,26 @@ says what is slower, by how much and against what, the choice that measured it, 
   strings of a document kept in one block, or the lists made at their size once the closing bracket is
   found (simdjson's way of counting first); a `Result` that is filled where the value goes.
 
+- **A moment in the time zone** (`std/time`, 3.8 times `chrono` on a million moments, 0.203 s against 0.054,
+  as Zig's program that also calls `localtime_r`, 0.189; choice 1675): each `toLocal()` asks the C library,
+  which takes a lock and looks at `TZ` again on every call. `chrono` reads the TZif file of the zone once and
+  finds each offset by a search through its transitions. Candidate: a reader of TZif of SG's own on Linux and
+  macOS, the transitions kept once a program asks; Windows keeps the rules of its system.
+
+- **A token from the random bytes of the system** (`std/random`, 4.7 times Zig on a million tokens of 32
+  bytes, 0.242 s against 0.051, four times as fast as Rust's `SysRng`, 0.957; choice 1676): `SecureRandom`
+  asks the system for each token (`arc4random_buf` on macOS, `getrandom` on Linux), where Zig's `Io.random`
+  is a ChaCha kept in the process and seeded by the system. Kept so on purpose: a generator in the process has
+  to see a `fork` and keep its key out of a dump of memory. Candidate, if it is ever wanted: the bytes of one
+  call of the system shared by several small requests, under the same rules.
+
+- **Reading RFC 3339, and lines of a log** (`std/time` and `std/log`, 1.09 times Zig's hand-written reader on
+  3,407,285 moments, 0.136 s against 0.125, and 1.09 times Zig on a million lines, 1.864 s against 1.708;
+  choices 1673, 1677): each line read is copied into a text checked to be UTF-8, where Zig's `takeDelimiter`
+  lends the bytes of its buffer, and `DateTimeOffset.parse` gives each part through a `Result`. A copy of a
+  few bytes with stores of a fixed size in place of `memcpy` was tried and gained nothing. The log's line is
+  made in a text and written by `fwrite` under a lock, Zig's straight from its buffer.
+
 ## Compiled code
 
 - **Bytes read one index at a time** (`hash`, choice 136): `data[at] | data[at + 1] << 8 | ...` checks

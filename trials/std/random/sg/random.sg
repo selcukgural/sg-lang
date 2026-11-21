@@ -1,0 +1,100 @@
+// `random`: `std`'s random numbers measured (choices 1553, 1629-1637, 1667, 1669). Four ways of
+// using them:
+//
+//     random numbers COUNT    COUNT numbers of 64 bits from `Random.fromSeed(1)`
+//     random range COUNT      COUNT numbers from 0 up to 1000, without 1000, counted in a histogram
+//     random fill MEGABYTES   MEGABYTES megabytes of random bytes, 64 KB at a time into one buffer
+//     random tokens COUNT     COUNT tokens of 64 hex digits (32 bytes) from the random bytes of the
+//                             system
+//
+// The generators are not the same in each language, so nothing printed depends on the numbers drawn,
+// only on whether they look random: how many were drawn, and whether the bits set (`numbers`), each
+// bar of the histogram (`range`) and the mean of every 64th byte (`fill`) lie within six standard
+// deviations of what they should be; `tokens` prints how many characters the tokens had and whether
+// all were hex digits. A wrong use is told on the standard error, with exit code 2.
+
+void numbers(long count) {
+    var random = Random.fromSeed(1)
+    long ones = 0
+    for _ in 0..count {
+        ones += random.nextUlong().countOnes()
+    }
+    // The bits set: 64 × count / 2 on average, with a variance of 64 × count / 4.
+    long off = ones - 32 * count
+    print($"numbers {count}\nbits near half {off * off <= 36 * 16 * count}")
+}
+
+void range(long count) {
+    var random = Random.fromSeed(1)
+    var bars = long[1000]
+    for _ in 0..count {
+        bars[(nint)random.nextInt(0, 1000)] += 1
+    }
+    // Each bar: count / 1000 on average, with a variance of about as much.
+    long expected = count / 1000
+    bool near = true
+    for bar in bars {
+        long off = bar - expected
+        if off * off > 36 * expected + 36 {
+            near = false
+        }
+    }
+    print($"numbers {count}\nbars 1000\nevery bar near {near}")
+}
+
+void fill(long megabytes) {
+    var random = Random.fromSeed(1)
+    var buffer = byte[65536]
+    long rounds = megabytes * 16
+    long sum = 0
+    long seen = 0
+    for _ in 0..rounds {
+        random.fill(ref buffer)
+        nint at = 0
+        while at < 65536 {
+            sum += buffer[at]
+            at += 64
+        }
+        seen += 1024
+    }
+    // The mean of a byte is 127.5, its variance 5461.25: 2 × sum - 255 × seen within six deviations.
+    long off = 2 * sum - 255 * seen
+    print($"bytes {rounds * 65536}\nmean near {off * off <= 786420 * seen}")
+}
+
+void tokens(long count) {
+    long characters = 0
+    bool hex = true
+    for _ in 0..count {
+        var token = SecureRandom.hexString(64)
+        characters += token.length()
+        for c in token.asBytes() {
+            if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+                hex = false
+            }
+        }
+    }
+    print($"tokens {count}\ncharacters {characters}\nhex {hex}")
+}
+
+void main(List<string> args) {
+    bool known = args.length() == 2 &&
+        (args[0] == "numbers" || args[0] == "range" || args[0] == "fill" || args[0] == "tokens")
+    long count = -1
+    if known {
+        count = long.parse(read args[1]) ?? -1
+    }
+    if count < 0 {
+        printError("usage: random numbers COUNT | range COUNT | fill MEGABYTES | tokens COUNT")
+        exit(2)
+    }
+    if args[0] == "numbers" {
+        numbers(count)
+    } else if args[0] == "range" {
+        range(count)
+    } else if args[0] == "fill" {
+        fill(count)
+    } else {
+        tokens(count)
+    }
+}

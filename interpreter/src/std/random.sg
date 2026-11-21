@@ -95,18 +95,18 @@ public struct Random {
         return this.nextUlong() >> 63 == 1
     }
 
-    // Every byte of `target`, eight from each draw, the lowest first.
+    // Every byte of `target`, eight from each draw, the lowest first: eight copied at once, the
+    // few at the end from one more draw.
     public void fill(ref this, ref byte[] target) {
         nint at = 0
         var count = target.length()
-        while at < count {
+        while at + 8 <= count {
+            target[at..at + 8].copyFrom(read this.nextUlong().toLittleEndian())
+            at += 8
+        }
+        if at < count {
             var bytes = this.nextUlong().toLittleEndian()
-            nint i = 0
-            while i < 8 && at < count {
-                target[at] = bytes[i]
-                at += 1
-                i += 1
-            }
+            target[at..count].copyFrom(bytes[..count - at])
         }
     }
 }
@@ -168,6 +168,12 @@ public struct SecureRandom {
         var bytes = byte[32]
         var digits = "0123456789abcdef"
         var left = length
+        // 64 digits at a time from 32 bytes, as `Hex.encodeInto` writes them, the rest one by one.
+        while left >= 64 {
+            Entropy.fill(ref bytes)
+            Hex.encodeInto(ref text, bytes[..])
+            left -= 64
+        }
         while left > 0 {
             Entropy.fill(ref bytes)
             nint i = 0

@@ -1,0 +1,64 @@
+// `log`: `std`'s log measured (choices 1553, 1629-1637, 1667, 1670). Three ways of using it:
+//
+//     log lines COUNT    COUNT lines at the level Info, `request 12 took 84 ms`
+//     log off COUNT      COUNT lines at the level Debug while the log writes from Info: none is
+//                        written, and the text of none is made
+//     log tasks COUNT    four tasks at once, each writing a quarter of COUNT lines at the level
+//                        Info, `task 2 request 12 took 84 ms`
+//
+// The lines go to the standard error, each `2026-11-21T20:15:03.123Z INFO  ` and the message, one
+// whole line from one call. Each prints on the standard output how many lines it wrote (`off`, how
+// many it did not, and the sum of the numbers it would have written). A wrong use is told on the
+// standard error, with exit code 2.
+
+void lines(long count) {
+    for i in 0..count {
+        Log.info($"request {i} took {i * 7 % 1000} ms")
+    }
+    print($"lines {count}")
+}
+
+void off(long count) {
+    long sum = 0
+    for i in 0..count {
+        Log.debug($"request {i} took {i * 7 % 1000} ms")
+        sum += i * 7 % 1000
+    }
+    print($"lines 0 of {count}\nsum {sum}")
+}
+
+long work(long task, long count) {
+    for i in 0..count {
+        Log.info($"task {task} request {i} took {i * 7 % 1000} ms")
+    }
+    return count
+}
+
+void tasks(long count) {
+    var a = Task.run(work, 0, count / 4)
+    var b = Task.run(work, 1, count / 4)
+    var c = Task.run(work, 2, count / 4)
+    var d = Task.run(work, 3, count - count / 4 * 3)
+    long written = a.wait() + b.wait() + c.wait() + d.wait()
+    print($"lines {written}")
+}
+
+void main(List<string> args) {
+    bool known = args.length() == 2 && (args[0] == "lines" || args[0] == "off" || args[0] == "tasks")
+    long count = -1
+    if known {
+        count = long.parse(read args[1]) ?? -1
+    }
+    if count < 0 {
+        printError("usage: log lines COUNT | off COUNT | tasks COUNT")
+        exit(2)
+    }
+    Log.setLevel(LogLevel.Info)
+    if args[0] == "lines" {
+        lines(count)
+    } else if args[0] == "off" {
+        off(count)
+    } else {
+        tasks(count)
+    }
+}

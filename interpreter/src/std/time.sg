@@ -119,7 +119,8 @@ public struct Duration : Copyable, Equatable, Hashable, Comparable, Formattable 
 }
 
 // A moment of the monotonic clock: it never goes back and nothing sets it. Only the distance
-// between two moments means something, so it is not printed.
+// between two moments means something, so it is not printed. On Linux and macOS it stops while
+// the machine sleeps, as Rust's `Instant`; on Windows it goes on (choice 1674).
 public struct Instant : Copyable, Equatable, Hashable, Comparable {
     long ns
 

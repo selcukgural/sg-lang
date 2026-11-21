@@ -1168,17 +1168,22 @@ static void sg_out_put(const void* bytes, int64_t count) {
 }
 static inline void sg_out_byte(char c) { sg_out_put(&c, 1); }
 static inline void sg_out_str(const char* text) { sg_out_put(text, (int64_t)strlen(text)); }
-static void sg_out_digits(unsigned long long left, bool negative) {
+/* A number in at least `least` digits (1 to 20), zeros before it, the sign before them: what
+   `%.*lld` writes, `{n:D4}` (choice 1673). */
+static void sg_out_digits(unsigned long long left, bool negative, int least) {
+    int count = 1;
+    for (unsigned long long rest = left; rest >= 10; rest /= 10) count++;
+    if (count < least) count = least;
     char digits[24];
     char* at = digits + sizeof digits;
-    do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
+    for (int i = 0; i < count; i++) { *--at = (char)('0' + left % 10); left /= 10; }
     if (negative) *--at = '-';
     sg_out_put(at, digits + sizeof digits - at);
 }
-static inline void sg_out_int(long long value) {
-    sg_out_digits(value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0);
+static inline void sg_out_int(long long value, int least) {
+    sg_out_digits(value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0, least);
 }
-static inline void sg_out_uint(unsigned long long value) { sg_out_digits(value, false); }
+static inline void sg_out_uint(unsigned long long value, int least) { sg_out_digits(value, false, least); }
 /* Whole calls of their own: bytes (`Stdout.write`), and what the block holds given on with C's
    own (the old `fflush(stdout)`): `sg_out_flushed` gives its error to `Stdout.flush`, whose
    `Result` tells it; `sg_out_flush`, before the standard error, another program or a read of a
@@ -2658,12 +2663,21 @@ static void sg_sink_end(sg_file_sink* s) {
 /* A line of `printError`. On Linux and macOS a standard error whose reader is gone ends the
    program by `SIGPIPE`, as `print` does (choice 1601), also where the signal was ignored when the
    program started; on Windows the line is lost and the program goes on. A panic, which has left
-   the signal out, is not ended so (choice 1602). */
+   the signal out, is not ended so (choice 1602). The line is one `fwrite`; the lines of threads
+   wait for each other on a lock: on macOS an `os_unfair_lock` of the program's own, since the lock
+   of C's stream waits in the kernel and four threads writing lines took half as long again
+   (choice 1673); elsewhere the lock of the stream. */
+#if SG_THREADS && defined(__APPLE__)
+#include <os/lock.h>
+static os_unfair_lock sg_err_mx = OS_UNFAIR_LOCK_INIT;
+#endif
 static void sg_vprint(FILE* f, const char* format, va_list args) {
     sg_file_sink s;
     sg_sink_start(&s, f);
 #if SG_THREADS && defined(_WIN32)
     _lock_file(f);
+#elif SG_THREADS && defined(__APPLE__)
+    os_unfair_lock_lock(&sg_err_mx);
 #elif SG_THREADS
     flockfile(f);
 #endif
@@ -2682,6 +2696,8 @@ static void sg_vprint(FILE* f, const char* format, va_list args) {
 #endif
 #if SG_THREADS && defined(_WIN32)
     _unlock_file(f);
+#elif SG_THREADS && defined(__APPLE__)
+    os_unfair_lock_unlock(&sg_err_mx);
 #elif SG_THREADS
     funlockfile(f);
 #endif
@@ -2801,18 +2817,30 @@ static int sg_fixed(char* out, size_t room, double v, int digits, bool single) {
     }
     return snprintf(out, room, "%.*f", digits, v);
 }
-static void sg_put_digits(sg_string* out, unsigned long long left, bool negative) {
-    char digits[24];
-    char* at = digits + sizeof digits;
-    do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
+/* As `sg_out_digits`, written in place at the end of the text: the digits counted first, then
+   each written once, the zeros before them by the same loop (no `memcpy` or `memset` of a few
+   bytes; choice 1673). */
+static void sg_put_digits(sg_string* out, unsigned long long left, bool negative, int least) {
+    int count = 1;
+    for (unsigned long long rest = left; rest >= 10; rest /= 10) count++;
+    if (count < least) count = least;
+    sg_room(out, count + negative);
+    uint8_t* at = out->ptr + out->len + negative + count;
+    for (int i = 0; i < count; i++) { *--at = (uint8_t)('0' + left % 10); left /= 10; }
     if (negative) *--at = '-';
-    sg_put(out, at, digits + sizeof digits - at);
+    out->len += count + negative;
 }
 static void sg_put_int(sg_string* out, long long value) {
-    sg_put_digits(out, value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0);
+    sg_put_digits(out, value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0, 1);
 }
 static void sg_put_uint(sg_string* out, unsigned long long value) {
-    sg_put_digits(out, value, false);
+    sg_put_digits(out, value, false, 1);
+}
+static void sg_put_int_least(sg_string* out, long long value, int least) {
+    sg_put_digits(out, value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0, least);
+}
+static void sg_put_uint_least(sg_string* out, unsigned long long value, int least) {
+    sg_put_digits(out, value, false, least);
 }
 static void sg_put_double(sg_string* out, double value) {
     char text[40];
@@ -3388,6 +3416,7 @@ static inline int64_t sg_clock(int id) {
     int64_t whole = count.QuadPart / hz, part = count.QuadPart % hz;
     return whole * 1000000000 + part * 1000000000 / hz;
 }
+static inline int64_t sg_monotonic(void) { return sg_clock(CLOCK_MONOTONIC); }
 /* `Clock.offsetAt(seconds)`: the seconds the time zone of the system is ahead of UTC then, by the
    rules Windows keeps for that year; 0 when Windows does not say. `TZ` is not read. */
 static int32_t sg_local_offset(int64_t seconds) {
@@ -3408,6 +3437,14 @@ static inline int64_t sg_clock(clockid_t id) {
     clock_gettime(id, &t);
     return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
+/* `Clock.monotonic()`: on macOS `CLOCK_UPTIME_RAW`, which stops while the machine sleeps, as
+   Linux's `CLOCK_MONOTONIC` and Rust's `Instant`, read in nanoseconds without a `timespec`: 0.105 s
+   for 10,000,000 reads where `CLOCK_MONOTONIC` took 0.184 (choice 1674). */
+#if defined(__APPLE__)
+static inline int64_t sg_monotonic(void) { return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+#else
+static inline int64_t sg_monotonic(void) { return sg_clock(CLOCK_MONOTONIC); }
+#endif
 /* `Clock.offsetAt(seconds)`: the seconds the time zone of the system (`TZ`, `/etc/localtime`) is
    ahead of UTC then; 0 when the C library does not say. The offset is the local date and time
    `localtime_r` gives, counted as seconds since 1970 by the calendar of `std`, less `seconds`:
@@ -11718,20 +11755,21 @@ fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// A piece of a line whose format has no width and no least count of digits, as `sg_vlines`
-/// would write it (choice 1544): bytes, a text (its length and its bytes), a word of C (`true`,
-/// `false`), a number with a sign and one without.
+/// A piece of a line whose format has no width, as `sg_vlines` would write it (choice 1544):
+/// bytes, a text (its length and its bytes), a word of C (`true`, `false`), a number with a sign
+/// and one without, each with the least count of its digits (`{n:D4}`, 1 when none is asked;
+/// choice 1673).
 enum Step {
     Bytes(String),
     Text(String, String),
     Word(String),
-    Int(String),
-    Uint(String),
+    Int(String, usize),
+    Uint(String, usize),
 }
 
 /// The pieces of a format of `sg_vlines` and its values, when each is written as it is: then
 /// the line is written where it is made, and nothing reads its format while it runs. `None`
-/// where something has a width, digits or a letter of hex, which `sg_vlines` writes.
+/// where something has a width, more than 20 digits or a letter of hex, which `sg_vlines` writes.
 fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
     let mut steps = Vec::new();
     let mut bytes = String::new();
@@ -11748,9 +11786,15 @@ fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
         let (step, after) = if let Some(after) = rest.strip_prefix(".*s") {
             (Step::Text(values.next()?.clone(), values.next()?.clone()), after)
         } else if let Some(after) = rest.strip_prefix("lld") {
-            (Step::Int(values.next()?.clone()), after)
+            (Step::Int(values.next()?.clone(), 1), after)
         } else if let Some(after) = rest.strip_prefix("llu") {
-            (Step::Uint(values.next()?.clone()), after)
+            (Step::Uint(values.next()?.clone(), 1), after)
+        } else if let Some((least, after)) = least_digits(rest) {
+            // `%.4lld`, `{n:D4}`: the zeros written before the digits here too.
+            match after.strip_prefix("lld") {
+                Some(after) => (Step::Int(values.next()?.clone(), least), after),
+                None => (Step::Uint(values.next()?.clone(), least), after.strip_prefix("llu")?),
+            }
         } else {
             (Step::Word(values.next()?.clone()), rest.strip_prefix('s')?)
         };
@@ -11768,6 +11812,16 @@ fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
         Some(_) => None,
         None => Some(steps),
     }
+}
+
+/// The least count of digits of `.4lld` or `.4llu` at the start of `rest`, 1 to 20, and what
+/// follows the count.
+fn least_digits(rest: &str) -> Option<(usize, &str)> {
+    let digits = rest.strip_prefix('.')?;
+    let end = digits.find(|c: char| !c.is_ascii_digit())?;
+    let least: usize = digits[..end].parse().ok()?;
+    let after = &digits[end..];
+    ((1..=20).contains(&least) && (after.starts_with("lld") || after.starts_with("llu"))).then_some((least, after))
 }
 
 /// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a format of
@@ -18813,15 +18867,15 @@ impl<'a> Emitter<'a> {
                             let _ = write!(line, " const char* {temp} = {word};");
                             let _ = write!(calls, " sg_out_str({temp});");
                         }
-                        Step::Int(value) => {
+                        Step::Int(value, least) => {
                             let temp = self.temp();
                             let _ = write!(line, " long long {temp} = {value};");
-                            let _ = write!(calls, " sg_out_int({temp});");
+                            let _ = write!(calls, " sg_out_int({temp}, {least});");
                         }
-                        Step::Uint(value) => {
+                        Step::Uint(value, least) => {
                             let temp = self.temp();
                             let _ = write!(line, " unsigned long long {temp} = {value};");
-                            let _ = write!(calls, " sg_out_uint({temp});");
+                            let _ = write!(calls, " sg_out_uint({temp}, {least});");
                         }
                     }
                 }
@@ -19137,15 +19191,25 @@ impl<'a> Emitter<'a> {
                                     let _ = write!(line, "const char* {temp} = {word}; ");
                                     format!("sg_puts({out}, {temp})")
                                 }
-                                Step::Int(value) => {
+                                Step::Int(value, 1) => {
                                     let temp = self.temp();
                                     let _ = write!(line, "long long {temp} = {value}; ");
                                     format!("sg_put_int({out}, {temp})")
                                 }
-                                Step::Uint(value) => {
+                                Step::Uint(value, 1) => {
                                     let temp = self.temp();
                                     let _ = write!(line, "unsigned long long {temp} = {value}; ");
                                     format!("sg_put_uint({out}, {temp})")
+                                }
+                                Step::Int(value, least) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "long long {temp} = {value}; ");
+                                    format!("sg_put_int_least({out}, {temp}, {least})")
+                                }
+                                Step::Uint(value, least) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "unsigned long long {temp} = {value}; ");
+                                    format!("sg_put_uint_least({out}, {temp}, {least})")
                                 }
                             });
                         }
@@ -20826,7 +20890,7 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Clock(call) => {
                     self.made.insert("clock".to_string());
-                    Ok(format!("sg_clock({})", if *call == ClockCall::Wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))
+                    Ok(if *call == ClockCall::Wall { "sg_clock(CLOCK_REALTIME)".to_string() } else { "sg_monotonic()".to_string() })
                 }
                 // `Entropy.fill(ref bytes)`: the system's random bytes into the slice.
                 Callee::Entropy => {

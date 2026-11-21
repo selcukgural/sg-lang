@@ -9,6 +9,7 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py std/compression std/zip
     python3 trials/measure.py std/hash std/checksum
     python3 trials/measure.py std/encoding std/unicode
+    python3 trials/measure.py std/time std/random std/log
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -19,7 +20,10 @@ names a check that opens what each wrote into `{out}` with Python's `gzip` or `z
 holds it to the input, and the size each wrote is shown under the table (1634, 1642, 1643). What
 must come out the same everywhere but is too large for the standard output (Base64, normal forms
 of Unicode) is written into `{out}` too and held to what Python's `base64` and `unicodedata` make
-of the input (1660, 1662).
+of the input (1660, 1662). What a log writes on the standard error is held to its form, each line a
+time to the millisecond, the level and the message, and the messages, in order of their text, must
+be the same everywhere (1670). Every program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or
+`RUST_LOG` (1668, 1670).
 Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
@@ -94,8 +98,11 @@ OTHER_INPUTS = {
     "small-unicode": "unicode-2.txt",
     "unicode-nfd": "unicode-100-nfd.txt",
     "small-unicode-nfd": "unicode-2-nfd.txt",
+    "time": "time-100.txt",
+    "small-time": "time-2.txt",
 }
 UNICODE_SEED = 1
+TIME_SEED = 1
 DOS_TIME = (2026, 11, 20, 13, 45, 30)
 
 
@@ -135,6 +142,13 @@ def other_input(placeholder):
         with open(path, "wb") as f:
             megabytes = "100" if placeholder == "unicode" else "2"
             subprocess.run([maker, megabytes, str(UNICODE_SEED)], stdout=f, check=True)
+    elif placeholder in ("time", "small-time"):
+        maker = OUT / "time-input"
+        if not maker.exists():
+            run([SG, "build", TRIALS / "inputs" / "time.sg", "--release", "-o", maker])
+        with open(path, "wb") as f:
+            megabytes = "100" if placeholder == "time" else "2"
+            subprocess.run([maker, megabytes, str(TIME_SEED)], stdout=f, check=True)
     elif placeholder in ("unicode-nfd", "small-unicode-nfd"):
         import unicodedata
         source = other_input(placeholder.removesuffix("-nfd"))
@@ -318,6 +332,51 @@ TRIALS_CASES = {
             ("950,206 lines, each checked to be NFC", ["check", "{unicode}"], None),
         ],
     },
+    "std/time": {
+        "check": [
+            ("1,000 moments, written", ["format", "1000"], None),
+            ("a small file of moments, read", ["parse", "{small-time}"], None),
+            ("1,000 moments, in the time zone", ["local", "1000"], None),
+            ("the clock, read 1,000 times", ["clock", "1000"], None),
+            ("not moments", ["parse", "{readme}"], None),
+            ("a missing file", ["parse", "missing.txt"], None),
+            ("a wrong use", ["format", "many"], None),
+        ],
+        "measure": [
+            ("10,000,000 moments, written in ISO 8601", ["format", "10000000"], None),
+            ("3,407,285 moments in RFC 3339, read", ["parse", "{time}"], None),
+            ("1,000,000 moments, in the time zone", ["local", "1000000"], None),
+            ("the clock, read 10,000,000 times", ["clock", "10000000"], None),
+        ],
+    },
+    "std/random": {
+        "check": [
+            ("1,000 numbers", ["numbers", "1000"], None),
+            ("1,000 numbers in a range", ["range", "1000"], None),
+            ("1 MB of bytes", ["fill", "1"], None),
+            ("10 tokens", ["tokens", "10"], None),
+            ("a wrong use", ["numbers", "many"], None),
+        ],
+        "measure": [
+            ("100,000,000 numbers of 64 bits", ["numbers", "100000000"], None),
+            ("100,000,000 numbers up to 1,000", ["range", "100000000"], None),
+            ("100 MB of bytes", ["fill", "100"], None),
+            ("1,000,000 tokens of the system", ["tokens", "1000000"], None),
+        ],
+    },
+    "std/log": {
+        "check": [
+            ("1,000 lines", ["lines", "1000"], None, "log"),
+            ("1,000 lines that are off", ["off", "1000"], None, "log"),
+            ("1,000 lines from four tasks", ["tasks", "1000"], None, "log"),
+            ("a wrong use", ["lines", "many"], None),
+        ],
+        "measure": [
+            ("1,000,000 lines", ["lines", "1000000"], None, "log"),
+            ("100,000,000 lines that are off", ["off", "100000000"], None, "log"),
+            ("1,000,000 lines from four tasks", ["tasks", "1000000"], None, "log"),
+        ],
+    },
 }
 
 # Rust built once more with a feature: trial -> (name of the build, arguments of `cargo build`).
@@ -451,6 +510,25 @@ def expected(kind, path):
     return unicodedata.normalize(kind.upper(), source.decode()).encode()
 
 
+def log_lines(error):
+    """The lines a log wrote, held to their form: how many, and a hash of their messages in order of
+    their text, the same whatever order tasks wrote them in; or what is wrong."""
+    import hashlib
+    import re
+    form = re.compile(rb"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO  ([^\n]*)")
+    lines = error.split(b"\n")
+    if lines[-1] != b"":
+        return b"malformed: the last line has no end"
+    messages = []
+    for line in lines[:-1]:
+        seen = form.fullmatch(line)
+        if seen is None:
+            return b"malformed: " + line[:80]
+        messages.append(seen.group(1))
+    messages.sort()
+    return f"log lines {len(messages)}, messages {hashlib.sha256(b'\n'.join(messages)).hexdigest()}".encode()
+
+
 def verify(kind, args, error):
     """What a build wrote that the others may write another way, checked: (what it says, the
     note shown under the table, or None). `gzip`: `{out}` opens to the file compressed; `zip`:
@@ -459,6 +537,8 @@ def verify(kind, args, error):
     `base64`, `unbase64`, `nfc`, `nfd`: `{out}` is what Python makes of the input."""
     import gzip
     import zipfile
+    if kind == "log":
+        return log_lines(error), None
     if kind == "stderr":
         words = error.split()
         return b"", words[-1].decode() if words else "?"
@@ -499,7 +579,9 @@ def check(trial, built, cases, notes):
             code, output = run_once(path, args, stdin_path, True, errors)[:2]
             if kind:
                 said, note = verify(kind[0], args, errors[0])
-                if kind[0] != "stderr" and said != b"what it wrote opens to its input: True":
+                wrong = said.startswith(b"malformed") if kind[0] == "log" else \
+                    kind[0] != "stderr" and said != b"what it wrote opens to its input: True"
+                if wrong:
                     ok = False
                     print(f"  WRONG {trial} / {name}: {build}: {said.decode()}")
                 output += said
@@ -518,15 +600,19 @@ def check(trial, built, cases, notes):
 
 def measure(trial, built, cases, runs):
     rows = []
-    for name, words, stdin, *_ in cases:
+    for name, words, stdin, *kind in cases:
         args = expand(words, trial)
         stdin_path = expand([stdin], trial)[0] if stdin else None
+        # A log writes into a file, as it would, not into `/dev/null`.
+        errors = [] if kind == ["log"] else None
         row = {}
         for build, path in built.items():
-            run_once(path, args, stdin_path, False)
+            run_once(path, args, stdin_path, False, errors)
             best_time, best_peak = None, None
             for _ in range(runs):
-                _, _, seconds, peak = run_once(path, args, stdin_path, False)
+                _, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
+                if errors:
+                    errors.clear()
                 best_time = seconds if best_time is None else min(best_time, seconds)
                 best_peak = peak if best_peak is None else min(best_peak, peak)
             row[build] = (best_time, best_peak)
@@ -582,6 +668,9 @@ def main():
     parser.add_argument("--runs", type=int, default=5, help="runs of each case, the best kept")
     a = parser.parse_args()
     trials = a.trials or list(TRIALS_CASES)
+    os.environ["TZ"] = "Europe/Istanbul"
+    for name in ("SG_LOG", "RUST_LOG"):
+        os.environ.pop(name, None)
     build_sg()
     make_inputs()
     all_ok = True

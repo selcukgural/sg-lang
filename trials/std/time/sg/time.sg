@@ -1,0 +1,147 @@
+// `time`: `std`'s calendar and clocks measured (choices 1553, 1629-1637, 1667, 1668). Four ways of
+// using them:
+//
+//     time format COUNT    COUNT moments between 1900 and 2200, each written in ISO 8601 into a
+//                          text kept from one to the next; a quarter of them whole seconds, the
+//                          others with milliseconds, microseconds or nanoseconds
+//     time parse FILE      each line of FILE, a moment in RFC 3339 with an offset, read and taken
+//                          to UTC
+//     time local COUNT     COUNT moments between 1900 and 2200, each seen in the time zone of the
+//                          system (`TZ`)
+//     time clock COUNT     the monotonic clock read COUNT times
+//
+// The moments are made by SplitMix64 from the seed 1. `format` prints how many it wrote, how many
+// characters they had and a sum of one character of each; `parse` how many lines, the sum of their
+// seconds since 1970, of their nanoseconds and of their offsets in seconds; `local` the sum of the
+// offsets and of the year, month, day, hour and minute seen; `clock` how many times it read the
+// clock and whether it never went back. A file that cannot be read is told on the standard error,
+// with exit code 1, as is a line that is not a moment; a wrong use, with 2.
+
+struct SplitMix {
+    ulong state
+
+    ulong next(ref this) {
+        this.state = this.state.wrappingAdd(0x9E3779B97F4A7C15)
+        ulong z = this.state
+        z = (z ^ (z >> 30)).wrappingMultiply(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> 27)).wrappingMultiply(0x94D049BB133111EB)
+        return z ^ (z >> 31)
+    }
+}
+
+// 1900-01-01 and 2200-01-01, in seconds since 1970.
+const long Low = -2208988800
+const long Span = 9467107200
+
+// A moment between 1900 and 2200: whole seconds, or a fraction of milliseconds, microseconds or
+// nanoseconds, each as likely.
+DateTime moment(ref SplitMix random) {
+    long seconds = Low + (long)(random.next() % (ulong)Span)
+    long nanoseconds = 0
+    var kind = random.next() % 4
+    if kind == 1 {
+        nanoseconds = (long)(random.next() % 1000) * 1000000
+    } else if kind == 2 {
+        nanoseconds = (long)(random.next() % 1000000) * 1000
+    } else if kind == 3 {
+        nanoseconds = (long)(random.next() % 1000000000)
+    }
+    return DateTime.fromUnixSeconds(seconds).plus(Duration.fromNanoseconds(nanoseconds))
+}
+
+void format(long count) {
+    var random = SplitMix { state = 1 }
+    var text = string.withCapacity(64)
+    long characters = 0
+    ulong sum = 0
+    for i in 0..count {
+        var t = moment(ref random)
+        text.clear()
+        text.write($"{t}")
+        characters += text.length()
+        sum += text.asBytes()[(nint)(i % text.length())]
+    }
+    print($"moments {count}\ncharacters {characters}\nsum {sum}")
+}
+
+Result<void, IoError> parse(read string path) {
+    var reader = try File.openText(read path)
+    string line = ""
+    long count = 0
+    long seconds = 0
+    long nanoseconds = 0
+    long offsets = 0
+    while try reader.readLine(ref line) {
+        count += 1
+        match DateTimeOffset.parse(read line) {
+            Ok(seen) => {
+                var utc = seen.toUtc()
+                seconds += utc.unixSeconds()
+                nanoseconds += utc.nanosecond()
+                offsets += seen.offset().seconds()
+            }
+            Error(cause) => {
+                printError($"time: {path}: line {count}: not a moment: {cause}")
+                exit(1)
+            }
+        }
+    }
+    print($"lines {count}\nseconds {seconds}\nnanoseconds {nanoseconds}\noffsets {offsets}")
+    return Ok()
+}
+
+void local(long count) {
+    var random = SplitMix { state = 1 }
+    long offsets = 0
+    long parts = 0
+    for _ in 0..count {
+        var seen = moment(ref random).toLocal()
+        offsets += seen.offset().seconds()
+        parts += seen.year() + seen.month() + seen.day() + seen.hour() + seen.minute()
+    }
+    print($"moments {count}\noffsets {offsets}\nparts {parts}")
+}
+
+void clock(long count) {
+    var last = Instant.now()
+    bool forward = true
+    for _ in 0..count {
+        var now = Instant.now()
+        if now < last {
+            forward = false
+        }
+        last = now
+    }
+    print($"reads {count}\nforward {forward}")
+}
+
+void main(List<string> args) {
+    bool file = args.length() == 2 && args[0] == "parse"
+    bool counts = args.length() == 2 && (args[0] == "format" || args[0] == "local" || args[0] == "clock")
+    if !file && !counts {
+        printError("usage: time format COUNT | parse FILE | local COUNT | clock COUNT")
+        exit(2)
+    }
+    if file {
+        match parse(read args[1]) {
+            Ok => {}
+            Error(cause) => {
+                printError($"time: {args[1]}: {cause}")
+                exit(1)
+            }
+        }
+        return
+    }
+    long count = long.parse(read args[1]) ?? -1
+    if count < 0 {
+        printError("usage: time format COUNT | parse FILE | local COUNT | clock COUNT")
+        exit(2)
+    }
+    if args[0] == "format" {
+        format(count)
+    } else if args[0] == "local" {
+        local(count)
+    } else {
+        clock(count)
+    }
+}

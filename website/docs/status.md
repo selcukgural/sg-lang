@@ -52,7 +52,9 @@ entries in less memory than the `zip` crate; `flate2` with `zlib-rs` compresses 
 instructions where it has them, and takes at most 1.3 times the time of Rust and Zig, where it took six to
 nine. Then hex and Base64, made five to seven times faster, to between 1.25 and 1.54 times the faster of Rust
 and Zig and three times as fast as Rust's `hex`; and the categories and normal forms of Unicode, as fast as
-ICU4X or faster.
+ICU4X or faster. Then time, random numbers and the log: dates are written in the time of `chrono`, where they
+took 2.4 times as long, and numbers and lines of a log in the time of Rust and Zig; a moment in a time zone,
+which SG asks of the C library each time, takes four times `chrono`'s.
 
 ## Not yet
 

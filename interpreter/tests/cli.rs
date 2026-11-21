@@ -1348,6 +1348,152 @@ fn the_trial_of_unicode() {
     assert_eq!(compiled(&["nfkc", "text.txt", "x"]).0, 2, "a wrong use");
 }
 
+/// A trial of `trials/std/<module>` built in `dir`: its source, and the program compiled from it
+/// with `--release`.
+fn std_trial(dir: &Path, module: &str) -> (String, String) {
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let source = trials.join("std").join(module).join("sg").join(format!("{module}.sg")).to_string_lossy().into_owned();
+    let built = program(dir, module).to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    (source, built)
+}
+
+/// The trial of `std`'s calendar and clocks (choices 1667, 1668), run small: the SG program,
+/// interpreted and compiled, writes 1,000 moments as `chrono` does, reads seven moments of RFC 3339
+/// (before 1970, with offsets of either sign and fractions of one to nine digits) to the seconds
+/// `chrono` reads, and, where the system has the time zone, sees 1,000 moments in Istanbul as
+/// `chrono` sees them.
+#[test]
+fn the_trial_of_time() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_time");
+    let (source, built) = std_trial(&dir, "time");
+    std::fs::write(
+        dir.join("moments.txt"),
+        "1970-01-01T00:00:00Z\n1969-12-31T23:59:59.999999999Z\n2026-11-21T23:30:05.5+03:00\n1900-01-01T00:00:00-14:00\n\
+         2199-12-31T23:59:59.123456789+14:00\n2000-02-29T12:00:00.01-05:45\n1987-03-14T22:05:41.0274+05:45\n",
+    )
+    .unwrap();
+    let compiled = |args: &[&str]| {
+        ran(&Command::new(&built).args(args).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+    };
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+    };
+    let cases: [(&[&str], &str); 3] = [
+        (&["format", "1000"], "moments 1000\ncharacters 25273\nsum 53997\n"),
+        (&["parse", "moments.txt"], "lines 7\nseconds 8339006144\nnanoseconds 1660856788\noffsets 10800\n"),
+        (&["clock", "1000"], "reads 1000\nforward true\n"),
+    ];
+    for (args, expected) in cases {
+        assert_eq!(interpreted(args), (0, expected.to_string(), String::new()), "{args:?}, interpreted");
+        assert_eq!(compiled(args), (0, expected.to_string(), String::new()), "{args:?}, compiled");
+    }
+    // `TZ` names a zone of the tz database only where the system has one (not on Windows).
+    let local = compiled(&["local", "1000"]);
+    assert_eq!(interpreted(&["local", "1000"]), local, "local, interpreted and compiled");
+    if Path::new("/usr/share/zoneinfo/Europe/Istanbul").exists() {
+        assert_eq!(local, (0, "moments 1000\noffsets 9839376\nparts 2111618\n".to_string(), String::new()));
+    }
+    assert_eq!(compiled(&["parse", "missing.txt"]).0, 1, "a missing file");
+    std::fs::write(dir.join("bad.txt"), "2026-11-21T23:30:05Z\n2026-02-30T00:00:00Z\n").unwrap();
+    let bad = compiled(&["parse", "bad.txt"]);
+    assert_eq!(bad.0, 1, "not a moment");
+    assert!(bad.2.contains("line 2"), "{bad:?}");
+    assert_eq!(compiled(&["format", "many"]).0, 2, "a wrong use");
+}
+
+/// The trial of `std`'s random numbers (choices 1667, 1669), run small, interpreted and compiled.
+/// What it prints does not depend on the numbers drawn; that they are those of the reference code
+/// of xoshiro256** seeded with SplitMix64, as `rand_xoshiro`'s, is held by `ok_random_seeded`.
+#[test]
+fn the_trial_of_random() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_random");
+    let (source, built) = std_trial(&dir, "random");
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&sg(&dir, &words))
+    };
+    let cases: [(&[&str], &str); 4] = [
+        (&["numbers", "1000"], "numbers 1000\nbits near half true\n"),
+        (&["range", "1000"], "numbers 1000\nbars 1000\nevery bar near true\n"),
+        (&["fill", "1"], "bytes 1048576\nmean near true\n"),
+        (&["tokens", "10"], "tokens 10\ncharacters 640\nhex true\n"),
+    ];
+    for (args, expected) in cases {
+        assert_eq!(interpreted(args), (0, expected.to_string(), String::new()), "{args:?}, interpreted");
+        assert_eq!(compiled(args), (0, expected.to_string(), String::new()), "{args:?}, compiled");
+    }
+    assert_eq!(compiled(&["numbers", "many"]).0, 2, "a wrong use");
+}
+
+/// A way of running a program: the exit code, the output and the standard error.
+type Run<'a> = dyn Fn(&[&str]) -> (i32, String, String) + 'a;
+
+/// The trial of `std`'s log (choices 1667, 1670), run small, interpreted and compiled: each line
+/// on the standard error is a time to the millisecond, `INFO ` and the message; the lines of four
+/// tasks are whole lines, every message there once; a line that is off writes nothing.
+#[test]
+fn the_trial_of_log() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_log");
+    let (source, built) = std_trial(&dir, "log");
+    let compiled = |args: &[&str]| {
+        ran(&Command::new(&built).args(args).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+    };
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+    };
+    // The messages of the lines, each line held to its form, in order of their text.
+    let messages = |error: &str| {
+        let mut seen: Vec<String> = error
+            .lines()
+            .map(|line| {
+                let (time, rest) = line.split_at(24);
+                let digits = time.bytes().enumerate().all(|(i, b)| match i {
+                    4 | 7 => b == b'-',
+                    10 => b == b'T',
+                    13 | 16 => b == b':',
+                    19 => b == b'.',
+                    23 => b == b'Z',
+                    _ => b.is_ascii_digit(),
+                });
+                assert!(digits, "{line:?}");
+                rest.strip_prefix(" INFO  ").unwrap_or_else(|| panic!("{line:?}")).to_string()
+            })
+            .collect();
+        seen.sort();
+        seen
+    };
+    let runs: [&Run<'_>; 2] = [&interpreted, &compiled];
+    for run in runs {
+        let (code, output, error) = run(&["lines", "3"]);
+        assert_eq!((code, output.as_str()), (0, "lines 3\n"));
+        assert_eq!(messages(&error), ["request 0 took 0 ms", "request 1 took 7 ms", "request 2 took 14 ms"]);
+        assert_eq!(run(&["off", "1000"]), (0, "lines 0 of 1000\nsum 499500\n".to_string(), String::new()));
+        let (code, output, error) = run(&["tasks", "100"]);
+        assert_eq!((code, output.as_str()), (0, "lines 100\n"));
+        let mut expected: Vec<String> =
+            (0..4).flat_map(|task| (0..25).map(move |i| format!("task {task} request {i} took {} ms", i * 7 % 1000))).collect();
+        expected.sort();
+        assert_eq!(messages(&error), expected);
+    }
+    assert_eq!(compiled(&["lines", "many"]).0, 2, "a wrong use");
+}
+
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
 /// part of its own (`## json`) in `benchmarks/library.md`, which holds the measurements, or is named
 /// in its list of those not measured yet, which the slices empty.

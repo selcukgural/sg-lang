@@ -28,6 +28,9 @@ and their tables are in [The library against Rust and Zig](../benchmarks/library
 | [std/checksum](std/checksum) | The CRC-32 and the Adler-32 of 100 MB, the CRC-32 of each of 921,952 lines | 151 |
 | [std/encoding](std/encoding) | 100 MB written in Base64 and read back, ten million values of 32 bytes in hex and back, ten million tokens in the Base64 of URLs and back | 152 |
 | [std/unicode](std/unicode) | The category of each character of 100 MB in many writings, each line into NFC and into NFD, each line checked to be NFC | 152 |
+| [std/time](std/time) | Ten million moments written in ISO 8601, 100 MB of RFC 3339 read, a million moments in a time zone, the clock read ten million times | 153 |
+| [std/random](std/random) | A hundred million numbers, a hundred million in a range, 100 MB of bytes, a million tokens of the system's bytes | 153 |
+| [std/log](std/log) | A million lines, a hundred million that are off, a million from four tasks | 153 |
 
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
@@ -37,21 +40,27 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 - Each trial has a folder with `sg/`, `rust/` and `zig/`. Rust uses its standard library and the crates
   people use for the job (`regex`), pinned in `Cargo.lock`, and threads rather than an async runtime. Zig
   uses its standard library, and a library of C where Zig has none, as Zig programs do: `grep` links
-  PCRE2 (with its JIT) through `build.zig` (1541), and `std/unicode` ICU4C, Zig having no categories or
-  normal forms (1659). SG uses only what comes with the language.
+  PCRE2 (with its JIT) through `build.zig` (1541), `std/unicode` ICU4C, Zig having no categories or
+  normal forms (1659), and `std/time` the C library's `localtime_r`, Zig having no time zones; its
+  calendar and its ISO 8601 are written by hand (1667). SG uses only what comes with the language.
 - The three give the same output, byte for byte, on the same input; their errors are worded each in its
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
   megabyte and holds them to what Rust and Zig print.
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
   same bytes on every machine, [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`, and
   [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression` and
-  `std/encoding`, and [`inputs/unicode.sg`](inputs/unicode.sg) the text in many writings of `std/unicode`.
+  `std/encoding`, [`inputs/unicode.sg`](inputs/unicode.sg) the text in many writings of `std/unicode`,
+  and [`inputs/time.sg`](inputs/time.sg) the moments in RFC 3339 of `std/time`.
   The gzip, the archives, the Base64 and the NFD that the programs read are made by Python's `gzip`,
   `zipfile`, `base64` and `unicodedata`, which none of the programs measured is.
 - Where each language may lawfully write other bytes (compressed data, an archive), the program writes
   into a file, and `measure.py` opens each one with Python and holds it to the input before anything is
   timed; the size each wrote is printed under its table. What is too large for the output and must be
   the same everywhere (Base64, a normal form) goes into a file too, held to what Python makes of the input.
+- What a log writes on the standard error goes into a file; each line is held to its form and the
+  messages, in the order of their text, must be the same everywhere. Where the numbers drawn differ
+  (Zig's generator is another), the programs print only whether they look random (1669, 1670). Every
+  program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or `RUST_LOG`.
 
 ## Fairness (1554)
 

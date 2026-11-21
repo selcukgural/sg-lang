@@ -11,7 +11,7 @@ wins ([the rules](method.md#fairness)).
 | [SG against C](against-c.md) | 61 small programs, each written in SG and in C by hand, on macOS |
 | [SG against C on Windows](against-c-windows.md) | The same programs on Windows 11 on Arm |
 | [Programs against Rust and Zig](programs.md) | `wc` and `grep`, written in SG, Rust and Zig |
-| [The library against Rust and Zig](library.md) | The modules of `std` against Rust's crates and Zig's library: JSON, compression, zip, hashes, checksums, hex and Base64, Unicode |
+| [The library against Rust and Zig](library.md) | The modules of `std` against Rust's crates and Zig's library: JSON, compression, zip, hashes, checksums, hex and Base64, Unicode, time, random numbers, the log |
 | [Slower than C, and could be better](slower-than-c.md) | Every place where SG was found slower, and what would fix it |
 | [How it is measured](method.md) | The rules of fairness, the machines, the compilers, and how to run it all again |
 

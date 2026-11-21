@@ -1,0 +1,12 @@
+[package]
+name = "random"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `rand` as people use it, with its default features, and `rand_xoshiro` for the generator SG has,
+# xoshiro256** seeded with SplitMix64 (choice 1667); `hex` writes the tokens.
+[dependencies]
+rand = "0.10.4"
+rand_xoshiro = "0.8.2"
+hex = "0.4.3"

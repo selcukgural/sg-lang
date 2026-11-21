@@ -40,7 +40,8 @@ pub(crate) fn entropy(bytes: &mut [u8]) -> bool {
 
 /// `Clock.monotonic()` and `Clock.wall()`: the real clocks, not the clock of the run, so that
 /// what a program measures is the time it took. Read with `clock_gettime`, as compiled code reads
-/// them, so that the monotonic clock is the same one (Rust's own stops while macOS sleeps).
+/// them, so that the monotonic clock is the same one: on macOS `CLOCK_UPTIME_RAW`, which stops
+/// while the machine sleeps, as Linux's `CLOCK_MONOTONIC` and Rust's `Instant` (choice 1674).
 pub(crate) fn clock(wall: bool) -> i128 {
     #[repr(C)]
     struct Timespec {
@@ -52,7 +53,7 @@ pub(crate) fn clock(wall: bool) -> i128 {
     }
     const REALTIME: std::ffi::c_int = 0;
     #[cfg(target_os = "macos")]
-    const MONOTONIC: std::ffi::c_int = 6;
+    const MONOTONIC: std::ffi::c_int = 8;
     #[cfg(not(target_os = "macos"))]
     const MONOTONIC: std::ffi::c_int = 1;
     let mut time = Timespec { seconds: 0, nanoseconds: 0 };

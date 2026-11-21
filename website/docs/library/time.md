@@ -64,7 +64,7 @@ true -1
 
 | Signature | What it does |
 |---|---|
-| `Instant Instant.now()` | Reads the monotonic clock |
+| `Instant Instant.now()` | Reads the monotonic clock; on Linux and macOS it stops while the machine sleeps, as Rust's `Instant` |
 | `Duration elapsed(read this)` | The time gone by since this moment |
 | `Duration since(read this, Instant earlier)` | The time from `earlier` to this; negative when `earlier` is later |
 | `Instant plus(read this, Duration span)`, `minus(read this, Duration span)` | A moment a span later, or earlier |
@@ -244,3 +244,12 @@ error: there is no variable or type named `Clock`
 
 To wait, an async function awaits `Task.delay(ms)`, and a deadline is `CancellationSource.after(ms)`: see
 [Tasks](./tasks.md). Neither a `const` nor the condition of `lock ... when` may read the clock.
+
+## How fast
+
+On an Apple M3 Max, ten million moments are written in ISO 8601 in 0.49 seconds, the time of Rust's `chrono`
+(0.50) and faster than Zig's own writing (0.70); 100 MB of RFC 3339, 3.4 million moments, are read in 0.136
+seconds, against 0.173 for `chrono` and 0.125 for a reader written by hand in Zig; the clock is read ten
+million times in 0.097 seconds, against 0.166 for Rust and 0.158 for Zig. A million moments seen in a time zone take 0.20 seconds where `chrono`
+takes 0.05: SG asks the C library each time, `chrono` reads the rules of the zone once ([the
+tables](../benchmarks/library.md#time)).

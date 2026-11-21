@@ -7,7 +7,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in [How it is measured](method.md), and so are the rules of fairness (1554). `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `command_line`, `environment`, `files`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`.
+Not measured yet: `atomic`, `command_line`, `environment`, `files`, `net`, `path`, `process`, `regex`, `signals`.
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
@@ -181,3 +181,79 @@ compressor: its normal forms take UTF-16, and each line is turned into UTF-16 an
 what is measured. ICU4C 79 has the tables of Unicode 18.0, SG and Python those of 17.0; no character of the
 text is new in 18.0, and every build writes the same bytes. Nothing had to be made faster for this table.
 
+## time
+
+`trials/std/time`: `format` writes ten million moments between 1900 and 2200 in ISO 8601 into a text kept
+from one to the next, a quarter of them whole seconds and the rest with milliseconds, microseconds or
+nanoseconds; `parse` reads 100 MB of moments in RFC 3339 (`trials/inputs/time.sg`: offsets from -14:00 to
++14:00 and `Z`, fractions of 0 to 9 digits) and takes each to UTC; `local` sees a million moments in the time
+zone of the system, `TZ=Europe/Istanbul`; `clock` reads the monotonic clock ten million times. The moments
+come from SplitMix64, and each program prints sums of what it wrote or read. Apple M3 Max, 22 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 10,000,000 moments, written in ISO 8601 | 0.490 s, 1.8 MB | 0.597 s, 1.8 MB | 0.497 s, 5.4 MB | 0.700 s, 2.0 MB | 1.023 s, 2.1 MB |
+| 3,407,285 moments in RFC 3339, read | 0.136 s, 1.9 MB | 0.138 s, 1.9 MB | 0.173 s, 5.4 MB | 0.125 s, 2.0 MB | 0.127 s, 2.2 MB |
+| 1,000,000 moments, in the time zone | 0.203 s, 2.0 MB | 0.223 s, 2.0 MB | 0.054 s, 5.4 MB | 0.189 s, 2.2 MB | 0.193 s, 2.3 MB |
+| The clock, read 10,000,000 times | 0.097 s, 1.8 MB | 0.099 s, 1.8 MB | 0.166 s, 5.3 MB | 0.158 s, 2.0 MB | 0.154 s, 2.1 MB |
+| Size, stripped | 67 KB | 67 KB | 403 KB | 361 KB | 442 KB |
+| Lines | 117 | 117 | 115 | 235 | 235 |
+
+Rust is `chrono` 0.4.45 with its default features, writing with `to_rfc3339_opts(SecondsFormat::AutoSi,
+true)`, four times as fast as `write!` with a format of `%` letters, reading with `parse_from_rfc3339`, and
+seeing the zone with `with_timezone(&Local)`; its clock is `std::time::Instant`. Zig's library has no
+calendar before 1970, no ISO 8601 and no time zones: its program writes the calendar by hand (the days of
+Howard Hinnant), the text with `std.fmt`, reads RFC 3339 by hand, asks the C library's `localtime_r` for the
+zone, and reads `std.Io.Clock.awake`. Before choice 1673 SG wrote the moments in 1.183 s, each part of a date
+going through `snprintf`, and before 1674 read the clock in 0.178 s (`CLOCK_MONOTONIC` of macOS, where Rust
+and Zig read `CLOCK_UPTIME_RAW`). `chrono` sees a zone 3.8 times as fast, having read its TZif file once;
+SG asks `localtime_r` each time, as Zig does ([Slower than C](slower-than-c.md#the-library)).
+
+## random
+
+`trials/std/random`: `numbers` draws a hundred million numbers of 64 bits from the seed 1, `range` a hundred
+million from 0 up to 1,000 into a histogram, `fill` 100 MB of bytes 64 KB at a time into one buffer, and
+`tokens` a million tokens of 64 hex digits from the random bytes of the system. Zig's generator is not SG's,
+so what is printed does not depend on the numbers drawn: whether the bits set, each bar of the histogram and
+the mean of every 64th byte lie within six standard deviations of what they should be, and whether every
+token is hex. Apple M3 Max, 22 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 100,000,000 numbers of 64 bits | 0.100 s, 1.8 MB | 0.100 s, 1.8 MB | 0.100 s, 2.0 MB | 0.095 s, 2.0 MB | 0.272 s, 2.1 MB |
+| 100,000,000 numbers up to 1,000 | 0.120 s, 1.9 MB | 0.111 s, 1.9 MB | 0.109 s, 2.0 MB | 0.101 s, 2.0 MB | 0.098 s, 2.1 MB |
+| 100 MB of bytes | 0.014 s, 2.0 MB | 0.014 s, 2.0 MB | 0.014 s, 2.0 MB | 0.015 s, 2.0 MB | 0.034 s, 2.1 MB |
+| 1,000,000 tokens of the system | 0.242 s, 1.9 MB | 0.243 s, 1.9 MB | 0.957 s, 2.0 MB | 0.051 s, 2.0 MB | 0.066 s, 2.1 MB |
+| Size, stripped | 34 KB | 50 KB | 353 KB | 345 KB | 442 KB |
+| Lines | 78 | 78 | 64 | 86 | 86 |
+
+Rust is `rand` 0.10.4 with `rand_xoshiro` 0.8.2's `Xoshiro256StarStar::seed_from_u64`, SG's own generator
+(xoshiro256\*\* seeded with SplitMix64), whose numbers and bytes were held to be SG's on a million draws; its
+range is `random_range`, its tokens `SysRng` and `hex::encode_to_slice`. Zig is `std.Random.DefaultPrng`,
+xoshiro256++, a cheaper step than xoshiro256\*\*, with `uintLessThan` and `bytes`, and its tokens `Io.random`,
+a ChaCha kept in the process and seeded by the system; SG asks the system for each token (`arc4random_buf`),
+as Rust's `SysRng` does (choice 1676). Before choice 1673 `fill` took 0.031 s, a byte at a time, and the
+tokens 0.341 s, a digit at a time.
+
+## log
+
+`trials/std/log`: `lines` writes a million lines at the level Info, `request 12 took 84 ms`; `off` makes a
+hundred million calls at the level Debug while the log writes from Info, none of which makes its text; `tasks`
+has four tasks write a quarter of a million lines each at once. Each line goes to the standard error, a file,
+as `2026-11-22T20:15:03.123Z INFO  ` and the message, and `measure.py` holds every line to that form and the
+messages to be the same in every build. Apple M3 Max, 22 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 1,000,000 lines | 1.864 s, 1.9 MB | 1.894 s, 1.9 MB | 1.851 s, 2.1 MB | 1.708 s, 2.0 MB | 1.805 s, 2.1 MB |
+| 100,000,000 lines that are off | 0.052 s, 1.8 MB | 0.083 s, 1.8 MB | 0.059 s, 2.1 MB | 0.042 s, 2.0 MB | 0.065 s, 2.1 MB |
+| 1,000,000 lines from four tasks | 2.761 s, 2.2 MB | 2.876 s, 2.2 MB | 3.642 s, 2.1 MB | 2.567 s, 2.1 MB | 2.615 s, 2.2 MB |
+| Size, stripped | 68 KB | 84 KB | 473 KB | 361 KB | 458 KB |
+| Lines | 47 | 47 | 50 | 99 | 99 |
+
+Rust is `log` 0.4.35 with `env_logger` 0.11.12, given SG's form of line, its time to the millisecond and no
+colour; Zig is `std.log` with a `logFn` that writes the same line under the lock of the standard error, the
+calendar by hand. Each line is one write of the system in all three, which is most of the time. Zig's level
+is fixed when the program is compiled, so its lines that are off are not in the program; SG reads its level,
+which `SG_LOG` may set, as the program runs. Before choice 1673 four tasks took 4.209 s on macOS, waiting in
+the kernel on the lock of C's stream.

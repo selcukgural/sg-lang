@@ -1,0 +1,70 @@
+// Moments written in RFC 3339 for the trial `std/time`: `time MEGABYTES SEED` writes about MEGABYTES
+// megabytes of them, one a line, made by SplitMix64 from SEED (choice 1668). The moments lie
+// between 1900 and 2200, the offset is `Z` on one line in eight and otherwise from -14:00 to
+// +14:00 by quarters of an hour, and the fraction of the second has 0 to 9 digits, each count as
+// likely as the others: `1987-03-14T22:05:41.0274+05:45`.
+
+struct SplitMix {
+    ulong state
+
+    ulong next(ref this) {
+        this.state = this.state.wrappingAdd(0x9E3779B97F4A7C15)
+        ulong z = this.state
+        z = (z ^ (z >> 30)).wrappingMultiply(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> 27)).wrappingMultiply(0x94D049BB133111EB)
+        return z ^ (z >> 31)
+    }
+}
+
+// 1900-01-01 and 2200-01-01, in seconds since 1970.
+const long Low = -2208988800
+const long Span = 9467107200
+
+void main(List<string> args) {
+    if args.length() != 2 {
+        printError("usage: time MEGABYTES SEED")
+        exit(2)
+    }
+    long megabytes = long.parse(read args[0]) ?? -1
+    long seed = long.parse(read args[1]) ?? -1
+    if megabytes < 0 || seed < 0 {
+        printError("usage: time MEGABYTES SEED")
+        exit(2)
+    }
+    var random = SplitMix { state = seed.wrappingToUlong() }
+    long goal = megabytes * 1048576
+    long written = 0
+    while written < goal {
+        long seconds = Low + (long)(random.next() % (ulong)Span)
+        int minutes = 0
+        bool zulu = random.next() % 8 == 0
+        if !zulu {
+            minutes = ((int)(random.next() % 113) - 56) * 15
+        }
+        var utc = DateTime.fromUnixSeconds(seconds)
+        var seen = utc.withOffset(Duration.fromSeconds((long)minutes * 60)) ?? panic("an offset under a day")
+        var line = string.withCapacity(40)
+        line.write($"{seen.year():D4}-{seen.month():D2}-{seen.day():D2}T{seen.hour():D2}:{seen.minute():D2}:{seen.second():D2}")
+        nint digits = (nint)(random.next() % 10)
+        if digits > 0 {
+            line.write('.')
+            for _ in 0..digits {
+                line.write((char)('0' + (int)(random.next() % 10)))
+            }
+        }
+        if zulu {
+            line.write('Z')
+        } else {
+            int away = minutes
+            if away < 0 {
+                line.write('-')
+                away = -away
+            } else {
+                line.write('+')
+            }
+            line.write($"{away / 60:D2}:{away % 60:D2}")
+        }
+        written += line.length() + 1
+        print(line)
+    }
+}

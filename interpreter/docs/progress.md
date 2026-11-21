@@ -336,12 +336,16 @@ where it has them and lose to Rust and Zig by at most 1.3 times, from six to nin
 Base64 and Unicode, where hex and Base64 go through tables and blocks on the stack, a character is written
 into a text without a call, and a text or a list kept by the program takes what they write (`encodeInto`,
 `decodeInto`), from nine to twelve times slower down to 1.25 to 1.54, and the categories and normal forms
-of Unicode were ahead of ICU4X and ICU4C as they stood (1659-1666).
+of Unicode were ahead of ICU4X and ICU4C as they stood (1659-1666), then time, random numbers and the log,
+where a number written with a least count of digits no longer goes through `snprintf`, which wrote dates in
+2.4 times the time of `chrono` and now in its time, the lines of tasks on macOS wait on a lock of the
+program's own, the monotonic clock of macOS is the one Rust reads, and a moment in a time zone and a token
+of the system's bytes are left slower on purpose or for later (1667-1677).
 
 ## Next
 
 Next comes a slice
-for each of time, random numbers and the log; the network; and the command line,
+for each of the network; and the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

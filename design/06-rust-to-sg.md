@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-fifty-second slice (`base64`'s `encode_string` and `decode_vec`, `hex::decode_to_slice`, 1665).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-third slice (`Instant` on macOS reads the clock Rust's does, 1674).
 
 ## Functions and variables
 
@@ -493,7 +493,7 @@ Last brought up to date: 21 November 2026, the hundred-and-fifty-second slice (`
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `std::time::Instant::now()`, `start.elapsed()`, `later.duration_since(earlier)` | `Instant.now()`, `start.elapsed()`, `later.since(earlier)` | built | `since` gives a negative `Duration` where Rust's saturates at zero; an `Instant` is not printed |
+| `std::time::Instant::now()`, `start.elapsed()`, `later.duration_since(earlier)` | `Instant.now()`, `start.elapsed()`, `later.since(earlier)` | built | `since` gives a negative `Duration` where Rust's saturates at zero; an `Instant` is not printed; on macOS the same clock as Rust's, `CLOCK_UPTIME_RAW`, which stops while the machine sleeps |
 | `std::time::Duration::from_millis(250)`, `d.as_millis()`, `d.as_secs_f64()` | `Duration.fromMilliseconds(250)`, `d.milliseconds()`, `d.totalSeconds()` | built | A `long` of nanoseconds that may be negative; `{:?}` and `print(d)` both write `1.5s` |
 | `a + b`, `a - b`, `d * 3`, `a.checked_add(b)` | `a.plus(b)`, `a.minus(b)`, `d.times(3)` | built | Methods; an overflow follows the rule of the numbers, so there is no `checked_` form yet |
 | `SystemTime::now()`, `.duration_since(UNIX_EPOCH)` | `DateTime.now()`, `t.unixSeconds()`, `t.unixMilliseconds()` | built | UTC, nanoseconds in a `long`: the years 1677 to 2262 |

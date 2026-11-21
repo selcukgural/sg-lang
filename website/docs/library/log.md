@@ -139,6 +139,13 @@ When the standard error is a terminal, the level is coloured: `ERROR` red, `WARN
 when `NO_COLOR` is set or `TERM` is `dumb`. On Windows the console is asked to take the escape sequences, and
 an old one that refuses them shows no colour.
 
+## How fast
+
+On an Apple M3 Max a million lines into a file take 1.86 seconds, as Rust's `env_logger` (1.85) and Zig's
+`std.log` with the same lines (1.71): each line is one write of the system. A hundred million lines that are
+off take 0.05 seconds, and a million lines from four tasks at once 2.76, against 3.64 for Rust and 2.57 for Zig
+([the tables](../benchmarks/library.md#log)).
+
 ## Not here yet
 
 Files and their rotation, fields of a structured log (JSON lines), a level for each module, and a way to

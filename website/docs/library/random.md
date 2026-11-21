@@ -170,3 +170,11 @@ keeps although nothing reads the bytes again.
 A token for a link or a file name is `SecureRandom.hexString(32)`; a key is `SecureRandom.fill` into a
 `byte[32]`; a password to show once is a few `SecureRandom.nextInt` draws into an alphabet. A `Random`, even
 one from `Random.fromSystem()`, is never any of those.
+
+## How fast
+
+On an Apple M3 Max a hundred million numbers of 64 bits take 0.10 seconds, the time of Rust's `rand` with
+the same generator (`rand_xoshiro`'s `Xoshiro256StarStar`, whose numbers are SG's), and 100 MB of bytes
+0.014 seconds, as Rust and Zig. A million tokens of 64 hex digits from the system's bytes take 0.24 seconds,
+four times as fast as Rust's `SysRng`, and five times the time of Zig, whose generator for keys is kept in the
+program rather than asked of the system each time ([the tables](../benchmarks/library.md#random)).
