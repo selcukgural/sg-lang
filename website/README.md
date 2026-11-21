@@ -15,8 +15,9 @@ built with Docusaurus, published by Cloudflare Pages from this folder.
 - Every ```` ```sg ```` block on a page is a whole program, and `npm run check` runs it with `sg`: the
   ```` ```text ```` block after it is what it prints. ```` ```sg error ```` must be refused, and ```` ```sg test
   ```` runs its tests. A slice that changes what a page shows changes the page in the same commit.
-- The two programs of the front page are checked by `npm run check` too, the second being a mistake that must
-  be refused with the message the page shows.
+- The three programs of the front page are checked by `npm run check` too: the first must print what the page
+  shows, and the other two are mistakes that must be refused with the messages the page shows. So is the
+  program in the repository's root README, by the rules of a page.
 - `src/theme/prism-include-languages.js` colours SG with the same words as the VS Code grammar.
 - `static/_headers` holds the headers Cloudflare gives each page: a CSP that allows no inline script but the
   one Docusaurus writes for the colour mode, by its hash (`scripts/check-csp.mjs` fails the build if another

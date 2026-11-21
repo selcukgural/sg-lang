@@ -5,11 +5,11 @@
 // `main` that ends with an error); for both the ```text after it is how the output starts. ```sg test runs
 // its tests (`sg test`). ```sg nocheck is not run: a part of a program, or one that needs files beside it
 // (modules, a C file); keep those few. The program is written as `example.sg` in a folder of its own,
-// so the messages name that file. `SG` names the sg program (../interpreter/target/release/sg by default).
+// so the messages name that file. The root README of the repository is held to the same rules. `SG` names the sg program (../interpreter/target/release/sg by default).
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const site = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +33,7 @@ function run(args) {
 
 let failures = 0;
 let programs = 0;
-for (const page of pages(join(site, 'docs'))) {
+for (const page of [...pages(join(site, 'docs')), join(site, '..', 'README.md')]) {
   const text = readFileSync(page, 'utf8');
   const blocks = [...text.matchAll(/^```(\w+)([^\n]*)\n([\s\S]*?)^```$/gm)].map((match) => ({ lang: match[1], meta: match[2].trim(), body: match[3] }));
   blocks.forEach((block, at) => {
@@ -45,7 +45,7 @@ for (const page of pages(join(site, 'docs'))) {
     const result = run(kind === 'test' ? ['test', 'example.sg'] : ['example.sg']);
     const next = blocks[at + 1];
     const shown = next && next.lang === 'text' ? next.body.trimEnd() : null;
-    const name = `${page.slice(site.length + 1)}, program ${programs}`;
+    const name = `${relative(site, page)}, program ${programs}`;
     // An error is refused before the program runs; a panic is a program the checker takes.
     if (kind === 'error' || kind === 'panic') {
       const checked = run(['emit-c', 'example.sg']).code === 0;

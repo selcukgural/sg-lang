@@ -50,6 +50,45 @@ cargo run -- build examples/primes.sg --release    # compile it through C
 cargo test                                         # everything, also under the sanitizers and a leak check
 ```
 
+A small program, to see what SG looks like:
+
+```sg
+struct Item {
+    string name
+    int count
+}
+
+Result<int, string> total(read List<Item> items) {
+    var sum = 0
+    for item in items {
+        if item.count < 0 {
+            return Error($"{item.name} has a negative count".toString())
+        }
+        sum += item.count
+    }
+    return Ok(sum)
+}
+
+void main() {
+    var items = List<Item> {
+        Item { name = "bolts", count = 40 },
+        Item { name = "nuts", count = 2 },
+    }
+    match total(read items) {
+        Ok(sum) => print($"{sum} items in stock")
+        Error(why) => print(why)
+    }
+}
+```
+
+```text
+42 items in stock
+```
+
+Types come first and lines need no semicolons. `read` lends the list to `total` without giving it
+away, so `main` still owns it; an error is a value (`Result`) that must be handled, and `match`
+names every case.
+
 Then [take the tour](https://sg-lang.org/docs/learn/tour) or read [the book](https://sg-lang.org/docs/learn/book/getting-started).
 The programs in [interpreter/examples](interpreter/examples) show the language as it is today.
 
