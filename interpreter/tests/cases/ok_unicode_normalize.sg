@@ -1,0 +1,65 @@
+// `text.normalize(form)` and `text.isNormalized(form)`: the normal forms of Unicode (choices 1599,
+// 1611-1613). `é` as one character and as `e` with an accent are one text in C and D; KC and KD
+// also make one of what differs only in how it is shown. Hangul is decomposed and composed by its
+// own rule. A long run of marks is put in order without quadratic time (1613).
+
+// The codes of a text: `"é"` is `00E9`.
+string codes(read string text) {
+    var out = string.withCapacity(0)
+    for c in text.chars() {
+        if out.length() > 0 {
+            out.write(' ')
+        }
+        int code = (int)c
+        out.write($"{code:X4}")
+    }
+    return out
+}
+
+string twice(read string s) {
+    return $"{s}{s}".toString()
+}
+
+void main() {
+    var composed = "é"
+    var decomposed = "e\u{301}"
+    print(composed == decomposed)
+    print(composed.normalize(NormalizationForm.D) == decomposed)
+    print(decomposed.normalize(NormalizationForm.C) == composed)
+    print(codes(read "ﬁ²Ａ".normalize(NormalizationForm.KC)))
+    print(codes(read "ﬁ²Ａ".normalize(NormalizationForm.C)))
+    print(codes(read "ǅ".normalize(NormalizationForm.KD)))
+    print(codes(read "한글".normalize(NormalizationForm.D)))
+    print(codes(read "\u{1100}\u{1161}\u{11A8}".normalize(NormalizationForm.C)))
+    // The marks put in the order of their classes (U+0316 below, 220; U+0301 above, 230), and
+    // the accent above composed with the `a` over the one below, which does not block it.
+    print(codes(read twice(read "a\u{301}\u{316}").normalize(NormalizationForm.C)))
+    // A mark of class 230 blocks another of 230 from composing with the letter.
+    print(codes(read "a\u{301}\u{300}".normalize(NormalizationForm.C)))
+    // An excluded composite (U+0958 DEVANAGARI LETTER QA) stays decomposed in C.
+    print(codes(read "\u{958}".normalize(NormalizationForm.C)))
+    print(codes(read "".normalize(NormalizationForm.KC)))
+    print("plain ASCII".normalize(NormalizationForm.KD))
+    var form = NormalizationForm.KD
+    print(form)
+    print("Å".isNormalized(form))
+    print("plain".isNormalized(NormalizationForm.C))
+    print(decomposed.isNormalized(NormalizationForm.C))
+    print(composed.isNormalized(NormalizationForm.C))
+    print(decomposed.isNormalized(NormalizationForm.D))
+    print("ﬁ".isNormalized(NormalizationForm.C))
+    print("ﬁ".isNormalized(NormalizationForm.KC))
+    var marks = string.withCapacity(400001)
+    marks.write('a')
+    for i in 0..100000 {
+        if i % 2 == 0 {
+            marks.write('\u{301}')
+        } else {
+            marks.write('\u{316}')
+        }
+    }
+    var sorted = marks.normalize(NormalizationForm.C)
+    print(sorted.length())
+    print(codes(sorted[..8]))
+    print(sorted.isNormalized(NormalizationForm.C))
+}

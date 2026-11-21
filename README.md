@@ -180,7 +180,7 @@ are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is writt
 - **C**: calling C and being called by it, C's layouts (unions, bit fields, `packed`), and libraries of SG
   that C links. SQLite, libcurl and zlib are wrapped in modules whose users write no `unsafe`.
 - **A small library**: files, folders and paths, other programs, TCP and UDP, signals, time and time
-  zones, random numbers, Unicode, hex and Base64, CRC-32, SHA-256 and HMAC, the command line, JSON, a log,
+  zones, random numbers, Unicode with its normal forms, hex and Base64, CRC-32, SHA-256 and HMAC, the command line, JSON, a log,
   regular expressions whose patterns are checked when the program compiles, gzip and zlib with zlib's
   bytes, and zip archives that refuse Zip Slip and bombs before they are read.
 - **No operating system needed**: a program can be built freestanding, and a small kernel for RISC-V boots
@@ -276,7 +276,8 @@ picture of Pasha, the mascot (`brand/pasha.png`), and the logo (`brand/`). The l
 wordmark are outlines of the Outfit font, and the font in `brand/src/` is under the SIL Open Font
 License 1.1 (`brand/src/OFL-Outfit.txt`). The Unicode tables
 (`interpreter/src/unicode_tables.rs`) are made from the Unicode Character Database, under the
-Unicode License v3, whose notice is at the top of that file.
+Unicode License v3, whose notice is at the top of that file; so is Unicode's
+`NormalizationTest.txt` in `interpreter/tests/normalization-suite`, kept unchanged beside its licence.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
 in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,

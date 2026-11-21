@@ -1,0 +1,98 @@
+// Runs Unicode's normalization tests (`NormalizationTest.txt`, choice 1614) with
+// `text.normalize(form)` and `text.isNormalized(form)`, and prints each line whose results are
+// not the expected ones, then a count. A line holds five texts, c1 to c5: a source, its NFC, its
+// NFD, its NFKC and its NFKD. Each of the five is put in each form, which must give what the
+// header of the file says (c2, c3, c4 or c5), and `isNormalized` must be true of it just when
+// `normalize` gives it back. Each code point the lines of Part 1 do not name must be left as it
+// is by all four forms.
+
+// The text a column writes as codes: `0044 0307` is `"D\u{307}"`.
+string text(read string column) {
+    var out = string.withCapacity(column.length())
+    for code in column.splitWhitespace() {
+        out.write((char)(int.parseHex(code) ?? panic($"not a code: {code}")))
+    }
+    return out
+}
+
+// What is wrong with `source` put in `form`, which should give `wanted`: empty when nothing is.
+string tried(read string source, NormalizationForm form, read string wanted) {
+    var normal = source.normalize(form)
+    if normal != wanted {
+        return $" {form} gives {normal.length()} bytes, not {wanted.length()};".toString()
+    }
+    if source.isNormalized(form) != (normal == source) {
+        return $" isNormalized({form}) is {source.isNormalized(form)};".toString()
+    }
+    return ""
+}
+
+void main(List<string> args) {
+    var file = File.readText(read args[0]) ?? panic("cannot read the file")
+    var named = HashSet<char>()
+    bool part1 = false
+    int lines = 0
+    int wrong = 0
+    for line in file.lines() {
+        if line.startsWith("@Part") {
+            part1 = line.startsWith("@Part1")
+            continue
+        }
+        nint hash = line.indexOf('#') ?? line.length()
+        var data = line[..hash].trim()
+        if data.length() == 0 {
+            continue
+        }
+        var c = List<string>()
+        for column in data.split(';') {
+            if c.length() < 5 {
+                c.add(text(read column))
+            }
+        }
+        if part1 {
+            for ch in c[0].chars() {
+                _ = named.add(ch)
+                break
+            }
+        }
+        var problems = string.withCapacity(0)
+        for at in 0..5 {
+            // The canonical forms of c1 to c3 are c2 and c3; of c4 and c5, c4 and c5.
+            nint composed = 3
+            if at < 3 {
+                composed = 1
+            }
+            problems.write(tried(read c[at], NormalizationForm.C, read c[composed]))
+            problems.write(tried(read c[at], NormalizationForm.D, read c[composed + 1]))
+            problems.write(tried(read c[at], NormalizationForm.KC, read c[3]))
+            problems.write(tried(read c[at], NormalizationForm.KD, read c[4]))
+        }
+        if problems.length() > 0 {
+            print($"{data}:{problems}")
+            wrong += 1
+        }
+        lines += 1
+    }
+    int others = 0
+    for code in 0..0x110000 {
+        if code >= 0xD800 && code <= 0xDFFF {
+            continue
+        }
+        char ch = (char)code
+        if named.contains(ch) {
+            continue
+        }
+        var alone = $"{ch}".toString()
+        var problems = string.withCapacity(0)
+        problems.write(tried(read alone, NormalizationForm.C, read alone))
+        problems.write(tried(read alone, NormalizationForm.D, read alone))
+        problems.write(tried(read alone, NormalizationForm.KC, read alone))
+        problems.write(tried(read alone, NormalizationForm.KD, read alone))
+        if problems.length() > 0 {
+            print($"U+{code:X4}:{problems}")
+            wrong += 1
+        }
+        others += 1
+    }
+    print($"{lines} lines and {others} other code points tried; {wrong} wrong")
+}

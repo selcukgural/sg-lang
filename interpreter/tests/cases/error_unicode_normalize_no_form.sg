@@ -1,0 +1,5 @@
+// `normalize` is given the form: there is no form taken when none is written (choice 1599).
+
+void main() {
+    print("x".normalize())
+}

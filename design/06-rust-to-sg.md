@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a range lent as `ref` lends its whole list or array, 1610; `copyFrom`, 1597 and 1609; Pike's machine copies a thread's slots once, 1598).
+Last brought up to date: 21 November 2026, the hundred-and-forty-seventh slice (the normal forms of Unicode, `text.normalize(form)`, 1599 and 1611-1615).
 
 ## Functions and variables
 
@@ -128,7 +128,9 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a 
 | `c.is_uppercase()`, `c.is_lowercase()`, `c.is_control()` | `c.isUpper()`, `c.isLower()`, `c.isControl()` | built | The categories Lu and Ll, narrower than Rust's derived properties |
 | none (the `caseless` or `unicase` crates) | `s.equalsIgnoreCase(t)`, `s.foldCase()` | built | Full case folding, without the Turkic lines |
 | none (the `unicode-general-category` crate) | `c.category()`, a `UnicodeCategory` | built | `UppercaseLetter` ... `Unassigned`; `abbreviation()` gives `Lu` |
-| the `unicode-normalization` and `unicode-segmentation` crates | none | not planned yet | |
+| `s.nfc().collect::<String>()`, `nfd`, `nfkc`, `nfkd` (the `unicode-normalization` crate) | `s.normalize(NormalizationForm.C)`, `D`, `KC`, `KD` | built | A new `string`; a text already in the form is copied as it is after the quick check |
+| `is_nfc(s)`, `is_nfd(s)`, ... (the same crate) | `s.isNormalized(NormalizationForm.C)` | built | The quick check, and the text normalized when it says Maybe |
+| the `unicode-segmentation` crate | none | not planned yet | |
 
 ## Collections
 

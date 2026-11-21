@@ -1,4 +1,4 @@
-// Zip archives that come with the language (choices 1467, 1490, 1491, 1501-1520): an archive
+// Zip archives that come with the language (choices 1467, 1490, 1491, 1501-1520, 1615): an archive
 // written by `ZipWriter` with every kind of entry and read back by `ZipReader`, the same bytes on
 // every machine, the names a writer refuses, the limit of a read, `copyTo`, and `ZipReader.of`.
 // The folder is the first word of the command line.
@@ -39,6 +39,9 @@ Result<void, ZipError> write(read string path, read string streamed) {
     refused("a file named as a folder", zip.add("docs", "x".asBytes(), ZipMethod.Stored, when))
     refused("a file ending in /", zip.add("dir/", "x".asBytes(), ZipMethod.Stored, when))
     refused("a folder named as a file", zip.addDirectory("empty", when))
+    // The name written decomposed, and in upper case too, is the same name (1615).
+    refused("decomposed", zip.add("c\u{327}ay/s\u{327}eker.txt", "x".asBytes(), ZipMethod.Stored, when))
+    refused("decomposed, upper case", zip.add("C\u{327}AY/S\u{327}EKER.TXT", "x".asBytes(), ZipMethod.Stored, when))
     return zip.close()
 }
 

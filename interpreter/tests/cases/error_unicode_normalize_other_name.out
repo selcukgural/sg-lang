@@ -1,0 +1,5 @@
+error: type `string` has no method `nfkc`
+  --> error_unicode_normalize_other_name.sg:4:15
+ 4 |     print("x".nfkc())
+   |               ^^^^
+  hint: `normalize(NormalizationForm.KC)`: a new text in that normal form of Unicode

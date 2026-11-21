@@ -4,9 +4,10 @@
 //
 // Reading checks what an archive says before anything of it is given (1503): a name that could
 // lead out of a folder, or be read another way on another system, is `InsecurePath`, two entries
-// of one name (in any case: `README` and `readme`) `DuplicateName`, entries whose
-// data lie over each other `Overlap` (the bomb that makes one block of compressed data the data of
-// every entry), and the number of entries must fit in the central directory. An entry is read with
+// of one name (in any case, and in any normal form of Unicode: `README` and `readme`, `é` and `e`
+// with an accent) `DuplicateName`, entries whose data lie over each other `Overlap` (the bomb that
+// makes one block of compressed data the data of every entry), and the number of entries must fit
+// in the central directory. An entry is read with
 // a limit, as compressed data is opened, and gives no more bytes than its size written in the
 // archive. There is no call that unpacks a whole archive to the disk: each entry is read, and the
 // program writes it where it decides.
@@ -776,14 +777,17 @@ bool insecure(read string name) {
     return false
 }
 
-// What tells two names apart: the name without a folder's `/`, each character folded as
-// `(?i)` folds it, since macOS and Windows take `README.TXT` and `Readme.txt` for one file.
+// What tells two names apart: the name without a folder's `/` as Unicode's canonical caseless
+// match takes it (D145: NFD, folded, NFD again, choice 1615), each character folded as `(?i)`
+// folds it. macOS and Windows take `README.TXT` and `Readme.txt` for one file, and macOS takes
+// `é` written as one character and as `e` and an accent for one too.
 string nameKey(read string name) {
-    var key = string.withCapacity(name.length())
-    for c in withoutSlash(name).chars() {
+    var decomposed = withoutSlash(name).normalize(NormalizationForm.D)
+    var key = string.withCapacity(decomposed.length())
+    for c in decomposed.chars() {
         key.write(System.charFold(c))
     }
-    return key
+    return key.normalize(NormalizationForm.D)
 }
 
 // A name with the `/` of a folder taken off: a file and a folder of one name are two entries of

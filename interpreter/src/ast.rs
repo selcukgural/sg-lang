@@ -866,6 +866,11 @@ pub enum SystemCall {
     /// `System.charFold(c)`: the simple case folding of a character (the C and S lines of
     /// CaseFolding.txt), by which `(?i)` of a `Regex` compares (choice 1477).
     CharFold,
+    /// `System.normalize(text, compose, compat)`: the text in a normal form of Unicode (choice
+    /// 1599): C with `compose`, D without, KC and KD with `compat`.
+    Normalize,
+    /// `System.isNormalized(text, compose, compat)`: whether the text is in that form.
+    IsNormalized,
     /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0
     /// for no file.
     Executable,

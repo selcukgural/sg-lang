@@ -273,6 +273,46 @@ strasse
 ada and grace
 ```
 
+## Normal forms
+
+What a reader takes for one text can be written in more than one way: `é` as one character, or as `e` and
+U+0301 COMBINING ACUTE ACCENT. The two are not equal as they are written; in a normal form of Unicode
+(UAX #15) they are one text.
+
+| Signature | What it gives |
+|---|---|
+| `string normalize(read this, NormalizationForm form)` | A new text in that form |
+| `bool isNormalized(read this, NormalizationForm form)` | Whether the text is in that form already |
+
+`NormalizationForm` has four variants. `C` (NFC) composes a character and its marks into one character where
+Unicode has one: what the web and most files write. `D` (NFD) decomposes each character into its base and its
+marks, the marks in a fixed order. `KC` and `KD` also make one of what differs only in how it is shown (`ﬁ`
+and `fi`, `²` and `2`, a full-width `Ａ` and `A`): they are for comparing and searching, not for keeping a
+text, since what they drop is gone. A text already in the form is copied as it is, after a look at each
+character, and ASCII is in every form.
+
+```sg
+void main() {
+    var composed = "é"
+    var decomposed = "e\u{301}"
+    print(composed == decomposed)
+    print(decomposed.normalize(NormalizationForm.C) == composed)
+    print(composed.normalize(NormalizationForm.D).length())
+    print("ﬁ²".normalize(NormalizationForm.KC))
+    print(decomposed.isNormalized(NormalizationForm.C))
+}
+```
+
+It prints:
+
+```text
+false
+true
+3
+fi2
+false
+```
+
 ## Writing values into text
 
 Inside `$"..."` a width and a letter may follow a value, as in C#: `{n,5}` takes at least five characters with

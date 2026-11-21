@@ -11,3 +11,5 @@ interpreter/tests/regex-suite/re2-search.txt -text
 interpreter/tests/zip-suite/go/** -text
 interpreter/tests/zip-suite/made/** -text
 interpreter/tests/zip-suite/others/** -text
+# Unicode's normalization tests are kept byte for byte, as their SHA-256 says.
+interpreter/tests/normalization-suite/NormalizationTest.txt -text

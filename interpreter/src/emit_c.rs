@@ -10825,7 +10825,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let _ = writeln!(out, "#define SG_FLOATS {}", u8::from(floats));
     if prog.freestanding {
         let heap = prog.funcs.iter().any(|func| func.name == "allocate" && func.foreign.is_none());
-        let runtime = [RUNTIME, crate::unicode::c_runtime(), RAW_RUNTIME, FFI_RUNTIME, SHARED_RUNTIME, &emitter.glue, &emitter.types, &emitter.late_types];
+        let runtime = [RUNTIME, crate::unicode::c_runtime(), crate::unicode::c_normalization(), RAW_RUNTIME, FFI_RUNTIME, SHARED_RUNTIME, &emitter.glue, &emitter.types, &emitter.late_types];
         freestanding_heap(heap, &runtime, emitter.written_stmts.as_deref().unwrap_or_default(), &emitter.func_bodies)?;
         let _ = writeln!(out, "#define SG_FREESTANDING 1\n#define SG_HEAP {}", u8::from(heap));
         out.push_str(FREESTANDING_PRELUDE);
@@ -10833,6 +10833,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(RUNTIME);
     if emitter.made.contains("unicode") {
         out.push_str(crate::unicode::c_runtime());
+    }
+    if emitter.made.contains("normalization") {
+        out.push_str(crate::unicode::c_normalization());
     }
     if emitter.made.contains("raw") {
         out.push_str(RAW_RUNTIME);
@@ -17527,6 +17530,14 @@ impl<'a> Emitter<'a> {
             SystemCall::CharFold => {
                 self.made.insert("unicode".to_string());
                 ("sg_system_char_fold", vec![Ty::Char], "return sg_uni_fold1(a0);".to_string())
+            }
+            SystemCall::Normalize => {
+                self.made.insert("normalization".to_string());
+                ("sg_system_normalize", vec![text(), Ty::Bool, Ty::Bool], "return sg_uni_normalize(a0, a1, a2);".to_string())
+            }
+            SystemCall::IsNormalized => {
+                self.made.insert("normalization".to_string());
+                ("sg_system_is_normalized", vec![text(), Ty::Bool, Ty::Bool], "return sg_uni_is_normalized(a0, a1, a2);".to_string())
             }
             SystemCall::Variable => (
                 "sg_system_variable",

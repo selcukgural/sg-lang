@@ -1263,6 +1263,9 @@ c.isUpper(), c.isLower(), c.isControl()          // Lu, Ll, Cc
 "Straße".equalsIgnoreCase("STRASSE")             // true: both folded, nothing allocated
 var key = name.foldCase()                        // a key that does not care about case
 b.toUpper()                                      // error on a byte. Hint: toAsciiUpper()
+"e\u{301}".normalize(NormalizationForm.C)        // "é": one character; D, KC, KD the other forms
+"ﬁ²".normalize(NormalizationForm.KC)             // "fi2": what differs only in how it is shown made one
+text.isNormalized(NormalizationForm.C)           // the quick check, then the text normalized if unsure
 ```
 
 ### Raw text

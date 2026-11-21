@@ -38,7 +38,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("command_line.sg", include_str!("std/command_line.sg"), &["CommandLine", "Arguments", "CommandLineError"]),
     ("json.sg", include_str!("std/json.sg"), &["Json", "JsonValue", "JsonObject", "JsonError", "JsonErrorKind"]),
     ("log.sg", include_str!("std/log.sg"), &["Log", "LogLevel"]),
-    ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory"]),
+    ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory", "NormalizationForm"]),
     ("regex.sg", include_str!("std/regex.sg"), &["Regex", "RegexError", "RegexErrorKind", "Match", "Captures"]),
     ("compression.sg", include_str!("std/compression.sg"), &["Deflate", "Zlib", "Gzip", "Compressor", "Decompressor", "CompressError"]),
     ("zip.sg", include_str!("std/zip.sg"), &["ZipReader", "ZipWriter", "ZipEntry", "ZipMethod", "ZipError"]),
@@ -54,9 +54,10 @@ pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp"];
 /// `SocketAddress`.
 pub const STD_STREAM_CALLS: &[&str] = &["remoteAddress", "localAddress"];
 
-/// The method of `char` that the language's own module does the work of (`c.category()` gives a
-/// `UnicodeCategory`): a program that names it gets the file of `UnicodeCategory`.
-pub const STD_CHAR_CALLS: &[&str] = &["category"];
+/// The methods of `char` and `string` that the language's own module does the work of
+/// (`c.category()` gives a `UnicodeCategory`, `text.normalize(form)` takes a `NormalizationForm`):
+/// a program that names one gets the file of both.
+pub const STD_CHAR_CALLS: &[&str] = &["category", "normalize", "isNormalized"];
 
 /// Every type of the language's own module.
 pub fn std_types() -> impl Iterator<Item = &'static str> {

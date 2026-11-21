@@ -5,6 +5,8 @@ twice: two entries are named "docs/stored.txt"
 a file named as a folder: two entries are named "docs"
 a file ending in /: invalid input
 a folder named as a file: two entries are named "empty/"
+decomposed: two entries are named "çay/şeker.txt"
+decomposed, upper case: two entries are named "ÇAY/ŞEKER.TXT"
 6105 bytes, CRC 3b67388d
 docs/ (0 bytes): method 0, 0 in the archive, folder true, 2026-11-20T13:45:31Z
   00000000 false

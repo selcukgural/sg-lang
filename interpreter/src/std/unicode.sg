@@ -1,6 +1,7 @@
 // The general category of a character, from the Unicode tables of the language (choice 1476):
-// `c.category()` gives one. Written in SG and brought along by the language; only the lookup in
-// the tables (`System.charCategory`) is the compiler's own.
+// `c.category()` gives one. The normal forms of a text (choice 1599): `text.normalize(form)` and
+// `text.isNormalized(form)` take one. Written in SG and brought along by the language; only the
+// lookups in the tables (`System.charCategory`, `System.normalize`) are the compiler's own.
 
 // What Unicode says a character is. The names are Unicode's long names (`Uppercase_Letter`)
 // written as SG writes a name; `abbreviation()` gives the short one (`Lu`), which `\p{Lu}` of a
@@ -166,6 +167,44 @@ public enum UnicodeCategory : Copyable, Equatable, Hashable, Formattable {
             out.write($"\\u{{{code:x}}}")
         } else {
             out.write($"\\u{code:x4}")
+        }
+    }
+}
+
+// A normal form of Unicode (UAX #15), for `text.normalize(form)` and `text.isNormalized(form)`.
+// What a reader takes for one text can be written in more than one way: `é` as one character or
+// as `e` and U+0301 COMBINING ACUTE ACCENT. In C and in D the two are one text. KC and KD also make
+// one of what differs only in how it is shown: `ﬁ` and `fi`, `²` and `2`, a full-width `Ａ` and
+// `A`; they are for comparing and finding, not for keeping a text, since what they drop is gone.
+public enum NormalizationForm : Copyable, Equatable, Hashable, Formattable {
+    // NFC, composed: a character and its marks as one character where Unicode has one. What the
+    // web and most files write.
+    C
+    // NFD, decomposed: each character as its base and its marks, the marks in a fixed order. How
+    // macOS gave the names of files.
+    D
+    // NFKC: C, with what differs only in how it is shown made one.
+    KC
+    // NFKD: D, with what differs only in how it is shown made one.
+    KD
+
+    // `text.normalize(form)`: a new text.
+    string normalize(read string text, NormalizationForm form) {
+        match form {
+            C => return System.normalize(text, true, false)
+            D => return System.normalize(text, false, false)
+            KC => return System.normalize(text, true, true)
+            KD => return System.normalize(text, false, true)
+        }
+    }
+
+    // `text.isNormalized(form)`.
+    bool isNormalized(read string text, NormalizationForm form) {
+        match form {
+            C => return System.isNormalized(text, true, false)
+            D => return System.isNormalized(text, false, false)
+            KC => return System.isNormalized(text, true, true)
+            KD => return System.isNormalized(text, false, true)
         }
     }
 }

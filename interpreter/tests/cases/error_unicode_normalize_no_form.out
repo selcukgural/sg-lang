@@ -1,0 +1,5 @@
+error: `normalize` takes 1 argument, the form, 0 given
+  --> error_unicode_normalize_no_form.sg:4:11
+ 4 |     print("x".normalize())
+   |           ^^^^^^^^^^^^^^^
+  hint: `text.normalize(NormalizationForm.C)`; the forms are C, D, KC and KD

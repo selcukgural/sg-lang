@@ -869,6 +869,24 @@ fn a_regex_suite() {
     }
 }
 
+/// Unicode's normalization tests (`tests/normalization-suite`, choice 1614), run by
+/// `text.normalize(form)` and `text.isNormalized(form)` interpreted and compiled.
+#[test]
+fn a_normalization_suite() {
+    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("normalization-suite");
+    let cases = suite.join("NormalizationTest.txt").to_string_lossy().into_owned();
+    let check = suite.join("check.sg").to_string_lossy().into_owned();
+    let dir = work("a_normalization_suite");
+    let expected = (0, "20034 lines and 1094978 other code points tried; 0 wrong\n".to_string(), String::new());
+    assert_eq!(ran(&sg(&dir, &[&check, &cases])), expected, "interpreted");
+    if has_compiler() {
+        let out = program(&dir, "check").to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        assert_eq!(ran(&run), expected, "compiled");
+    }
+}
+
 /// The archives of `tests/zip-suite` (choice 1512): Go's `archive/zip/testdata`, archives made wrong
 /// on purpose by `make.py`, and archives of Python and Info-ZIP, read by `ZipReader` interpreted
 /// and compiled; what it prints is `expected.txt`.

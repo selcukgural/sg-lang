@@ -98,7 +98,7 @@ of `tests/Containerfile` has them.
 | Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
-| Unicode | On `char`, from the tables of Unicode 17.0: `isLetter()` (category L), `isNumeric()` (N: `'٣'`, `'½'`), `isAlphanumeric()`, `isUpper()` (Lu), `isLower()` (Ll), `isControl()` (Cc), and `toUpper()`, `toLower()`, one character for one (`'ß'.toUpper()` is `'ß'`). On a text: `toUpper()` and `toLower()` give a new text by the full mappings (`"straße".toUpper()` is `"STRASSE"`, `Σ` at the end of a word is `ς`), `foldCase()` the text as it is compared without case, `a.equalsIgnoreCase(b)` compares so without allocating. No language is taken into account: `"i".toUpper()` is `"I"`. `c.category()` gives the general category, a `UnicodeCategory` (`UppercaseLetter`, `DecimalNumber`, `CurrencySymbol`, ... `Unassigned`), and `k.abbreviation()` its short name (`Lu`) |
+| Unicode | On `char`, from the tables of Unicode 17.0: `isLetter()` (category L), `isNumeric()` (N: `'٣'`, `'½'`), `isAlphanumeric()`, `isUpper()` (Lu), `isLower()` (Ll), `isControl()` (Cc), and `toUpper()`, `toLower()`, one character for one (`'ß'.toUpper()` is `'ß'`). On a text: `toUpper()` and `toLower()` give a new text by the full mappings (`"straße".toUpper()` is `"STRASSE"`, `Σ` at the end of a word is `ς`), `foldCase()` the text as it is compared without case, `a.equalsIgnoreCase(b)` compares so without allocating. No language is taken into account: `"i".toUpper()` is `"I"`. `c.category()` gives the general category, a `UnicodeCategory` (`UppercaseLetter`, `DecimalNumber`, `CurrencySymbol`, ... `Unassigned`), and `k.abbreviation()` its short name (`Lu`). `text.normalize(form)` gives the text in a normal form of Unicode, `text.isNormalized(form)` says whether it is in one: `NormalizationForm.C`, `D`, `KC` or `KD` (`"e\u{301}".normalize(NormalizationForm.C)` is `"é"`) |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, `File.openAppend(path)` one that writes after what the file holds, and `File.openWrite(path)` one that writes from the start over what it holds (a missing file is made). A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. A reader and a writer of a file move with `seek(SeekFrom.Start(n))`, `SeekFrom.End(n)` or `SeekFrom.Current(n)`, which gives the new place as a `Result<long, IoError>`; a reader moves inside its block without the system, a writer writes what it holds first (`seekAsync` in an async function); a place before the start is `InvalidInput`, and a pipe, a writer of `openAppend` or `Stdin` lent on is `NotSeekable`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `NotSeekable` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
@@ -9895,6 +9895,7 @@ text that repeats, `printError` to a pipe that is gone) waits for 1595:
        `InsecurePath` says "or name another file on another system"; two names that differ only in case
        are `DuplicateName`, as macOS and Windows take them for one file. Two names in different Unicode
        forms of one text are not compared, since `std` has no normalization: written in the library page.
+       (They are compared since the hundred-and-forty-seventh slice, 1615.)
        An NTFS time before 1684 or past 2255, and a locator of zip64 past 2^63, are no longer panics (41
        of 6,000 archives changed at random were; none now).
      - **Paths**: `joinInside` refuses the control characters of C1 too, and on Windows `\\?\UNC\` is
@@ -10135,6 +10136,78 @@ code before this change, compiled; 3,000 of them interpreted too. They take 2.1 
 The whole of the tests passes again on macOS and on Linux, with the same 494 of 1895 programs compiled
 through C and run clean under the sanitizers, 108 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-seventh slice (the normal forms of Unicode). 1599 was approved during
+the hundred-and-forty-second slice, 1611 to 1615 at the start of this one:
+
+1599. **`text.normalize(form)` gives the text in a normal form of Unicode; `text.isNormalized(form)` says
+     whether it is in one.** The forms are those of UAX #15, a `NormalizationForm` of `std` with C#'s names:
+     `C` (NFC), `D` (NFD), `KC` (NFKC) and `KD` (NFKD), always written, since no form is right for every use.
+     `"e\u{301}".normalize(NormalizationForm.C)` is `"é"`, and `"ﬁ²".normalize(NormalizationForm.KC)` is
+     `"fi2"`. Rust has them in the `unicode-normalization` crate (`s.nfc()`, `is_nfc(s)`), Go in
+     `golang.org/x/text/unicode/norm`, C# as `Normalize` and `IsNormalized`. `nfc()`, `toNFC()`, `is_nfc()`
+     and their like are errors whose hint is the call. A form given as a text (`"NFC"`) is a type error.
+1611. **The work is the compiler's own, as the case of a text is.** The interpreter in Rust and compiled
+     code in C read the same tables of `src/unicode_tables.rs`, which `tools/unicode_tables.py` now also
+     makes from `DerivedNormalizationProps.txt` of the UCD 17.0, held to its SHA-256 as the four other files
+     are: a record for each code point, found in three steps as the record of case is (its canonical
+     combining class, the bits of its quick checks, and where its full canonical and compatibility
+     decompositions are, each already in the canonical order), 6,763 code points of decompositions and the
+     961 pairs that compose. The syllables of Hangul are decomposed and composed by Hangul's rule. In
+     compiled code the tables (96 KB) are only in a program that normalizes, apart from the tables of case.
+     `NormalizationForm` is in `std/unicode.sg`, beside `UnicodeCategory`; its `normalize` and
+     `isNormalized` call `System.normalize` and `System.isNormalized`, as `c.category()` calls
+     `System.charCategory`.
+1612. **The quick check first.** A text is looked at character by character (ASCII a byte at a time); a
+     text whose characters the quick check of the form says Yes to, with the marks in order, is copied as
+     it is. Otherwise the text up to the last starter before that place is copied, and the rest is
+     normalized a piece at a time, each piece ending before a starter the check says Yes to, which nothing
+     before it reorders or composes with. `isNormalized` is the quick check; when it says Maybe (a character
+     that may compose with the one before it), the text normalized is compared with the text. ICU works so,
+     and the quick checks are Unicode's own (`NFC_QC` and the others). After each piece the quick check
+     looks again from the starter that ended it, and what it says Yes to is copied as it is: a text with a
+     few characters to change is mostly copied. 16 MB of text in eight languages (French, Vietnamese,
+     German, Greek, Korean, English, Portuguese and Spanish, Turkish), compiled with `--release` on an
+     Apple M3 Max, the best of ten runs, each output the same bytes as Python's `unicodedata`:
+
+     | Case | SG | Rust `unicode-normalization` 0.1.26 | Rust `icu_normalizer` 2.4.0 | ICU4C 79.1 |
+     |---|---|---|---|---|
+     | NFC of the text in NFD | 55 ms | 147 ms | 66 ms | 117 ms |
+     | NFD of the text in NFC | 36 ms | 106 ms | 29 ms | 81 ms |
+     | NFC of the text in NFC | 7 ms | 149 ms | 8 ms | 62 ms |
+     | NFKC of the text in NFC | 7 ms | 147 ms | 9 ms | 62 ms |
+
+     `unicode-normalization` is the crate most Rust programs use, called as its users call it
+     (`s.nfc().collect::<String>()`), with no quick check of its own; `icu_normalizer` is ICU4X, Unicode's
+     own library for Rust. ICU4C normalizes UTF-16, and its time counts the text made UTF-16 and back. Before
+     the quick check looked again after each piece, SG took 121, 80, 7 and 118 ms: one `᾽` (U+1FBD, which
+     NFKC changes) in the first lines sent the whole rest down the slow way. NFD is the case SG loses
+     (1.24 times `icu_normalizer`): written in "Slower than C".
+1613. **The output is always Unicode's, and a run of marks never takes quadratic time.** Go's `norm` puts
+     U+034F COMBINING GRAPHEME JOINER after 30 marks in a row (the Stream-Safe Text Format of UAX #15),
+     which bounds its buffer and changes the text; SG does not. The marks of a run are put in the order of
+     their classes by a stable sort: by insertion when the run is short, by merging when it is long. `a`
+     followed by 100,000 marks of two classes is normalized at once, interpreted and compiled.
+1614. **Unicode's own tests.** `tests/normalization-suite` holds `NormalizationTest.txt` of Unicode 17.0,
+     unchanged, under the Unicode licence. `check.sg` puts each of the five texts of each of its 20,034 lines
+     in the four forms and holds the results to the invariants of its header, holds `isNormalized` to
+     `normalize`, and checks that the 1,094,978 code points Part 1 does not name are left as they are; it
+     runs interpreted and compiled (`a_normalization_suite`), and the same runs through the interpreter's
+     side alone (`normalization_suite` in `src/unicode.rs`). `tools/unicode_tables.py` checks every code
+     point against Python 3.15's `unicodedata`, which knows Unicode 17.0: the combining class, NFD and NFKD
+     of the character alone, each pair that composes, and that there is no other.
+1615. **Zip names are compared by Unicode's canonical caseless match.** The key that tells two names apart
+     is the name in NFD, folded as `(?i)` folds it, and in NFD again (Unicode's definition D145): `é` as one
+     character and as `e` and an accent is one name, and the second is `DuplicateName`, in `ZipWriter` and in
+     `ZipReader`, as macOS takes the two for one file. The note of 1594 that left them as two names is gone
+     from the library page.
+
+Tested by `ok_unicode_normalize`, `error_unicode_normalize_no_form`, `error_unicode_normalize_form_type` and
+`error_unicode_normalize_other_name` (new), and by `ok_zip`, which adds `çay/şeker.txt` written decomposed
+and in upper case: both are `DuplicateName`, and the archive is the same bytes. The suite, the program of
+100,000 marks and the examples run clean under the address and undefined-behaviour sanitizers. The whole of
+the tests passes on macOS and on Linux, with 495 of the 1899 programs compiled through C and run clean under
+the sanitizers, 108 of them under the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10150,6 +10223,12 @@ check off.
   that reads through `unsafe` once the row is known to be inside it. `findAll` over 100 MB takes 1.4 to 45
   times Rust's (`\bcache\b` the most), for the same reasons and because Rust's looks for an inner text
   through the whole text with vector instructions before its DFA starts.
+
+- **Decomposing a text** (NFD of 16 MB in eight languages, 1.24 times Rust's `icu_normalizer`, choice
+  1612, 1613): SG looks up the record of each character a decomposition gives, for its class, and pushes the
+  characters of a piece one at a time; ICU4X keeps the classes with the decompositions and copies a run of
+  characters that have none at once. Candidates: the class of each character of a decomposition kept beside
+  it in `NORM_DECOMPOSED`, and a run of starters with nothing to change written straight to the output.
 
 - **CRC-32 without the processor's instructions** (`checksum`, 9.67 times zlib on macOS, choice 1415):
   `Crc32` takes sixteen bytes in a step through tables, in the time of the same algorithm written in C,
@@ -10494,7 +10573,7 @@ check off.
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- What Unicode has beyond the tables of 635: normalization, grapheme clusters, sorting by a language, the width
+- What Unicode has beyond the tables of 635 and the normal forms (1599): grapheme clusters, sorting by a language, the width
   of a character, the title case, the Turkish and Azeri case mappings (640), and names in Unicode in the
   source. Replacing only the first places
   (`replacen`), replacing in place without a new text; a `padLeft` is a width: `$"{name,10}"` (229); the positions
@@ -10834,7 +10913,9 @@ it did not (1595, 1601-1603); and the tool holds on what a program or a folder g
 A const is made of constant expressions alone, with no calls, as in C# and Go (1606-1608), and a range lent
 as `ref` is counted among what a call lends (1610), and `copyFrom` copies the items of a window over as many,
 inside one place too (1597, 1609), and Pike's machine copies a thread's slots once, as Rust's does (1598).
-Next come the normal forms of Unicode (1599) and a bound on the depth of the JSON that is written (1600). Then
+A text is put in a normal form of Unicode by the compiler's own tables, as its case is, and every line of
+Unicode's tests gives what it should (1599, 1611-1614); zip names are compared in it (1615). Next comes a
+bound on the depth of the JSON that is written (1600). Then
 every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

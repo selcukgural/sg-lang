@@ -116,10 +116,10 @@ is `x.txt` there), a control character (C0, DEL and C1), or a part that Windows 
 `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `LPT0` to `LPT9`, with an extension or not). Only
 the `/` at the end of a folder's name is let through. The rule is the same on every system, so an archive
 that is safe on Linux is safe on Windows too. Two names that differ only in case (`README.TXT` and
-`Readme.txt`) are one name, as macOS and Windows take them, and the second is `DuplicateName`. Two names
-written in different Unicode forms of one text (`é` as one character, or as `e` and an accent) are still two
-names, and macOS takes them for one file: a program that unpacks an archive there checks that a file it
-writes is not there yet. A name shown in an error has the characters a reader does not see escaped
+`Readme.txt`) are one name, as macOS and Windows take them, and the second is `DuplicateName`. So are two
+names written in different Unicode forms of one text (`é` as one character, or as `e` and an accent), which
+macOS takes for one file too: names are compared as Unicode's canonical caseless match compares them (NFD,
+folded, NFD again). A name shown in an error has the characters a reader does not see escaped
 (`\u202e`).
 
 ```sg

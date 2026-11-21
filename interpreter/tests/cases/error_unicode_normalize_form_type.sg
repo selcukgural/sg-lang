@@ -1,0 +1,5 @@
+// The form of `isNormalized` is a `NormalizationForm`, not a number or a name.
+
+void main() {
+    print("x".isNormalized("NFC"))
+}

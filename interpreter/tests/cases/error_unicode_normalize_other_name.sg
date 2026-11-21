@@ -1,0 +1,5 @@
+// Rust's `nfc()` and Go's `norm.NFC` are `normalize(NormalizationForm.C)`.
+
+void main() {
+    print("x".nfkc())
+}

@@ -6186,6 +6186,13 @@ impl<'a, 'e> Interp<'a, 'e> {
             Value::Str(text) => text.to_string(),
             _ => unreachable!("the checker makes it text"),
         };
+        if let (SystemCall::Normalize | SystemCall::IsNormalized, [Value::Str(text), Value::Bool(compose), Value::Bool(compat)]) = (call, &values[..]) {
+            let form = crate::unicode::Form { compose: *compose, compat: *compat };
+            return Ok(match call {
+                SystemCall::Normalize => Value::Str(crate::unicode::normalize(text, form).into()),
+                _ => Value::Bool(crate::unicode::is_normalized(text, form)),
+            });
+        }
         let first = match values.first() {
             Some(Value::Str(text)) => text.to_string(),
             _ => String::new(),
@@ -6339,7 +6346,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalNumber
             | SystemCall::ColourTerminal
             | SystemCall::CharCategory
-            | SystemCall::CharFold => unreachable!("done above"),
+            | SystemCall::CharFold
+            | SystemCall::Normalize
+            | SystemCall::IsNormalized => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.

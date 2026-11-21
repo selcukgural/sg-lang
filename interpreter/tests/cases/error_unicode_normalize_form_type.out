@@ -1,0 +1,4 @@
+error: expected `NormalizationForm`, found `string`
+  --> error_unicode_normalize_form_type.sg:4:28
+ 4 |     print("x".isNormalized("NFC"))
+   |                            ^^^^^

@@ -465,7 +465,7 @@ const UNICODE_TESTS: &[&str] = &["isLetter", "isNumeric", "isAlphanumeric", "isU
 const TEXT_METHODS: &[&str] = &[
     "length", "clone", "asBytes", "write", "clear", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
     "chars", "split", "splitWhitespace", "lines", "replaceAll", "repeat", "equalsIgnoreAsciiCase", "equals", "compare",
-    "toUpper", "toLower", "foldCase", "equalsIgnoreCase",
+    "toUpper", "toLower", "foldCase", "equalsIgnoreCase", "normalize", "isNormalized",
 ];
 
 /// The searches in items that are in order, by the names other languages give them.
@@ -497,6 +497,16 @@ fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
         "isuppercase" | "is_uppercase" if !text => return diag.hint("`isUpper()`"),
         "islowercase" | "is_lowercase" if !text => return diag.hint("`isLower()`"),
         "casefold" | "tocasefold" | "fold" | "folded" | "tofoldcase" if text => return diag.hint("`foldCase()`: the text as it is compared without case"),
+        "nfc" | "nfd" | "nfkc" | "nfkd" | "tonfc" | "tonfd" | "tonfkc" | "tonfkd" | "normalise" | "normalized" if text => {
+            let form = lower.trim_start_matches("to").trim_start_matches("nf").to_uppercase();
+            let form = if matches!(form.as_str(), "C" | "D" | "KC" | "KD") { form } else { "C".to_string() };
+            return diag.hint(format!("`normalize(NormalizationForm.{form})`: a new text in that normal form of Unicode"));
+        }
+        "is_nfc" | "is_nfd" | "is_nfkc" | "is_nfkd" | "isnfc" | "isnfd" | "isnfkc" | "isnfkd" | "isnormalised" if text => {
+            let form = lower.trim_start_matches("is").trim_start_matches('_').trim_start_matches("nf").to_uppercase();
+            let form = if matches!(form.as_str(), "C" | "D" | "KC" | "KD") { form } else { "C".to_string() };
+            return diag.hint(format!("`isNormalized(NormalizationForm.{form})`"));
+        }
         "totitle" | "totitlecase" | "capitalize" => return diag.note("the title case is not here yet"),
         "substring" | "substr" | "slice" if text => return diag.hint("a range of the text: `text[a..b]`, `text[a..]`"),
         "equals_ignore_case" | "equalsignorecaseinvariant" | "eq_ignore_case" if text => return diag.hint("`equalsIgnoreCase`"),
@@ -11870,6 +11880,8 @@ impl<'a> Checker<'a> {
             "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
             "charCategory" => (SystemCall::CharCategory, vec![Ty::Char], Ty::Int(IntTy::Int)),
             "charFold" => (SystemCall::CharFold, vec![Ty::Char], Ty::Char),
+            "normalize" => (SystemCall::Normalize, vec![text(), Ty::Bool, Ty::Bool], Ty::Str),
+            "isNormalized" => (SystemCall::IsNormalized, vec![text(), Ty::Bool, Ty::Bool], Ty::Bool),
             "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
             "run" => {
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
@@ -12208,6 +12220,27 @@ impl<'a> Checker<'a> {
         let c = std::mem::replace(recv, written);
         args.push(c);
         *callee = Callee::Static { owner, name: "of".to_string() };
+        Ok(ret)
+    }
+
+    /// `text.normalize(form)` and `text.isNormalized(form)`: done by the language's own module,
+    /// which is given the text through a `read` borrow (`NormalizationForm.normalize(read text,
+    /// form)`, choice 1611).
+    fn text_normalize(&mut self, recv: &mut Expr, name: &str, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
+        let owner = format!("{STD_MODULE}.NormalizationForm");
+        if args.len() != 1 {
+            return Err(Diag::error(span, format!("`{name}` takes 1 argument, the form, {} given", args.len()))
+                .hint(format!("`text.{name}(NormalizationForm.C)`; the forms are C, D, KC and KD")));
+        }
+        self.typed(&mut args[0], &Ty::Enum(owner.clone()))?;
+        self.touch(recv, Access::Read);
+        let Some(sig) = self.methods_of(&owner).get(name) else { unreachable!("a program that names `{name}` gets the file of `NormalizationForm`") };
+        let ret = sig.ret.clone();
+        let written = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span: recv.span, ty: Ty::Void, moved: false };
+        let text = std::mem::replace(recv, written);
+        let (text_span, ty) = (text.span, Ty::Read(Box::new(Ty::Str)));
+        args.insert(0, Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(text) }, span: text_span, ty, moved: false });
+        *callee = Callee::Static { owner, name: name.to_string() };
         Ok(ret)
     }
 
@@ -12749,6 +12782,9 @@ impl<'a> Checker<'a> {
         }
         if *target == Ty::Char && name == "category" {
             return self.char_category(recv, args, callee, span);
+        }
+        if *target == Ty::Str && matches!(name, "normalize" | "isNormalized") {
+            return self.text_normalize(recv, name, args, callee, span);
         }
         if matches!(target, Ty::Listener | Ty::Socket) {
             let target = target.clone();
