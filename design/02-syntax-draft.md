@@ -232,8 +232,8 @@ If an argument of `Task.run` carries a borrow or an unlocked `checked`, it is a 
 is always atomic, Rust's `Send` and `Sync` distinction comes down to this single rule. A `lock` block does not wait:
 another `lock`, a `wait`, or a call of a function that does one inside it is a compile error, and two values are locked
 together with `lock a as x, b as y { }`, so locks and waits cannot deadlock. The task a call gives can be waited for
-in the same line: `Task.delay(100).wait()` pauses code that is not async. The rules are in the decisions file
-(rows "Starting a task" to "Tasks in the interpreter"), and async is to come the same way ("Async, the direction").
+in the same line: `Task.delay(100).wait()` pauses code that is not async. The rules are in [the decisions by topic](rules/README.md)
+(rows ["Starting a task"](rules/concurrency.md#starting-a-task) to ["Tasks in the interpreter"](rules/concurrency.md#tasks-in-the-interpreter)), and async is to come the same way (["Async, the direction"](directions/async.md)).
 
 A task that waits until a locked value is ready writes `when` after the names. The wait is at the head of the block
 only, with the locks let go; the block itself still waits for nothing. Every `lock` block on the value that ends
@@ -273,7 +273,7 @@ lock jobs as q when q.items.length() > 0 || Stop.load() { }  // error: an `atomi
 ```
 
 A task left the only owner of what it waits for, with no `weak` look at it, waits for what no other task could
-change: a panic, whose hint is the `done` field. The rows "Waiting under a lock" of the decisions file have the rest.
+change: a panic, whose hint is the `done` field. The rows ["Waiting under a lock"](rules/concurrency.md#waiting-under-a-lock) of [the decisions by topic](rules/README.md) have the rest.
 
 Tasks also hand each other items through a channel. `Channel<T>(n)` is the end that receives, with room for `n`
 items; the senders it makes send. The last sender to end closes it, so there is no `close` to forget, as C#'s
@@ -310,7 +310,7 @@ var got = jobs.receive(read token)               // Result<int?, Cancelled>
 var item = await jobs.receiveAsync()             // in an async function; `await tx.sendAsync(x)` sends
 ```
 
-A send or a receive waits, so it is not written in a `lock` block. The rows "Channels" of the decisions file have
+A send or a receive waits, so it is not written in a `lock` block. The rows ["Channels"](directions/async.md#channels) of [the decisions by topic](rules/README.md) have
 the rest.
 
 ### Generics and interfaces
@@ -1738,8 +1738,8 @@ table the program needs from its start is written out, made by a script beside t
 `crc32.h` is.
 
 A local never takes the name of a const it sees. In compiled code a number is written where it is used, and
-a table is one `static const`, which nothing copies. The rules are in the decisions file ("Consts", "Consts,
-as built", "No call in a const").
+a table is one `static const`, which nothing copies. The rules are in [the decisions by topic](rules/README.md) (["Consts"](rules/types.md#consts), ["Consts,
+as built"](rules/types.md#consts-as-built), ["No call in a const"](rules/types.md#no-call-in-a-const)).
 
 `const assert` checks a condition when the program is compiled, at the top of a file or in a block; it is
 made as a const is, with no call, and leaves nothing in the program. The size and alignment of a type, which
@@ -1791,7 +1791,7 @@ no `Task`. Nothing in it is closed or disposed of, since a static is never dropp
 There is no static that changes freely and none that each thread has of its own: what changes is atomic or
 locked. A number, a `bool`, a `char` or a function is read as a value, anything else lent as `read`; a
 `static locked` value only in a `lock` block. A const cannot read a static. Each test starts with the statics
-not used yet. The rules are in the decisions file ("Globals, as decided", "Statics", "Statics, as built").
+not used yet. The rules are in [the decisions by topic](rules/README.md) (["Globals, as decided"](rules/concurrency.md#globals-as-decided), ["Statics"](rules/types.md#statics), ["Statics, as built"](rules/types.md#statics-as-built)).
 
 ### Raw memory and calling C
 
@@ -2496,7 +2496,7 @@ is `assert`. The full example is in the [example programs](05-examples.md) file.
 ## Previous variant: C# direction, generation model
 
 Abandoned, kept for comparison.
-*Chosen on 5 November 2026. The notation rules are in the [decisions and open questions](04-decisions-and-open-questions.md) file.*
+*Chosen on 5 November 2026. The notation rules are in [the decisions by topic](rules/README.md).*
 
 ```
 public struct Node {

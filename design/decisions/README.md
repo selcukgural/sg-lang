@@ -5,8 +5,8 @@ interpreter and compiled code, with tests. Before a slice, the questions it rais
 a recommended answer; what is approved is written here, in the words it was approved in, with what was found
 while the slice was built and how it was tested. This folder is that record, one file per day.
 
-- The decisions that shape the language itself (its rules, its types, its library as designed) are the table of
-  [04, Decisions and open questions](../04-decisions-and-open-questions.md); the files here hold the smaller
+- The decisions that shape the language itself (its rules, its types, its library as designed) are in
+  [the decisions by topic](../rules/README.md); the files here hold the smaller
   choices made while building it, and the reasons.
 - From the sixteenth slice on, every choice has a number that runs across all slices (`choice 886`, `1340`); the
   code, the tests and the other documents cite them by it. The first fifteen slices number their rules from 1

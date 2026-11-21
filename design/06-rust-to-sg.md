@@ -11,7 +11,7 @@ The **Status** column says how far each line is:
 - **designed**: decided in the design, not built yet,
 - **not in SG**: left out on purpose; the note says what to write instead.
 
-The details of each line are in the [decisions file](04-decisions-and-open-questions.md) and in the
+The details of each line are in [the decisions by topic](rules/README.md) and in the
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 

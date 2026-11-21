@@ -1,7 +1,7 @@
 # Example programs
 
 *6 November 2026. The examples were written by hand, before there was any tool to check them. Since 12 November 2026 the [interpreter](../interpreter/README.md) runs a growing part of the language; the stack example runs there as `examples/stack.sg`, and the calculator as `examples/calculator.sg` (the differences from the text below are listed in the interpreter's README); the stock and invoice example with its tests runs as `examples/shop`. The aim is to
-put the notation under stress. The decisions are in the [decisions](04-decisions-and-open-questions.md) file.*
+put the notation under stress. The decisions are in [decisions and open questions](04-decisions-and-open-questions.md), by topic in [rules](rules/README.md).*
 
 ## Calculator
 
@@ -295,7 +295,7 @@ Result<void, IoError> main() {
 ```
 
 When async comes, the same program reads the files with `await` and can be cancelled with a token; it is written out in
-the decisions file ("Async, the direction").
+[Async, the direction](directions/async.md).
 
 ## `List`: `for`, index and `raw`
 
@@ -791,8 +791,8 @@ void main() {
 ### Decisions this example led to
 
 On 12 November 2026: the function value as the address of a named function, and the removal of lambda notation,
-capture and the list methods that took a lambda. The reasons are in the decisions table ("Function value") and under
-"Dropped decisions".
+capture and the list methods that took a lambda. The reasons are in ["Function value"](rules/types.md#function-value) and under
+[Dropped decisions](dropped-decisions.md).
 
 ## Cities and roads: graph, cycle, `weak` edge
 
@@ -958,7 +958,7 @@ var seen = HashSet<CityRef>()                    // error: CityRef is not Hashab
 
 ### Decisions this example led to
 
-Approved on 11 November, in the [decision table](04-decisions-and-open-questions.md): the distinction between
+Approved on 11 November, in the [decisions of ownership](rules/ownership.md): the distinction between
 `same(a, b)` and `==`, the leak report, `share` passing a null value through, the names `HashMap` and `HashSet`.
 
 ## Stock and invoice: module, `use`, `public`
@@ -1156,7 +1156,7 @@ public Shelf shelfOf(read this, read string code) { ... }
 
 ### Decisions this example led to
 
-Approved on 11 November, in the [decision table](04-decisions-and-open-questions.md):
+Approved on 11 November, in the [decisions of modules](rules/modules.md):
 
 | Decision | Rust | C# |
 |---|---|---|
@@ -1323,7 +1323,7 @@ Before the buffer is emptied, anything that must be kept is copied: `var path = 
 
 ### Decisions this example led to
 
-Approved on 11 November, in the [decision table](04-decisions-and-open-questions.md):
+Approved on 11 November, in the [decisions of collections](rules/collections.md):
 
 | Decision | Rust | C# |
 |---|---|---|
@@ -1428,7 +1428,7 @@ and no new rule was needed.
 
 ### Decisions this example led to
 
-Approved on 11 November, in the [decision table](04-decisions-and-open-questions.md). It was weighed against the
+Approved on 11 November, in the [decisions of collections](rules/collections.md). It was weighed against the
 small-language goal: without fixed arrays every buffer goes to the heap through `List`, and the goal of C-level
 performance is not met; the feature adds no new keyword.
 
@@ -1566,7 +1566,7 @@ In a normal build `test` blocks are not compiled at all and do not enter the pro
 
 ### Decisions this example led to
 
-Approved on 12 November, in the [decision table](04-decisions-and-open-questions.md). It was weighed against the
+Approved on 12 November, in the [decisions of the tools](rules/tools.md). It was weighed against the
 small-language goal: can code be written without tests? A separate `main` program can be written, but that program cannot
 see names that are not `public`, stops at the first error and does not say which check failed. So the smallest form was
 chosen: one keyword, one function. The block notation is from Zig.
@@ -1645,7 +1645,7 @@ A panic follows the same rule: it prints `index 5, length 3` and shows the safe 
 
 ## What the examples revealed
 
-All the decisions are in the [decision table](04-decisions-and-open-questions.md): naming the source at the type level,
+All the decisions are in the [decisions by topic](rules/README.md): naming the source at the type level,
 integer overflow, implicit conversions, character and slice notation, `new`, constructor, collection initialisation,
 field order, types that carry a borrow, `Copyable` and enum, `take`, `for` and ownership, string literal, `for` pattern,
 index, `length`, `raw T` operations, number types, text formatting, the `string` guarantee, file API, the duration and
