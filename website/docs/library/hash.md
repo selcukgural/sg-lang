@@ -117,4 +117,5 @@ A compiled program hands each block of 64 bytes to the processor's SHA instructi
 (the SHA2 extension of 64-bit Arm, SHA-NI on x86-64); elsewhere, and in the interpreter, the 64 rounds are
 plain SG. The hash is the same either way. A gigabyte takes 0.41 seconds on an Apple M3 Max, where
 OpenSSL takes 0.35; 100 MB of a file take 0.049 seconds, against 0.045 for Rust's `sha2` and 0.041 for
-Zig's. An HMAC of each of 921,952 lines of a log takes 0.14 seconds, about Rust's time.
+Zig's. An HMAC of each of 921,952 lines of a log takes 0.14 seconds, about Rust's time
+([the tables](../benchmarks/library.md#hash)).

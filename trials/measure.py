@@ -25,7 +25,7 @@ the C of `sg emit-c` compiled with `-O2` as `--release` compiles it (`sg build` 
 (which keeps its checks of bounds and overflow), with `zig build` where the trial has a `build.zig` (a
 library of C to link) and `zig build-exe` where it has not. A trial may build Rust once more with a
 feature people turn on (`flate2` with `zlib-rs`, 1632). Everything built and every input goes to
-`trials/target`. The measurements follow the rules of fairness in `trials/README.md` (1554): every case
+`trials/target`. The measurements follow the rules of fairness in `benchmarks/method.md` (1554): every case
 is reported, also those SG loses.
 """
 

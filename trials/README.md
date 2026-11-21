@@ -6,14 +6,18 @@ lane: compiled ahead of time, no collector, memory held and freed by the program
 trial, was left for them. Each difference found is a numbered choice in
 the [interpreter's README](../interpreter/README.md), fixed and measured again.
 
+**The numbers are in [`benchmarks/`](../benchmarks/README.md)**: the trials in
+[Programs against Rust and Zig](../benchmarks/programs.md), the modules of `std` in
+[The library against Rust and Zig](../benchmarks/library.md), and how they are measured, with the rules
+that keep it fair, in [How it is measured](../benchmarks/method.md). This folder holds the code.
+
 | Trial | What it is | Slice |
 |---|---|---|
 | [wc](wc) | The lines, words and bytes of files, read in pieces of 64 KB | 133 |
 | [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v` | 133 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
-and their tables are in the [interpreter's README](../interpreter/README.md), "`std`, measured against Rust
-and Zig":
+and their tables are in [The library against Rust and Zig](../benchmarks/library.md):
 
 | Module | What it is | Slice |
 |---|---|---|
@@ -46,25 +50,8 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 
 ## Fairness (1554)
 
-No measurement is made, chosen or reported so that it favours SG. In particular:
-
-- **The other languages are written as their own people write them.** Rust and Zig get the idiomatic
-  program and the library people use for the job, in their fastest ordinary build (`--release`,
-  `ReleaseFast`); nothing is slowed down, left unbuffered or written the long way. When a faster ordinary way
-  is shown for Rust or Zig, it is taken and everything is measured again, also when SG loses by it.
-- **The same work.** The same algorithm where one is named, the same input, the same output byte for byte,
-  checked before anything is timed; a case where the programs do different work (a check one skips, a
-  Unicode rule one ignores) is said beside the numbers or made the same.
-- **Every case is published.** The cases are chosen before the numbers are seen, and none is dropped,
-  changed or put out of sight because SG loses it; a case where SG loses stays in the table, and the
-  difference goes into "Slower than C" in the interpreter's README with what would fix it.
-- **SG as it ships.** SG is measured in its release build with every check of safety it has by default, and
-  once more with its arithmetic checked. Nothing is turned off, and nothing is tuned for a measurement alone
-  (1543): a change counts only where it serves every program.
-- **Said plainly.** The machine, the compilers and their versions, the build flags, how time, memory and
-  size are taken, and what is left out (a shared library Zig loads) are written beside every table, and a
-  difference that comes from the tools rather than the language (another C compiler, another LLVM) is
-  named as such.
+No measurement is made, chosen or reported so that it favours SG. The rules are in
+[How it is measured](../benchmarks/method.md#fairness).
 
 ## Measuring
 
@@ -77,68 +64,10 @@ python3 trials/measure.py std/json      # one module of std
 python3 trials/measure.py --check       # only that the outputs are the same
 ```
 
-The time is the best of five runs after one to warm up, the memory the most the program held (its peak
-resident set), the size that of the program stripped, and the lines those that are neither blank nor only
-a comment. SG is built with `sg build --release` and once more with its arithmetic checked (the C of
-`sg emit-c` at `-O2`); Rust with `cargo build --release`; Zig twice (1542), `ReleaseFast` and
-`ReleaseSafe`, which keeps its checks of bounds and overflow. `std/compression` builds Rust once more with
-`flate2`'s feature `zlib-rs`, which people turn on for speed (1632). No LTO and no profile. The size of Zig's
-`grep` leaves out PCRE2, which it loads as a shared library (about 650 KB).
+How the time, the memory, the size and the lines are taken, and how each language is built, is in
+[How it is measured](../benchmarks/method.md#against-rust-and-zig).
 
 ## Results
 
-The modules of `std` were measured on the same machine on 21 November 2026, with macOS 27.2, Apple clang
-21.0, rustc 1.99.1 and Zig 0.17.1; their tables are in the interpreter's README.
-
-Apple M3 Max, macOS, 20 November 2026; 100 MB of text from `inputs/text.sg` (seed 1). SG is compiled by
-the system's `cc` (Apple clang 21), Rust by its own LLVM (23.1), Zig 0.17.1 (LLVM too) with PCRE2 10.49.
-
-### wc
-
-| Case | SG | SG, checked | Rust | Zig | Zig, safe |
-|---|---|---|---|---|---|
-| 100 MB | 0.088 s, 1.9 MB | 0.089 s, 1.9 MB | 0.067 s, 2.0 MB | 0.098 s, 2.0 MB | 0.108 s, 2.2 MB |
-| 100 MB from the input | 0.088 s, 1.9 MB | 0.089 s, 1.9 MB | 0.067 s, 2.0 MB | 0.099 s, 2.0 MB | 0.107 s, 2.2 MB |
-| Size, stripped | 50 KB | 50 KB | 352 KB | 345 KB | 442 KB |
-| Lines | 70 | 70 | 73 | 62 | 62 |
-
-The difference with Rust is the C compiler, not SG: the same C built through Homebrew's clang 23.1
-(`CC=... sg build`, which 1533 made possible on Linux and macOS) takes 0.043 s.
-
-Measured again after 1543-1546 (the slice after the first), and after 1549-1550, which changed nothing of
-`wc`'s work (it reads blocks, not lines): the numbers above are of those runs, the same within a
-millisecond.
-
-### grep
-
-| Case | SG | SG, checked | Rust | Zig | Zig, safe |
-|---|---|---|---|---|---|
-| `-c ERROR` | 0.046 s, 2.0 MB | 0.046 s, 2.0 MB | 0.066 s, 2.8 MB | 0.060 s, 3.4 MB | 0.061 s, 3.6 MB |
-| `-n timeout` | 0.052 s, 2.1 MB | 0.054 s, 2.1 MB | 0.072 s, 2.8 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
-| `-c -i error` | 0.150 s, 2.0 MB | 0.159 s, 2.0 MB | 0.086 s, 3.0 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
-| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.228 s, 2.1 MB | 0.236 s, 2.1 MB | 0.146 s, 3.2 MB | 0.129 s, 3.5 MB | 0.130 s, 3.6 MB |
-| `'in [0-9]{4} ms: .*日本'` | 0.064 s, 2.2 MB | 0.064 s, 2.1 MB | 0.106 s, 3.2 MB | 0.072 s, 3.5 MB | 0.072 s, 3.6 MB |
-| `-v -c INFO` | 0.049 s, 2.0 MB | 0.048 s, 2.0 MB | 0.068 s, 2.8 MB | 0.062 s, 3.4 MB | 0.063 s, 3.6 MB |
-| Size, stripped | 164 KB | 164 KB | 1684 KB | 362 KB | 442 KB |
-| Lines | 101 | 101 | 145 | 137 | 137 |
-
-`-n timeout` prints 136,194 lines: it took 0.086 s, against Rust's and Zig's 0.072 s, until the slice that
-followed this one. A line is now written into a block of 64 KB of the program's own, piece by piece where
-it is printed, and no longer through C's `fwrite` and its lock with its format read at run time
-(1544-1546): printing costs SG 4 ms over the search, as it costs Rust. The search was what was left
-(`-c timeout` 0.072 s, Rust 0.065 s), until the slice after that: a plain text is now looked for by its two
-rarest bytes, sixteen places at a time (1549), where `memchr` stopped at every `t`, and UTF-8 is checked by
-going straight to the first byte past ASCII (1550). `-c timeout` takes 0.049 s (Rust 0.066 s, Zig 0.066 s,
-the best of seven, not a case of the table), `-n timeout` 0.052 s and `-c ERROR` 0.046 s; reading the lines
-is 0.033 s of them. `-i` and the address are still behind, for the reasons below.
-
-Before the first slice of the trials, `Regex` ran Pike's machine on every line: `-i error` took 1.16 s, the address 2.06 s and
-`日本` 0.83 s. An inner text every match holds (1535), a lazy DFA (1536) with its cache kept in the `Regex`
-(1538), and the same for where a match is (1539) brought them to the numbers above. Go's `regexp` took 1.13 s and 1.33 s on the two hardest. What is left behind Rust and Zig:
-`-i` looks for `error` in any case a byte at a time where Rust's `regex` uses the processor's vector
-instructions, and the DFA's loop checks each read of its table against the table's end; PCRE2's JIT turns the
-pattern into machine code, and its search for a pattern that starts with a class or a word in any case
-goes as fast as a search for text.
-
-Rust's `\w` and `\d` are Unicode's unless `(?-u)` is written, while SG's are ASCII's as RE2's, and PCRE2
-backtracks where SG and Rust never do: the patterns measured mean the same in all three.
+In [Programs against Rust and Zig](../benchmarks/programs.md) and
+[The library against Rust and Zig](../benchmarks/library.md).

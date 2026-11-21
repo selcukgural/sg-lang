@@ -126,8 +126,9 @@ error: this returns a borrow of `best`, and `best` is gone when the function ret
 ## Is it fast?
 
 That is the claim, so it is measured. Each benchmark is written twice, in SG and in C by hand,
-and both go through the same C compiler with `-O2`. Some of the results (time of SG divided by
-time of C; 1.00 is the same speed):
+and both go through the same C compiler with `-O2`. Of the 61 programs, 37 take the time of C
+within 5%, 13 are faster and 11 are slower. Some of them (time of SG divided by time of C; 1.00 is the same
+speed):
 
 | Program | SG / C |
 |---|---|
@@ -136,18 +137,20 @@ time of C; 1.00 is the same speed):
 | A list of a million numbers, filled, changed, added up | 1.02 |
 | Three hundred million lookups that give back a borrow or nothing | 1.01 |
 | Counting in a hash table | 1.20 |
-| Printing two million structs | 0.57 |
+| Printing two million structs | 0.47 |
 
 The hash table is slower because it uses a keyed hash by default, which protects against
 crafted keys; with a plain hash it is 0.99. The same programs were measured on Windows 11 too
 (64-bit Arm, in a virtual machine): most take the time of C there as well, and those that lean on
 Windows' C library (`printf`, `fgets`) are several times faster in SG. These are small programs on
-two machines, not proof. All the numbers, and how they were taken, are in the
-[interpreter README](interpreter/README.md#the-c-back-end).
+two machines, not proof. All the numbers, and how they were taken, are in
+[benchmarks](benchmarks/README.md).
 
-Real programs are measured too, written the same way in SG, Rust and Zig: the [trials](trials/README.md).
+Real programs are measured too, written the same way in SG, Rust and Zig: [the trials](benchmarks/programs.md).
 Each module of the library is measured the same way against Rust's crates and Zig's own library, JSON
 first, where SG reads, walks and writes 100 MB faster than `serde_json` and Zig's `std.json`, in less memory.
+Against the faster of Rust and Zig, SG is faster in 8 of the 25 cases and slower in 14:
+[every case](benchmarks/README.md#at-a-glance-against-rust-and-zig).
 
 ## Try it
 
@@ -210,8 +213,9 @@ SG rules out. It is taken up when the language is further along.
 | Folder | What it holds |
 |---|---|
 | [design](design) | The language itself, on paper |
-| [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests and benchmarks |
-| [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip, SHA-256 and CRC-32 so far) in SG, Rust and Zig, measured against each other |
+| [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests, and the programs measured against C |
+| [benchmarks](benchmarks/README.md) | The measurements: SG against C, Rust and Zig, where it is still slower, and how it is measured |
+| [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip, SHA-256 and CRC-32 so far) in SG, Rust and Zig, measured against each other ([the numbers](benchmarks/README.md)) |
 | [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
 | [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
 | [website](website/README.md) | The web site, [sg-lang.org](https://sg-lang.org), built with Docusaurus |

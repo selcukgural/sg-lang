@@ -39,7 +39,8 @@ a test that shows it.
 Now it is tried on programs people write: each is written in SG, in Rust and in Zig, the three are measured
 against each other, and each difference is a choice that is fixed and measured again. `grep` and `wc` are
 the first; the
-[trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) keep the programs and their numbers.
+[trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) keep the programs, and
+[Benchmarks](./benchmarks/index.md) their numbers.
 
 Each module of the library is measured the same way, against the crates Rust's people use and Zig's own
 library, and a new module comes in with its measurement. JSON was the first: with its values made a third of

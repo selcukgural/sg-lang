@@ -59,14 +59,14 @@ const mistakeMessage = `error: \`names\` was moved and can no longer be used
  3 |     var kept = names
    |                ^^^^^`;
 
-// Time of SG divided by time of C, the same C compiler with -O2 (interpreter/README.md, "The C back end").
+// Time of SG divided by time of C, the same C compiler with -O2 (benchmarks/against-c.md).
 const measured = [
   ['Recursive `fib(40)`', '0.98'],
   ['A linked list of a million nodes, built, walked and freed', '1.01'],
   ['A list of a million numbers, filled, changed, added up', '1.02'],
   ['Three hundred million lookups that give back a borrow or nothing', '1.01'],
   ['Counting in a hash table, with a keyed hash against crafted keys', '1.20'],
-  ['Printing two million structs', '0.57'],
+  ['Printing two million structs', '0.47'],
 ];
 
 const pillars = [
@@ -174,7 +174,7 @@ export default function Home() {
             </table>
             <p className={styles.small}>
               Small programs on two machines, macOS and Windows on Arm, not proof. With a plain hash the hash table is 0.99.{' '}
-              <Link href="https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#the-c-back-end">All the numbers, and how they were taken</Link>
+              <Link to="/docs/benchmarks">All the numbers, against C, Rust and Zig, and how they were taken</Link>
             </p>
           </section>
           <section>

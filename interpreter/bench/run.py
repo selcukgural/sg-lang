@@ -3,7 +3,7 @@
 build (overflow wraps), SG with overflow checked, and the C written by hand. All three go through
 the C compiler `sg build` uses (`cc` on Linux and macOS, Clang on Windows) with `-O2`, without
 fused multiply-add (SG's rule for fractional numbers). The measurements are fair (choice 1554, the rules
-in `trials/README.md`): the C is the ordinary program a C programmer writes, and every program is shown,
+in `benchmarks/method.md`): the C is the ordinary program a C programmer writes, and every program is shown,
 also where SG loses. Run from the `interpreter` folder, on any of the three systems:
 
     python3 bench/run.py                  every program

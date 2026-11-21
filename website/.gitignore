@@ -3,3 +3,4 @@ build/
 .docusaurus/
 .cache-loader/
 docs/learn/for-rust.md
+docs/benchmarks/

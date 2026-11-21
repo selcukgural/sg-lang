@@ -61,6 +61,7 @@ const config = {
           { type: 'docSidebar', sidebarId: 'learn', position: 'left', label: 'Learn' },
           { type: 'docSidebar', sidebarId: 'reference', position: 'left', label: 'Reference' },
           { type: 'docSidebar', sidebarId: 'library', position: 'left', label: 'Library' },
+          { type: 'docSidebar', sidebarId: 'benchmarks', position: 'left', label: 'Benchmarks' },
           { to: '/docs/status', label: 'Status', position: 'left' },
           { href: repo, label: 'GitHub', position: 'right' },
         ],
@@ -69,7 +70,7 @@ const config = {
         style: 'dark',
         links: [
           { title: 'Learn', items: [{ label: 'Install', to: '/docs/learn/install' }, { label: 'A tour of SG', to: '/docs/learn/tour' }, { label: 'SG for Rust programmers', to: '/docs/learn/for-rust' }] },
-          { title: 'Project', items: [{ label: 'Status', to: '/docs/status' }, { label: 'Source', href: repo }, { label: 'Security', href: `${repo}/blob/main/SECURITY.md` }] },
+          { title: 'Project', items: [{ label: 'Status', to: '/docs/status' }, { label: 'Benchmarks', to: '/docs/benchmarks' }, { label: 'Source', href: repo }, { label: 'Security', href: `${repo}/blob/main/SECURITY.md` }] },
         ],
         copyright: 'SG is free software under the MIT or Apache 2.0 license. Pasha, the cat of SG.',
       },

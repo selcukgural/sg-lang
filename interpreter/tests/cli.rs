@@ -1253,16 +1253,12 @@ fn the_trials_of_hash_and_checksum() {
 }
 
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
-/// part of its own (`### json`) in the section of the interpreter's README that holds the
-/// measurements, or is named in its list of those not measured yet, which the slices empty.
+/// part of its own (`## json`) in `benchmarks/library.md`, which holds the measurements, or is named
+/// in its list of those not measured yet, which the slices empty.
 #[test]
 fn every_module_of_std_is_measured() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
-    let heading = "## `std`, measured against Rust and Zig";
-    let start = readme.find(heading).expect("the README has the section of the measurements of std");
-    let rest = &readme[start + heading.len()..];
-    let section = &rest[..rest.find("\n## ").unwrap_or(rest.len())];
+    let section = std::fs::read_to_string(root.join("..").join("benchmarks").join("library.md")).unwrap();
     let waiting = section
         .lines()
         .find_map(|line| line.strip_prefix("Not measured yet: "))
@@ -1276,7 +1272,7 @@ fn every_module_of_std_is_measured() {
         .collect();
     modules.sort();
     for module in &modules {
-        let measured = section.contains(&format!("\n### {module}\n"));
+        let measured = section.contains(&format!("\n## {module}\n"));
         let listed = waiting.contains(&module.as_str());
         assert!(
             measured != listed,

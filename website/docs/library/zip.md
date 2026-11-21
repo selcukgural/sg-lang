@@ -172,7 +172,8 @@ cannot forge what a program prints.
 90 ms and 42 ms. Writing takes zlib's own time or less: zlib in C, compressing the same entries with nothing of
 zip around them, takes 125 ms, half of it building the trees of Huffman for every block, which its bytes need.
 Go's compressor is another one and makes other bytes. A large entry opens at the speed of
-[`Deflate`](./compression.md#how-fast), whose decoder takes about 1.7 times zlib's time.
+[`Deflate`](./compression.md#how-fast), whose decoder takes about 1.3 times zlib's time. Against Rust's `zip` crate and Zig's `std.zip`:
+[the tables](../benchmarks/library.md#zip).
 
 Not yet: encryption, methods other than stored and deflated (bzip2, LZMA, Zstandard), the comments of an
 archive, the modes of Unix and links, and an archive held in memory.

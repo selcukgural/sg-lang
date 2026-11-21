@@ -57,7 +57,7 @@ time through sixteen tables of 256 numbers, which the compiler makes once when t
 The CRC-32 is the same either way. Four gigabytes take 0.08 seconds on an Apple M3 Max, less than zlib's
 `crc32` there (0.11 seconds), and 100 MB of a file 0.013 seconds, against 0.010 for Rust's `crc32fast`.
 `Adler32` sums eight bytes side by side in lanes, without the processor's help: 100 MB take 0.024 seconds,
-against 0.022 for Rust's `adler2`.
+against 0.022 for Rust's `adler2` ([the tables](../benchmarks/library.md#checksum)).
 
 ## Adler-32
 
