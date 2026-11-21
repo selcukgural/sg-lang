@@ -10422,6 +10422,13 @@ every version of `sg` reads alike. The whole of the tests passes on macOS and on
 programs compiled through C and run clean under the sanitizers, 109 of them under the thread sanitizer; the
 tests of `tests/cli.rs` take 11 s where they took nine minutes, the most of it `the_trial_of_json`.
 
+After the hundred-and-fiftieth slice, on 21 November 2026: `text.asBytes()` in the interpreter is a view of
+the text, as it is in compiled code, where it made a cell for each byte. A byte becomes a value when it is
+read; a range of the view is a view of the same text, and two views are compared where they are.
+`Regex.findAll` took the bytes of its text at every match, so 20,000 matches in 200 KB took 156 s; they take
+0.9 s. Compiled code is not touched, and what a program sees does not change. Tested by
+`ok_text_bytes_view`, `panic_text_bytes_view_index` and `panic_text_bytes_view_range` (new).
+
 ## `std`, measured against Rust and Zig
 
 Each module of `std` measured against the crates Rust's people use for the job and against Zig's own
@@ -10589,15 +10596,6 @@ check off.
   bytes, with a mask of the bytes set and a table of the ones that hold a pointer); `raw.rs` already reads
   and writes values in that layout. Zig keeps an array of bytes as one slice of bytes too. The work is in
   how the interpreter lends an item that is no longer a cell, so it is a choice of its own.
-- **`asBytes()` in the interpreter makes a cell of every byte** (found on 21 November 2026, in the
-  hundred-and-fiftieth slice): in compiled code `text.asBytes()` is a view of the text, in the interpreter a
-  new list of a cell for each byte, so a function that is given a long text and calls `asBytes()` each
-  time takes the length of the text at every call. `toJson` took the square of its output that way (fixed
-  in this slice, 1.8 s for a megabyte, 95 before); `Regex.findAll` on a long text still does, since
-  `regexDfaForward`, `regexDfaBackward`, `regexInnerAt` and `regexSearch` call it for each match.
-  Compiled programs are not touched. Candidates: `asBytes()` that looks at the bytes of the text where
-  they are, for every program; or `regex.sg` taking the bytes once and handing them down. The next piece
-  of work after this slice.
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
   producer is the same instructions as C's (one more for the bound of the list), and neither taking that

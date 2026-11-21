@@ -1,0 +1,6 @@
+108
+panic: index 2 is out of range: the length is 2
+  --> panic_text_bytes_view_index.sg:2:12
+ 2 |     return data[2]
+   |            ^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

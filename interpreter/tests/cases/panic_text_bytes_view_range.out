@@ -1,0 +1,5 @@
+[101, 108, 108]
+panic: range 1..4 is out of range: the length is 3
+  --> panic_text_bytes_view_range.sg:5:11
+ 5 |     print(part[1..4])
+   |           ^^^^^^^^^^

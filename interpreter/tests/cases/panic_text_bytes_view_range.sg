@@ -1,0 +1,6 @@
+void main() {
+    var bytes = "hello".asBytes()
+    var part = bytes[1..4]
+    print(part)
+    print(part[1..4])
+}

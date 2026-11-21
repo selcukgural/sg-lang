@@ -54,6 +54,11 @@ pub enum Value {
     Array(Rc<Vec<Cell>>),
     /// `read T[]` / `ref T[]`: the cells of the items it looks at.
     Slice(Rc<Vec<Cell>>),
+    /// `text.asBytes()` and the slices of it: bytes `start..end` of the text, read where they
+    /// are. A byte is made into a value when it is read, so looking at a text's bytes costs
+    /// nothing however long the text is; a cell for each byte made `asBytes` as slow as the
+    /// text is long, and a search that took the bytes at each step as slow as its square.
+    Bytes(Rc<String>, usize, usize),
     /// The address of a named function: its name.
     Func(Rc<str>),
     /// `HashSet<T>`: the items, each under itself as the key.
@@ -1719,8 +1724,25 @@ fn cells_of(value: &Value) -> Rc<Vec<Cell>> {
     match value {
         Value::List(items) => Rc::new(items.borrow().clone()),
         Value::Array(items) | Value::Slice(items) => items.clone(),
-        Value::Str(text) => Rc::new(text.bytes().map(|byte| cell(Value::Int(IntTy::Byte, byte as i128))).collect()),
+        Value::Str(text) => Rc::new(text.bytes().map(byte_cell).collect()),
+        Value::Bytes(text, start, end) => Rc::new(text.as_bytes()[*start..*end].iter().copied().map(byte_cell).collect()),
         _ => unreachable!("the checker only lets a slice look at items"),
+    }
+}
+
+/// The cell of a byte read out of a text.
+fn byte_cell(byte: u8) -> Cell {
+    cell(Value::Int(IntTy::Byte, byte as i128))
+}
+
+/// The bytes a `read byte[]` looks at; those of a text without a cell for each.
+fn byte_values(value: &Value) -> Vec<u8> {
+    match value {
+        Value::Bytes(text, start, end) => text.as_bytes()[*start..*end].to_vec(),
+        other => cells_of(other).iter().map(|item| match &*item.borrow() {
+            Value::Int(_, byte) => *byte as u8,
+            _ => unreachable!("the checker makes the items bytes"),
+        }).collect(),
     }
 }
 
@@ -1728,6 +1750,7 @@ fn cells_of(value: &Value) -> Rc<Vec<Cell>> {
 fn as_list(value: Value) -> Value {
     match value {
         Value::Array(items) | Value::Slice(items) => Value::List(Rc::new(RefCell::new((*items).clone()))),
+        Value::Bytes(..) => Value::List(Rc::new(RefCell::new((*cells_of(&value)).clone()))),
         other => other,
     }
 }
@@ -3507,10 +3530,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             NetCall::Send => {
                 let Value::Socket(stream) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `send` on a stream") };
-                let bytes: Vec<u8> = cells_of(&owned(self.expr(&args[0], frame)?)).iter().map(|item| match &*item.borrow() {
-                    Value::Int(_, byte) => *byte as u8,
-                    _ => unreachable!("the checker makes the items bytes"),
-                }).collect();
+                let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
                 let source = match token {
                     Some(token) => self.token(token, frame)?,
                     None => None,
@@ -3917,6 +3937,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         },
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
                         (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
+                        (Value::Bytes(text, start, end), _) => text.as_bytes()[*start..*end].get(next).copied().map(byte_cell),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
                     };
                     let Some(item) = item else { break };
@@ -4083,6 +4104,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Some(item) => Ok(item.clone()),
                         None => Err(no_item(*at, items.len())),
                     },
+                    (Value::Bytes(text, start, end), Value::Int(_, at)) => {
+                        let bytes = &text.as_bytes()[start..end];
+                        match usize::try_from(*at).ok().and_then(|at| bytes.get(at)) {
+                            Some(byte) => Ok(byte_cell(*byte)),
+                            None => Err(no_item(*at, bytes.len())),
+                        }
+                    }
                     (Value::Map(entries), key) => match entries.borrow().get(&key_of(key)) {
                         Some((_, value)) => Ok(value.clone()),
                         None => {
@@ -4355,7 +4383,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Ok(Value::Array(Rc::new(cells)))
             }
-            ExprKind::AsSlice(inner) => Ok(Value::Slice(cells_of(&owned(self.expr(inner, frame)?)))),
+            ExprKind::AsSlice(inner) => match owned(self.expr(inner, frame)?) {
+                bytes @ Value::Bytes(..) => Ok(bytes),
+                other => Ok(Value::Slice(cells_of(&other))),
+            },
             ExprKind::Slice { recv, from, to } => {
                 // The items where they are, not a copy of them: a place is looked into.
                 let holder = match recv.is_place() {
@@ -4368,6 +4399,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Value::Str(text) => text.len() as i128,
                     Value::List(items) => items.borrow().len() as i128,
                     Value::Array(items) | Value::Slice(items) => items.len() as i128,
+                    Value::Bytes(_, start, end) => (end - start) as i128,
                     other => cells_of(other).len() as i128,
                 };
                 let from = match from {
@@ -4385,6 +4417,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 if from > to {
                     return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
+                }
+                if let Value::Bytes(text, start, _) = holder {
+                    return Ok(Value::Bytes(text, start + from as usize, start + to as usize));
                 }
                 let Value::Str(text) = holder else {
                     let part = match &holder {
@@ -4796,11 +4831,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(Value::Str(Rc::new(text)))
                 }
                 Callee::FromUtf8 => {
-                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
-                    let bytes: Vec<u8> = cells.iter().map(|item| match &*item.borrow() {
-                        Value::Int(_, byte) => *byte as u8,
-                        _ => unreachable!("the checker makes the items bytes"),
-                    }).collect();
+                    let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
                     Ok(match String::from_utf8(bytes) {
                         Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                         Err(error) => {
@@ -5106,6 +5137,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     // hashing a megabyte take most of a minute.
                     match (&recv, name.as_str(), values.as_slice()) {
                         (Value::Array(cells) | Value::Slice(cells), "length", []) => return Ok(Value::Int(IntTy::Nint, cells.len() as i128)),
+                        (Value::Bytes(_, start, end), "length", []) => return Ok(Value::Int(IntTy::Nint, (end - start) as i128)),
+                        (Value::Bytes(text, start, end), "get", [Value::Int(_, at)]) => {
+                            let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes()[*start..*end].get(at).copied());
+                            return Ok(byte.map_or(Value::Null, |byte| Value::Borrow(byte_cell(byte))));
+                        }
                         (Value::Array(cells) | Value::Slice(cells), "get", [Value::Int(_, at)]) => {
                             return Ok(usize::try_from(*at).ok().and_then(|at| cells.get(at).cloned()).map_or(Value::Null, Value::Borrow));
                         }
@@ -5799,7 +5835,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let mut shown = Vec::new();
                         for side in [&left, &right] {
                             shown.push(match owned(side.clone()) {
-                                Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Array(_) | Value::Slice(_) => self.show(side, true, cond.span)?,
+                                Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Array(_) | Value::Slice(_) | Value::Bytes(..) => self.show(side, true, cond.span)?,
                                 _ => side.debug(),
                             });
                         }
@@ -5835,7 +5871,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let value = held.value.borrow().clone();
                 self.show(&value, inside, span)
             }
-            Value::Array(_) | Value::Slice(_) => self.show(&as_list(value.clone()), inside, span),
+            Value::Array(_) | Value::Slice(_) | Value::Bytes(..) => self.show(&as_list(value.clone()), inside, span),
             Value::Str(text) if inside => Ok(format!("{text:?}")),
             Value::Char(value) if inside => Ok(quoted_char(*value)),
             Value::Null => Ok("null".to_string()),
@@ -5901,7 +5937,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// An operator on two values. On a struct or an enum `==` is `equals` and `<` is `compare`.
     fn binary(&mut self, op: BinOp, left: Value, right: Value, span: Span) -> Res<Value> {
         use std::cmp::Ordering;
-        let (left, right) = (as_list(owned(left)), as_list(owned(right)));
+        // The bytes of two texts are compared where they are.
+        let (left, right) = (owned(left), owned(right));
+        if let (Value::Bytes(a, a_start, a_end), Value::Bytes(b, b_start, b_end), BinOp::Eq | BinOp::Ne) = (&left, &right, op) {
+            let same = a.as_bytes()[*a_start..*a_end] == b.as_bytes()[*b_start..*b_end];
+            return Ok(Value::Bool(same == (op == BinOp::Eq)));
+        }
+        let (left, right) = (as_list(left), as_list(right));
         let by_method = |value: &Value| matches!(value, Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_));
         if !by_method(&left) {
             return Ok(binary(op, left, right, span)?);
@@ -6159,10 +6201,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 done(write_file(&path, text.as_bytes(), call == IoCall::AppendText).map(|()| Value::Void))
             }
             IoCall::WriteBytes => {
-                let bytes: Vec<u8> = cells_of(&values.next().expect("bytes")).iter().map(|item| match &*item.borrow() {
-                    Value::Int(_, byte) => *byte as u8,
-                    _ => unreachable!("the checker makes the items bytes"),
-                }).collect();
+                let bytes = byte_values(&values.next().expect("bytes"));
                 done(write_file(&path, &bytes, false).map(|()| Value::Void))
             }
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
@@ -6655,10 +6694,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             },
             SystemCall::UdpSend | SystemCall::UdpSendAsync if cancelled => failed(io_cancelled()),
             SystemCall::UdpSend | SystemCall::UdpSendAsync => {
-                let bytes: Vec<u8> = cells_of(&values[1]).iter().map(|item| match &*item.borrow() {
-                    Value::Int(_, byte) => *byte as u8,
-                    _ => unreachable!("the checker makes the items bytes"),
-                }).collect();
+                let bytes = byte_values(&values[1]);
                 let to = flag(2).then(|| address(3));
                 let socket = socket();
                 loop {
@@ -6986,10 +7022,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 })
             }
             (StreamCall::WriteBytes, Value::Writer(writer)) => {
-                let bytes: Vec<u8> = cells_of(&owned(self.expr(&args[0], frame)?)).iter().map(|item| match &*item.borrow() {
-                    Value::Int(_, byte) => *byte as u8,
-                    _ => unreachable!("the checker makes the items bytes"),
-                }).collect();
+                let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }
@@ -8119,7 +8152,7 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (Value::Char(value), "toLower", []) => Value::Char(crate::unicode::lower(*value)),
         (Value::Char(value), "utf8Length", []) => Value::Int(IntTy::Nint, value.len_utf8() as i128),
         (Value::Str(_), "clone", []) => recv,
-        (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
+        (Value::Str(text), "asBytes", []) => Value::Bytes(text.clone(), 0, text.len()),
         (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),
         (_, "compare", [other]) => Value::Int(IntTy::Int, key_of(&recv).cmp(&key_of(other)) as i128),
         (Value::Int(ty, a), _, [Value::Int(_, b)]) => {

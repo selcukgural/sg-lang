@@ -1,0 +1,9 @@
+byte third(read byte[] data) {
+    return data[2]
+}
+
+void main() {
+    var text = "hello"
+    print(third(text.asBytes()))
+    print(third(text.asBytes()[3..]))
+}
