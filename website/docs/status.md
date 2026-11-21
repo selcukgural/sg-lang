@@ -24,8 +24,9 @@ are built and tested on Linux, macOS and Windows; what is written here can still
   zones, random numbers, Unicode, hex and Base64, CRC-32 and Adler-32, SHA-256 and HMAC, the command line,
   JSON, a log, regular expressions, compression (DEFLATE, zlib and gzip), and zip archives.
 - **A machine without a system**: a program built for one (`--freestanding`), and a small kernel for RISC-V.
-- **Tools**: `sg test`, a debug build that counts every block of memory and reports leaks, and `sg lsp` for
-  editors.
+- **Tools**: `sg test`, a debug build that counts every block of memory and reports leaks, `sg lsp` with an
+  extension for VS Code, and packages without a registry: `sg add` fetches them by `git`, pinned by the SHA-256
+  of their files in `sg.lock`.
 
 ## How it is tested
 
@@ -58,3 +59,9 @@ function value is the address of a named function. On this site, the reference o
 the language is still to be written, and the pages of the library are written by hand until `sg doc` makes them
 from the source. The repository keeps the full list:
 [Not here yet](https://github.com/selcukgural/sg-lang/blob/main/interpreter/docs/not-here-yet.md).
+
+## What comes next
+
+A well-known program written in SG, one that has not been rewritten in Rust yet:
+[gifsicle](https://www.lcdf.org/gifsicle/), measured against its C original
+([how it got here, and what comes next](./about/history.md#what-comes-next)).

@@ -63,6 +63,7 @@ const config = {
           { type: 'docSidebar', sidebarId: 'library', position: 'left', label: 'Library' },
           { type: 'docSidebar', sidebarId: 'benchmarks', position: 'left', label: 'Benchmarks' },
           { to: '/docs/status', label: 'Status', position: 'left' },
+          { type: 'docSidebar', sidebarId: 'about', position: 'left', label: 'About' },
           { href: repo, label: 'GitHub', position: 'right' },
         ],
       },
@@ -70,6 +71,7 @@ const config = {
         style: 'dark',
         links: [
           { title: 'Learn', items: [{ label: 'Install', to: '/docs/learn/install' }, { label: 'A tour of SG', to: '/docs/learn/tour' }, { label: 'SG for Rust programmers', to: '/docs/learn/for-rust' }] },
+          { title: 'About', items: [{ label: 'Why SG', to: '/docs/about/why' }, { label: 'How it got here', to: '/docs/about/history' }, { label: 'The repository', to: '/docs/about/repository' }] },
           { title: 'Project', items: [{ label: 'Status', to: '/docs/status' }, { label: 'Benchmarks', to: '/docs/benchmarks' }, { label: 'Source', href: repo }, { label: 'Security', href: `${repo}/blob/main/SECURITY.md` }] },
         ],
         copyright: 'SG is free software under the MIT or Apache 2.0 license. Pasha, the cat of SG.',

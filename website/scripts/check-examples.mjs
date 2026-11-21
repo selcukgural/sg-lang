@@ -70,14 +70,14 @@ for (const page of pages(join(site, 'docs'))) {
     }
   });
 }
-// The programs on the front page, in `src/pages/index.js`: the sample prints what is shown, and the mistake is
-// refused with the message shown, written for a file named `main.sg`.
+// The programs on the front page, in `src/pages/index.js`: the sample prints what is shown, and the two mistakes
+// are refused with the messages shown, written for a file named `main.sg`.
 const index = readFileSync(join(site, 'src', 'pages', 'index.js'), 'utf8');
 const literal = (name) => {
   const found = index.match(new RegExp(`const ${name} = [\`']([\\s\\S]*?)[\`'];`));
   return found ? found[1].replaceAll('\\`', '`').replaceAll('\\$', '$') : null;
 };
-for (const [code, shown, refused] of [['sample', 'sampleOutput', false], ['mistake', 'mistakeMessage', true]]) {
+for (const [code, shown, refused] of [['sample', 'sampleOutput', false], ['mistake', 'mistakeMessage', true], ['dangle', 'dangleMessage', true]]) {
   const program = literal(code);
   if (program === null) continue;
   programs += 1;
