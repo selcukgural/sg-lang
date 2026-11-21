@@ -1,0 +1,11 @@
+// A range lent as `ref` beside another range of the same list (choice 1610): the call would
+// write over the text the other one reads.
+void change(ref string[] into, read string[] from) {
+    var kept = read from[0]
+    into[1] = "x".repeat(40)
+    print(kept)
+}
+void main() {
+    var xs = List<string> { "a".repeat(40), "b".repeat(40), "c".repeat(40) }
+    change(ref xs[0..2], xs[1..3])
+}

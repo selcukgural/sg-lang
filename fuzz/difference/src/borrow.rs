@@ -89,6 +89,12 @@ int next(ref int n) {
     n += 1
     return n
 }
+
+void spill(ref string[] into, read string[] from) {
+    var kept = read from[0]
+    into[0] = \"a text put by spill, long enough for the heap\".clone()
+    print(kept)
+}
 ";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -513,8 +519,15 @@ impl Borrow {
             },
             Kind::List | Kind::RefList => {
                 let given = if kind == Kind::List { format!("ref {name}") } else { name.clone() };
-                match self.rng.below(7) {
+                match self.rng.below(8) {
                     0 => Node::line(format!("refill({given})")),
+                    // A range lent to be changed beside a range that may be of the same list
+                    // (choice 1610).
+                    6 => {
+                        let (other, other_kind) = self.kind_in_scope(&[Kind::List, Kind::RefList, Kind::Holder])?;
+                        let from = if other_kind == Kind::Holder { format!("{other}.items") } else { other };
+                        Node::line(format!("spill(ref {name}[0..1], {from}[0..1])"))
+                    }
                     1 => Node::line(format!("_ = g({given})")),
                     2 => {
                         let value = self.long_text();

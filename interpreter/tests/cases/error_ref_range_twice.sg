@@ -1,0 +1,9 @@
+// Two ranges of one array lent as `ref` to one call clash however far apart they are, as in
+// Rust (choice 1610).
+void both(ref int[] a, ref int[] b) {
+    a[0] = b[0]
+}
+void main() {
+    var xs = int[4] { 1, 2, 3, 4 }
+    both(ref xs[0..1], ref xs[2..4])
+}

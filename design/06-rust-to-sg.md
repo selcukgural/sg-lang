@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-fifth slice (a const calls no function, 1606: `const fn` is now "not planned", and a value a function finds is a `static`).
+Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a range lent as `ref` lends its whole list or array, 1610).
 
 ## Functions and variables
 
@@ -234,6 +234,8 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-fifth slice (a 
 | implicit reborrow: `wipe(xs)` with `xs: &mut Vec<T>` | `wipe(xs)` with `ref List<T> xs` | built | Lends `xs` again to be changed: no other borrow of it may be used after the call, nor given in the same call (1592) |
 | drop check: a value with `Drop` that borrows outlives what it borrows | the same for a `Disposable` value | built | Its `dispose` at the end of the block is a use of the borrow; an owner declared after it is an error |
 | two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it. The same for every value made of parts: a struct, `with`, a variant, a list, `==`, `??`, `$"..."` (1592) |
+| `f(&mut v[0..2], &v[2..4])` is an error | `f(ref xs[0..2], xs[2..4])`, the same error | built | A range lent as `ref` lends its whole list or array: two ranges of one place clash in one call however far apart they are (1610) |
+| `let (a, b) = v.split_at_mut(2)` | none | not in SG | Not looked at yet: two `ref` windows of one place at once; noted in "Not here yet" (1610) |
 | `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |

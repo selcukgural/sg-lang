@@ -169,7 +169,8 @@ It prints:
 
 A slice is a window on the items of a list, an array or another slice. `read xs` and `ref xs` give one where a
 slice is expected, and so does a range: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` to write
-through. A function that takes `read T[]` takes a list and an array alike.
+through. A function that takes `read T[]` takes a list and an array alike. A range lent as `ref` lends the whole
+list or array, as in Rust: `f(ref xs[0..2], xs[2..4])` is an error, however far apart the two ranges are.
 
 | Signature | What it does |
 |---|---|

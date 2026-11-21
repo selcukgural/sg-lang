@@ -1,0 +1,12 @@
+// A range lent as `ref` beside the whole list, or an item of it, lent as `read` (choice 1610).
+struct Holder {
+    List<string> items
+}
+void look(ref string[] window, read Holder whole) {
+    window[0] = "x"
+    print(whole.items.length())
+}
+void main() {
+    var holder = Holder { items = List<string> { "a", "b" } }
+    look(ref holder.items[0..1], read holder)
+}

@@ -1,0 +1,9 @@
+error: `holder` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_ref_range_beside_whole.sg:11:39
+ 11 |     look(ref holder.items[0..1], read holder)
+    |                                       ^^^^^^
+  the other borrow is here:
+  --> error_ref_range_beside_whole.sg:11:10
+ 11 |     look(ref holder.items[0..1], read holder)
+    |          ^^^^^^^^^^^^^^^^^^^^^^
+  hint: copy what is needed into a variable before the call

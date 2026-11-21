@@ -4159,6 +4159,22 @@ fn store_path(expr: &Expr) -> Option<(&str, String)> {
     }
 }
 
+/// The place a call is lent: that of the items a range looks at (`ref xs[0..2]`), as an item
+/// is counted as its whole collection. Two ranges of one place clash however far apart they
+/// are, as in Rust.
+fn lent_path(expr: &Expr) -> Option<(&str, String)> {
+    match &expr.kind {
+        ExprKind::Slice { recv, .. } => lent_path(recv),
+        _ => store_path(expr),
+    }
+}
+
+/// A place as a message names it: `xs[0..2]` for the range written `ref xs[0..2]`.
+fn range_named(text: &str) -> &str {
+    let text = text.trim();
+    text.strip_prefix("ref").filter(|rest| rest.starts_with(char::is_whitespace)).map_or(text, str::trim_start)
+}
+
 /// The variants a `match` or `is` chooses between: those of an enum, or `Ok` and `Error`.
 struct Variants {
     /// The type as it is named in messages.
@@ -5607,6 +5623,8 @@ impl<'a> Checker<'a> {
             .chain(args.iter().enumerate().filter_map(|(at, arg)| match &arg.kind {
                 _ if given(at, arg) => Some((arg, true)),
                 ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable)),
+                // `ref xs[a..b]`, kept as the range alone: its items are lent to be changed.
+                ExprKind::Slice { .. } if matches!(arg.ty, Ty::Ref(_)) => Some((arg, true)),
                 // The items whose address C is given may be written by it.
                 ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
                 ExprKind::RawCast { expr, .. } => match &expr.kind {
@@ -5620,7 +5638,7 @@ impl<'a> Checker<'a> {
         // as a borrow (`Hex.encodeInto(ref s, s.asBytes())`, `grow(ref s, s[1..])`): the call
         // may change the place while it reads the view (choice 1592).
         let changed: Vec<(usize, String, &Expr)> =
-            places.iter().filter(|(_, mutable)| *mutable).filter_map(|(place, _)| store_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place)))).collect();
+            places.iter().filter(|(_, mutable)| *mutable).filter_map(|(place, _)| lent_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place)))).collect();
         if !changed.is_empty() {
             let lent_itself = |arg: &Expr| match &arg.kind {
                 ExprKind::Borrow { .. } | ExprKind::Method { callee: Callee::Pointer, .. } => true,
@@ -5631,7 +5649,7 @@ impl<'a> Checker<'a> {
                 for loan in self.part_loans(arg, false) {
                     let overlaps = |path: &str| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
                     let Some((_, _, place)) = changed.iter().find(|(root, path, _)| *root == loan.root && overlaps(path)) else { continue };
-                    let (text, into) = (self.src[arg.span.start..arg.span.end].trim(), self.src[place.span.start..place.span.end].trim());
+                    let (text, into) = (self.src[arg.span.start..arg.span.end].trim(), range_named(&self.src[place.span.start..place.span.end]));
                     return Err(Diag::error(arg.span, format!("`{text}` looks at `{into}`, which this call is given to change"))
                         .related(place.span, "given as `ref` here")
                         .note(format!("the call may change `{into}` while `{text}` is read, and it would be read from what was there"))
@@ -5646,14 +5664,14 @@ impl<'a> Checker<'a> {
     fn lent_places(&mut self, places: Vec<(&Expr, bool)>) -> Res<()> {
         let mut lent: Vec<(usize, String, bool, Span)> = Vec::new();
         for (place, mutable) in places {
-            let Some((name, path)) = store_path(place) else { continue };
+            let Some((name, path)) = lent_path(place) else { continue };
             let Some((root, declared)) = self.find(name).map(|var| (var.id, var.declared.clone())) else { continue };
             let clash = lent.iter().find(|(other, other_path, other_mutable, _)| {
                 let overlaps = path.is_empty() || other_path.is_empty() || within(&path, other_path) || within(other_path, &path);
                 *other == root && overlaps && (mutable || *other_mutable)
             });
             if let Some((_, _, _, first)) = clash {
-                let text = &self.src[place.span.start..place.span.end];
+                let text = range_named(&self.src[place.span.start..place.span.end]);
                 // A `shared checked` value lent to change and to read stops the program when it
                 // runs, as `opening.rs` says of one lent through two owners (choice 1401).
                 let diag = match (path.is_empty(), declared.strip_borrow()) {

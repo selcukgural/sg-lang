@@ -10063,6 +10063,26 @@ difference found. The whole of the tests passes on macOS and on Linux (the kerne
 test, which needs a Clang that knows RISC-V, on Linux alone), with 492 of the 1887 programs compiled through C
 and run clean under the sanitizers, 108 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-sixth slice (a range lent as `ref` is counted among what a call
+lends). 1610 was approved at the start of the slice:
+
+1610. **A range lent as `ref` lends its whole list or array.** `ref xs[0..2]` is kept as the range alone, and
+     the check of what one call lends did not see it: beside it, another range of the same list
+     (`f(ref xs[0..2], xs[1..3])`), the list itself (`read xs`) or an item of it (`read xs[2]`) was taken.
+     The function could write over an item the other argument still read: in compiled code, a text freed
+     under a `read string` that looked at it. A range lent as `ref` is now one of the places a call lends,
+     counted as its list or array, as an item is, so two ranges of one place clash in one call however far
+     apart they are, as in Rust. Two `ref` windows of one place at once (Rust's `split_at_mut`) are not in
+     the language yet.
+
+Tested by `error_ref_range_beside_range` and `error_ref_range_beside_whole` (new), both taken on the code
+before this slice, and `error_ref_range_twice` (new): two `ref` ranges were refused before, by the rule of the
+parts of a call, and are now lent twice. The generator of programs that borrow (`fuzz/difference`) lends a
+range of a list as `ref` beside a range that may be of the same list: on the code before the fix, 89 of 648
+programs read freed memory under the address sanitizer; after it, none of 1061. The whole of the tests passes on macOS and on
+Linux, with 492 of the 1890 programs compiled through C and run clean under the sanitizers, 108 of them under
+the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10228,6 +10248,9 @@ check off.
   Tokio's numbers on Windows.
 
 ## Not here yet
+
+- **Two `ref` windows of one place at once (1610)**: a call is lent one range of a list or an array as `ref`,
+  and nothing else of it; Rust's `split_at_mut`, which gives two that do not overlap, has no partner yet.
 
 - **Of packages (1552, 1555-1583)**: a package in a folder of a repository (Go's `sub/v1.0.0` tags), an
   address that leads to another through `?go-get=1`, versions before a release, branches and commits, a
@@ -10756,7 +10779,8 @@ never run or followed, and a package is kept only as itself (1591); the rules of
 not cases (1592), and a generator of programs that borrow tries them (1593); the modules of `std` that read
 what others write hold on what they are given (1594); compiled code does what the interpreter does where
 it did not (1595, 1601-1603); and the tool holds on what a program or a folder gives it (1596, 1604).
-A const is made of constant expressions alone, with no calls, as in C# and Go (1606-1608). Next come
+A const is made of constant expressions alone, with no calls, as in C# and Go (1606-1608), and a range lent
+as `ref` is counted among what a call lends (1610). Next come
 the copy of a slice into another (`copyFrom`, 1597) and a Pike machine that copies a thread's places once
 (1598), the normal forms of Unicode (1599) and a bound on the depth of the JSON that is written (1600). Then
 every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
