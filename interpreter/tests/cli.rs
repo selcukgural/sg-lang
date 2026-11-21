@@ -1072,6 +1072,97 @@ fn the_trials() {
     assert!(printed[4].lines().all(|line| line.split_once(':').is_some_and(|(n, _)| n.parse::<u32>().is_ok())));
 }
 
+/// The trial of `std`'s JSON (1553, 1634): `trials/std/json` in SG, interpreted and compiled, on
+/// the megabyte of each kind `trials/inputs/json.sg` makes from seed 7, gives what `serde_json` and
+/// Zig's `std.json` give: the counts and sums below were taken from those, and a copy is the
+/// document with its lines joined, as theirs is.
+#[test]
+fn the_trial_of_json() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_json");
+    let maker = program(&dir, "json-input").to_string_lossy().into_owned();
+    let maker_source = trials.join("inputs").join("json.sg").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &maker_source, "--release", "-o", &maker])), (0, String::new(), String::new()));
+    for kind in ["records", "lines", "numbers"] {
+        let made = Command::new(&maker).args([kind, "1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        assert!(made.status.success());
+        std::fs::write(dir.join(format!("{kind}.json")), &made.stdout).unwrap();
+    }
+    let source = trials.join("std").join("json").join("sg").join("json.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "json").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let counts = |values, null, bool_, integer, number, string, array, object, bytes: (u64, u64), sums: (&str, &str)| {
+        format!(
+            "values {values}\nnull {null}\nbool {bool_}\ninteger {integer}\nnumber {number}\nstring {string}\n\
+             array {array}\nobject {object}\nstring bytes {}\nname bytes {}\ninteger sum {}\nnumber sum {}\n",
+            bytes.0, bytes.1, sums.0, sums.1
+        )
+    };
+    let records = counts(67540, 660, 6724, 6724, 10848, 25011, 8137, 9436, (298340, 217812), ("7048255495089", "31052479.53212802"));
+    let lines = format!(
+        "documents 2712\n{}",
+        counts(67539, 660, 6724, 6724, 10848, 25011, 8136, 9436, (298340, 217812), ("7048255495089", "31052479.53212802"))
+    );
+    let numbers = counts(76002, 0, 0, 85, 50156, 256, 25249, 256, (1793, 3667), ("3655", "-37091.1940778679"));
+    let joined = |kind: &str| {
+        let text = std::fs::read_to_string(dir.join(format!("{kind}.json"))).unwrap();
+        format!("{}\n", text.replace('\n', ""))
+    };
+    let cases = [
+        (["sum", "records.json"], records),
+        (["lines", "lines.json"], lines),
+        (["sum", "numbers.json"], numbers),
+        (["copy", "records.json"], joined("records")),
+        (["copy", "numbers.json"], joined("numbers")),
+    ];
+    for (args, expected) in cases {
+        let interpreted = ran(&sg(&dir, &[source.as_str(), args[0], args[1]]));
+        let compiled = ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        assert_eq!(interpreted, compiled, "json {args:?}: interpreted and compiled");
+        assert!(compiled == (0, expected, String::new()), "json {args:?}");
+    }
+}
+
+/// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
+/// part of its own (`### json`) in the section of the interpreter's README that holds the
+/// measurements, or is named in its list of those not measured yet, which the slices empty.
+#[test]
+fn every_module_of_std_is_measured() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let heading = "## `std`, measured against Rust and Zig";
+    let start = readme.find(heading).expect("the README has the section of the measurements of std");
+    let rest = &readme[start + heading.len()..];
+    let section = &rest[..rest.find("\n## ").unwrap_or(rest.len())];
+    let waiting = section
+        .lines()
+        .find_map(|line| line.strip_prefix("Not measured yet: "))
+        .expect("the section names the modules not measured yet");
+    let waiting: Vec<&str> = waiting.trim_end_matches('.').split(", ").map(|name| name.trim_matches('`')).collect();
+    let mut modules: Vec<String> = std::fs::read_dir(root.join("src").join("std"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "sg"))
+        .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    modules.sort();
+    for module in &modules {
+        let measured = section.contains(&format!("\n### {module}\n"));
+        let listed = waiting.contains(&module.as_str());
+        assert!(
+            measured != listed,
+            "std/{module}.sg: {}",
+            if measured { "measured, and still in the list of those not measured yet" } else { "neither measured nor in the list of those not measured yet" }
+        );
+    }
+    for name in &waiting {
+        assert!(modules.iter().any(|m| m == name), "`{name}` in the list is not a module of std");
+    }
+}
+
 const ORDER: &str = r#"extern {
     int puts(read CString text)
 }

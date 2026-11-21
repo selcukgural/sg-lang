@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-eighth slice (default values of parameters, `JsonOptions`, 1600 and 1617-1628).
+Last brought up to date: 21 November 2026, the hundred-and-forty-ninth slice (`JsonObject.values()`, 1640).
 
 ## Functions and variables
 
@@ -570,6 +570,7 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-eighth slice (d
 | `v.as_str()`, `as_i64()`, `as_f64()`, `as_bool()`, `as_array()`, `as_object()`, `is_null()` | `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()`, `isNull()` | built | |
 | `map.insert(k, v)` | `o.set(k, v)`; `o.add(k, v)` for a new name | built | |
 | `map.shift_remove(k)` | `o.remove(k)` | built | The others keep their order |
+| `for (k, v) in map` | `var names = o.names()`, `var values = o.values()`, `for i in 0..names.length()` | built | Two lists in one order; SG has no tuples |
 | `serde_json::to_string(&v)` | `v.toJson()`, `$"{v}"` | built | |
 | `serde_json::to_string_pretty(&v)` | `v.toJson(JsonOptions { indent = 2 })` | built | serde_json writes any depth; `toJson` writes 128 levels, as many as `Json.parse` reads, and `JsonOptions { maxDepth = n }` more |
 | `json!({"a": 1})` | `var o = JsonObject()`, `o.add("a", JsonValue.Integer(1))` | built | No macros |

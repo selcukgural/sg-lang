@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Builds each trial in SG, Rust and Zig, checks that the three give the same output, and measures
-them (choices 1418, 1525-1532, 1540-1542). Run from the repository's root:
+them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the same way, each in
+`trials/std/<module>` (choices 1553, 1629-1637). Run from the repository's root:
 
     python3 trials/measure.py               every trial: checked, then measured
     python3 trials/measure.py grep          only this one
+    python3 trials/measure.py std/json      only the module of `std`
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -47,6 +49,31 @@ def small_input():
     return OUT / "text-2.log"
 
 
+# The inputs made by `inputs/json.sg`: placeholder -> (kind, megabytes, file name). Made the first
+# time a case names them.
+JSON_INPUTS = {
+    "records": ("records", 100, "records-100.json"),
+    "lines": ("lines", 100, "lines-100.ndjson"),
+    "numbers": ("numbers", 100, "numbers-100.json"),
+    "small-records": ("records", 2, "records-2.json"),
+    "small-lines": ("lines", 2, "lines-2.ndjson"),
+    "small-numbers": ("numbers", 2, "numbers-2.json"),
+}
+JSON_SEED = 1
+
+
+def json_input(placeholder):
+    kind, megabytes, name = JSON_INPUTS[placeholder]
+    path = OUT / name
+    if not path.exists():
+        maker = OUT / "json-input"
+        if not maker.exists():
+            run([SG, "build", TRIALS / "inputs" / "json.sg", "--release", "-o", maker])
+        with open(path, "wb") as f:
+            subprocess.run([maker, kind, str(megabytes), str(JSON_SEED)], stdout=f, check=True)
+    return path
+
+
 # Each trial: the cases that are only checked (small, or the ways it fails), and those that are
 # also measured. A case is (name, arguments, file given as the input or None). `{text}` and
 # `{small}` stand for the inputs.
@@ -78,6 +105,25 @@ TRIALS_CASES = {
             ("an address and a method", ["-c", r"[a-z]+[0-9]+@example\.com (PUT|DELETE)", "{text}"], None),
             ("a range and Unicode", ["in [0-9]{4} ms: .*日本", "{text}"], None),
             ("inverted", ["-v", "-c", "INFO", "{text}"], None),
+        ],
+    },
+    "std/json": {
+        "check": [
+            ("records, summed", ["sum", "{small-records}"], None),
+            ("records, written back", ["copy", "{small-records}"], None),
+            ("a document a line", ["lines", "{small-lines}"], None),
+            ("coordinates, summed", ["sum", "{small-numbers}"], None),
+            ("coordinates, written back", ["copy", "{small-numbers}"], None),
+            ("not JSON", ["sum", "{readme}"], None),
+            ("a line that is not JSON", ["lines", "{readme}"], None),
+            ("a missing file", ["sum", "missing.json"], None),
+            ("a wrong use", ["walk", "{small-records}"], None),
+        ],
+        "measure": [
+            ("records, read and summed", ["sum", "{records}"], None),
+            ("records, read and written back", ["copy", "{records}"], None),
+            ("a document a line, each read and summed", ["lines", "{lines}"], None),
+            ("coordinates, read and summed", ["sum", "{numbers}"], None),
         ],
     },
 }
@@ -119,6 +165,8 @@ def build(trial):
     folder = TRIALS / trial
     out = OUT / trial
     out.mkdir(parents=True, exist_ok=True)
+    # `std/json` is built as `json`.
+    trial = Path(trial).name
     sg_source = folder / "sg" / f"{trial}.sg"
     built = {}
     built["SG"] = out / f"{trial}-sg"
@@ -152,7 +200,9 @@ def expand(words, trial):
         "empty": str(OUT / "empty.txt"),
         "readme": str(ROOT / "README.md"),
     }
-    return [w.format(**values) if "{" in w and "}" in w and w.strip("{}") in values else w for w in words]
+    words = [w.format(**values) if "{" in w and "}" in w and w.strip("{}") in values else w for w in words]
+    return [str(json_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in JSON_INPUTS else w
+            for w in words]
 
 
 def run_once(program, args, stdin_path, capture):

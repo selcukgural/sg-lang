@@ -197,16 +197,14 @@ public enum JsonValue : Equatable, Formattable {
 
 // The members of a JSON object, in the order they were read or added, found by name: by looking
 // at each name while there are few, through a table once there are more than 16.
-// `var o = JsonObject()`, `o.add("name", JsonValue.String("Ada"))`.
+// `var o = JsonObject()`, `o.add("name", JsonValue.String("Ada"))`. Its members are kept on the
+// heap, behind one pointer, so that a `JsonValue` takes the room of a list, 32 bytes, and not 96;
+// an empty object has none (choice 1639).
 public struct JsonObject : Equatable {
-    List<string> keys
-    List<JsonValue> values
-    // The place of each name in `keys`, made once the object has more than `JsonIndexAfter`
-    // members; empty before.
-    HashMap<string, nint> places
+    JsonMembers*? inner
 
     public JsonObject create() {
-        return JsonObject { keys = List<string>(), values = List<JsonValue>(), places = HashMap<string, nint>() }
+        return JsonObject { inner = null }
     }
 
     // Adds a member at the end; a panic when the object has one of that name already, as
@@ -221,8 +219,9 @@ public struct JsonObject : Equatable {
     // Puts `value` in place of the member named `name`, where it is, or adds it at the end.
     public void set(ref this, read string name, JsonValue value) {
         var place = this.find(name)
-        if place is not null {
-            this.values[place] = value
+        var inner = ref this.inner
+        if place is not null && inner is not null {
+            inner.values[place] = value
         } else {
             this.append(name.clone(), value)
         }
@@ -235,17 +234,17 @@ public struct JsonObject : Equatable {
         if place is null {
             return null
         }
-        nint gone = place
-        var oldKeys = this.keys.replace(List<string>())
-        var oldValues = this.values.replace(List<JsonValue>())
-        this.places.clear()
+        var members = this.inner.replace(null)
+        if members is null {
+            return null
+        }
         JsonValue? taken = null
         nint i = 0
-        for value in oldValues {
-            if i == gone {
+        for value in members.values {
+            if i == place {
                 taken = value
             } else {
-                this.append(oldKeys[i].clone(), value)
+                this.append(members.keys[i].clone(), value)
             }
             i += 1
         }
@@ -254,11 +253,15 @@ public struct JsonObject : Equatable {
 
     // The place of the member named `name`.
     nint? find(read this, read string name) {
-        if this.places.length() > 0 {
-            return this.places.get(name)
+        var inner = read this.inner
+        if inner is null {
+            return null
         }
-        for i in 0..this.keys.length() {
-            if this.keys[i] == name {
+        if inner.places.length() > 0 {
+            return inner.places.get(name)
+        }
+        for i in 0..inner.keys.length() {
+            if inner.keys[i] == name {
                 return i
             }
         }
@@ -267,26 +270,34 @@ public struct JsonObject : Equatable {
 
     // A member whose name the object does not have yet, at the end.
     void append(ref this, string name, JsonValue value) {
-        nint place = this.keys.length()
+        if this.inner is null {
+            this.inner = new JsonMembers { keys = List<string>(), values = List<JsonValue>(), places = HashMap<string, nint>() }
+        }
+        var inner = ref this.inner
+        if inner is null {
+            return
+        }
+        nint place = inner.keys.length()
         if place >= JsonIndexAfter {
-            if this.places.length() == 0 {
+            if inner.places.length() == 0 {
                 for i in 0..place {
-                    this.places.add(this.keys[i].clone(), i)
+                    inner.places.add(inner.keys[i].clone(), i)
                 }
             }
-            this.places.add(name.clone(), place)
+            inner.places.add(name.clone(), place)
         }
-        this.keys.add(name)
-        this.values.add(value)
+        inner.keys.add(name)
+        inner.values.add(value)
     }
 
     // The value of the member named `name`, `null` when there is none.
     public read JsonValue? get(read this, read string name) from this {
         var place = this.find(name)
-        if place is null {
+        var inner = read this.inner
+        if place is null || inner is null {
             return null
         }
-        return this.values[place]
+        return inner.values[place]
     }
 
     public bool contains(read this, read string name) {
@@ -295,22 +306,46 @@ public struct JsonObject : Equatable {
 
     // How many members the object has.
     public nint length(read this) {
-        return this.keys.length()
+        var inner = read this.inner
+        if inner is null {
+            return 0
+        }
+        return inner.keys.length()
     }
 
     // The names of the members, in order.
     public read List<string> names(read this) from this {
-        return read this.keys
+        var inner = read this.inner
+        if inner is null {
+            return read JsonNoNames
+        }
+        return read inner.keys
     }
 
-    // The same members with the same values, in any order.
+    // The values of the members, in the order of `names()`: `values()[i]` is the value of
+    // `names()[i]`, so an object is walked without looking each name up (choice 1640).
+    public read List<JsonValue> values(read this) from this {
+        var inner = read this.inner
+        if inner is null {
+            return read JsonNoValues
+        }
+        return read inner.values
+    }
+
+    // The same members with the same values, in any order. (It reads the members itself, not
+    // through `names()` and `values()`: `==`, which a static of `JsonValue`s may run, would read
+    // those statics on the way to their own value.)
     public bool equals(read this, read JsonObject other) {
-        if this.keys.length() != other.keys.length() {
+        if this.length() != other.length() {
             return false
         }
-        for i in 0..this.keys.length() {
-            var theirs = other.get(this.keys[i])
-            if theirs is null || !this.values[i].equals(theirs) {
+        var inner = read this.inner
+        if inner is null {
+            return true
+        }
+        for i in 0..inner.keys.length() {
+            var theirs = other.get(inner.keys[i])
+            if theirs is null || !inner.values[i].equals(theirs) {
                 return false
             }
         }
@@ -320,11 +355,26 @@ public struct JsonObject : Equatable {
     // A copy of the object and of everything in it.
     public JsonObject clone(read this) {
         var copy = JsonObject()
-        for i in 0..this.keys.length() {
-            copy.add(this.keys[i], this.values[i].clone())
+        var names = this.names()
+        var values = this.values()
+        for i in 0..names.length() {
+            copy.add(names[i], values[i].clone())
         }
         return copy
     }
+}
+
+// What `names()` and `values()` of an empty object lend.
+static List<string> JsonNoNames = List<string>()
+static List<JsonValue> JsonNoValues = List<JsonValue>()
+
+// What a `JsonObject` holds.
+struct JsonMembers {
+    List<string> keys
+    List<JsonValue> values
+    // The place of each name in `keys`, made once the object has more than `JsonIndexAfter`
+    // members; empty before.
+    HashMap<string, nint> places
 }
 
 // Why a text is not JSON.
@@ -949,19 +999,22 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
         Object(members) => {
             jsonCheckDepth(level, limit)
             target.write('{')
-            for i in 0..members.keys.length() {
-                if i > 0 {
-                    target.write(',')
+            // The members read here, not through `names()`: see `JsonObject.equals`. An empty
+            // object has none.
+            var inner = read members.inner
+            if inner is not null {
+                for i in 0..inner.keys.length() {
+                    if i > 0 {
+                        target.write(',')
+                    }
+                    writeJsonBreak(ref target, spaces, level + 1)
+                    writeJsonString(ref target, inner.keys[i])
+                    target.write(':')
+                    if spaces >= 0 {
+                        target.write(' ')
+                    }
+                    writeJsonValue(ref target, inner.values[i], spaces, level + 1, limit)
                 }
-                writeJsonBreak(ref target, spaces, level + 1)
-                writeJsonString(ref target, members.keys[i])
-                target.write(':')
-                if spaces >= 0 {
-                    target.write(' ')
-                }
-                writeJsonValue(ref target, members.values[i], spaces, level + 1, limit)
-            }
-            if members.keys.length() > 0 {
                 writeJsonBreak(ref target, spaces, level)
             }
             target.write('}')

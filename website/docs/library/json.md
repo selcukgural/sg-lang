@@ -104,6 +104,7 @@ each name while there are 16 or fewer, through a table past that.
 | `bool o.contains(read string name)` | Whether there is a member of that name |
 | `nint o.length()` | How many members there are |
 | `read List<string> o.names()` | The names, in order |
+| `read List<JsonValue> o.values()` | The values, in the order of the names: `values()[i]` is the value of `names()[i]` |
 
 Two values are `==` when they are the same JSON: arrays item by item in order, objects member by member in
 any order, since the RFC gives an object no order. `Integer(1)` and `Number(1.0)` are not the same.
@@ -224,9 +225,9 @@ panic, since no JSON reader would take it.
 
 The reader is tested with every parsing case of [JSONTestSuite](https://github.com/nst/JSONTestSuite). It is
 about 1.15 times as slow as cJSON on a document of 34 MB. There is no reader of a stream yet: the whole text
-is read first, and the values take far more room than the text: about 50 to 200 bytes for each byte of it (a
-`JsonValue` takes 96 bytes, and each array and object is a block of its own), so 10 MB of zeros in an array
-take about 500 MB, as a tree of values does in Go or Rust too. A program that reads JSON from outside bounds
+is read first, and the values take more room than the text: about 10 to 30 bytes for each byte of it (a
+`JsonValue` takes 32 bytes, and each array and each object with members is a block of its own), so 10 MB of
+zeros in an array take about 170 MB, as a tree of values does in Go or Rust too. A program that reads JSON from outside bounds
 the length of the text before it reads it.
 
 A key in an error is shown with the characters a reader does not see escaped (`duplicate key "a\u202eb"`).

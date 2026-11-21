@@ -78,7 +78,7 @@ of `tests/Containerfile` has them.
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece; `Adler32` is zlib's checksum, used the same way. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
-| JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJson(JsonOptions { indent = 2 })` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128, written to 128 too, `JsonOptions { maxDepth = 512 }` given to `toJson` and `Json.parse` for more; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
+| JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` and `o.values()` in the same order on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJson(JsonOptions { indent = 2 })` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128, written to 128 too, `JsonOptions { maxDepth = 512 }` given to `toJson` and `Json.parse` for more; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Searched by lazy DFAs, forwards for whether and where a match ends and backwards for where it starts, with Pike's machine only for the groups; their states are kept in the `Regex` behind a lock, so one in a `static` serves every task (1535-1539). Written in SG in the module `std` |
 | Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
@@ -10282,6 +10282,111 @@ Tested by `ok_param_defaults`, `error_default_param_order`, `error_default_param
 macOS and on Linux, with 500 of the 1914 programs compiled through C and run clean under the sanitizers,
 109 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-ninth slice (every module of `std` measured against Rust and Zig,
+first JSON). 1553 was approved during the hundred-and-thirty-sixth slice; 1629 to 1637 at the start of this
+one, and 1638 to 1640, which the measurement of JSON brought, the same day (21 November 2026):
+
+1629. **Where.** Each module is measured as the trials are, in `trials/std/<module>` with `sg/`, `rust/`
+     and `zig/`, by the same `trials/measure.py` (`python3 trials/measure.py std/json`). `bench/` keeps
+     its comparison with C and is not changed.
+1630. **The tables are here**, in "`std`, measured against Rust and Zig" below: a short table for each
+     module and what it says. The machine, the compilers and the flags are written once, in
+     `trials/README.md`.
+1631. **What is measured** is what the trials measure: SG, SG with its arithmetic checked, Rust, Zig and
+     Zig with its checks (`ReleaseSafe`); the time (the best of five runs), the most memory held, the size
+     of the program stripped and its lines. The command line, the environment and paths are measured for
+     size and memory only (1553).
+1632. **Against what**, pinned in `Cargo.lock`: `serde_json` and Zig's `std.json`; `flate2` and Zig's
+     `std.compress.flate` or zlib; `zip` and Zig's `std.zip` or a library of C; `sha2` and `hmac` and
+     `std.crypto`; `crc32fast` and `std.hash.Crc32`; `hex` and `base64` and `std.fmt` and `std.base64`;
+     `unicode-normalization` or `icu_normalizer`; `rand`; `chrono`; `log` with `env_logger`; `std::net`
+     and `std.net`. A feature that makes a crate faster and that people turn on as a rule is measured too,
+     beside the default (`flate2` with `zlib-rs`), as 1554 asks.
+1633. **The cases are chosen before the numbers are seen**: two to four for each module, one of a large
+     input (about 100 MB), one of many small pieces of work, and one of the hard way of the module where it
+     has one. The inputs are made from a seed by programs of `trials/inputs/`; nothing large is kept.
+1634. **The same work, held byte for byte.** The three give the same output; where a format may lawfully
+     differ, a program prints what can be compared (a hash, counts, sums), and the table says which.
+     `tests/cli.rs` runs the SG program, interpreted and compiled, on small inputs and holds it to what
+     Rust and Zig print, as `the_trials` does.
+1635. **What is made right.** A case where SG takes more than 1.10 times the faster of Rust and Zig is
+     profiled, and its cause is a numbered choice, fixed as 1543 asks, for every program and with no check of
+     safety taken away; what cannot be fixed goes into "Slower than C". A case SG loses is published.
+1636. **A test holds the rule**: `every_module_of_std_is_measured` fails when a file of `src/std` has neither
+     a part of its own in the section below (`### json`) nor a place in its list of those not measured
+     yet, or has both. A new module is added to the list, or comes in measured; the slices empty the list.
+1637. **The order**, a slice for each: JSON with the frame; compression and zip; SHA-256, HMAC, CRC-32 and
+     Adler-32; hex, Base64 and Unicode; time, random numbers and the log; the network; the command line,
+     the environment and paths. The tables are measured on macOS (the M3 Max of the trials); Linux runs
+     `--check` only, as it does for the trials.
+1638. **`serde_json` does the work SG does**: it is built with `preserve_order`, which keeps the members of
+     an object in the order they were read, as SG's `JsonObject` and Zig's `ObjectMap` do (without it they
+     are sorted, and a copy is another text), and with `float_roundtrip`, which reads a number to the
+     nearest `double`, as SG and Zig do. Without it, `18.615550827810694` comes out `18.615550827810697`,
+     one unit in the last place, and so do 4,449 of the 50,176 coordinates of a megabyte, one in eleven. The
+     default is written beside the table: the coordinates take it 0.386 s, and their copy is not the same.
+1639. **A `JsonValue` takes 32 bytes, not 96.** A `JsonObject` held its names, its values and its table of
+     places in itself, 88 bytes, which made every value of every kind 96 bytes: an array of two numbers took
+     a block of 384. It now holds one pointer to them, on the heap, `null` while it has no member: nothing
+     a program writes changes, an object with members costs one more allocation, an empty one none, and
+     what `names()` and `values()` of an empty object lend are two empty statics. Rust's `Value` takes 80
+     bytes with `preserve_order` and 32 without, Zig's 64. Read into values, 10 MB of `[0,0,...]` now hold
+     166 MB (471 before), of `[[1,2],...]` 269 MB (788) and of `[{},{},...]` 115 MB (318). Measured as below: the coordinates went from 0.467 s and 1,335 MB to 0.372 s and 518 MB (Rust
+     0.411 s, the case was 1.13 times it), the records from 0.590 s and 1,347 MB to 0.518 s and 786 MB; a
+     document a line took the same time. A profile had put a fifth of the time in growing the lists and a
+     fifth in walking the tree, and `strtod`, which reads a number of more than about sixteen digits, at
+     less than a tenth: a reader of its own (Eisel-Lemire, as Rust and Zig have) was not needed.
+1640. **`o.values()`**: the values of an object, in the order of `o.names()`, so that an object is walked
+     without looking each name up: `values()[i]` is the value of `names()[i]`. Rust and Zig walk the pairs
+     of a map; SG has no tuples (04), and two lists in one order cost nothing. The trial walks with it: the
+     records went from 0.518 s to 0.471 s and a document a line from 0.441 s to 0.387 s.
+
+Tested by `the_trial_of_json` and `every_module_of_std_is_measured` (new), and by `ok_json`, which walks an
+object with `values()`. The whole of the tests passes on macOS and on Linux, with 500 of the 1914 programs
+compiled through C and run clean under the sanitizers, 109 of them under the thread sanitizer.
+
+## `std`, measured against Rust and Zig
+
+Each module of `std` measured against the crates Rust's people use for the job and against Zig's own
+library, as the trials are (1553, 1629-1637): the time, the best of five runs after one to warm up; the most
+memory held; the size of the program stripped; and its lines. SG is built with `--release` and once more with
+its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, the compilers and the flags
+are in `trials/README.md`; the rules of fairness there (1554) hold here. `python3 trials/measure.py std/json`
+measures one module again.
+
+Not measured yet: `atomic`, `checksum`, `command_line`, `compression`, `encoding`, `environment`, `files`, `hash`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`, `zip`.
+
+The trial `grep` measures `Regex.isMatch` already (`trials/README.md`); `regex` gets a table of its own,
+with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
+which 1637 does not name.
+
+### json
+
+`trials/std/json`: `sum` reads a document and walks it, counting the values of each kind and adding up
+the numbers; `copy` reads it and writes it back on one line; `lines` reads a document on each line and walks
+each. 100 MB of each kind from `trials/inputs/json.sg`, seed 1: records (numbers whole and not, texts with
+escapes and letters past ASCII, nested objects and arrays), one record a line, and polygons of coordinates
+of seventeen digits, as `canada.json`. Apple M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| Records, read and summed | 0.476 s, 786 MB | 0.494 s, 786 MB | 0.668 s, 1286 MB | 0.552 s, 1074 MB | 0.697 s, 1191 MB |
+| Records, read and written back | 0.688 s, 881 MB | 0.722 s, 881 MB | 0.763 s, 1286 MB | 0.719 s, 1074 MB | 0.889 s, 1191 MB |
+| A document a line, each read and summed | 0.392 s, 2.4 MB | 0.412 s, 2.4 MB | 0.543 s, 2.8 MB | 0.464 s, 2.2 MB | 0.582 s, 2.3 MB |
+| Coordinates, read and summed | 0.355 s, 518 MB | 0.358 s, 518 MB | 0.415 s, 1117 MB | 0.457 s, 942 MB | 0.591 s, 1066 MB |
+| Size, stripped | 99 KB | 99 KB | 485 KB | 426 KB | 522 KB |
+| Lines | 130 | 130 | 111 | 110 | 110 |
+
+Rust is `serde_json` 1.0.154 into a `Value`, with `preserve_order` and `float_roundtrip` (1638); without
+them the coordinates take 0.386 s and come out other numbers. Zig is `std.json` into a `Value`, in an arena
+(`parseFromSliceLeaky`), emptied before each line. The outputs are the same bytes; every number with a
+fraction in the inputs is written without an exponent and is not whole, since the three write `1e-7`,
+`1e+16` and `2.0` each its own way. A struct mapped by `#[derive(Deserialize)]` reads faster in Rust, but
+does other work: SG has no mapping (1411). Before 1639 and 1640, SG took 0.590 s and 1,347 MB, 0.802 s and
+1,443 MB, 0.438 s, and 0.467 s and 1,335 MB: the coordinates were the case it lost, at 1.13 times Rust.
+`copy` holds 95 MB more than `sum`: `toJson` makes the whole text before it is written, where Rust and Zig
+write as they go.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10994,8 +11099,11 @@ A text is put in a normal form of Unicode by the compiler's own tables, as its c
 Unicode's tests gives what it should (1599, 1611-1614); zip names are compared in it (1615). The last
 parameters of a function may have default values, which a call that leaves them out gets as if it wrote
 them (1620-1624), the token of `std` among them (1623), and JSON is written to the depth it is read, which
-`JsonOptions` changes for both (1600, 1617-1619). Then
-every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
+`JsonOptions` changes for both (1600, 1617-1619). Every module of `std` is now measured against Rust and
+Zig, and a new one comes in with its measurement (1553, 1629-1637): JSON first, where a `JsonValue` takes 32
+bytes and not 96 and an object gives its values in order (1638-1640), then, a slice for each, compression
+and zip; SHA-256, HMAC, CRC-32 and Adler-32; hex, Base64 and Unicode; time, random numbers and the log; the
+network; and the command line, the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

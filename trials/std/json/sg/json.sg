@@ -1,0 +1,144 @@
+// `json`: `std`'s JSON measured (choices 1553, 1629-1637). Three ways of using it:
+//
+//     json sum FILE      reads the document and walks it: what it holds, counted and added up
+//     json copy FILE     reads the document and writes it back on one line
+//     json lines FILE    reads a document on each line, and walks each, as `sum` does
+//
+// What `sum` and `lines` print: how many values of each kind there are, the bytes of the texts and
+// of the names of members, and the sums of the whole numbers and of the others, added in the
+// order they come. A file that cannot be read or is not JSON is told on the standard error, with
+// exit code 1; a wrong use, with 2.
+
+struct Counts {
+    long values
+    long nulls
+    long bools
+    long integers
+    long numbers
+    long strings
+    long arrays
+    long objects
+    long stringBytes
+    long nameBytes
+    long integerSum
+    double numberSum
+}
+
+void walk(read JsonValue value, ref Counts c) {
+    c.values += 1
+    match value {
+        Null => c.nulls += 1
+        Bool(_) => c.bools += 1
+        Integer(n) => {
+            c.integers += 1
+            c.integerSum += n
+        }
+        Number(d) => {
+            c.numbers += 1
+            c.numberSum += d
+        }
+        String(text) => {
+            c.strings += 1
+            c.stringBytes += text.length()
+        }
+        Array(items) => {
+            c.arrays += 1
+            for item in items {
+                walk(item, ref c)
+            }
+        }
+        Object(members) => {
+            c.objects += 1
+            var names = members.names()
+            var values = members.values()
+            for i in 0..names.length() {
+                c.nameBytes += names[i].length()
+                walk(values[i], ref c)
+            }
+        }
+    }
+}
+
+void show(read Counts c) {
+    print($"values {c.values}")
+    print($"null {c.nulls}")
+    print($"bool {c.bools}")
+    print($"integer {c.integers}")
+    print($"number {c.numbers}")
+    print($"string {c.strings}")
+    print($"array {c.arrays}")
+    print($"object {c.objects}")
+    print($"string bytes {c.stringBytes}")
+    print($"name bytes {c.nameBytes}")
+    print($"integer sum {c.integerSum}")
+    print($"number sum {c.numberSum}")
+}
+
+void main(List<string> args) {
+    if args.length() != 2 || (args[0] != "sum" && args[0] != "copy" && args[0] != "lines") {
+        printError("usage: json sum|copy|lines FILE")
+        exit(2)
+    }
+    var c = Counts {
+        values = 0, nulls = 0, bools = 0, integers = 0, numbers = 0, strings = 0, arrays = 0,
+        objects = 0, stringBytes = 0, nameBytes = 0, integerSum = 0, numberSum = 0.0,
+    }
+    if args[0] == "lines" {
+        match File.openText(read args[1]) {
+            Ok(reader) => {
+                string line = ""
+                long number = 0
+                while true {
+                    match reader.readLine(ref line) {
+                        Ok(more) => {
+                            if !more {
+                                break
+                            }
+                        }
+                        Error(cause) => {
+                            printError($"json: {args[1]}: {cause}")
+                            exit(1)
+                        }
+                    }
+                    number += 1
+                    match Json.parse(read line) {
+                        Ok(value) => walk(read value, ref c)
+                        Error(e) => {
+                            printError($"json: {args[1]}, line {number}: {e}")
+                            exit(1)
+                        }
+                    }
+                }
+                print($"documents {number}")
+                show(read c)
+            }
+            Error(cause) => {
+                printError($"json: {args[1]}: {cause}")
+                exit(1)
+            }
+        }
+        return
+    }
+    match File.readText(read args[1]) {
+        Ok(text) => {
+            match Json.parse(read text) {
+                Ok(value) => {
+                    if args[0] == "sum" {
+                        walk(read value, ref c)
+                        show(read c)
+                    } else {
+                        print(value.toJson())
+                    }
+                }
+                Error(e) => {
+                    printError($"json: {args[1]}: {e}")
+                    exit(1)
+                }
+            }
+        }
+        Error(cause) => {
+            printError($"json: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

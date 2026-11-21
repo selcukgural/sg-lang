@@ -1,0 +1,173 @@
+// The JSON the trial of `std`'s JSON reads (choices 1553, 1633): made from a seed, so the same seed
+// gives the same bytes on every machine and nothing large is kept in the repository.
+//
+//     sg build trials/inputs/json.sg --release -o target/json-input
+//     target/json-input records 100 1 > target/records-100.json    an array of records, about 100 MB
+//     target/json-input lines 100 1 > target/lines-100.ndjson      one record a line
+//     target/json-input numbers 100 1 > target/numbers-100.json    polygons of coordinates
+//
+// A record has whole numbers, numbers with a fraction, `true` and `false`, `null`, texts with
+// escapes and letters that are not ASCII, an array of texts, a nested object and an array of
+// objects. The polygons are in the shape of GeoJSON, as `canada.json` of the benchmarks of JSON:
+// mostly numbers of fifteen to seventeen digits.
+//
+// Every number with a fraction is written with no exponent, is not whole and is at least 0.001
+// away from zero, so that SG, `serde_json` and Zig's `std.json`, which write `1e-7`, `1e+16` and
+// `2.0` each its own way, write it back the same (choice 1634).
+
+List<string> words() {
+    return List<string> {
+        "alpha", "beta", "gamma", "delta", "cache", "order", "payment", "queue", "café", "şehir",
+        "naïve", "日本", "Größe", "worker", "lock", "disk", "admin", "guest", "beta-tester", "vip",
+    }
+}
+
+List<string> users() {
+    return List<string> { "ada", "grace", "linus", "ken", "barbara", "dennis", "margaret", "alan" }
+}
+
+List<string> cities() {
+    return List<string> { "İstanbul", "Zürich", "Kraków", "São Paulo", "Москва", "東京", "Ankara", "Lyon" }
+}
+
+List<string> events() {
+    return List<string> { "login", "logout", "purchase", "refund", "reset" }
+}
+
+// A text of a few words with, now and then, what JSON escapes: a quote, a backslash, a new line,
+// a tab and a character below space.
+string note(ref Random random, read List<string> words) {
+    string text = ""
+    int count = random.nextInt(2, 12)
+    for i in 0..count {
+        if i > 0 {
+            text.write(' ')
+        }
+        text.write(words[random.nextInt(0, (int)words.length())])
+        int odd = random.nextInt(0, 40)
+        if odd == 0 {
+            text.write(" \"quoted\"")
+        } else if odd == 1 {
+            text.write(" C:\\temp")
+        } else if odd == 2 {
+            text.write("\n")
+        } else if odd == 3 {
+            text.write("\t")
+        } else if odd == 4 {
+            text.write('\u{1}')
+        }
+    }
+    return text
+}
+
+// A number of `scale` places after the point, between `low` and `high`, that is not whole.
+double fraction(ref Random random, int low, int high, double scale) {
+    while true {
+        long n = random.nextLong((long)((double)low * scale), (long)((double)high * scale))
+        double value = (double)n / scale
+        if (double)(long)value != value && (value >= 0.001 || value <= -0.001) {
+            return value
+        }
+    }
+}
+
+void record(ref string out, ref Random random, long id, read List<string> words, read List<string> users,
+        read List<string> cities, read List<string> events) {
+    var user = users[random.nextInt(0, (int)users.length())]
+    int n = random.nextInt(0, 1000)
+    out.write($"{{\"id\":{id},\"name\":\"{user}{n}\",\"email\":\"{user}{n}@example.com\",")
+    out.write($"\"active\":{random.nextBool()},\"score\":{fraction(ref random, 0, 10000, 1000.0)},")
+    out.write($"\"balance\":{fraction(ref random, -1000000, 1000000, 100.0)},\"tags\":[")
+    int tags = random.nextInt(0, 5)
+    for i in 0..tags {
+        if i > 0 {
+            out.write(',')
+        }
+        out.write($"\"{words[random.nextInt(0, (int)words.length())]}\"")
+    }
+    out.write($"],\"address\":{{\"street\":\"{random.nextInt(1, 500)} {words[random.nextInt(0, (int)words.length())]} Street\",")
+    out.write($"\"city\":\"{cities[random.nextInt(0, (int)cities.length())]}\",\"zip\":\"{random.nextInt(10000, 100000)}\",")
+    out.write($"\"geo\":[{fraction(ref random, -90, 90, 1000000.0)},{fraction(ref random, -180, 180, 1000000.0)}]}},")
+    out.write("\"note\":")
+    if random.nextInt(0, 4) == 0 {
+        out.write("null")
+    } else {
+        out.write(JsonValue.String(note(ref random, read words)).toJson())
+    }
+    out.write(",\"history\":[")
+    int history = random.nextInt(0, 4)
+    for i in 0..history {
+        if i > 0 {
+            out.write(',')
+        }
+        out.write($"{{\"at\":{1_700_000_000 + random.nextLong(0, 100_000_000)},")
+        out.write($"\"event\":\"{events[random.nextInt(0, (int)events.length())]}\",\"ok\":{random.nextBool()}}}")
+    }
+    out.write("]}")
+}
+
+// A coordinate as GeoJSON keeps it: seventeen digits or so, never close to zero.
+double coordinate(ref Random random, double range) {
+    while true {
+        double value = (random.nextDouble() * 2.0 - 1.0) * range
+        if (value >= 0.001 || value <= -0.001) && (double)(long)value != value {
+            return value
+        }
+    }
+}
+
+void polygon(ref string out, ref Random random, long id) {
+    out.write($"{{\"type\":\"Feature\",\"properties\":{{\"name\":\"Area {id}\",\"id\":{id}}},")
+    out.write("\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[")
+    int points = random.nextInt(50, 500)
+    for i in 0..points {
+        if i > 0 {
+            out.write(',')
+        }
+        out.write($"[{coordinate(ref random, 180.0)},{coordinate(ref random, 90.0)}]")
+    }
+    out.write("]]}}")
+}
+
+void main(List<string> args) {
+    if args.length() != 3 || (args[0] != "records" && args[0] != "lines" && args[0] != "numbers") {
+        printError("usage: json-input records|lines|numbers <megabytes> <seed>")
+        exit(2)
+    }
+    long megabytes = long.parse(read args[1]) ?? panic("the megabytes are a whole number")
+    long seed = long.parse(read args[2]) ?? panic("the seed is a whole number")
+    long wanted = megabytes * 1_000_000
+    var random = Random.fromSeed(seed)
+    var words = words()
+    var users = users()
+    var cities = cities()
+    var events = events()
+    string out = string.withCapacity(16384)
+    long written = 0
+    long id = 0
+    bool lines = args[0] == "lines"
+    if args[0] == "records" {
+        print("[")
+    } else if args[0] == "numbers" {
+        print("{\"type\":\"FeatureCollection\",\"features\":[")
+    }
+    while written < wanted {
+        out.clear()
+        id += 1
+        if args[0] == "numbers" {
+            polygon(ref out, ref random, id)
+        } else {
+            record(ref out, ref random, id * 7919 % 1_000_000_007, read words, read users, read cities, read events)
+        }
+        written += out.length() + 2
+        if !lines && written < wanted {
+            out.write(',')
+        }
+        print(out)
+    }
+    if args[0] == "records" {
+        print("]")
+    } else if args[0] == "numbers" {
+        print("]}")
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "json"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `preserve_order` keeps the members of an object in the order they were read, as SG's and Zig's
+# do: without it `serde_json` sorts them, and a copy would not be the same text. `float_roundtrip`
+# reads a number to the nearest `f64`, as SG and Zig do: without it a number of seventeen digits
+# may come out one unit in the last place off (choice 1634).
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

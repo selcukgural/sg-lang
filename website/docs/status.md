@@ -41,6 +41,11 @@ against each other, and each difference is a choice that is fixed and measured a
 the first; the
 [trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) keep the programs and their numbers.
 
+Each module of the library is measured the same way, against the crates Rust's people use and Zig's own
+library, and a new module comes in with its measurement. JSON was the first: with its values made a third of
+their size, SG reads, walks and writes 100 MB of it faster than `serde_json` and Zig's `std.json`, in less
+memory.
+
 ## Not yet
 
 Generics of your own and a full standard library. Closures are left out on purpose: a

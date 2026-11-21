@@ -71,6 +71,12 @@ void main() {
     if members is not null {
         print($"{members.length()} members: {string.join(", ", members.names())}")
         print($"{members.contains("id")} {members.contains("ID")}")
+        // The values in the order of the names (1640).
+        var names = members.names()
+        var values = members.values()
+        for i in 0..names.length() {
+            print($"{names[i]} = {values[i]}")
+        }
     }
     match doc.get("exp") {
         null => print("no exp")

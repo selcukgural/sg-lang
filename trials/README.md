@@ -11,6 +11,14 @@ the [interpreter's README](../interpreter/README.md), fixed and measured again.
 | [wc](wc) | The lines, words and bytes of files, read in pieces of 64 KB | 133 |
 | [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v` | 133 |
 
+The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
+and their tables are in the [interpreter's README](../interpreter/README.md), "`std`, measured against Rust
+and Zig":
+
+| Module | What it is | Slice |
+|---|---|---|
+| [std/json](std/json) | A document read and walked, read and written back, and a document a line read | 149 |
+
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 
@@ -24,7 +32,7 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
   megabyte and holds them to what Rust and Zig print.
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
-  same bytes on every machine.
+  same bytes on every machine, and [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`.
 
 ## Fairness (1554)
 
@@ -55,6 +63,7 @@ From the repository's root, with Rust, Zig 0.17, PCRE2 and a C compiler installe
 ```
 python3 trials/measure.py               # every trial: checked, then measured
 python3 trials/measure.py grep          # one trial
+python3 trials/measure.py std/json      # one module of std
 python3 trials/measure.py --check       # only that the outputs are the same
 ```
 
@@ -66,6 +75,9 @@ a comment. SG is built with `sg build --release` and once more with its arithmet
 `grep` leaves out PCRE2, which it loads as a shared library (about 650 KB).
 
 ## Results
+
+The modules of `std` were measured on the same machine on 21 November 2026, with macOS 27.2, Apple clang
+21.0, rustc 1.99.1 and Zig 0.17.1; their tables are in the interpreter's README.
 
 Apple M3 Max, macOS, 20 November 2026; 100 MB of text from `inputs/text.sg` (seed 1). SG is compiled by
 the system's `cc` (Apple clang 21), Rust by its own LLVM (23.1), Zig 0.17.1 (LLVM too) with PCRE2 10.49.

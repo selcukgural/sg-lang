@@ -146,6 +146,8 @@ two machines, not proof. All the numbers, and how they were taken, are in the
 [interpreter README](interpreter/README.md#the-c-back-end).
 
 Real programs are measured too, written the same way in SG, Rust and Zig: the [trials](trials/README.md).
+Each module of the library is measured the same way against Rust's crates and Zig's own library, JSON
+first, where SG reads, walks and writes 100 MB faster than `serde_json` and Zig's `std.json`, in less memory.
 
 ## Try it
 

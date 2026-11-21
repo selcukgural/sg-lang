@@ -59,6 +59,19 @@ tag "é😀"
 tag "\u0000"
 13 members: name, id, huge, ratio, two, exp, negativeZero, tags, active, manager, address, empty, nothing
 true false
+name = "Ada"
+id = 9007199254740993
+huge = 1.2345678901234568e+29
+ratio = 0.1
+two = 2.0
+exp = 1000.0
+negativeZero = -0.0
+tags = ["math","a\"quote\"\\","tab\there","é😀","\u0000"]
+active = true
+manager = null
+address = {"city":"London","zip":""}
+empty = []
+nothing = {}
 exp is a Number: 1000
 [0,-1,9223372036854775807,-9223372036854775808,9223372036854776000.0,1.5,-0.0025,100.0,0.0,5e-324]
 [1.0,100.0,1e+21,1e+300,0.30000000000000004]
