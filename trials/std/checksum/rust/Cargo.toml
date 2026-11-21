@@ -1,0 +1,12 @@
+[package]
+name = "checksum"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `crc32fast` and `adler2` as people use them, with their default features: `crc32fast` finds the
+# processor's CRC instructions when it starts (ARMv8 `crc32`, x86 PCLMULQDQ) and uses them, and
+# `adler2` is the Adler-32 that `miniz_oxide` takes (choice 1653).
+[dependencies]
+adler2 = "2.0.1"
+crc32fast = "1.5.5"

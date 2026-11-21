@@ -211,7 +211,7 @@ SG rules out. It is taken up when the language is further along.
 |---|---|
 | [design](design) | The language itself, on paper |
 | [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests and benchmarks |
-| [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip so far) in SG, Rust and Zig, measured against each other |
+| [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip, SHA-256 and CRC-32 so far) in SG, Rust and Zig, measured against each other |
 | [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
 | [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
 | [website](website/README.md) | The web site, [sg-lang.org](https://sg-lang.org), built with Docusaurus |

@@ -1213,6 +1213,45 @@ fn the_trial_of_zip() {
     assert_eq!(compiled(&["read"]).0, 2, "a wrong use");
 }
 
+/// The trials of `std`'s SHA-256, HMAC, CRC-32 and Adler-32 (choices 1653-1655), run small: the SG
+/// programs, interpreted and compiled, give for the text what Python's `hashlib`, `hmac` and `zlib`
+/// give, the values below: its SHA-256, 1,000 hashes chained from 32 zero bytes, the HMAC-SHA-256 of
+/// each of its 1,832 lines (the last without its `\n`) put together with XOR, its CRC-32 and
+/// Adler-32, and the CRC-32 of each line put together the same way.
+#[test]
+fn the_trials_of_hash_and_checksum() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trials_of_hash_and_checksum");
+    let (text, _) = trial_inputs(&dir);
+    std::fs::write(dir.join("text.log"), &text).unwrap();
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let cases: [(&str, &[&str], &str); 6] = [
+        ("hash", &["sha256", "text.log"], "6beed989b9e321c83cbe0cb876354ce7f018c2d293b501b68d7f7ee53c918418\n"),
+        ("hash", &["chain", "1000"], "36c1cb4f826ae42ceba848227e0c5f786178ca9dceca6772e5d728d09c30a2f6\n"),
+        ("hash", &["hmac", "text.log"], "lines 1832\nxor cdb16de1d525ec6bd601dff87334eabd8c06de26aea839ea27e0fb4c5cd7df0f\n"),
+        ("checksum", &["crc32", "text.log"], "2119eaab\n"),
+        ("checksum", &["adler32", "text.log"], "60e7f412\n"),
+        ("checksum", &["lines", "text.log"], "lines 1832\nxor 914841d1\n"),
+    ];
+    for trial in ["hash", "checksum"] {
+        let source = trials.join("std").join(trial).join("sg").join(format!("{trial}.sg")).to_string_lossy().into_owned();
+        let built = program(&dir, trial).to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+        let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        for (_, args, expected) in cases.iter().filter(|case| case.0 == trial) {
+            let mut words = vec![source.as_str()];
+            words.extend_from_slice(args);
+            let interpreted = ran(&sg(&dir, &words));
+            assert_eq!(interpreted, compiled(args), "{trial} {args:?}: interpreted and compiled");
+            assert_eq!(interpreted, (0, expected.to_string(), String::new()), "{trial} {args:?}");
+        }
+        assert_eq!(compiled(&["crc32", "missing.txt"]).0, if trial == "hash" { 2 } else { 1 }, "{trial}: a missing file");
+        assert_eq!(compiled(&["sum"]).0, 2, "{trial}: a wrong use");
+    }
+}
+
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
 /// part of its own (`### json`) in the section of the interpreter's README that holds the
 /// measurements, or is named in its list of those not measured yet, which the slices empty.

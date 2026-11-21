@@ -3420,6 +3420,318 @@ static int32_t sg_local_offset(int64_t seconds) {
 #endif
 "#;
 
+/// The processor's own instructions for CRC-32 and SHA-256 (choices 1656, 1657): ARMv8's `crc32`
+/// and SHA2, x86-64's PCLMULQDQ and SHA-NI, each used only when the processor says it has them,
+/// asked once (`sysctlbyname` on macOS, `getauxval` on Linux, `IsProcessorFeaturePresent` on
+/// Windows, `cpuid` on x86-64). Where it has none, or when the program runs without an operating
+/// system, `sg_crc32_hw` gives -1 and `sg_sha256_hw` false, and `std` works the sums out in SG:
+/// the same bytes either way, which the tests hold the two to.
+const HARDWARE_HASH_RUNTIME: &str = r#"
+#if !SG_FREESTANDING && (defined(__aarch64__) || defined(_M_ARM64))
+#include <arm_acle.h>
+#include <arm_neon.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <sys/auxv.h>
+#endif
+#if defined(__clang__)
+#define SG_HW_CRC __attribute__((target("crc")))
+#define SG_HW_PMULL __attribute__((target("crc,aes")))
+#define SG_HW_SHA __attribute__((target("sha2")))
+#else
+#define SG_HW_CRC __attribute__((target("+crc")))
+#define SG_HW_PMULL __attribute__((target("+crc+crypto")))
+#define SG_HW_SHA __attribute__((target("+crypto")))
+#endif
+#define SG_HW_ARM 1
+#elif !SG_FREESTANDING && (defined(__x86_64__) || defined(_M_X64))
+#include <cpuid.h>
+#include <immintrin.h>
+#define SG_HW_CRC __attribute__((target("pclmul,sse4.1")))
+#define SG_HW_SHA __attribute__((target("sha,sse4.1")))
+#define SG_HW_X86 1
+#endif
+
+#if defined(SG_HW_ARM) || defined(SG_HW_X86)
+/* What the processor has: 2 the instructions of CRC-32 (on x86-64 PCLMULQDQ), 4 those of
+   SHA-256, 8 on ARM the carry-less product (PMULL); 1 that it was asked. */
+static int sg_hw_features = 0;
+static int sg_hw_ask(void) {
+    int found = 1;
+#if defined(SG_HW_ARM) && defined(__APPLE__)
+    int has = 0;
+    size_t size = sizeof has;
+    if (sysctlbyname("hw.optional.armv8_crc32", &has, &size, NULL, 0) == 0 && has) found |= 2;
+    has = 0;
+    size = sizeof has;
+    if (sysctlbyname("hw.optional.arm.FEAT_SHA256", &has, &size, NULL, 0) == 0 && has) found |= 4;
+    has = 0;
+    size = sizeof has;
+    if (sysctlbyname("hw.optional.arm.FEAT_PMULL", &has, &size, NULL, 0) == 0 && has) found |= 8;
+#elif defined(SG_HW_ARM) && defined(__linux__)
+    unsigned long caps = getauxval(AT_HWCAP);
+    if (caps & (1UL << 7)) found |= 2;  /* HWCAP_CRC32 */
+    if (caps & (1UL << 6)) found |= 4;  /* HWCAP_SHA2 */
+    if (caps & (1UL << 4)) found |= 8;  /* HWCAP_PMULL */
+#elif defined(SG_HW_ARM) && defined(_WIN32)
+    if (IsProcessorFeaturePresent(31)) found |= 2;  /* PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE */
+    if (IsProcessorFeaturePresent(30)) found |= 4 | 8;  /* PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE */
+#elif defined(SG_HW_X86)
+    unsigned a, b, c, d;
+    if (__get_cpuid(1, &a, &b, &c, &d)) {
+        bool sse41 = (c >> 19) & 1;
+        if (sse41 && ((c >> 1) & 1)) found |= 2;  /* PCLMULQDQ */
+        if (sse41 && __get_cpuid_count(7, 0, &a, &b, &c, &d) && ((b >> 29) & 1)) found |= 4;  /* SHA */
+    }
+#endif
+    __atomic_store_n(&sg_hw_features, found, __ATOMIC_RELAXED);
+    return found;
+}
+static inline int sg_hw_has(int bit) {
+    int found = __atomic_load_n(&sg_hw_features, __ATOMIC_RELAXED);
+    if (!found) found = sg_hw_ask();
+    return found & bit;
+}
+#endif
+
+static const uint32_t sg_sha256_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+/* CRC-32 by carry-less products (Intel, "Fast CRC Computation for Generic Polynomials Using
+   PCLMULQDQ", 2009): eight streams of 16 bytes, each folded forward over the next 128 bytes (four
+   over the next 64 when there are fewer than 128), then folded into one 16 bytes apart, then the
+   rest 16 bytes at a time. The keys, low then high,
+   are those of the reflected polynomial of zlib for those distances, as `crc32fast` and zlib-ng
+   use. On ARM what is left is 16 bytes whose CRC-32 from a zero register, carried on over the
+   last bytes, is that of the whole; on x86-64 a Barrett reduction brings it to 32 bits. */
+#define SG_CRC32_FOLD_1024 0x1e88ef372, 0x14a7fe880
+#define SG_CRC32_FOLD_512 0x154442bd4, 0x1c6e41596
+#define SG_CRC32_FOLD_128 0x1751997d0, 0x0ccaa009e
+
+#if defined(SG_HW_ARM)
+/* The register after `n` bytes with `crc32x` eight at a time, then `crc32w`, `crc32h`, `crc32b`. */
+SG_HW_CRC static uint32_t sg_crc32_arm(uint32_t c, const uint8_t* p, int64_t n) {
+    while (n >= 8) {
+        uint64_t word;
+        memcpy(&word, p, 8);
+        c = __crc32d(c, word);
+        p += 8;
+        n -= 8;
+    }
+    if (n >= 4) {
+        uint32_t word;
+        memcpy(&word, p, 4);
+        c = __crc32w(c, word);
+        p += 4;
+        n -= 4;
+    }
+    if (n >= 2) {
+        uint16_t word;
+        memcpy(&word, p, 2);
+        c = __crc32h(c, word);
+        p += 2;
+        n -= 2;
+    }
+    if (n > 0) c = __crc32b(c, *p);
+    return c;
+}
+SG_HW_PMULL static inline uint64x2_t sg_crc32_fold(uint64x2_t a, uint64x2_t b, uint64x2_t keys) {
+    poly128_t low = vmull_p64((poly64_t)vgetq_lane_u64(a, 0), (poly64_t)vgetq_lane_u64(keys, 0));
+    poly128_t high = vmull_high_p64(vreinterpretq_p64_u64(a), vreinterpretq_p64_u64(keys));
+    return veorq_u64(b, veorq_u64(vreinterpretq_u64_p128(low), vreinterpretq_u64_p128(high)));
+}
+/* At least `16 * streams` bytes, `streams` 8 or 4. */
+SG_HW_PMULL static inline uint32_t sg_crc32_arm_fold(uint32_t c, const uint8_t* p, int64_t n, int streams) {
+    /* Not `near` and `far`, which the headers of Windows make words of nothing. */
+    static const uint64_t keys1024[2] = { SG_CRC32_FOLD_1024 }, keys512[2] = { SG_CRC32_FOLD_512 }, keys128[2] = { SG_CRC32_FOLD_128 };
+    uint64x2_t v[8];
+    for (int i = 0; i < streams; i++) v[i] = vreinterpretq_u64_u8(vld1q_u8(p + 16 * i));
+    v[0] = veorq_u64(v[0], vsetq_lane_u64((uint64_t)c, vdupq_n_u64(0), 0));
+    p += 16 * streams;
+    n -= 16 * streams;
+    uint64x2_t keys = vld1q_u64(streams == 8 ? keys1024 : keys512);
+    while (n >= 16 * streams) {
+        for (int i = 0; i < streams; i++) v[i] = sg_crc32_fold(v[i], vreinterpretq_u64_u8(vld1q_u8(p + 16 * i)), keys);
+        p += 16 * streams;
+        n -= 16 * streams;
+    }
+    keys = vld1q_u64(keys128);
+    uint64x2_t x = v[0];
+    for (int i = 1; i < streams; i++) x = sg_crc32_fold(x, v[i], keys);
+    while (n >= 16) {
+        x = sg_crc32_fold(x, vreinterpretq_u64_u8(vld1q_u8(p)), keys);
+        p += 16;
+        n -= 16;
+    }
+    c = __crc32d(0, vgetq_lane_u64(x, 0));
+    c = __crc32d(c, vgetq_lane_u64(x, 1));
+    return sg_crc32_arm(c, p, n);
+}
+SG_HW_PMULL static uint32_t sg_crc32_arm_fold8(uint32_t c, const uint8_t* p, int64_t n) { return sg_crc32_arm_fold(c, p, n, 8); }
+SG_HW_PMULL static uint32_t sg_crc32_arm_fold4(uint32_t c, const uint8_t* p, int64_t n) { return sg_crc32_arm_fold(c, p, n, 4); }
+/* The rounds of SHA-256 four at a time, and the words of the message made four at a time, written
+   out: as a loop the four words of the message do not stay in registers. ARM keeps the state as it
+   is written, a b c d and e f g h. */
+#define SG_SHA_ARM_ROUNDS(m, i) do { \
+        uint32x4_t wk = vaddq_u32(m, vld1q_u32(sg_sha256_k + 4 * (i))), before = abcd; \
+        abcd = vsha256hq_u32(abcd, efgh, wk); \
+        efgh = vsha256h2q_u32(efgh, before, wk); \
+    } while (0)
+#define SG_SHA_ARM_NEXT(m0, m1, m2, m3) m0 = vsha256su1q_u32(vsha256su0q_u32(m0, m1), m2, m3)
+SG_HW_SHA static void sg_sha256_arm(uint32_t* state, const uint8_t* p, int64_t blocks) {
+    uint32x4_t abcd = vld1q_u32(state), efgh = vld1q_u32(state + 4);
+    while (blocks-- > 0) {
+        uint32x4_t m0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p)));
+        uint32x4_t m1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 16)));
+        uint32x4_t m2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 32)));
+        uint32x4_t m3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 48)));
+        uint32x4_t abcd0 = abcd, efgh0 = efgh;
+        for (int i = 0; i < 12; i += 4) {
+            SG_SHA_ARM_ROUNDS(m0, i);
+            SG_SHA_ARM_NEXT(m0, m1, m2, m3);
+            SG_SHA_ARM_ROUNDS(m1, i + 1);
+            SG_SHA_ARM_NEXT(m1, m2, m3, m0);
+            SG_SHA_ARM_ROUNDS(m2, i + 2);
+            SG_SHA_ARM_NEXT(m2, m3, m0, m1);
+            SG_SHA_ARM_ROUNDS(m3, i + 3);
+            SG_SHA_ARM_NEXT(m3, m0, m1, m2);
+        }
+        SG_SHA_ARM_ROUNDS(m0, 12);
+        SG_SHA_ARM_ROUNDS(m1, 13);
+        SG_SHA_ARM_ROUNDS(m2, 14);
+        SG_SHA_ARM_ROUNDS(m3, 15);
+        abcd = vaddq_u32(abcd, abcd0);
+        efgh = vaddq_u32(efgh, efgh0);
+        p += 64;
+    }
+    vst1q_u32(state, abcd);
+    vst1q_u32(state + 4, efgh);
+}
+#endif
+
+#if defined(SG_HW_X86)
+SG_HW_CRC static inline __m128i sg_crc32_fold(__m128i a, __m128i b, __m128i keys) {
+    return _mm_xor_si128(_mm_xor_si128(b, _mm_clmulepi64_si128(a, keys, 0x00)), _mm_clmulepi64_si128(a, keys, 0x11));
+}
+/* At least `16 * streams` bytes, `streams` 8 or 4. The 16 bytes left are brought to 32 bits by a
+   Barrett reduction, and the last bytes, fewer than 16, taken a bit at a time. */
+SG_HW_CRC static inline uint32_t sg_crc32_x86(uint32_t c, const uint8_t* p, int64_t n, int streams) {
+    __m128i v[8];
+    for (int i = 0; i < streams; i++) v[i] = _mm_loadu_si128((const __m128i*)(p + 16 * i));
+    v[0] = _mm_xor_si128(v[0], _mm_cvtsi32_si128((int)c));
+    p += 16 * streams;
+    n -= 16 * streams;
+    __m128i keys = streams == 8 ? _mm_set_epi64x(0x14a7fe880, 0x1e88ef372) : _mm_set_epi64x(0x1c6e41596, 0x154442bd4);
+    while (n >= 16 * streams) {
+        for (int i = 0; i < streams; i++) v[i] = sg_crc32_fold(v[i], _mm_loadu_si128((const __m128i*)(p + 16 * i)), keys);
+        p += 16 * streams;
+        n -= 16 * streams;
+    }
+    keys = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);
+    __m128i x = v[0];
+    for (int i = 1; i < streams; i++) x = sg_crc32_fold(x, v[i], keys);
+    while (n >= 16) {
+        x = sg_crc32_fold(x, _mm_loadu_si128((const __m128i*)p), keys);
+        p += 16;
+        n -= 16;
+    }
+    const __m128i low32 = _mm_set_epi32(0, 0, 0, -1);
+    x = _mm_xor_si128(_mm_clmulepi64_si128(x, keys, 0x10), _mm_srli_si128(x, 8));
+    x = _mm_xor_si128(_mm_clmulepi64_si128(_mm_and_si128(x, low32), _mm_set_epi64x(0, 0x163cd6124), 0x00), _mm_srli_si128(x, 4));
+    const __m128i pu = _mm_set_epi64x(0x1F7011641, 0x1DB710641);
+    __m128i t1 = _mm_clmulepi64_si128(_mm_and_si128(x, low32), pu, 0x10);
+    __m128i t2 = _mm_clmulepi64_si128(_mm_and_si128(t1, low32), pu, 0x00);
+    c = (uint32_t)_mm_extract_epi32(_mm_xor_si128(x, t2), 1);
+    while (n > 0) {
+        c ^= *p++;
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1)));
+        n--;
+    }
+    return c;
+}
+SG_HW_CRC static uint32_t sg_crc32_x86_8(uint32_t c, const uint8_t* p, int64_t n) { return sg_crc32_x86(c, p, n, 8); }
+SG_HW_CRC static uint32_t sg_crc32_x86_4(uint32_t c, const uint8_t* p, int64_t n) { return sg_crc32_x86(c, p, n, 4); }
+/* SHA-NI keeps the state as a b e f and c d g h, and does two rounds an instruction; written out
+   as on ARM. */
+#define SG_SHA_X86_ROUNDS(m, i) do { \
+        __m128i wk = _mm_add_epi32(m, _mm_loadu_si128((const __m128i*)(sg_sha256_k + 4 * (i)))); \
+        cdgh = _mm_sha256rnds2_epu32(cdgh, abef, wk); \
+        abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(wk, 0x0E)); \
+    } while (0)
+#define SG_SHA_X86_NEXT(m0, m1, m2, m3) \
+    m0 = _mm_sha256msg2_epu32(_mm_add_epi32(_mm_sha256msg1_epu32(m0, m1), _mm_alignr_epi8(m3, m2, 4)), m3)
+SG_HW_SHA static void sg_sha256_x86(uint32_t* state, const uint8_t* p, int64_t blocks) {
+    const __m128i order = _mm_set_epi64x(0x0c0d0e0f08090a0bLL, 0x0405060700010203LL);
+    __m128i t = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i*)state), 0xB1);
+    __m128i cdgh = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i*)(state + 4)), 0x1B);
+    __m128i abef = _mm_alignr_epi8(t, cdgh, 8);
+    cdgh = _mm_blend_epi16(cdgh, t, 0xF0);
+    while (blocks-- > 0) {
+        __m128i m0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)p), order);
+        __m128i m1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(p + 16)), order);
+        __m128i m2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(p + 32)), order);
+        __m128i m3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(p + 48)), order);
+        __m128i abef0 = abef, cdgh0 = cdgh;
+        for (int i = 0; i < 12; i += 4) {
+            SG_SHA_X86_ROUNDS(m0, i);
+            SG_SHA_X86_NEXT(m0, m1, m2, m3);
+            SG_SHA_X86_ROUNDS(m1, i + 1);
+            SG_SHA_X86_NEXT(m1, m2, m3, m0);
+            SG_SHA_X86_ROUNDS(m2, i + 2);
+            SG_SHA_X86_NEXT(m2, m3, m0, m1);
+            SG_SHA_X86_ROUNDS(m3, i + 3);
+            SG_SHA_X86_NEXT(m3, m0, m1, m2);
+        }
+        SG_SHA_X86_ROUNDS(m0, 12);
+        SG_SHA_X86_ROUNDS(m1, 13);
+        SG_SHA_X86_ROUNDS(m2, 14);
+        SG_SHA_X86_ROUNDS(m3, 15);
+        abef = _mm_add_epi32(abef, abef0);
+        cdgh = _mm_add_epi32(cdgh, cdgh0);
+        p += 64;
+    }
+    t = _mm_shuffle_epi32(abef, 0x1B);
+    cdgh = _mm_shuffle_epi32(cdgh, 0xB1);
+    _mm_storeu_si128((__m128i*)state, _mm_blend_epi16(t, cdgh, 0xF0));
+    _mm_storeu_si128((__m128i*)(state + 4), _mm_alignr_epi8(cdgh, t, 8));
+}
+#endif
+
+/* The register of a CRC-32 after `n` bytes, or -1 where `std` does it itself: no instructions,
+   or on x86-64 fewer than 64 bytes, where its tables are as fast. On ARM `crc32x` takes what is
+   too short to fold. */
+static int64_t sg_crc32_hw(uint32_t c, const uint8_t* p, int64_t n) {
+#if defined(SG_HW_ARM)
+    if (n >= 64 && sg_hw_has(8) && sg_hw_has(2)) return (int64_t)(n >= 128 ? sg_crc32_arm_fold8(c, p, n) : sg_crc32_arm_fold4(c, p, n));
+    if (sg_hw_has(2)) return (int64_t)sg_crc32_arm(c, p, n);
+#elif defined(SG_HW_X86)
+    if (n >= 64 && sg_hw_has(2)) return (int64_t)(n >= 128 ? sg_crc32_x86_8(c, p, n) : sg_crc32_x86_4(c, p, n));
+#endif
+    (void)c; (void)p; (void)n;
+    return -1;
+}
+
+/* `blocks` blocks of 64 bytes taken into the state, or false where `std` does it itself. */
+static bool sg_sha256_hw(uint32_t* state, const uint8_t* p, int64_t blocks) {
+#if defined(SG_HW_ARM)
+    if (sg_hw_has(4)) { sg_sha256_arm(state, p, blocks); return true; }
+#elif defined(SG_HW_X86)
+    if (sg_hw_has(4)) { sg_sha256_x86(state, p, blocks); return true; }
+#endif
+    (void)state; (void)p; (void)blocks; (void)sg_sha256_k;
+    return false;
+}
+"#;
+
 /// What a program that calls C needs: the name a C function has for the linker, written as
 /// a label of its declaration so that it clashes with no header the runtime includes (see
 /// `foreign_func`), and `CString`, the bytes of a text and a zero byte, from `malloc`.
@@ -10846,6 +11158,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("clock") {
         out.push_str(CLOCK_RUNTIME);
     }
+    if emitter.made.contains("hardware hash") {
+        out.push_str(HARDWARE_HASH_RUNTIME);
+    }
     if floats {
         out.push_str(crate::shortest::tables());
         out.push_str(crate::shortest::DRAGONBOX);
@@ -17336,6 +17651,7 @@ impl<'a> Emitter<'a> {
         let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = || Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))));
+        let read_bytes = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         // A call that gives `Ok()` or the error of a code.
         let plain = |code: &str| format!("int code = {code}; if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)"));
         // A text the system gave as bytes of their own: checked to be UTF-8.
@@ -17538,6 +17854,18 @@ impl<'a> Emitter<'a> {
             SystemCall::IsNormalized => {
                 self.made.insert("normalization".to_string());
                 ("sg_system_is_normalized", vec![text(), Ty::Bool, Ty::Bool], "return sg_uni_is_normalized(a0, a1, a2);".to_string())
+            }
+            SystemCall::Crc32Hardware => {
+                self.made.insert("hardware hash".to_string());
+                ("sg_system_crc32_hardware", vec![Ty::Int(IntTy::Uint), read_bytes()], "return sg_crc32_hw(a0, a1.ptr, a1.len);".to_string())
+            }
+            SystemCall::Sha256Hardware => {
+                self.made.insert("hardware hash".to_string());
+                (
+                    "sg_system_sha256_hardware",
+                    vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Uint))))), read_bytes()],
+                    "return a0.len == 8 && sg_sha256_hw(a0.ptr, a1.ptr, a1.len / 64);".to_string(),
+                )
             }
             SystemCall::Variable => (
                 "sg_system_variable",

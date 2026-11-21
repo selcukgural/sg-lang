@@ -1,0 +1,16 @@
+crc32, 0 to 399 bytes from 16 places: c35c31ca
+adler32, 0 to 399 bytes from 16 places: 1773cbe0
+5551: crc32 a1f8ad8b adler32 26d9af5e, in pieces the same: true
+5552: crc32 f7ccc580 adler32 d670af97, in pieces the same: true
+5553: crc32 a94408e6 adler32 8660afe1, in pieces the same: true
+11103: crc32 8aa36f42 adler32 7b118551, in pieces the same: true
+11104: crc32 b555062e adler32 014a862a, in pieces the same: true
+11105: crc32 4208a71a adler32 8795864b, in pieces the same: true
+65536: crc32 f2745398 adler32 9cee97f1, in pieces the same: true
+65537: crc32 df9df1e0 adler32 35009803, in pieces the same: true
+100003: crc32 4332acf1 adler32 adcccf12, in pieces the same: true
+139984: crc32 b45b81a9 adler32 5ea46543, in pieces the same: true
+sha256, 0 to 199 bytes from 4 places: 8dfc6db5f8688c7092bd2a3b988d536121b3e11e0f7aa92a15dfc9a7fe718fea
+sha256 of 20,000 bytes in pieces: 46b39c80a635e0bc42156318af1abd509f291e904eb22fa5dc9908ad6c090dd4
+sha256 of 20,000 bytes at once:   46b39c80a635e0bc42156318af1abd509f291e904eb22fa5dc9908ad6c090dd4
+hmac-sha256: 08616ae3eca2b51957b07c61013651309061c3eece0661b21156d39413d588e5

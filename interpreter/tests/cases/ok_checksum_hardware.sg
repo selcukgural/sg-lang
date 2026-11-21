@@ -1,0 +1,72 @@
+// CRC-32, Adler-32 and SHA-256 over every length around where the processor's instructions take
+// over (choices 1656-1658: 128 bytes for folding a CRC-32, whole blocks of 64 for SHA-256, runs of
+// 5,552 for the lanes of Adler-32), from every place in a word, and given in pieces: the compiled
+// program, which hands them to the processor where it can, prints what the interpreter, which never
+// does, printed into this test's output.
+
+List<byte> made(nint count) {
+    var bytes = List<byte>.withCapacity(count)
+    uint x = 2463534242
+    for _ in 0..count {
+        x ^= x << 13
+        x ^= x >> 17
+        x ^= x << 5
+        bytes.add((byte)(x >> 24))
+    }
+    return bytes
+}
+
+void main() {
+    var data = made(140000)
+
+    uint crcs = 0
+    uint adlers = 0
+    for start in 0..16 {
+        for n in 0..400 {
+            crcs = crcs.rotateLeft(1) ^ Crc32.of(data[start..start + n])
+            adlers = adlers.rotateLeft(1) ^ Adler32.of(data[start..start + n])
+        }
+    }
+    print($"crc32, 0 to 399 bytes from 16 places: {crcs:x8}")
+    print($"adler32, 0 to 399 bytes from 16 places: {adlers:x8}")
+
+    var lengths = nint[10] { 5551, 5552, 5553, 11103, 11104, 11105, 65536, 65537, 100003, 139984 }
+    for n in lengths {
+        var c = Crc32()
+        var a = Adler32()
+        nint at = 0
+        nint piece = 1
+        while at < n {
+            nint end = (at + piece).min(n)
+            c.update(data[at..end])
+            a.update(data[at..end])
+            at = end
+            piece = piece * 3 + 1
+        }
+        bool same = c.value() == Crc32.of(data[0..n]) && a.value() == Adler32.of(data[0..n])
+        print($"{n}: crc32 {Crc32.of(data[3..3 + n]):x8} adler32 {Adler32.of(data[3..3 + n]):x8}, in pieces the same: {same}")
+    }
+
+    var hashes = byte[32]
+    for start in 0..4 {
+        for n in 0..200 {
+            var h = Sha256.of(data[start * 5..start * 5 + n])
+            for i in 0..32 {
+                hashes[i] ^= h[(i + n) % 32]
+            }
+        }
+    }
+    print($"sha256, 0 to 199 bytes from 4 places: {Hex.encode(read hashes)}")
+    var whole = Sha256()
+    nint at = 0
+    nint piece = 1
+    while at < 20000 {
+        nint end = (at + piece).min(20000)
+        whole.update(data[at..end])
+        at = end
+        piece = piece * 2 + 3
+    }
+    print($"sha256 of 20,000 bytes in pieces: {Hex.encode(read whole.finish())}")
+    print($"sha256 of 20,000 bytes at once:   {Hex.encode(read Sha256.of(data[0..20000]))}")
+    print($"hmac-sha256: {Hex.encode(read Hmac.sha256(data[0..100], data[100..5000]))}")
+}

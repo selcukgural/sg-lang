@@ -1,8 +1,9 @@
 // SHA-256 (FIPS 180-4), HMAC-SHA-256 (RFC 2104) and a comparison of bytes whose time does not tell
-// where they differ. Written in SG and brought along by the language (choice 1409), with no
-// instructions of the processor made for SHA: slower than OpenSSL, measured in the README's
-// "Slower than C". No other hash and no cipher comes with the language: those stay with vetted C
-// libraries behind safe wrappers (choice 1406).
+// where they differ. Written in SG and brought along by the language (choice 1409); a compiled
+// program hands the blocks to the processor's SHA instructions where it has them (ARMv8 SHA2,
+// x86-64 SHA-NI; choice 1657), and works them out here where it has not. No other hash and no
+// cipher comes with the language: those stay with vetted C libraries behind safe wrappers (choice
+// 1406).
 
 const uint[64] Sha256Rounds = {
     0x428a_2f98, 0x7137_4491, 0xb5c0_fbcf, 0xe9b5_dba5, 0x3956_c25b, 0x59f1_11f1, 0x923f_82a4, 0xab1c_5ed5,
@@ -38,9 +39,12 @@ public struct Sha256 {
     // The SHA-256 of `data`: `Hex.encode(Sha256.of("abc".asBytes()))` is
     // `"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"`.
     public byte[32] of(read byte[] data) {
-        var h = Sha256()
-        h.update(data)
-        return h.finish()
+        var state = Sha256Start
+        nint whole = data.length() / 64 * 64
+        if whole > 0 {
+            sha256Blocks(ref state, data[0..whole])
+        }
+        return sha256Last(ref state, data[whole..data.length()], (ulong)data.length())
     }
 
     // Takes in more bytes.
@@ -69,36 +73,39 @@ public struct Sha256 {
     // taken in after it, and `finish` then gives the hash of all of them.
     public byte[32] finish(read this) {
         var state = this.state
-        var block = this.block
-        nint filled = this.filled
-        block[filled] = 0x80
-        filled += 1
-        if filled > 56 {
-            while filled < 64 {
-                block[filled] = 0
-                filled += 1
-            }
-            sha256Blocks(ref state, read block)
-            filled = 0
-        }
-        while filled < 56 {
-            block[filled] = 0
-            filled += 1
-        }
-        var bits = this.length.wrappingMultiply(8).toBigEndian()
-        block[56..64].copyFrom(read bits)
-        sha256Blocks(ref state, read block)
-        var hash = byte[32]
-        for k in 0..8 {
-            var word = state[k].toBigEndian()
-            hash[k * 4..k * 4 + 4].copyFrom(read word)
-        }
-        return hash
+        return sha256Last(ref state, this.block[0..this.filled], this.length)
     }
 }
 
-// Each block of 64 bytes of `data` (a whole number of them) taken into the eight words.
+// The hash, from the words after the whole blocks, the bytes after them (fewer than 64) and how
+// many bytes there were in all: the last bytes, a one bit, zeros and the length in bits, in one
+// block or two.
+byte[32] sha256Last(ref uint[] state, read byte[] rest, ulong length) {
+    var block = byte[64]
+    nint filled = rest.length()
+    block[0..filled].copyFrom(rest)
+    block[filled] = 0x80
+    if filled >= 56 {
+        sha256Blocks(ref state, read block)
+        block = byte[64]
+    }
+    var bits = length.wrappingMultiply(8).toBigEndian()
+    block[56..64].copyFrom(read bits)
+    sha256Blocks(ref state, read block)
+    var hash = byte[32]
+    for k in 0..8 {
+        var word = state[k].toBigEndian()
+        hash[k * 4..k * 4 + 4].copyFrom(read word)
+    }
+    return hash
+}
+
+// Each block of 64 bytes of `data` (a whole number of them) taken into the eight words: by the
+// processor's SHA instructions where it has them (choice 1657), else here.
 void sha256Blocks(ref uint[] state, read byte[] data) {
+    if System.sha256Hardware(ref state, data) {
+        return
+    }
     var w = uint[64]
     nint start = 0
     while start < data.length() {
@@ -161,20 +168,25 @@ public struct Hmac {
         } else {
             padded[0..key.length()].copyFrom(key)
         }
-        var inner = byte[64]
-        var outer = byte[64]
+        // The inner hash, of the key padded with 0x36 and then the data, and the outer one, of the
+        // key padded with 0x5c and then the inner hash, each from its first block straight into
+        // the words: no `Sha256` and its buffer is needed for either.
         for i in 0..64 {
-            inner[i] = padded[i] ^ 0x36
-            outer[i] = padded[i] ^ 0x5c
+            padded[i] ^= 0x36
         }
-        var h = Sha256()
-        h.update(read inner)
-        h.update(data)
-        var innerHash = h.finish()
-        var o = Sha256()
-        o.update(read outer)
-        o.update(read innerHash)
-        return o.finish()
+        var state = Sha256Start
+        sha256Blocks(ref state, read padded)
+        nint whole = data.length() / 64 * 64
+        if whole > 0 {
+            sha256Blocks(ref state, data[0..whole])
+        }
+        var inner = sha256Last(ref state, data[whole..data.length()], (ulong)data.length() + 64)
+        for i in 0..64 {
+            padded[i] ^= 0x36 ^ 0x5c
+        }
+        state = Sha256Start
+        sha256Blocks(ref state, read padded)
+        return sha256Last(ref state, read inner, 96)
     }
 }
 

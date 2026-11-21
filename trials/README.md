@@ -20,6 +20,8 @@ and Zig":
 | [std/json](std/json) | A document read and walked, read and written back, and a document a line read | 149 |
 | [std/compression](std/compression) | 100 MB of a log compressed in gzip and opened, 99,640 records each compressed and opened in zlib, 100 MB that do not compress | 150 |
 | [std/zip](std/zip) | 100 MB written as 10,001 entries, the entries of an archive read, 100,000 entries listed | 150 |
+| [std/hash](std/hash) | The SHA-256 of 100 MB, ten million hashes chained, an HMAC-SHA-256 of each of 921,952 lines | 151 |
+| [std/checksum](std/checksum) | The CRC-32 and the Adler-32 of 100 MB, the CRC-32 of each of 921,952 lines | 151 |
 
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.

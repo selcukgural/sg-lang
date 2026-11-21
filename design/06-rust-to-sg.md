@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-fiftieth slice (`List<T>.repeat`, `List<T>.withCapacity`, `ZipReader.entries()`, 1648, 1650, 1652).
+Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`crc32fast` and `sha2` with the processor's instructions, 1656, 1657).
 
 ## Functions and variables
 
@@ -534,13 +534,13 @@ Last brought up to date: 21 November 2026, the hundred-and-fiftieth slice (`List
 |---|---|---|---|
 | `crc32fast::hash(bytes)` | `Crc32.of(read bytes)` | built | In the language's own module; a `uint` |
 | `let mut h = crc32fast::Hasher::new(); h.update(bytes); h.finalize()` | `var c = Crc32(); c.update(read bytes); c.value()` | built | `value()` does not end it: more may be taken in after it |
-| `crc32fast` with the processor's CRC instructions | none yet | | Sixteen bytes in a step through tables, as `crc32fast` without them; zlib's `crc32` through C for that speed |
+| `crc32fast` with the processor's CRC instructions | `Crc32` | built | Compiled, folded with ARMv8's PMULL and `crc32x` or x86-64's PCLMULQDQ where the processor has them, through tables elsewhere; the same bytes (1656) |
 | `adler::adler32_slice(bytes)` | `Adler32.of(read bytes)` | built | zlib's checksum; `var a = Adler32(); a.update(read bytes); a.value()` piece by piece |
 | `sha2::Sha256::digest(bytes)` | `Sha256.of(read bytes)` | built | A `byte[32]`; `Hex.encode(read hash)` writes it as text |
 | `let mut h = Sha256::new(); h.update(bytes); h.finalize()` | `var h = Sha256(); h.update(read bytes); h.finish()` | built | `finish()` does not end it: more may be taken in after it |
 | `Hmac::<Sha256>::new_from_slice(key)?.chain_update(data).finalize()` | `Hmac.sha256(read key, read data)` | built | One call; a key of any length |
 | `mac.verify_slice(tag)` / `subtle::ConstantTimeEq` | `Bytes.equalInConstantTime(read a, read b)` | built | Never `==` for a tag |
-| `sha2` with the processor's SHA instructions | none yet | | Plain arithmetic, the time of the same algorithm in C; OpenSSL through C for that speed |
+| `sha2` with the processor's SHA instructions | `Sha256`, `Hmac` | built | Compiled, through ARMv8's SHA2 or x86-64's SHA-NI where the processor has them, plain SG elsewhere (1657) |
 
 ## The command line
 

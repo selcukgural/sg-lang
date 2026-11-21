@@ -1,0 +1,82 @@
+// `hash`: `std`'s SHA-256 and HMAC-SHA-256 measured (choices 1553, 1629-1637, 1653-1654). Three ways
+// of using them:
+//
+//     hash sha256 FILE    the SHA-256 of FILE, read a piece of 64 KB at a time, as `sha256sum` does
+//     hash chain COUNT    32 zero bytes hashed COUNT times, each time the hash of the one before
+//     hash hmac FILE      each line of FILE, without its end (`\n` or `\r\n`), signed with
+//                         HMAC-SHA-256 under one key of 32 bytes; how many lines, and every tag
+//                         put together with XOR
+//
+// The hashes are printed in hexadecimal. A file that cannot be read is told on the standard error,
+// with exit code 1; a wrong use, with 2.
+
+Result<void, IoError> sha256(read string path) {
+    var source = try File.openText(read path)
+    var buffer = byte[65536]
+    var h = Sha256()
+    while true {
+        nint count = try source.readSome(ref buffer)
+        if count == 0 {
+            break
+        }
+        h.update(buffer[..count])
+    }
+    print(Hex.encode(read h.finish()))
+    return Ok()
+}
+
+void chain(long count) {
+    var h = byte[32]
+    for _ in 0..count {
+        h = Sha256.of(read h)
+    }
+    print(Hex.encode(read h))
+}
+
+Result<void, IoError> hmac(read string path) {
+    var key = byte[32]
+    for i in 0..32 {
+        key[i] = (byte)i
+    }
+    var reader = try File.openText(read path)
+    string line = ""
+    long lines = 0
+    var all = byte[32]
+    while try reader.readLine(ref line) {
+        var tag = Hmac.sha256(read key, line.asBytes())
+        for i in 0..32 {
+            all[i] ^= tag[i]
+        }
+        lines += 1
+    }
+    print($"lines {lines}")
+    print($"xor {Hex.encode(read all)}")
+    return Ok()
+}
+
+void main(List<string> args) {
+    if args.length() == 2 && args[0] == "chain" {
+        long count = long.parse(read args[1]) ?? -1
+        if count >= 0 {
+            chain(count)
+            return
+        }
+    }
+    if args.length() != 2 || args[0] != "sha256" && args[0] != "hmac" {
+        printError("usage: hash sha256 FILE | chain COUNT | hmac FILE")
+        exit(2)
+    }
+    Result<void, IoError> result = Ok()
+    if args[0] == "sha256" {
+        result = sha256(read args[1])
+    } else {
+        result = hmac(read args[1])
+    }
+    match result {
+        Ok => {}
+        Error(cause) => {
+            printError($"hash: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

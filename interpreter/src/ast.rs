@@ -876,6 +876,14 @@ pub enum SystemCall {
     Normalize,
     /// `System.isNormalized(text, compose, compat)`: whether the text is in that form.
     IsNormalized,
+    /// `System.crc32Hardware(state, read bytes)`: the register of a CRC-32 after the bytes, worked
+    /// out by the processor's own instructions (choice 1656), or -1 where there are none to use
+    /// (and always when interpreted): `std` then works it out itself.
+    Crc32Hardware,
+    /// `System.sha256Hardware(ref state, read blocks)`: whole blocks of 64 bytes taken into the
+    /// eight words of a SHA-256 by the processor's SHA instructions (choice 1657); `false`, with
+    /// nothing done, where there are none (and always when interpreted).
+    Sha256Hardware,
     /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0
     /// for no file.
     Executable,

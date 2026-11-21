@@ -1,0 +1,11 @@
+[package]
+name = "hash"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `sha2` and `hmac` as people use them, with their default features: on a processor with the SHA
+# instructions (ARMv8, x86 SHA-NI), `sha2` finds them when it starts and uses them (choice 1653).
+[dependencies]
+hmac = "0.13.0"
+sha2 = "0.11.1"

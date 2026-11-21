@@ -1,0 +1,68 @@
+// `checksum`: `std`'s CRC-32 and Adler-32 measured (choices 1553, 1629-1637, 1653, 1655). Three ways
+// of using them:
+//
+//     checksum crc32 FILE      the CRC-32 of FILE, read a piece of 64 KB at a time
+//     checksum adler32 FILE    the Adler-32 of FILE, read the same way
+//     checksum lines FILE      the CRC-32 of each line of FILE, without its end (`\n` or `\r\n`);
+//                              how many lines, and every CRC-32 put together with XOR
+//
+// The checksums are printed in hexadecimal. A file that cannot be read is told on the standard
+// error, with exit code 1; a wrong use, with 2.
+
+Result<void, IoError> whole(read string path, bool crc) {
+    var source = try File.openText(read path)
+    var buffer = byte[65536]
+    var c = Crc32()
+    var a = Adler32()
+    while true {
+        nint count = try source.readSome(ref buffer)
+        if count == 0 {
+            break
+        }
+        if crc {
+            c.update(buffer[..count])
+        } else {
+            a.update(buffer[..count])
+        }
+    }
+    if crc {
+        print($"{c.value():x8}")
+    } else {
+        print($"{a.value():x8}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> lines(read string path) {
+    var reader = try File.openText(read path)
+    string line = ""
+    long count = 0
+    uint all = 0
+    while try reader.readLine(ref line) {
+        all ^= Crc32.of(line.asBytes())
+        count += 1
+    }
+    print($"lines {count}")
+    print($"xor {all:x8}")
+    return Ok()
+}
+
+void main(List<string> args) {
+    if args.length() != 2 || args[0] != "crc32" && args[0] != "adler32" && args[0] != "lines" {
+        printError("usage: checksum crc32 FILE | adler32 FILE | lines FILE")
+        exit(2)
+    }
+    Result<void, IoError> result = Ok()
+    if args[0] == "lines" {
+        result = lines(read args[1])
+    } else {
+        result = whole(read args[1], args[0] == "crc32")
+    }
+    match result {
+        Ok => {}
+        Error(cause) => {
+            printError($"checksum: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

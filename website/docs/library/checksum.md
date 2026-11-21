@@ -50,11 +50,14 @@ cbf43926
 
 ## How fast
 
-The bytes are taken sixteen at a time through sixteen tables of 256 numbers, which the compiler makes once when
-the program is compiled. Four gigabytes take 1.1 seconds on an Apple M3 Max, as the same algorithm
-written in C does. zlib on macOS takes a tenth of that with the processor's own CRC instructions, which SG
-cannot call yet; a program that needs that speed calls zlib's `crc32` through C, as the
-[zlib example](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples/zlib) does.
+A compiled program hands the bytes to the processor's own instructions where it has them: 64 bytes or
+more are folded with its carry-less product (PMULL on 64-bit Arm, PCLMULQDQ on x86-64), and on Arm its
+`crc32` instruction takes the rest. Elsewhere, and in the interpreter, the bytes are taken sixteen at a
+time through sixteen tables of 256 numbers, which the compiler makes once when the program is compiled.
+The CRC-32 is the same either way. Four gigabytes take 0.08 seconds on an Apple M3 Max, less than zlib's
+`crc32` there (0.11 seconds), and 100 MB of a file 0.013 seconds, against 0.010 for Rust's `crc32fast`.
+`Adler32` sums eight bytes side by side in lanes, without the processor's help: 100 MB take 0.024 seconds,
+against 0.022 for Rust's `adler2`.
 
 ## Adler-32
 

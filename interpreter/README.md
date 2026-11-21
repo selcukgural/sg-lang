@@ -76,7 +76,7 @@ of `tests/Containerfile` has them.
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on. On Windows the same, through Winsock: the loop asks the driver under the sockets (AFD) on an I/O completion port, as mio and Tokio do, and the interpreter waits with `WSAPoll`; a listener and a datagram socket hold their port alone, and a datagram socket that is not connected is not told of a datagram that came back, as on Linux and macOS. Windows tells of a refused connection after about two seconds, and `localhost` tries `::1` before `127.0.0.1` (1025) |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. `d.toLocal()` gives a `DateTimeOffset`, the moment seen at the offset of the system's time zone (`2026-11-18T12:30:05+03:00`, its parts those of the place), `d.withOffset(offset)` one at an offset of your own, `DateTimeOffset.local(2026, 3, 29, 2, 30, 0)` the moment the clocks of the place show that at (`SkippedLocalTime` in the hour summer time skips, the earlier of the two in the hour it repeats), and `t.toUtc()` the moment back; `DateTime.parse(text)` and `DateTimeOffset.parse(text)` read RFC 3339 (`InvalidText(position)` where the text stops being one). A format of your own is written with the parts: `$"{t.day():D2}.{t.month():D2}.{t.year()}"`. All four are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
-| Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece; `Adler32` is zlib's checksum, used the same way. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
+| Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece; `Adler32` is zlib's checksum, used the same way. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std`; compiled, CRC-32 and SHA-256 go through the processor's own instructions where it has them (ARMv8's CRC, PMULL and SHA2, x86-64's PCLMULQDQ and SHA-NI), the same bytes either way |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` and `o.values()` in the same order on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJson(JsonOptions { indent = 2 })` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128, written to 128 too, `JsonOptions { maxDepth = 512 }` given to `toJson` and `Json.parse` for more; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
@@ -524,12 +524,12 @@ hand with no checks):
 | `queue`: four tasks push 500,000 numbers each through a queue without locks of 1024 places while four take them out (the C is the same queue with pthreads and `__atomic`) | 0.475 s | 0.456 s | 0.341 s | 1.39 |
 | `statics`: CRC-32 of 64 KB, 4096 times, byte by byte through a table that is a static found the first time it is read, so every read looks whether it is found (the C keeps the table in a plain global filled before the loop) | 0.626 s | 0.626 s | 0.633 s | 0.99 |
 | `library`: a program of C calls a static library built from SG fifty million times through a handle (`ref Stats`), then hashes 256 MB of its own bytes with it through `Memory.view` (the C is the same program linked against the same library written in C) | 0.506 s | 0.507 s | 0.503 s | 1.01 |
-| `checksum`: four gigabytes through `Crc32` of `std`, written in SG, 64 KB of an array at a time (the C calls zlib's `crc32`, which on macOS uses the processor's CRC instructions; the same sixteen tables written in C take 1.10 s) | 1.095 s | 1.085 s | 0.113 s | 9.67 |
-| `sha256`: a gigabyte through `Sha256` of `std`, written in SG, 64 KB of an array at a time (the C calls OpenSSL 3.5's SHA-256, which uses the processor's SHA instructions; the same algorithm written in plain C takes 2.90 s) | 3.138 s | 3.198 s | 0.351 s | 8.93 |
+| `checksum`: four gigabytes through `Crc32` of `std`, 64 KB of an array at a time, folded by the processor's carry-less product since choice 1656 (1.095 s before, through sixteen tables; the C calls zlib's `crc32`, which on macOS uses the processor's CRC instructions too) | 0.077 s | 0.076 s | 0.111 s | 0.69 |
+| `sha256`: a gigabyte through `Sha256` of `std`, 64 KB of an array at a time, through the processor's SHA instructions since choice 1657 (3.138 s before, in plain SG; the C calls OpenSSL 3.5's SHA-256, which uses them too) | 0.413 s | 0.411 s | 0.353 s | 1.17 |
 | `json`: a JSON document of 100,000 records (34 MB) read five times by `Json.parse` of `std`, written in SG, and walked once (the C reads it with cJSON 1.7.19) | 0.773 s | 0.789 s | 0.675 s | 1.15 |
 | `log`: a billion `Log.debug($"...")` calls while the level is `Info`, in a loop that does little else, so no text is built: the static of the level, a load and a compare (the C tests an atomic global the same way; between 1.01 and 1.10 over several runs) | 0.811 s | 0.808 s | 0.805 s | 1.01 |
-| `gzip`: sixteen megabytes of text made of words compressed at level 6 by `Gzip.compress` of `std`, written in SG (the C calls zlib 1.2.12 of macOS; the bytes are the same, so both print the same length and CRC-32) | 0.470 s | 0.475 s | 0.493 s | 0.95 |
-| `gunzip`: the same text compressed at level 1 and opened twenty times by `Gzip.decompress` of `std`, each time with its CRC-32 (the C calls zlib's `inflate`) | 0.632 s | 0.820 s | 0.363 s | 1.74 |
+| `gzip`: sixteen megabytes of text made of words compressed at level 6 by `Gzip.compress` of `std`, written in SG (the C calls zlib 1.2.12 of macOS; the bytes are the same, so both print the same length and CRC-32) | 0.469 s | 0.471 s | 0.495 s | 0.95 |
+| `gunzip`: the same text compressed at level 1 and opened twenty times by `Gzip.decompress` of `std`, each time with its CRC-32 (the C calls zlib's `inflate`) | 0.477 s | 0.654 s | 0.364 s | 1.31 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
 virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
@@ -10429,6 +10429,58 @@ read; a range of the view is a view of the same text, and two views are compared
 0.9 s. Compiled code is not touched, and what a program sees does not change. Tested by
 `ok_text_bytes_view`, `panic_text_bytes_view_index` and `panic_text_bytes_view_range` (new).
 
+Choices made in the hundred-and-fifty-first slice (SHA-256, HMAC, CRC-32 and Adler-32 measured against Rust
+and Zig). 1653 to 1655 were approved at its start and 1656 to 1658 after the profile of the first
+measurement, all on 21 November 2026:
+
+1653. **Two trials, as there are two modules**: `trials/std/hash` for `std/hash.sg` (SHA-256 and HMAC) and
+     `trials/std/checksum` for `std/checksum.sg` (CRC-32 and Adler-32). Rust is `sha2` and `hmac`,
+     `crc32fast`, and `adler2`, the Adler-32 of `miniz_oxide`, each with its default features; Zig is
+     `std.crypto.hash.sha2`, `std.crypto.auth.hmac`, `std.hash.Crc32` and `std.hash.Adler32`.
+1654. **The cases of hash**, chosen before the numbers were seen: the SHA-256 of 100 MB of the log, read 64
+     KB at a time; 32 zero bytes hashed ten million times, each the hash of the one before, the cost of a
+     call with nothing read; and each of the 921,952 lines of the log signed with HMAC-SHA-256 under one
+     key, the tags put together with XOR.
+1655. **The cases of checksum**: the CRC-32 and the Adler-32 of the 100 MB, read 64 KB at a time, and the
+     CRC-32 of each line, put together with XOR. `Bytes.equalInConstantTime` is not measured alone.
+1656. **CRC-32 by the processor's instructions.** Where it has them, a compiled program folds 64 bytes or
+     more with the carry-less product (Intel's method of 2009, the keys of zlib's polynomial that
+     `crc32fast` and zlib-ng use): eight streams of 16 bytes over each 128, four over each 64 when there
+     are fewer, then one 16 bytes at a time; ARMv8's PMULL, with `crc32x` for what is left and what is
+     shorter, and x86-64's PCLMULQDQ, with a Barrett reduction. The processor is asked once what it has
+     (`sysctlbyname` on macOS, `getauxval` on Linux, `IsProcessorFeaturePresent` on Windows, `cpuid` on
+     x86-64), through `System.crc32Hardware`, a call only `std` makes; where it has none, on another
+     machine, without an operating system, and always in the interpreter, `std` takes sixteen bytes a step
+     through its tables as before. The bytes are the same either way. Before: 0.035 s on 100 MB and 0.060
+     s on the lines, against 0.010 s and 0.035 s for `crc32fast`; after, 0.013 s and 0.044 s.
+1657. **SHA-256 by the processor's instructions**, the same way: ARMv8's SHA2 and x86-64's SHA-NI, four
+     rounds or two at an instruction, written out so that the words of the message stay in registers,
+     through `System.sha256Hardware`; the 64 rounds in SG where there are none. It takes back the word of
+     1409 that `std` has no instructions made for SHA. `Sha256.of` and `Hmac.sha256` hand their blocks
+     straight to the rounds and make the last block once, where they went through a `Sha256` and its
+     buffer. Before: 0.303 s, 2.018 s and 1.001 s, six to nine times Rust and Zig; after, 0.049 s, 0.331 s
+     and 0.138 s, and `sha256` of `bench` takes 1.17 times OpenSSL, where it took 8.93.
+1658. **Adler-32 in eight lanes**: a run of up to 5,552 bytes, a whole number of words of 8, is summed with
+     each byte in the lane of its place modulo 8, so that no byte waits for the sum before it, and the
+     lanes give the two sums back at the end of the run, as `adler2` does with four. Plain SG, the same
+     sums: 0.038 s before, 0.024 s after, against `adler2`'s 0.022 s.
+
+What is left of the losses is written under "Slower than C": a call of SHA-256 costs 33 ns, where the
+instructions take 25 and Zig's whole call 28, and the lines are read as text, checked to be UTF-8. Opening
+gzip, which takes a CRC-32 of what it opens, now takes the time of `zlib-rs` (0.084 s, where it took
+0.108), and reading the entries of a zip archive 0.139 s, where it took 0.164.
+
+Tested by `the_trials_of_hash_and_checksum` (new): the SG programs, interpreted and compiled, give the
+values of Python's `hashlib`, `hmac` and `zlib`. `ok_checksum_hardware` (new) takes every length from 0 to
+399 from each of 16 places, lengths around the runs of Adler-32 and the folds of CRC-32 given in pieces,
+and SHA-256 and HMAC around their blocks: the compiled program, which uses the instructions, prints what
+the interpreter, which never does, wrote into its output, and the values were checked against Python. It
+gave the same on macOS and on Linux on 64-bit Arm, built by Clang and by GCC, and on x86-64 run under
+emulation, whose processor said it had PCLMULQDQ and SHA-NI; on Windows 11 on 64-bit Arm, which has the
+instructions of all three, and its x64 emulation, which has PCLMULQDQ and not SHA-NI, so that the rounds
+in SG ran there. The whole of the tests passes on macOS and on Linux, with 508 of the 1926 programs
+compiled through C and run clean under the sanitizers, 109 of them under the thread sanitizer.
+
 ## `std`, measured against Rust and Zig
 
 Each module of `std` measured against the crates Rust's people use for the job and against Zig's own
@@ -10438,7 +10490,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in `trials/README.md`; the rules of fairness there (1554) hold here. `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `checksum`, `command_line`, `encoding`, `environment`, `files`, `hash`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`.
+Not measured yet: `atomic`, `command_line`, `encoding`, `environment`, `files`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`.
 
 The trial `grep` measures `Regex.isMatch` already (`trials/README.md`); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
@@ -10481,10 +10533,10 @@ not compress. Apple M3 Max, 21 November 2026:
 
 | Case | SG | SG, checked | Rust | Rust, `zlib-rs` | Zig | Zig, safe |
 |---|---|---|---|---|---|---|
-| 100 MB of a log, compressed | 1.632 s, 2.6 MB | 1.651 s, 2.6 MB | 1.674 s, 2.6 MB | 0.948 s, 2.7 MB | 1.554 s, 2.5 MB | 1.683 s, 2.7 MB |
-| 100 MB of a log, opened | 0.108 s, 2.7 MB | 0.151 s, 2.8 MB | 0.175 s, 2.3 MB | 0.084 s, 2.3 MB | 0.170 s, 2.3 MB | 0.206 s, 2.4 MB |
-| 99,640 records, each compressed and opened | 1.564 s, 2.6 MB | 1.747 s, 2.6 MB | 1.562 s, 2.6 MB | 1.692 s, 2.8 MB | 1.674 s, 2.4 MB | 2.023 s, 2.8 MB |
-| 100 MB that do not compress, compressed | 1.511 s, 2.6 MB | 1.618 s, 2.6 MB | 1.572 s, 2.5 MB | 1.273 s, 2.7 MB | 1.616 s, 2.5 MB | 2.018 s, 2.7 MB |
+| 100 MB of a log, compressed | 1.616 s, 2.6 MB | 1.616 s, 2.6 MB | 1.675 s, 2.6 MB | 0.949 s, 2.7 MB | 1.556 s, 2.5 MB | 1.687 s, 2.7 MB |
+| 100 MB of a log, opened | 0.084 s, 2.7 MB | 0.124 s, 2.7 MB | 0.175 s, 2.3 MB | 0.086 s, 2.3 MB | 0.171 s, 2.3 MB | 0.206 s, 2.4 MB |
+| 99,640 records, each compressed and opened | 1.562 s, 2.6 MB | 1.765 s, 2.7 MB | 1.551 s, 2.6 MB | 1.694 s, 2.8 MB | 1.669 s, 2.4 MB | 2.020 s, 2.8 MB |
+| 100 MB that do not compress, compressed | 1.483 s, 2.6 MB | 1.592 s, 2.6 MB | 1.578 s, 2.5 MB | 1.267 s, 2.7 MB | 1.622 s, 2.5 MB | 2.020 s, 2.7 MB |
 | Size, stripped | 115 KB | 132 KB | 435 KB | 483 KB | 394 KB | 474 KB |
 | Lines | 86 | 86 | 89 | 89 | 93 | 93 |
 
@@ -10493,9 +10545,9 @@ Rust is `flate2` 1.1.11, with its default `miniz_oxide` 0.9.1 and once more with
 `measure.py` opens what each wrote and holds it to the input. The log took SG 18,728,988 bytes (zlib's own,
 byte for byte), `miniz_oxide` 18,371,889, `zlib-rs` 19,275,743 and Zig 19,229,859; the records 27,113,059,
 27,110,665, 27,101,349 and 27,112,644; the bytes that do not compress 100,030,523, 100,015,773, 100,030,538
-and 100,167,750. `zlib-rs` compresses at level 6 by zlib-ng's own way, which SG does not take (1485, 1651);
-it opens with the CRC-32 instructions of the processor, which come in the hundred-and-fifty-first slice.
-Before 1646 to 1649, SG took 1.768 s, 0.169 s, 2.253 s and 1.490 s.
+and 100,167,750. `zlib-rs` compresses at level 6 by zlib-ng's own way, which SG does not take (1485, 1651).
+Before 1646 to 1649, SG took 1.768 s, 0.169 s, 2.253 s and 1.490 s; before the CRC-32 and Adler-32 of the
+hundred-and-fifty-first slice (1656, 1658), 1.632 s, 0.108 s, 1.564 s and 1.511 s.
 
 ### zip
 
@@ -10506,9 +10558,9 @@ M3 Max, 21 November 2026:
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |
 |---|---|---|---|---|---|
-| 100 MB in 10,001 entries, written | 1.086 s, 100.9 MB | 1.223 s, 100.9 MB | 0.772 s, 101.8 MB | 1.192 s, 99.0 MB | 1.320 s, 98.9 MB |
-| 10,001 entries, read | 0.164 s, 4.3 MB | 0.211 s, 4.3 MB | 0.184 s, 4.8 MB | 0.520 s, 2.2 MB | 0.586 s, 2.5 MB |
-| 100,000 entries, listed | 0.026 s, 19.6 MB | 0.026 s, 19.6 MB | 0.250 s, 22.7 MB | 0.008 s, 2.2 MB | 0.011 s, 2.5 MB |
+| 100 MB in 10,001 entries, written | 1.068 s, 100.7 MB | 1.200 s, 100.9 MB | 0.770 s, 101.8 MB | 1.198 s, 98.7 MB | 1.322 s, 98.9 MB |
+| 10,001 entries, read | 0.139 s, 4.3 MB | 0.185 s, 4.3 MB | 0.183 s, 4.8 MB | 0.517 s, 2.2 MB | 0.586 s, 2.5 MB |
+| 100,000 entries, listed | 0.027 s, 19.6 MB | 0.027 s, 19.6 MB | 0.251 s, 22.7 MB | 0.008 s, 2.2 MB | 0.010 s, 2.5 MB |
 | Size, stripped | 261 KB | 277 KB | 1678 KB | 394 KB | 490 KB |
 | Lines | 61 | 61 | 66 | 159 | 159 |
 
@@ -10519,7 +10571,45 @@ checks the CRC-32 that `std.zip` does not (1645). The archives written took SG 2
 25,934,270 and Zig 25,809,759, each read back by Python before anything was timed. SG checks every name of
 the archive against the others when it opens it (1503), which Rust and Zig do not; that is the time and the
 memory of the listing, which Zig does without keeping anything. Before 1650 and 1652, SG took 1.191 s,
-0.231 s and 7.2 MB, and 0.048 s and 49.8 MB.
+0.231 s and 7.2 MB, and 0.048 s and 49.8 MB; before the CRC-32 of 1656, 1.086 s and 0.164 s.
+
+### hash
+
+`trials/std/hash`: `sha256` hashes 100 MB of the log, read 64 KB at a time, as `sha256sum` does; `chain`
+hashes 32 zero bytes ten million times, each time the hash of the one before, the cost of one call with
+nothing read; `hmac` signs each of the 921,952 lines of the log with HMAC-SHA-256 under one key of 32 bytes
+and puts the tags together with XOR. Apple M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 100 MB of a log, hashed | 0.049 s, 2.0 MB | 0.048 s, 2.0 MB | 0.045 s, 2.0 MB | 0.041 s, 2.0 MB | 0.045 s, 2.2 MB |
+| 10,000,000 hashes, chained | 0.331 s, 1.8 MB | 0.334 s, 1.8 MB | 0.323 s, 2.0 MB | 0.284 s, 2.0 MB | 0.281 s, 2.1 MB |
+| 921,952 lines, each signed | 0.138 s, 1.9 MB | 0.138 s, 1.9 MB | 0.144 s, 2.1 MB | 0.113 s, 2.0 MB | 0.122 s, 2.2 MB |
+| Size, stripped | 67 KB | 67 KB | 352 KB | 345 KB | 442 KB |
+| Lines | 67 | 67 | 80 | 76 | 76 |
+
+Rust is `sha2` 0.11.1 and `hmac` 0.13.0 with their default features, Zig `std.crypto.hash.sha2` and
+`std.crypto.auth.hmac`; all three use the SHA instructions of the processor, SG since 1657. A line is signed
+without its end, `\n` or `\r\n`, by each. `Bytes.equalInConstantTime` is not measured: alone it takes too
+little time to tell. Before 1657, SG took 0.303 s, 2.018 s and 1.001 s, six to nine times the others.
+
+### checksum
+
+`trials/std/checksum`: the CRC-32 and the Adler-32 of 100 MB of the log, read 64 KB at a time, and the CRC-32
+of each of its 921,952 lines, put together with XOR. Apple M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 100 MB of a log, CRC-32 | 0.013 s, 2.0 MB | 0.012 s, 2.0 MB | 0.010 s, 2.1 MB | 0.219 s, 2.0 MB | 0.220 s, 2.2 MB |
+| 100 MB of a log, Adler-32 | 0.024 s, 2.0 MB | 0.046 s, 2.0 MB | 0.022 s, 2.1 MB | 0.034 s, 2.0 MB | 0.036 s, 2.1 MB |
+| 921,952 lines, each a CRC-32 | 0.044 s, 1.9 MB | 0.044 s, 1.9 MB | 0.035 s, 2.1 MB | 0.169 s, 2.0 MB | 0.170 s, 2.2 MB |
+| Size, stripped | 83 KB | 83 KB | 352 KB | 345 KB | 442 KB |
+| Lines | 55 | 55 | 58 | 61 | 61 |
+
+Rust is `crc32fast` 1.5.5 and `adler2` 2.0.1 (the Adler-32 of `miniz_oxide`) with their default features;
+`crc32fast` folds with the processor's carry-less product, as SG does since 1656. Zig's `std.hash.Crc32`
+takes a byte at a time through one table. Reading 100 MB alone takes about 9 ms of each case. Before 1656
+and 1658, SG took 0.035 s, 0.038 s and 0.060 s.
 
 ## Slower than C, and could be better
 
@@ -10543,43 +10633,50 @@ check off.
   characters that have none at once. Candidates: the class of each character of a decomposition kept beside
   it in `NORM_DECOMPOSED`, and a run of starters with nothing to change written straight to the output.
 
-- **CRC-32 without the processor's instructions** (`checksum`, 9.67 times zlib on macOS, choice 1415; taken
-  up in the hundred-and-fifty-first slice, 1651):
-  `Crc32` takes sixteen bytes in a step through tables, in the time of the same algorithm written in C,
-  while zlib on macOS folds the bytes with the CRC instructions of the processor and multiplication
-  without carries. Candidate: a built-in for those instructions, which the C compiler maps to them on
-  each machine and to the tables where there are none; until then a program calls zlib's `crc32`.
+- **CRC-32 of short pieces, and of much at once** (`std/checksum`, 1.26 times `crc32fast` on the 921,952
+  lines of the log, 0.044 s against 0.035 s, and 1.3 times on 100 MB, 0.013 s against 0.010 s; choices
+  1415, 1656): since 1656 the processor's carry-less product folds what is 64 bytes or longer, eight streams
+  at a time, and on ARM `crc32x` takes what is shorter, faster than zlib on macOS (`checksum`, 0.69 times).
+  What is left: reading a line takes 3 ms more over the log than Rust's `read_until`, as SG checks it is
+  UTF-8; each call goes from `Crc32.of` through `std` to the C that holds the instructions, and asks once
+  more whether the processor has them; and `crc32fast` folds sixteen streams from 4 KB, which in SG's C
+  took twice the time, the streams no longer kept in registers. Candidates: sixteen streams written out
+  by hand rather than as a loop; the question of the processor asked once for a program, not at each call.
 
-- **Opening DEFLATE** (`gunzip`, 1.74 times zlib on macOS, 2.60 before choice 1647; choice 1486): the
+- **Opening DEFLATE** (`gunzip`, 1.31 times zlib on macOS, 1.74 before the CRC-32 of 1656 and 2.60 before choice 1647; choice 1486): the
   decoder reads its codes from tables as zlib's does, with the bits, the place in the input and the length of
   the output in locals and the lists looked at through slices, and copies a match eight bytes at a time when
   it lies 8 back or more (1647), but each byte it writes and each entry it reads is checked against the end
   of its slice, a literal is decoded one at a time and a match closer than 8 is copied a byte at a time. In
-  the trial of `std/compression` it opens 100 MB in 0.108 s, faster than `flate2`'s default (0.175 s) and
-  Zig (0.170 s), and 1.29 times `zlib-rs` (0.084 s), which also takes the CRC-32 with the processor's
-  instructions (the entry of CRC-32 above). Candidates: two literals decoded in one step, a short distance
+  the trial of `std/compression` it opens 100 MB in 0.084 s, as `zlib-rs` does (0.086 s), and faster than
+  `flate2`'s default (0.175 s) and Zig (0.171 s). Candidates: two literals decoded in one step, a short distance
   copied by widening its pattern, and the checks the compiler can see are needed once a block.
 
 - **Compressing as zlib-ng does** (`std/compression`, 1.72 times `flate2` with `zlib-rs` on 100 MB of a log,
   1.19 times on bytes that do not compress, 1.41 times the `zip` crate writing 10,001 entries; choices 1485,
   1651): `zlib-rs` is zlib-ng in Rust, whose level 6 is a way of its own (its "medium"): it writes 3 per
   cent more bytes (19,275,743 against 18,728,988) in 0.58 of the time. SG gives zlib's bytes at every level
-  (1485) and takes the time of `flate2`'s default (`miniz_oxide`, 1.674 s against SG's 1.632 s) and of Zig
-  (1.554 s). Candidate, if speed is wanted over zlib's bytes: zlib-ng's levels as a choice of their own.
+  (1485) and takes the time of `flate2`'s default (`miniz_oxide`, 1.675 s against SG's 1.616 s) and of Zig
+  (1.556 s). Candidate, if speed is wanted over zlib's bytes: zlib-ng's levels as a choice of their own.
 
-- **Listing a zip archive** (`std/zip`, 3.3 times Zig's `std.zip` on 100,000 entries, 0.026 s against
+- **Listing a zip archive** (`std/zip`, 3.4 times Zig's `std.zip` on 100,000 entries, 0.027 s against
   0.008 s, and 19.6 MB against 2.2 MB; choices 1503, 1652): Zig reads each record of the central directory
   as the program asks for the next and keeps nothing, and checks no name against another. SG reads the
   directory once and checks every name before anything is given (a name that could lead out of a folder,
   two names of one key in any case and normal form, data that lie over each other), so it keeps the
-  entries; it takes a tenth of the time of Rust's `zip` (0.250 s) in less memory (22.7 MB). Candidate: an
+  entries; it takes a tenth of the time of Rust's `zip` (0.251 s) in less memory (22.7 MB). Candidate: an
   entry that keeps its name and its numbers in one block, the size of a record of the directory.
 
-- **SHA-256 without the processor's instructions** (`sha256`, 8.93 times OpenSSL on macOS, choice 1422):
-  `Sha256` takes a block of 64 bytes through 64 rounds of plain arithmetic, about the time of the same
-  algorithm written in C (1.08 times it), while OpenSSL uses the SHA instructions of the processor (ARMv8's
-  SHA-2 extension, x86's SHA-NI). Candidate: the same kind of built-in as for CRC-32; until then a program
-  that hashes gigabytes calls OpenSSL.
+- **SHA-256 one call at a time** (`std/hash`, 1.16 times Zig on ten million hashes of 32 bytes, 0.331 s
+  against 0.284 s, as Rust's `sha2` takes; 1.22 times Zig on an HMAC of each line of the log, 0.138 s
+  against 0.113 s, faster than Rust's 0.144 s; 1.20 times Zig on 100 MB, 0.049 s against 0.041 s; `sha256`
+  1.17 times OpenSSL on macOS; choices 1422, 1657): since 1657 the blocks go through the SHA instructions
+  of the processor, 8.93 times OpenSSL before. The C of those instructions takes a hash of one block in
+  25 ns alone, where the whole call takes 33 in SG and 28 in Zig: the rest is the way to it, the eight
+  words lent as a slice, a call of the system for each run of blocks that asks again whether the
+  processor has the instructions, the checks of the last block's slices. The HMAC of a line reads it as
+  text, checked to be UTF-8, where Zig's `takeDelimiter` lends the bytes of its buffer. Candidates: the
+  question of the processor asked once for a program; the last block made in C beside the rounds.
 - **JSON read one allocation at a time** (`json`, 1.15 times cJSON on macOS, choice 1444): every string,
   list and object of a `JsonValue` is a block of its own from `malloc`, and each value is moved through a
   `Result` on its way up, where cJSON allocates one node for each value and links them. Candidate: the
@@ -11256,8 +11353,10 @@ Zig, and a new one comes in with its measurement (1553, 1629-1637): JSON first, 
 bytes and not 96 and an object gives its values in order (1638-1640), then compression and zip, where a
 match is compared and copied eight bytes at a time, a list is made at its size (`List<T>.repeat`,
 `List<T>.withCapacity`) and a zip reader lends its entries and holds 20 MB for 100,000 of them
-(1642-1652); then, a slice for each, SHA-256, HMAC, CRC-32 and Adler-32 with the processor's CRC-32; hex, Base64 and Unicode; time, random numbers and the log; the
-network; and the command line, the environment and paths. Then the checks of the DFA's reads and a search in any case
+(1642-1652), then SHA-256, HMAC, CRC-32 and Adler-32, which go through the processor's own instructions
+where it has them and lose to Rust and Zig by at most 1.3 times, from six to nine (1653-1658); then, a slice
+for each, hex, Base64 and Unicode; time, random numbers and the log; the network; and the command line,
+the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

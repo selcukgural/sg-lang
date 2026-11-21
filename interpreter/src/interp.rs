@@ -6292,6 +6292,14 @@ impl<'a, 'e> Interp<'a, 'e> {
             let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
             return Ok(Value::Int(IntTy::Int, i128::from(crate::unicode::category(c))));
         }
+        // The processor's instructions are the compiled program's: interpreted, `std` works the
+        // checksums out itself.
+        if call == SystemCall::Crc32Hardware {
+            return Ok(Value::Int(IntTy::Long, -1));
+        }
+        if call == SystemCall::Sha256Hardware {
+            return Ok(Value::Bool(false));
+        }
         if call == SystemCall::CharFold {
             let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
             return Ok(Value::Char(crate::unicode::simple_fold(c)));
@@ -6422,7 +6430,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::CharCategory
             | SystemCall::CharFold
             | SystemCall::Normalize
-            | SystemCall::IsNormalized => unreachable!("done above"),
+            | SystemCall::IsNormalized
+            | SystemCall::Crc32Hardware
+            | SystemCall::Sha256Hardware => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.

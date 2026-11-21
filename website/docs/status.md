@@ -46,7 +46,9 @@ library, and a new module comes in with its measurement. JSON was the first: wit
 their size, SG reads, walks and writes 100 MB of it faster than `serde_json` and Zig's `std.json`, in less
 memory. Compression and zip came next: SG opens gzip faster than `flate2`'s default and Zig, compresses in
 their time with zlib's bytes, reads zip archives faster than the `zip` crate and Zig, and lists 100,000
-entries in less memory than the `zip` crate; `flate2` with `zlib-rs` compresses faster by another algorithm.
+entries in less memory than the `zip` crate; `flate2` with `zlib-rs` compresses faster by another algorithm. SHA-256, HMAC, CRC-32 and Adler-32 followed: a compiled program hands them to the processor's own
+instructions where it has them, and takes at most 1.3 times the time of Rust and Zig, where it took six to
+nine.
 
 ## Not yet
 

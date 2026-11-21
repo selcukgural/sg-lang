@@ -7,6 +7,7 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py grep          only this one
     python3 trials/measure.py std/json      only the module of `std`
     python3 trials/measure.py std/compression std/zip
+    python3 trials/measure.py std/hash std/checksum
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -219,6 +220,36 @@ TRIALS_CASES = {
             ("100 MB in 10,001 entries, written", ["write", "{text}", "{out}"], None, "zip"),
             ("10,001 entries, read", ["read", "{parts}"], None),
             ("100,000 entries, listed", ["list", "{many}"], None),
+        ],
+    },
+    "std/hash": {
+        "check": [
+            ("a small file, hashed", ["sha256", "{small}"], None),
+            ("an empty file, hashed", ["sha256", "{empty}"], None),
+            ("1,000 hashes, chained", ["chain", "1000"], None),
+            ("each line of a small file, signed", ["hmac", "{small}"], None),
+            ("a missing file", ["hmac", "missing.txt"], None),
+            ("a wrong use", ["chain", "many"], None),
+        ],
+        "measure": [
+            ("100 MB of a log, hashed", ["sha256", "{text}"], None),
+            ("10,000,000 hashes, chained", ["chain", "10000000"], None),
+            ("921,952 lines, each signed", ["hmac", "{text}"], None),
+        ],
+    },
+    "std/checksum": {
+        "check": [
+            ("a small file, CRC-32", ["crc32", "{small}"], None),
+            ("a small file, Adler-32", ["adler32", "{small}"], None),
+            ("an empty file, Adler-32", ["adler32", "{empty}"], None),
+            ("each line of a small file, CRC-32", ["lines", "{small}"], None),
+            ("a missing file", ["crc32", "missing.txt"], None),
+            ("a wrong use", ["sum", "{small}"], None),
+        ],
+        "measure": [
+            ("100 MB of a log, CRC-32", ["crc32", "{text}"], None),
+            ("100 MB of a log, Adler-32", ["adler32", "{text}"], None),
+            ("921,952 lines, each a CRC-32", ["lines", "{text}"], None),
         ],
     },
 }

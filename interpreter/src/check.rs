@@ -11991,6 +11991,7 @@ impl<'a> Checker<'a> {
     /// language's own module builds `Directory`, `FileInfo` and `Environment` on.
     fn system_call(&mut self, name: &str, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
         let text = || Ty::Read(Box::new(Ty::Str));
+        let bytes = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let (call, params, ret) = match name {
             "createDirectory" => (SystemCall::CreateDirectory, vec![text()], io(Ty::Void)),
@@ -12012,6 +12013,12 @@ impl<'a> Checker<'a> {
             "charFold" => (SystemCall::CharFold, vec![Ty::Char], Ty::Char),
             "normalize" => (SystemCall::Normalize, vec![text(), Ty::Bool, Ty::Bool], Ty::Str),
             "isNormalized" => (SystemCall::IsNormalized, vec![text(), Ty::Bool, Ty::Bool], Ty::Bool),
+            "crc32Hardware" => (SystemCall::Crc32Hardware, vec![Ty::Int(IntTy::Uint), bytes()], Ty::Int(IntTy::Long)),
+            "sha256Hardware" => (
+                SystemCall::Sha256Hardware,
+                vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Uint))))), bytes()],
+                Ty::Bool,
+            ),
             "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
             "run" => {
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));

@@ -113,8 +113,8 @@ false
 
 ## How fast
 
-SHA-256 is written in plain SG, with no instructions of the processor made for it. A gigabyte takes 3.1
-seconds on an Apple M3 Max, about the time of the same algorithm written in C (2.9 seconds). OpenSSL takes
-0.35 seconds there with the processor's SHA instructions, which SG cannot call yet; a program that hashes
-gigabytes calls OpenSSL through C, as the
-[zlib example](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples/zlib) does for zlib.
+A compiled program hands each block of 64 bytes to the processor's SHA instructions where it has them
+(the SHA2 extension of 64-bit Arm, SHA-NI on x86-64); elsewhere, and in the interpreter, the 64 rounds are
+plain SG. The hash is the same either way. A gigabyte takes 0.41 seconds on an Apple M3 Max, where
+OpenSSL takes 0.35; 100 MB of a file take 0.049 seconds, against 0.045 for Rust's `sha2` and 0.041 for
+Zig's. An HMAC of each of 921,952 lines of a log takes 0.14 seconds, about Rust's time.

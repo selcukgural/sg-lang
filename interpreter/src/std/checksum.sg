@@ -549,8 +549,13 @@ public struct Crc32 {
     }
 }
 
-// The register after `data`, sixteen bytes in each step and the last ones one by one.
+// The register after `data`: by the processor's instructions for CRC-32 where it has them
+// (choice 1656), else sixteen bytes in each step and the last ones one by one.
 uint crc32Run(uint state, read byte[] data) {
+    long fast = System.crc32Hardware(state, data)
+    if fast >= 0 {
+        return (uint)fast
+    }
     uint c = state
     nint n = data.length()
     nint i = 0
@@ -596,35 +601,46 @@ public struct Adler32 {
     }
 
     // Takes in more bytes. The sums are taken modulo 65,521 every 5,552 bytes, the most that
-    // cannot carry them past 32 bits (zlib's NMAX).
+    // cannot carry them past 32 bits (zlib's NMAX). A run of up to 5,552 bytes, a whole number of
+    // words of 8, is summed in eight lanes, each byte into the lane of its place modulo 8, so that
+    // no byte waits for the sum of the one before it (choice 1658); the lanes give the two sums
+    // back at the end of the run: the first gains all of them, and the second gains the run's
+    // length times the first as it was, 8 times every lane's second, less each lane's first times
+    // its place. The last bytes, fewer than 8, are taken one by one.
     public void update(ref this, read byte[] data) {
         uint low = this.low
         uint high = this.high
         nint n = data.length()
         nint i = 0
-        while i < n {
-            nint end = (i + 5552).min(n)
-            while i + 4 <= end {
-                low += data[i]
-                high += low
-                low += data[i + 1]
-                high += low
-                low += data[i + 2]
-                high += low
-                low += data[i + 3]
-                high += low
-                i += 4
-            }
+        while n - i >= 8 {
+            nint run = (n - i).min(5552) / 8 * 8
+            var firsts = uint[8]
+            var seconds = uint[8]
+            nint end = i + run
             while i < end {
-                low += data[i]
-                high += low
-                i += 1
+                ulong word = ulong.fromLittleEndian(data[i..i + 8])
+                for lane in 0..8 {
+                    firsts[lane] += (uint)(word >> (lane * 8) & 255)
+                    seconds[lane] += firsts[lane]
+                }
+                i += 8
             }
-            low = low % 65521
-            high = high % 65521
+            long first = 0
+            long second = (long)high + (long)run * (long)low
+            for lane in 0..8 {
+                first += (long)firsts[lane]
+                second += 8 * (long)seconds[lane] - (long)lane * (long)firsts[lane]
+            }
+            low = (uint)(((long)low + first) % 65521)
+            high = (uint)(second % 65521)
         }
-        this.low = low
-        this.high = high
+        while i < n {
+            low += data[i]
+            high += low
+            i += 1
+        }
+        this.low = low % 65521
+        this.high = high % 65521
     }
 
     // The Adler-32 of the bytes taken in so far; more may still be taken in after it.
