@@ -2,7 +2,7 @@
 
 The lexer, the parser, the checker, the consts it finds and the C written from a program must end
 with a result or a message on any text, never with a panic, a hang, a stack run out or memory run
-out (choices 1323 and 1349-1355 in `interpreter/README.md`). This crate holds the targets that
+out (choices [1323](../design/decisions/2026-11-18.md#slice-115) and [1349-1355](../design/decisions/2026-11-19.md#slice-118)). This crate holds the targets that
 try them with libFuzzer. It is a crate of its own, so that `sg` keeps no dependencies, and it is
 not part of `cargo test`.
 

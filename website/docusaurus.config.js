@@ -1,6 +1,6 @@
 // The web site of SG, sg-lang.org (choices 1383-1390): a static site built with Docusaurus and
 // published by Cloudflare Pages. Its pages are written for the reader; the decisions behind them
-// stay in the repository's `design/` and `interpreter/README.md`.
+// stay in the repository's `design/` and `design/decisions/`.
 // @ts-check
 
 const { themes: prismThemes } = require('prism-react-renderer');

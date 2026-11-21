@@ -200,7 +200,7 @@ Every test program runs in the interpreter and compiled, under the sanitizers, a
 same; the front end was fuzzed, generated programs that borrow are run both ways, and the rules of safety
 were tried with mutants. The [status page](https://sg-lang.org/docs/status)
 says where it stands in short; [decisions and open questions](design/04-decisions-and-open-questions.md) and
-[the interpreter's README](interpreter/README.md) keep the full record, slice by slice.
+[the choices of every slice](design/decisions/README.md) keep the full record, day by day.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is
@@ -212,7 +212,7 @@ SG rules out. It is taken up when the language is further along.
 
 | Folder | What it holds |
 |---|---|
-| [design](design) | The language itself, on paper |
+| [design](design/README.md) | The language itself, on paper, and [every choice made while building it](design/decisions/README.md), slice by slice |
 | [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests, and the programs measured against C |
 | [benchmarks](benchmarks/README.md) | The measurements: SG against C, Rust and Zig, where it is still slower, and how it is measured |
 | [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip, SHA-256 and CRC-32 so far) in SG, Rust and Zig, measured against each other ([the numbers](benchmarks/README.md)) |

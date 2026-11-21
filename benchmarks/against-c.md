@@ -90,7 +90,7 @@ The code of each program is in [`interpreter/bench/`](../interpreter/bench): `na
 ## Notes on each program
 
 What each of the first programs found, and what was changed because of it. The programs from `tasks` on
-are explained in the choices of the slice that added them, in the [interpreter's README](../interpreter/README.md).
+are explained in the choices of the slice that added them, in [the choices of each slice](../design/decisions/README.md).
 
 ### `fib`, `primes` and `collatz`
 

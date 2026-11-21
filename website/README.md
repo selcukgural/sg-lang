@@ -1,6 +1,6 @@
 # The web site of SG
 
-The source of [sg-lang.org](https://sg-lang.org) (choices 1383-1390 in `interpreter/README.md`): a static site
+The source of [sg-lang.org](https://sg-lang.org) (choices [1383-1390](../design/decisions/2026-11-19.md#slice-121)): a static site
 built with Docusaurus, published by Cloudflare Pages from this folder.
 
     npm ci --ignore-scripts      # Node 22 (.nvmrc); the packages are pinned in package-lock.json

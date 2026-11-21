@@ -4,7 +4,7 @@ Programs that people write, written in SG, in Rust and in Zig, the same algorith
 plainly, then measured against each other (choices 1418, 1540). Rust and Zig are the languages in SG's
 lane: compiled ahead of time, no collector, memory held and freed by the program; Go, measured in the first
 trial, was left for them. Each difference found is a numbered choice in
-the [interpreter's README](../interpreter/README.md), fixed and measured again.
+the [choices of each slice](../design/decisions/README.md), fixed and measured again.
 
 **The numbers are in [`benchmarks/`](../benchmarks/README.md)**: the trials in
 [Programs against Rust and Zig](../benchmarks/programs.md), the modules of `std` in

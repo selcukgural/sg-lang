@@ -12,7 +12,7 @@ The **Status** column says how far each line is:
 - **not in SG**: left out on purpose; the note says what to write instead.
 
 The details of each line are in the [decisions file](04-decisions-and-open-questions.md) and in the
-[interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
+[choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
 Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`crc32fast` and `sha2` with the processor's instructions, 1656, 1657).
