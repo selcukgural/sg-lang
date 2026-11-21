@@ -177,11 +177,15 @@ the first: event 0
 
 ## How fast
 
-Sixteen megabytes of text compress at level 6 in about the time zlib takes, on an Apple M3 Max (`bench/gzip`,
-1.04 times zlib's time). Opening is slower: `bench/gunzip`, which opens the same text twenty times, takes 2.6
+Sixteen megabytes of text compress at level 6 in zlib's time or less, on an Apple M3 Max (`bench/gzip`,
+0.95 times zlib's time). Opening is slower: `bench/gunzip`, which opens the same text twenty times, takes 1.74
 times zlib's time. The decoder reads its codes from tables as zlib's does, but each byte it writes and each entry
-it reads is checked against the end of its list, where zlib's C trusts its pointers; a program that needs zlib's
-speed calls zlib through C, as the
+it reads is checked against the end of its list, where zlib's C trusts its pointers. Against Rust's `flate2`
+and Zig's `std.compress.flate`, on 100 MB of a log at level 6, SG compresses in the time of `flate2`'s default
+and of Zig and opens faster than both; `flate2` with `zlib-rs` compresses 1.7 times faster, writing 3 per cent
+more bytes, and opens 1.3 times faster (the tables are in the
+[interpreter's README](https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md)). A program that
+needs zlib's speed calls zlib through C, as the
 [zlib example](https://github.com/selcukgural/sg-lang/tree/main/interpreter/examples/zlib) does.
 
 [Zip archives](./zip.md) are built on `Deflate`.

@@ -56,13 +56,14 @@ Result<void, ZipError> main(List<string> args) {
     print($"{bytes.length()} bytes, CRC {Crc32.of(read bytes):x8}")
 
     var zip = try ZipReader.open(read path)
-    for entry in zip.entries() {
+    // The reader keeps its entries and changes as it reads: each is copied out first (1650).
+    for i in 0..zip.entries().length() {
+        var entry = zip.entries()[i].clone()
         print($"{entry}: method {entry.method}, {entry.compressedSize} in the archive, folder {entry.isDirectory}, {entry.modified}")
         var data = try zip.readBytes(read entry, 1 << 20)
         print($"  {Crc32.of(read data):x8} {data[..] == body.asBytes()}")
     }
-    var entries = zip.entries()
-    var deflated = ref entries[2]
+    var deflated = zip.entries()[2].clone()
     print(deflated.name)
     // The limit: as many bytes as the entry is are read, one fewer is `TooLarge`.
     print(zip.readBytes(read deflated, (nint)deflated.size) is Ok(_))

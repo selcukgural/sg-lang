@@ -1,0 +1,5 @@
+// A list of fewer than 0 items is a panic (choice 1648).
+void main(List<string> args) {
+    nint count = (nint)args.length() * 0 - 3
+    print(List<int>.repeat(1, count))
+}

@@ -1,0 +1,4 @@
+panic: the capacity of a list cannot be negative: -1
+  --> panic_list_capacity_negative.sg:4:14
+ 4 |     var xs = List<int>.withCapacity(count)
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

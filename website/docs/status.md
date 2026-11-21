@@ -44,7 +44,9 @@ the first; the
 Each module of the library is measured the same way, against the crates Rust's people use and Zig's own
 library, and a new module comes in with its measurement. JSON was the first: with its values made a third of
 their size, SG reads, walks and writes 100 MB of it faster than `serde_json` and Zig's `std.json`, in less
-memory.
+memory. Compression and zip came next: SG opens gzip faster than `flate2`'s default and Zig, compresses in
+their time with zlib's bytes, reads zip archives faster than the `zip` crate and Zig, and lists 100,000
+entries in less memory than the `zip` crate; `flate2` with `zlib-rs` compresses faster by another algorithm.
 
 ## Not yet
 

@@ -81,7 +81,8 @@ public struct ZipEntry : Formattable {
     public readonly bool isDirectory
     // How it is compressed: 0 stored, 8 deflated, another number for a method that is not read.
     public readonly int method
-    // The name's bytes, as the central directory has them.
+    // The name's bytes, as the central directory has them, when they are not the name's own: a
+    // name of code page 437 made into text. Empty when the name is the UTF-8 it was written in.
     List<byte> written
     // Where the entry's header begins, and where the next entry or the central directory does.
     long offset
@@ -93,7 +94,8 @@ public struct ZipEntry : Formattable {
         f.write($"{this.name} ({this.size} bytes)")
     }
 
-    ZipEntry copy(read this) {
+    // A copy of the entry, to keep while the reader reads (1650).
+    public ZipEntry clone(read this) {
         var written = List<byte>()
         written.addAll(read this.written)
         return ZipEntry {
@@ -136,14 +138,9 @@ public struct ZipReader {
         return Ok(reader)
     }
 
-    // The entries, in the order of the central directory: a list of their own, so the reader may
-    // read while the program goes over them.
-    public List<ZipEntry> entries(read this) {
-        var entries = List<ZipEntry>()
-        for entry in read this.list {
-            entries.add(entry.copy())
-        }
-        return entries
+    // The entries, in the order of the central directory, where the reader keeps them (1650).
+    public read List<ZipEntry> entries(read this) from this {
+        return read this.list
     }
 
     // The bytes of `entry`; `TooLarge` when it opens into more than `limit` bytes.
@@ -285,12 +282,15 @@ public struct ZipReader {
         }
         nint nameLength = (nint)ushort.fromLittleEndian(header[26..28])
         nint extraLength = (nint)ushort.fromLittleEndian(header[28..30])
-        var name = List<byte>()
-        for _ in 0..nameLength {
-            name.add(0)
-        }
+        var name = List<byte>.repeat(0, nameLength)
         try this.fill(ref name)
-        if name != entry.written {
+        bool same = false
+        if entry.written.length() > 0 {
+            same = name == entry.written
+        } else {
+            same = name[..] == entry.name.asBytes()
+        }
+        if !same {
             return Error(ZipError.NameMismatch(entry.name.clone()))
         }
         long start = entry.offset + 30 + (long)nameLength + (long)extraLength
@@ -355,10 +355,7 @@ public struct ZipReader {
         // The end record is 22 bytes and a comment of at most 65,535; the last one whose comment
         // fits is taken, as Go takes it.
         long tail = size.min(65557)
-        var block = List<byte>()
-        for _ in 0..tail {
-            block.add(0)
-        }
+        var block = List<byte>.repeat(0, (nint)tail)
         try this.seekTo(size - tail)
         try this.fill(ref block)
         long found = -1
@@ -434,29 +431,47 @@ public struct ZipReader {
             return Error(ZipError.Corrupt(endAt))
         }
         long directoryAt = base + (long)directoryOffset
-        var directory = List<byte>()
-        for _ in 0..(long)directorySize {
-            directory.add(0)
-        }
         try this.seekTo(directoryAt)
-        try this.fill(ref directory)
-        var names = HashSet<string>()
-        var starts = List<long>()
-        nint p = 0
-        while p < directory.length() {
-            long position = directoryAt + (long)p
-            if directory.length() - p < 46 || uint.fromLittleEndian(directory[p..p + 4]) != 0x0201_4B50 {
+        // The directory is read 64 KB at a time, not all at once, and the lists take the room of
+        // the entries it counts before they are added: the number is at most one for 46 bytes of
+        // the directory, as checked above (1652).
+        var w = DirectoryWindow {
+            held = List<byte>.repeat(0, (nint)directorySize.min(65536)),
+            at = 0,
+            end = 0,
+            before = 0,
+            size = (long)directorySize
+        }
+        this.list = List<ZipEntry>.withCapacity((nint)records)
+        var starts = List<long>.withCapacity((nint)records + 1)
+        // Two names of one key are found by the hash of the key: the first entry of each hash is
+        // kept, and a name whose hash is there is compared with that entry's by their keys. A
+        // name of another key with the same hash, which is all but never seen, goes to `others`.
+        var keys = HashMap<ulong, nint>()
+        var others = HashSet<string>()
+        while w.before + (long)w.at < w.size {
+            long position = directoryAt + w.before + (long)w.at
+            if !try directoryHolds(ref this, ref w, 46) {
                 return Error(ZipError.Corrupt(position))
             }
-            var entry = try entryAt(read directory, p, position, base)
-            p += 46 + (nint)ushort.fromLittleEndian(directory[p + 28..p + 30]) + (nint)ushort.fromLittleEndian(directory[p + 30..p + 32]) + (nint)ushort.fromLittleEndian(directory[p + 32..p + 34])
-            if p > directory.length() {
+            nint p = w.at
+            if uint.fromLittleEndian(w.held[p..p + 4]) != 0x0201_4B50 {
                 return Error(ZipError.Corrupt(position))
             }
+            nint length = 46 + (nint)ushort.fromLittleEndian(w.held[p + 28..p + 30]) + (nint)ushort.fromLittleEndian(w.held[p + 30..p + 32]) + (nint)ushort.fromLittleEndian(w.held[p + 32..p + 34])
+            if !try directoryHolds(ref this, ref w, length) {
+                return Error(ZipError.Corrupt(position))
+            }
+            var entry = try entryAt(read w.held, w.at, position, base)
+            w.at += length
             if insecure(read entry.name) {
                 return Error(ZipError.InsecurePath(entry.name.clone()))
             }
-            if !names.add(nameKey(read entry.name)) {
+            ulong hash = keyHash(read entry.name)
+            nint? first = keys.get(hash)
+            if first is null {
+                keys.add(hash, this.list.length())
+            } else if nameKey(read entry.name) == nameKey(read this.list[first].name) || !others.add(nameKey(read entry.name)) {
                 return Error(ZipError.DuplicateName(entry.name.clone()))
             }
             if entry.offset < 0 || entry.offset > directoryAt - 30 {
@@ -479,7 +494,7 @@ public struct ZipReader {
             nint place = starts.lowerBound(entry.offset)
             long next = starts[place + 1]
             // Each part taken from the room that is left, so that no sum can overflow.
-            long room = next - entry.offset - 30 - (long)entry.written.length()
+            long room = next - entry.offset - 30 - (long)nameSize(read entry)
             if next == entry.offset || room < 0 || entry.compressedSize > room {
                 return Error(ZipError.Overlap(entry.name.clone()))
             }
@@ -487,6 +502,65 @@ public struct ZipReader {
         }
         return Ok()
     }
+}
+
+// The central directory, read a block at a time: `held[at..end]` are its bytes from `before + at`
+// on, of the `size` it has.
+struct DirectoryWindow {
+    List<byte> held
+    nint at
+    nint end
+    long before
+    long size
+}
+
+// Whether the directory has `count` bytes from `w.at` on; they are then in `w.held`. What is left
+// of the block is moved to its front and the rest read after it; a record longer than the block
+// makes it as long.
+Result<bool, ZipError> directoryHolds(ref ZipReader reader, ref DirectoryWindow w, nint count) {
+    if w.before + (long)w.at + (long)count > w.size {
+        return Ok(false)
+    }
+    if w.at + count <= w.end {
+        return Ok(true)
+    }
+    nint left = w.end - w.at
+    w.held[0..left].copyFrom(w.held[w.at..w.end])
+    w.before += (long)w.at
+    w.at = 0
+    w.end = left
+    if count > w.held.length() {
+        var longer = List<byte>.repeat(0, count)
+        longer[0..left].copyFrom(w.held[0..left])
+        w.held = longer
+    }
+    nint more = (nint)((long)(w.held.length() - left)).min(w.size - w.before - (long)left)
+    try reader.fill(ref w.held[left..left + more])
+    w.end = left + more
+    return Ok(true)
+}
+
+// The hash of a name's key (FNV-1a over the key's bytes, 64 bits): two names of one key have one
+// hash. A name of ASCII alone is hashed as its key, its letters in lower case, without the key
+// being made.
+ulong keyHash(read string name) {
+    var path = withoutSlash(name)
+    ulong hash = 0xCBF2_9CE4_8422_2325
+    for b in path.asBytes() {
+        if b >= 128 {
+            hash = 0xCBF2_9CE4_8422_2325
+            for c in nameKey(name).asBytes() {
+                hash = (hash ^ (ulong)c).wrappingMultiply(0x0000_0100_0000_01B3)
+            }
+            return hash
+        }
+        byte c = b
+        if c >= 65 && c <= 90 {
+            c += 32
+        }
+        hash = (hash ^ (ulong)c).wrappingMultiply(0x0000_0100_0000_01B3)
+    }
+    return hash
 }
 
 // The entry whose record begins at `p` of the central directory, at `position` in the archive.
@@ -506,9 +580,17 @@ Result<ZipEntry, ZipError> entryAt(read List<byte> d, nint p, long position, lon
     if nameAt + nameLength + extraLength + commentLength > d.length() {
         return Error(ZipError.Corrupt(position))
     }
+    // The name as text, made from the directory at once; its bytes are kept apart only when they
+    // are not UTF-8 and the name is made from code page 437.
     var written = List<byte>()
-    written.addAll(d[nameAt..nameAt + nameLength])
-    var name = nameOf(read written)
+    string name = ""
+    match string.fromUtf8(d[nameAt..nameAt + nameLength]) {
+        Ok(text) => name = text.clone()
+        Error(_) => {
+            written.addAll(d[nameAt..nameAt + nameLength])
+            name = nameOf(read written)
+        }
+    }
     // The extra fields: zip64's sizes and offset where the record holds 0xFFFFFFFF, and the time
     // of the change in UTC, from the fields that hold one (1505, 1514).
     long seconds = -1
@@ -659,10 +741,7 @@ const nint ZipHandOver = 1 << 20
 // The inflater of a reader, with room for 64 KB of compressed data at a time.
 Inflater inflaterOf() {
     var inflater = inflaterNew(DeflateRaw, 0)
-    for _ in 0..16 {
-        inflater.input.addAll(read DeflateZeroBytes)
-    }
-    inflater.input.addAll(DeflateZeroBytes[..InflateAhead])
+    inflater.input = List<byte>.repeat(0, 65536 + InflateAhead)
     return inflater
 }
 
@@ -704,11 +783,16 @@ Result<void, ZipError> written(Result<void, IoError> result) {
 
 // The name, from its bytes: UTF-8 when they are, else code page 437, the format's first encoding
 // (1514).
-string nameOf(read List<byte> bytes) {
-    match string.fromUtf8(read bytes) {
-        Ok(text) => return text.clone()
-        Error(_) => {}
+// How many bytes the entry's name takes in the archive.
+nint nameSize(read ZipEntry entry) {
+    if entry.written.length() > 0 {
+        return entry.written.length()
     }
+    return entry.name.length()
+}
+
+// A name that is not UTF-8, read as code page 437.
+string nameOf(read List<byte> bytes) {
     var text = string.withCapacity(bytes.length() * 2)
     for b in read bytes {
         if b < 128 {
@@ -782,7 +866,24 @@ bool insecure(read string name) {
 // folds it. macOS and Windows take `README.TXT` and `Readme.txt` for one file, and macOS takes
 // `é` written as one character and as `e` and an accent for one too.
 string nameKey(read string name) {
-    var decomposed = withoutSlash(name).normalize(NormalizationForm.D)
+    // A name of ASCII alone, as most are: NFD leaves it as it is, and folding it puts its letters
+    // in lower case, so that is its key, made at once.
+    var path = withoutSlash(name)
+    bool ascii = true
+    for b in path.asBytes() {
+        if b >= 128 {
+            ascii = false
+            break
+        }
+    }
+    if ascii {
+        var key = string.withCapacity(path.length())
+        for c in path.chars() {
+            key.write(c.toAsciiLower())
+        }
+        return key
+    }
+    var decomposed = path.normalize(NormalizationForm.D)
     var key = string.withCapacity(decomposed.length())
     for c in decomposed.chars() {
         key.write(System.charFold(c))
@@ -815,7 +916,7 @@ public struct ZipWriter : Closable {
 
     // A writer of an archive into `target`, which the archive begins at.
     public ZipWriter create(StreamWriter target) {
-        return ZipWriter { target = target, at = 0, records = List<ZipRecord>(), names = HashSet<string>(), deflater = deflateNew(DeflateRaw, 6) }
+        return ZipWriter { target = target, at = 0, records = List<ZipRecord>(), names = HashSet<string>(), deflater = deflateNew(DeflateRaw, 6, nint.MaxValue) }
     }
 
     // An entry `name` that holds `data`, changed last at `modified`.

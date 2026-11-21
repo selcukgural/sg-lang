@@ -1,0 +1,5 @@
+// `repeat` is a function of the type, not a method of a list (choice 1648).
+void main() {
+    var xs = List<int>()
+    xs.repeat(0, 3)
+}

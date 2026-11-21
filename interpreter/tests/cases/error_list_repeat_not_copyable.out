@@ -1,0 +1,5 @@
+error: `string` is not `Copyable`, so one item cannot be put in every place
+  --> error_list_repeat_not_copyable.sg:3:30
+ 3 |     var names = List<string>.repeat("ada", 3)
+   |                              ^^^^^^
+  hint: add the items one by one to a `List<string>()`

@@ -1,0 +1,26 @@
+// `List<T>.withCapacity(n)`: an empty list with room for `n` items taken at once, so adding that
+// many never moves it (choice 1652). Any item type: owned ones are freed as in any list.
+void main() {
+    var names = List<string>.withCapacity(3)
+    print(names.length())
+    for i in 0..5 {
+        names.add($"name {i}".toString())
+    }
+    print(names)
+    var none = List<int>.withCapacity(0)
+    none.add(7)
+    print(none)
+    nint n = 1000
+    var numbers = List<long>.withCapacity(n)
+    for i in 0..n {
+        numbers.add((long)i)
+    }
+    long sum = 0
+    for v in read numbers {
+        sum += v
+    }
+    print($"{numbers.length()} {sum}")
+    var nested = List<List<int>>.withCapacity(2)
+    nested.add(List<int> { 1, 2 })
+    print(nested)
+}

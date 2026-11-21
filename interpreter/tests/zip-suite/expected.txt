@@ -98,8 +98,12 @@ made/directory-past-end.zip
   corrupt zip archive at byte 89
 made/duplicate-case.zip
   two entries are named "README.TXT"
+made/duplicate-fold.zip
+  two entries are named "çay/şeker.TXT"
 made/duplicate-folder.zip
   two entries are named "a/"
+made/duplicate-normal.zip
+  two entries are named "café.txt"
 made/duplicate.zip
   two entries are named "same.txt"
 made/encrypted.zip
@@ -156,6 +160,15 @@ made/method.zip
   bzip2.bin: file, 4 bytes, 4 in the archive, method 12, 1980-01-01T00:00:00Z: the entry is compressed by method 12, which is not read (0 stored, 8 deflated)
 made/name-mismatch.zip
   good.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z: the header of "good.txt" names another entry
+made/names-unicode.zip
+  çay.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  cay.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  ÇAYI.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  日本.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  Größe.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  grosse.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  ﬁle.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
+  file.txt: file, 11 bytes, 11 in the archive, method 0, 1980-01-01T00:00:00Z, CRC cb72381b
 made/overlap-fifield.zip
   the data of "0000" lies over another entry's
 made/overlap-same.zip

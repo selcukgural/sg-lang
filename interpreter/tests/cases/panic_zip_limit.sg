@@ -7,8 +7,8 @@ Result<void, ZipError> main(List<string> args) {
     try writer.add("one.txt", "one".asBytes(), ZipMethod.Deflated, DateTime.fromUnixSeconds(0))
     try writer.close()
     var zip = try ZipReader.open(read path)
-    var entries = zip.entries()
-    print(zip.readBytes(read entries[0], 3) is Ok(_))
-    print(zip.readBytes(read entries[0], limit) is Ok(_))
+    var entry = zip.entries()[0].clone()
+    print(zip.readBytes(read entry, 3) is Ok(_))
+    print(zip.readBytes(read entry, limit) is Ok(_))
     return Ok()
 }

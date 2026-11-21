@@ -1,0 +1,5 @@
+// Room is taken when a list is made, with `withCapacity` (choice 1652).
+void main() {
+    var xs = List<int>()
+    xs.reserve(10)
+}

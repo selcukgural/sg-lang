@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-ninth slice (`JsonObject.values()`, 1640).
+Last brought up to date: 21 November 2026, the hundred-and-fiftieth slice (`List<T>.repeat`, `List<T>.withCapacity`, `ZipReader.entries()`, 1648, 1650, 1652).
 
 ## Functions and variables
 
@@ -138,6 +138,8 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-ninth slice (`J
 |---|---|---|---|
 | `Vec<T>` | `List<T>` | built | |
 | `Vec::new()`, `vec![1, 2]` | `List<int>()`, `List<int> { 1, 2 }` | built | |
+| `vec![0u8; n]`, `vec![x; n]` | `List<byte>.repeat(0, n)`, `List<T>.repeat(x, n)` | built | The item is `Copyable`; zeros come from `calloc`, as Rust's do |
+| `Vec::with_capacity(n)` | `List<T>.withCapacity(n)` | built | No `reserve` on a list made already |
 | `v.push(x)`, `v.pop()`, `v.len()` | `xs.add(x)`, `xs.removeLast()`, `xs.length()` | built | `removeLast` gives a `T?` |
 | `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?`; the panic of `xs[i]` names it, where Rust's names nothing |
 | `v.get(i).copied()` | `int? first = xs.get(i)` | built | A `read T?` is copied into a `T?` where one is written, when `T` is copyable; otherwise `xs.get(i)?.clone()` |
@@ -622,7 +624,7 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-ninth slice (`J
 | `GzBuilder::filename(...)`, `GzDecoder::header()` | none yet | | The header holds no name or time; a header read is not given |
 | `Compress::compress(..., FlushCompress::Sync)`, a preset dictionary | none yet | | |
 | `zip::ZipArchive::new(File::open(path)?)` | `ZipReader.open(read path)`, `ZipReader.of(reader)` | built | The directory is checked when it is opened: `InsecurePath` (the rule of `Path.joinInside`, part by part), `DuplicateName` (in any case), `Overlap` refuse the archive |
-| `for i in 0..archive.len() { archive.by_index(i)? }`, `file.name()`, `file.size()` | `for entry in zip.entries()`, `entry.name`, `entry.size` | built | `compressedSize`, `modified` (a `DateTime` in UTC), `isDirectory`, `method` too; the list is the program's own |
+| `for i in 0..archive.len() { archive.by_index(i)? }`, `file.name()`, `file.size()` | `for entry in zip.entries()`, `entry.name`, `entry.size` | built | `compressedSize`, `modified` (a `DateTime` in UTC), `isDirectory`, `method` too; `entries()` lends the reader's list, so an entry read while going over it is copied first: `var entry = zip.entries()[i].clone()` |
 | `io::copy(&mut archive.by_index(i)?, &mut out)` | `zip.copyTo(read entry, ref writer, limit)` | built | Always a limit (`TooLarge`); an entry that opens into another size than its own is `SizeMismatch` |
 | `file.read_to_end(&mut bytes)` | `zip.readBytes(read entry, limit)` | built | |
 | `file.enclosed_name()` | the names themselves | built | No name of an open archive can lead out of a folder: `..`, a root, `\\`, `:`, NUL and the device names of Windows are refused, on every system |

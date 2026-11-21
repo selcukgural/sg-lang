@@ -1,0 +1,75 @@
+// `zip`: `std`'s zip archives measured (choices 1553, 1629-1637, 1643). Three ways of using them:
+//
+//     zip write FILE OUT    FILE cut into parts of 10,000 bytes, `logs/part-00000.txt` and on,
+//                           each deflated at level 6 into the archive OUT
+//     zip read ARCHIVE      every entry of ARCHIVE opened into memory, its CRC-32 checked
+//     zip list ARCHIVE      the name and the size of every entry, as the archive lists them
+//
+// What `write` and `read` print: how many entries and their bytes. An archive that cannot be read
+// is told on the standard error, with exit code 1; a wrong use, with 2.
+
+Result<void, ZipError> write(read string path, read string out) {
+    var data = try File.readBytes(read path)
+    var when = DateTime.utc(2026, 11, 20, 13, 45, 30) ?? panic("a time of 2026")
+    var zip = ZipWriter.create(try File.createText(read out))
+    nint entries = 0
+    nint at = 0
+    while at < data.length() {
+        nint end = (at + 10000).min(data.length())
+        try zip.add(read $"logs/part-{entries:d5}.txt".toString(), data[at..end], ZipMethod.Deflated, when)
+        entries += 1
+        at = end
+    }
+    try zip.close()
+    print($"entries {entries}")
+    print($"bytes {data.length()}")
+    return Ok()
+}
+
+Result<void, ZipError> readAll(read string path) {
+    var zip = try ZipReader.open(read path)
+    long entries = 0
+    long bytes = 0
+    // The reader keeps the entries and changes as it reads, so each is copied out first (1650).
+    for i in 0..zip.entries().length() {
+        var entry = zip.entries()[i].clone()
+        var data = try zip.readBytes(read entry, (nint)entry.size)
+        entries += 1
+        bytes += (long)data.length()
+    }
+    print($"entries {entries}")
+    print($"bytes {bytes}")
+    return Ok()
+}
+
+Result<void, ZipError> list(read string path) {
+    var zip = try ZipReader.open(read path)
+    for entry in zip.entries() {
+        print($"{entry.name} {entry.size}")
+    }
+    return Ok()
+}
+
+void main(List<string> args) {
+    bool usage = args.length() == 3 && args[0] == "write" ||
+        args.length() == 2 && (args[0] == "read" || args[0] == "list")
+    if !usage {
+        printError("usage: zip write FILE OUT | read ARCHIVE | list ARCHIVE")
+        exit(2)
+    }
+    Result<void, ZipError> result = Ok()
+    if args[0] == "write" {
+        result = write(read args[1], read args[2])
+    } else if args[0] == "read" {
+        result = readAll(read args[1])
+    } else {
+        result = list(read args[1])
+    }
+    match result {
+        Ok => {}
+        Error(cause) => {
+            printError($"zip: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

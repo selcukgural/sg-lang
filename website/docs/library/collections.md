@@ -78,6 +78,8 @@ For the same reason a collection that a `for` goes over by borrowing cannot be c
 | Signature | What it does |
 |---|---|
 | `List<T>()`, `List<T> { a, b }` | An empty list, or one with these items |
+| `List<T> List<T>.repeat(T item, nint count)` | `count` copies of a `Copyable` item, in one block: `List<byte>.repeat(0, 65536)` is a buffer of a size known when the program runs. Zeros come from fresh zeroed memory, nothing written; fewer than 0 items is a panic |
+| `List<T> List<T>.withCapacity(nint count)` | An empty list with room for `count` items, taken at once, so that adding that many never moves it; fewer than 0 is a panic |
 | `void add(ref this, T item)` | Adds the item at the end |
 | `void addAll(ref this, read T[] items)` | Copies the items to the end, when they are `Copyable` |
 | `nint length(read this)` | The number of items |
@@ -112,6 +114,11 @@ void main() {
     var bytes = List<byte>()
     bytes.addAll("hi".asBytes())
     print(bytes)
+    var buffer = List<byte>.repeat(0, 4)
+    buffer[1] = 9
+    var names = List<string>.withCapacity(2)
+    names.add("ada")
+    print($"{buffer} {names}")
 }
 ```
 
@@ -126,6 +133,7 @@ It prints:
 4 false 3
 0 2
 [104, 105]
+[0, 9, 0, 0] ["ada"]
 ```
 
 `addAll` on text is refused, since a `string` is not copied silently; the hint is `more.add(item.clone())`.

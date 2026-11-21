@@ -4362,8 +4362,12 @@ impl<'a, 'e> Interp<'a, 'e> {
                     true => owned(self.place(recv, frame)?.borrow().clone()),
                     false => owned(self.expr(recv, frame)?),
                 };
+                // A list's length and its part are read where it is: copying all of its cells to
+                // cut a few out would make each slice of a long list as slow as the list is long.
                 let length = match &holder {
                     Value::Str(text) => text.len() as i128,
+                    Value::List(items) => items.borrow().len() as i128,
+                    Value::Array(items) | Value::Slice(items) => items.len() as i128,
                     other => cells_of(other).len() as i128,
                 };
                 let from = match from {
@@ -4383,7 +4387,12 @@ impl<'a, 'e> Interp<'a, 'e> {
                     return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
                 }
                 let Value::Str(text) = holder else {
-                    return Ok(Value::Slice(Rc::new(cells_of(&holder)[from as usize..to as usize].to_vec())));
+                    let part = match &holder {
+                        Value::List(items) => items.borrow()[from as usize..to as usize].to_vec(),
+                        Value::Array(items) | Value::Slice(items) => items[from as usize..to as usize].to_vec(),
+                        other => cells_of(other)[from as usize..to as usize].to_vec(),
+                    };
+                    return Ok(Value::Slice(Rc::new(part)));
                 };
                 let (start, end) = (from as usize, to as usize);
                 if let Some(cut) = [start, end].into_iter().find(|at| !text.is_char_boundary(*at)) {
@@ -4748,6 +4757,32 @@ impl<'a, 'e> Interp<'a, 'e> {
                     };
                     let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
                     Ok(Value::Str(parts.join(&separator).into()))
+                }
+                // `count` copies of the item, each a value of its own (1648).
+                Callee::ListRepeat => {
+                    let value = self.expr(&args[0], frame)?;
+                    let count = self.int(&args[1], frame)?;
+                    let Ok(count) = usize::try_from(count) else {
+                        return Err(Diag::panic(expr.span, format!("a list cannot have {count} items")).into());
+                    };
+                    let mut cells = Vec::new();
+                    if cells.try_reserve_exact(count).is_err() {
+                        return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                    }
+                    cells.extend((0..count).map(|_| cell(fresh(&value))));
+                    Ok(Value::List(Rc::new(RefCell::new(cells))))
+                }
+                // An empty list with room for `count` items (1652).
+                Callee::ListWithCapacity => {
+                    let count = self.int(&args[0], frame)?;
+                    let Ok(count) = usize::try_from(count) else {
+                        return Err(Diag::panic(expr.span, format!("the capacity of a list cannot be negative: {count}")).into());
+                    };
+                    let mut cells: Vec<Cell> = Vec::new();
+                    if cells.try_reserve_exact(count).is_err() {
+                        return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                    }
+                    Ok(Value::List(Rc::new(RefCell::new(cells))))
                 }
                 Callee::WithCapacity => {
                     let room = self.int(&args[0], frame)?;

@@ -1,0 +1,4 @@
+panic: a list cannot have -3 items
+  --> panic_list_repeat_negative.sg:4:11
+ 4 |     print(List<int>.repeat(1, count))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^

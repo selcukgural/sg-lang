@@ -1,0 +1,5 @@
+// A list type has one function, `repeat` (choice 1648).
+void main() {
+    var xs = List<int>.filled(0, 3)
+    print(xs)
+}

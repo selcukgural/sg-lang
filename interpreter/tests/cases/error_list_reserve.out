@@ -1,0 +1,5 @@
+error: `List<int>` has no method `reserve`
+  --> error_list_reserve.sg:4:8
+ 4 |     xs.reserve(10)
+   |        ^^^^^^^
+  hint: room is taken when the list is made: `List<int>.withCapacity(n)`

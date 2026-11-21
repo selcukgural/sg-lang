@@ -1,0 +1,5 @@
+// One item put in every place is copied, so it must be `Copyable` (choice 1648).
+void main() {
+    var names = List<string>.repeat("ada", 3)
+    print(names)
+}

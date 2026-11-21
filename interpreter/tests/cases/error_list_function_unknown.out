@@ -1,0 +1,5 @@
+error: `List<int>` has no function `filled`
+  functions for now: repeat, withCapacity; an empty list is `List<T>()`
+  --> error_list_function_unknown.sg:3:24
+ 3 |     var xs = List<int>.filled(0, 3)
+   |                        ^^^^^^

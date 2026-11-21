@@ -1,0 +1,103 @@
+// `compression`: `std`'s compression measured (choices 1553, 1629-1637, 1642). Three ways of using
+// it, all at level 6, zlib's default:
+//
+//     compression compress FILE OUT  FILE in gzip into OUT, read and written a piece at a time
+//     compression decompress FILE    the gzip FILE opened on the standard output, a piece at a time
+//     compression records FILE       each line of FILE, without its `\n`, compressed in zlib and
+//                                    opened again in memory
+//
+// What `compress` prints: the bytes it read. What `records` prints: how many lines, their bytes,
+// and how many came back the same; the bytes they took compressed go to the standard error, as
+// the size of what `compress` writes is not compared: each compressor finds its own matches. A
+// file that cannot be read or opened is told on the standard error, with exit code 1; a wrong use,
+// with 2.
+
+Result<void, IoError> compress(read string path, read string out) {
+    var source = try File.openText(read path)
+    var writer = Gzip.writer(try File.createText(read out), 6)
+    var buffer = byte[65536]
+    long total = 0
+    while true {
+        nint count = try source.readSome(ref buffer)
+        if count == 0 {
+            break
+        }
+        try writer.writeBytes(buffer[..count])
+        total += (long)count
+    }
+    try writer.close()
+    print($"bytes {total}")
+    return Ok()
+}
+
+Result<void, CompressError> decompress(read string path) {
+    var reader = Gzip.reader(try File.openText(read path), long.MaxValue)
+    var buffer = byte[65536]
+    while true {
+        nint count = try reader.readSome(ref buffer)
+        if count == 0 {
+            break
+        }
+        try Stdout.writeBytes(buffer[..count])
+    }
+    return Ok()
+}
+
+Result<void, CompressError> records(read string path) {
+    var reader = try File.openText(read path)
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long same = 0
+    long compressed = 0
+    while try reader.readLine(ref line) {
+        var data = line.asBytes()
+        var packed = Zlib.compress(read data, 6)
+        var opened = try Zlib.decompress(packed[..], data.length())
+        lines += 1
+        bytes += (long)data.length()
+        compressed += (long)packed.length()
+        if opened[..] == data {
+            same += 1
+        }
+    }
+    print($"records {lines}")
+    print($"bytes {bytes}")
+    print($"same {same}")
+    printError($"compressed {compressed}")
+    return Ok()
+}
+
+void main(List<string> args) {
+    bool usage = args.length() == 3 && args[0] == "compress" ||
+        args.length() == 2 && (args[0] == "decompress" || args[0] == "records")
+    if !usage {
+        printError("usage: compression compress FILE OUT | decompress FILE | records FILE")
+        exit(2)
+    }
+    if args[0] == "compress" {
+        match compress(read args[1], read args[2]) {
+            Ok => {}
+            Error(cause) => {
+                printError($"compression: {args[1]}: {cause}")
+                exit(1)
+            }
+        }
+    } else if args[0] == "decompress" {
+        match decompress(read args[1]) {
+            Ok => {}
+            Error(cause) => {
+                printError($"compression: {args[1]}: {cause}")
+                exit(1)
+            }
+        }
+    } else {
+        match records(read args[1]) {
+            Ok => {}
+            Error(cause) => {
+                printError($"compression: {args[1]}: {cause}")
+                exit(1)
+            }
+        }
+    }
+}

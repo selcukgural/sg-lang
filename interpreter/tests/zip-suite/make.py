@@ -51,6 +51,12 @@ write("secure-names.zip", archive([stored(name, hello) for name in [b"a..b", b".
 # Two entries of one name, also in another case, and a file and a folder of one name (1491).
 write("duplicate.zip", archive([stored(b"same.txt", hello), stored(b"same.txt", b"other\n")]))
 write("duplicate-case.zip", archive([stored(b"Readme.txt", hello), stored(b"README.TXT", b"other\n")]))
+# Names that are not ASCII: one name written composed and decomposed, one in two cases, and names
+# that only look alike, which are all read (1615, 1652).
+utf8 = 0x800
+write("duplicate-normal.zip", archive([stored("café.txt".encode(), hello, utf8), stored("cafe\u0301.txt".encode(), b"other\n", utf8)]))
+write("duplicate-fold.zip", archive([stored("Çay/Şeker.txt".encode(), hello, utf8), stored("çay/şeker.TXT".encode(), b"other\n", utf8)]))
+write("names-unicode.zip", archive([stored(name.encode(), hello, utf8) for name in ["çay.txt", "cay.txt", "ÇAYI.txt", "日本.txt", "Größe.txt", "grosse.txt", "ﬁle.txt", "file.txt"]]))
 
 # The time of NTFS (tenths of a microsecond since 1601) in the extra field of the directory: one a
 # DateTime holds, one before 1677 (0: 1601) and one past 2^63; the last two leave the time of DOS.

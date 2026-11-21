@@ -397,18 +397,16 @@ Decompressor decompressorOf(int format, StreamReader source, long limit) {
         panic($"a limit of {limit} bytes: it is 0 or more")
     }
     var inflater = inflaterNew(format, limit)
-    for _ in 0..16 {
-        inflater.input.addAll(read DeflateZeroBytes)
-    }
+    inflater.input = List<byte>.repeat(0, 65536)
     return Decompressor { inflater = inflater, source = source, given = 0, ended = false }
 }
 
 Compressor compressorOf(int format, StreamWriter target, int level) {
-    return Compressor { state = deflateNew(format, level), target = target }
+    return Compressor { state = deflateNew(format, level, nint.MaxValue), target = target }
 }
 
 List<byte> deflateAll(int format, read byte[] data, int level) {
-    var state = deflateNew(format, level)
+    var state = deflateNew(format, level, data.length())
     deflateRun(ref state, data, true)
     return state.out.replace(List<byte>())
 }
@@ -433,9 +431,7 @@ Result<List<byte>, CompressError> inflateAll(int format, read byte[] data, nint 
         guess = (long)uint.fromLittleEndian(data[data.length() - 4..])
     }
     guess = guess.min((long)data.length() * 1032).min((long)limit) + 512
-    while (long)inflater.out.length() < guess {
-        inflater.out.addAll(read DeflateZeroBytes)
-    }
+    inflater.out = List<byte>.repeat(0, (nint)((guess + 4095) / 4096 * 4096))
     try inflater.run(stop)
     if (long)inflater.outLen > inflater.limit {
         return Error(CompressError.TooLarge)
@@ -577,33 +573,25 @@ struct DeflateState {
     long totalIn
 }
 
-List<ushort> zeroShorts(nint count) {
-    var zeros = ushort[1024]
-    var list = List<ushort>()
-    for _ in 0..count / 1024 {
-        list.addAll(read zeros)
-    }
-    return list
-}
-
-DeflateState deflateNew(int format, int level) {
+// The state of a compressor. `size` is how many bytes it will be given, when that is known
+// (`nint.MaxValue` when not): the window, the chains and the symbols of a block then take only the
+// room those bytes can reach, with the 258 bytes past them that a match is compared over, as
+// zlib's window is zero there. Every size the algorithm counts with stays zlib's, so the bytes it
+// gives do not change (1649). The heads of the chains are all kept: a hash may fall anywhere.
+DeflateState deflateNew(int format, int level, nint size) {
     if level < 0 || level > 9 {
         panic($"compression level {level}: a level is 0 (stored as it is) to 9 (smallest)")
     }
-    var window = List<byte>()
-    for _ in 0..DeflateWindowSize / 4096 {
-        window.addAll(read DeflateZeroBytes)
-    }
-    var symLc = List<byte>()
-    for _ in 0..4 {
-        symLc.addAll(read DeflateZeroBytes)
+    nint reach = DeflateWindowSize
+    if size < DeflateWindowSize - 512 {
+        reach = size + 512
     }
     var s = DeflateState {
         level = level,
         format = format,
-        window = window,
-        prev = zeroShorts(DeflateWSize),
-        head = zeroShorts(DeflateHashMask + 1),
+        window = List<byte>.repeat(0, reach),
+        prev = List<ushort>.repeat(0, reach.min(DeflateWSize)),
+        head = List<ushort>.repeat(0, DeflateHashMask + 1),
         strstart = 0,
         blockStart = 0,
         lookahead = 0,
@@ -618,8 +606,8 @@ DeflateState deflateNew(int format, int level) {
         maxLazy = DeflateLazy[level],
         niceMatch = DeflateNice[level],
         maxChain = DeflateChain[level],
-        symDist = zeroShorts(16384),
-        symLc = symLc,
+        symDist = List<ushort>.repeat(0, reach.min(16384)),
+        symLc = List<byte>.repeat(0, reach.min(16384)),
         symNext = 0,
         freq = int[673],
         code = int[673],
@@ -858,10 +846,25 @@ nint longestMatch(ref DeflateState s, nint curMatch) {
         nint candidate = current
         if s.window[candidate + bestLen] == scanEnd && s.window[candidate + bestLen - 1] == scanEnd1 &&
             s.window[candidate] == first && s.window[candidate + 1] == second {
-            // The third bytes are equal, as the hash of three bytes says.
+            // The third bytes are equal, as the hash of three bytes says. Eight bytes are compared
+            // at once while eight fit below 258; the first that differs is the lowest set bit of
+            // the two words told apart. The length is the one zlib finds byte by byte.
             nint length = 3
-            while length < 258 && s.window[scan + length] == s.window[candidate + length] {
-                length += 1
+            bool differs = false
+            while length + 8 <= 258 {
+                ulong apart = ulong.fromLittleEndian(s.window[scan + length..scan + length + 8]) ^
+                    ulong.fromLittleEndian(s.window[candidate + length..candidate + length + 8])
+                if apart != 0 {
+                    length += (nint)(apart.trailingZeros() >> 3)
+                    differs = true
+                    break
+                }
+                length += 8
+            }
+            if !differs {
+                while length < 258 && s.window[scan + length] == s.window[candidate + length] {
+                    length += 1
+                }
             }
             if length > bestLen {
                 s.matchStart = current
@@ -2265,12 +2268,13 @@ struct Inflater {
         bool ended = false
         bool starved = false
         while !ended && !starved && this.outLen < stop {
-            // Each symbol gives at most 258 bytes.
+            // Each symbol gives at most 258 bytes, and a match copied eight bytes at a time writes
+            // up to 7 past its end.
             if this.out.length() - this.outLen < 1024 {
                 this.room(65536, stop)
             }
             nint size = this.outLen
-            nint limit = (this.out.length() - 258).min(stop)
+            nint limit = (this.out.length() - 266).min(stop)
             var o = ref this.out[..]
             var input = this.input[..]
             var lengths = this.lenTable[..]
@@ -2376,8 +2380,19 @@ struct Inflater {
                         return Error(CompressError.Corrupt(this.inBase + (long)pos - (long)(bits >> 3) - 1))
                     }
                     nint from = size - dist
-                    for k in 0..length {
-                        o[size + k] = o[from + k]
+                    if dist >= 8 {
+                        // Eight bytes at a time: those read lie before those written, so each
+                        // piece copies bytes already opened; the last may write past the match,
+                        // into room the next symbols write over (1647).
+                        nint k = 0
+                        while k < length {
+                            o[size + k..size + k + 8].copyFrom(o[from + k..from + k + 8])
+                            k += 8
+                        }
+                    } else {
+                        for k in 0..length {
+                            o[size + k] = o[from + k]
+                        }
                     }
                     size += length
                     continue
@@ -2441,14 +2456,6 @@ struct Inflater {
     }
 }
 
-List<uint> zeroWords(nint count) {
-    var zeros = uint[256]
-    var list = List<uint>()
-    for _ in 0..count / 256 {
-        list.addAll(read zeros)
-    }
-    return list
-}
 
 Inflater inflaterNew(int format, long limit) {
     return Inflater {
@@ -2469,9 +2476,9 @@ Inflater inflaterNew(int format, long limit) {
         mode = InflateHeader,
         last = false,
         storedLeft = 0,
-        lenTable = zeroWords(1024),
+        lenTable = List<uint>.repeat(0, 1024),
         lenBits = 0,
-        distTable = zeroWords(1024),
+        distTable = List<uint>.repeat(0, 1024),
         distBits = 0,
         fixedTables = false,
         lens = int[320],

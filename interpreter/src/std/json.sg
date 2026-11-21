@@ -940,9 +940,12 @@ void writeJsonNumber(ref string target, double value) {
     }
     nint start = target.length()
     target.write(value)
-    var bytes = target.asBytes()
-    for i in start..bytes.length() {
-        if bytes[i] == '.' || bytes[i] == 'e' {
+    // Only the bytes just written are looked at: the interpreter makes a cell of each byte it is
+    // given, and the whole text, given for every number, made writing a document take the square
+    // of its length there.
+    var bytes = target[start..].asBytes()
+    for b in bytes {
+        if b == '.' || b == 'e' {
             return
         }
     }

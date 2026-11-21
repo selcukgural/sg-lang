@@ -1,0 +1,36 @@
+// Bytes that do not compress, for the trial of `std`'s compression (choices 1633, 1642): made from a
+// seed by SplitMix64, so the same seed gives the same bytes on every machine and nothing large is
+// kept in the repository.
+//
+//     sg build trials/inputs/bytes.sg --release -o target/bytes-input
+//     target/bytes-input 100 1 > target/random-100.bin      100 MB (100,000,000 bytes), seed 1
+
+Result<void, IoError> main(List<string> args) {
+    if args.length() != 2 {
+        printError("usage: bytes MEGABYTES SEED")
+        exit(2)
+    }
+    long megabytes = long.parse(read args[0]) ?? panic("the megabytes are a whole number")
+    ulong state = ulong.parse(read args[1]) ?? panic("the seed is a whole number")
+    var block = byte[65536]
+    long left = megabytes * 1000000
+    while left > 0 {
+        nint count = (nint)left.min(65536)
+        for i in 0..count / 8 + 1 {
+            state += 0x9E3779B97F4A7C15
+            ulong z = state
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+            z = z ^ (z >> 31)
+            for j in 0..8 {
+                nint at = i * 8 + j
+                if at < count {
+                    block[at] = (byte)(z >> (j * 8))
+                }
+            }
+        }
+        try Stdout.writeBytes(block[..count])
+        left -= (long)count
+    }
+    return Ok()
+}

@@ -6,18 +6,24 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py               every trial: checked, then measured
     python3 trials/measure.py grep          only this one
     python3 trials/measure.py std/json      only the module of `std`
+    python3 trials/measure.py std/compression std/zip
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
 For each case the standard output and the exit code of the three must be the same, byte for byte;
-the standard error is not compared, since each language words its errors its own way. Measured:
+the standard error is not compared, since each language words its errors its own way. Where the
+programs write what they may each write their own way (compressed data, an archive), the case
+names a check that opens what each wrote into `{out}` with Python's `gzip` or `zipfile` and
+holds it to the input, and the size each wrote is shown under the table (1634, 1642, 1643).
+Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
 only a comment. SG is built with `sg build --release`, and once more with its arithmetic checked:
 the C of `sg emit-c` compiled with `-O2` as `--release` compiles it (`sg build` alone compiles with
 `-O0`, for a debugger); Rust with `cargo build --release`; Zig twice, `ReleaseFast` and `ReleaseSafe`
 (which keeps its checks of bounds and overflow), with `zig build` where the trial has a `build.zig` (a
-library of C to link) and `zig build-exe` where it has not. Everything built and every input goes to
+library of C to link) and `zig build-exe` where it has not. A trial may build Rust once more with a
+feature people turn on (`flate2` with `zlib-rs`, 1632). Everything built and every input goes to
 `trials/target`. The measurements follow the rules of fairness in `trials/README.md` (1554): every case
 is reported, also those SG loses.
 """
@@ -27,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -60,6 +67,62 @@ JSON_INPUTS = {
     "small-numbers": ("numbers", 2, "numbers-2.json"),
 }
 JSON_SEED = 1
+
+
+# The other inputs, each made the first time a case names it: placeholder -> file name. The
+# compressed ones are made by Python's `gzip` and `zipfile` (zlib at level 6), which none of the
+# programs measured is.
+OTHER_INPUTS = {
+    "random": "random-100.bin",
+    "text-gz": "text-100.log.gz",
+    "small-gz": "text-2.log.gz",
+    "records-lines": "lines-37.ndjson",
+    "parts": "parts-100.zip",
+    "small-parts": "parts-2.zip",
+    "many": "many-100000.zip",
+    "small-many": "many-1000.zip",
+}
+DOS_TIME = (2026, 11, 20, 13, 45, 30)
+
+
+def zip_of_parts(text):
+    """The archive `std/zip` writes: the text in parts of 10,000 bytes."""
+    return [(f"logs/part-{n:05d}.txt", text[at:at + 10000]) for n, at in enumerate(range(0, len(text), 10000))]
+
+
+def write_zip(path, entries):
+    import zipfile
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, DOS_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, data, compresslevel=6)
+
+
+def other_input(placeholder):
+    import gzip
+    path = OUT / OTHER_INPUTS[placeholder]
+    if path.exists():
+        return path
+    if placeholder == "random":
+        maker = OUT / "bytes-input"
+        run([SG, "build", TRIALS / "inputs" / "bytes.sg", "--release", "-o", maker])
+        with open(path, "wb") as f:
+            subprocess.run([maker, "100", "1"], stdout=f, check=True)
+    elif placeholder in ("text-gz", "small-gz"):
+        source = text_input() if placeholder == "text-gz" else small_input()
+        path.write_bytes(gzip.compress(source.read_bytes(), compresslevel=6, mtime=0))
+    elif placeholder == "records-lines":
+        json_input("lines")
+        with open(path, "wb") as f:
+            subprocess.run([OUT / "json-input", "lines", "37", str(JSON_SEED)], stdout=f, check=True)
+    elif placeholder in ("parts", "small-parts"):
+        source = text_input() if placeholder == "parts" else small_input()
+        write_zip(path, zip_of_parts(source.read_bytes()))
+    else:
+        count = 100000 if placeholder == "many" else 1000
+        write_zip(path, [(f"dir-{i // 1000:03d}/file-{i:06d}.txt", f"entry {i}\n".encode()) for i in range(count)])
+    return path
 
 
 def json_input(placeholder):
@@ -126,6 +189,43 @@ TRIALS_CASES = {
             ("coordinates, read and summed", ["sum", "{numbers}"], None),
         ],
     },
+    "std/compression": {
+        "check": [
+            ("a small text, compressed", ["compress", "{small}", "{out}"], None, "gzip"),
+            ("an empty file, compressed", ["compress", "{empty}", "{out}"], None, "gzip"),
+            ("a small text, opened", ["decompress", "{small-gz}"], None),
+            ("records of a small file", ["records", "{small-lines}"], None, "stderr"),
+            ("not gzip", ["decompress", "{readme}"], None),
+            ("a missing file", ["compress", "missing.txt", "{out}"], None),
+            ("a wrong use", ["compress", "{small}"], None),
+        ],
+        "measure": [
+            ("100 MB of a log, compressed", ["compress", "{text}", "{out}"], None, "gzip"),
+            ("100 MB of a log, opened", ["decompress", "{text-gz}"], None),
+            ("99,640 records, each compressed and opened", ["records", "{records-lines}"], None, "stderr"),
+            ("100 MB that do not compress, compressed", ["compress", "{random}", "{out}"], None, "gzip"),
+        ],
+    },
+    "std/zip": {
+        "check": [
+            ("a small archive, written", ["write", "{small}", "{out}"], None, "zip"),
+            ("a small archive, read", ["read", "{small-parts}"], None),
+            ("1,000 entries, listed", ["list", "{small-many}"], None),
+            ("not an archive", ["read", "{readme}"], None),
+            ("a missing archive", ["list", "missing.zip"], None),
+            ("a wrong use", ["read"], None),
+        ],
+        "measure": [
+            ("100 MB in 10,001 entries, written", ["write", "{text}", "{out}"], None, "zip"),
+            ("10,001 entries, read", ["read", "{parts}"], None),
+            ("100,000 entries, listed", ["list", "{many}"], None),
+        ],
+    },
+}
+
+# Rust built once more with a feature: trial -> (name of the build, arguments of `cargo build`).
+RUST_FEATURES = {
+    "std/compression": [("Rust zlib-rs", ["--features", "zlib-rs"])],
 }
 
 
@@ -166,6 +266,7 @@ def build(trial):
     out = OUT / trial
     out.mkdir(parents=True, exist_ok=True)
     # `std/json` is built as `json`.
+    full = trial
     trial = Path(trial).name
     sg_source = folder / "sg" / f"{trial}.sg"
     built = {}
@@ -180,6 +281,12 @@ def build(trial):
     run(["cargo", "build", "--release", "--quiet", "--target-dir", out / "cargo"], cwd=folder / "rust")
     built["Rust"] = out / f"{trial}-rust"
     fresh_copy(out / "cargo" / "release" / trial, built["Rust"])
+    for name, features in RUST_FEATURES.get(full, []):
+        tag = name.lower().replace(" ", "-")
+        target = out / f"cargo-{tag}"
+        run(["cargo", "build", "--release", "--quiet", *features, "--target-dir", target], cwd=folder / "rust")
+        built[name] = out / f"{trial}-{tag}"
+        fresh_copy(target / "release" / trial, built[name])
     zig = folder / "zig"
     for mode, name in (("ReleaseFast", "Zig"), ("ReleaseSafe", "Zig safe")):
         built[name] = out / f"{trial}-zig-{mode}"
@@ -199,36 +306,88 @@ def expand(words, trial):
         "small": str(small_input()),
         "empty": str(OUT / "empty.txt"),
         "readme": str(ROOT / "README.md"),
+        "out": str(OUT / trial / "out"),
     }
     words = [w.format(**values) if "{" in w and "}" in w and w.strip("{}") in values else w for w in words]
-    return [str(json_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in JSON_INPUTS else w
+    words = [str(json_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in JSON_INPUTS else w
+             for w in words]
+    return [str(other_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in OTHER_INPUTS else w
             for w in words]
 
 
-def run_once(program, args, stdin_path, capture):
-    """Runs a program once: (exit code, standard output or None, seconds, peak memory in bytes)."""
+def run_once(program, args, stdin_path, capture, errors=None):
+    """Runs a program once: (exit code, standard output or None, seconds, peak memory in bytes).
+    With `errors`, a list, the standard error is added to it."""
     stdin = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
     stdout = subprocess.PIPE if capture else subprocess.DEVNULL
+    # A file, not a pipe, so that a program writing much to both cannot wait on the other.
+    stderr = tempfile.TemporaryFile() if errors is not None else subprocess.DEVNULL
     start = time.perf_counter()
-    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr)
     output = process.stdout.read() if capture else None
     _, status, usage = os.wait4(process.pid, 0)
     seconds = time.perf_counter() - start
     process.returncode = os.waitstatus_to_exitcode(status)
     if stdin_path:
         stdin.close()
+    if errors is not None:
+        stderr.seek(0)
+        errors.append(stderr.read())
+        stderr.close()
     # macOS gives bytes, Linux kilobytes.
     peak = usage.ru_maxrss if MACOS else usage.ru_maxrss * 1024
     return process.returncode, output, seconds, peak
 
 
-def check(trial, built, cases):
-    """Every build must give the output and the exit code of the first."""
+def verify(kind, args, error):
+    """What a build wrote that the others may write another way, checked: (what it says, the
+    note shown under the table). `gzip`: `{out}` opens to the file compressed; `zip`: `{out}` is an
+    archive whose every entry is the part of the file it should be, its CRC-32 right; `stderr`:
+    the last word of the standard error, the bytes the program counted compressed."""
+    import gzip
+    import zipfile
+    if kind == "stderr":
+        words = error.split()
+        return b"", words[-1].decode() if words else "?"
+    out = Path(args[-1])
+    if not out.exists():
+        return b"nothing written", "-"
+    size = out.stat().st_size
+    source = Path(args[1]).read_bytes()
+    if kind == "gzip":
+        try:
+            same = gzip.decompress(out.read_bytes()) == source
+        except (OSError, EOFError) as e:
+            same = f"not gzip: {e}"
+    else:
+        try:
+            with zipfile.ZipFile(out) as z:
+                same = z.testzip() is None and [(i.filename, z.read(i)) for i in z.infolist()] == zip_of_parts(source)
+        except zipfile.BadZipFile as e:
+            same = f"not an archive: {e}"
+    out.unlink()
+    return f"what it wrote opens to its input: {same}".encode(), f"{size:,} bytes"
+
+
+def check(trial, built, cases, notes):
+    """Every build must give the output and the exit code of the first. What a case's check
+    notes of each build goes into `notes`: case -> build -> note."""
     ok = True
-    for name, words, stdin in cases:
+    for name, words, stdin, *kind in cases:
         args = expand(words, trial)
         stdin_path = expand([stdin], trial)[0] if stdin else None
-        results = {build: run_once(path, args, stdin_path, True)[:2] for build, path in built.items()}
+        results = {}
+        for build, path in built.items():
+            errors = []
+            code, output = run_once(path, args, stdin_path, True, errors)[:2]
+            if kind:
+                said, note = verify(kind[0], args, errors[0])
+                if kind[0] != "stderr" and said != b"what it wrote opens to its input: True":
+                    ok = False
+                    print(f"  WRONG {trial} / {name}: {build}: {said.decode()}")
+                output += said
+                notes.setdefault(name, {})[build] = note
+            results[build] = (code, output)
         first = next(iter(results.values()))
         for build, result in results.items():
             if result != first:
@@ -241,7 +400,7 @@ def check(trial, built, cases):
 
 def measure(trial, built, cases, runs):
     rows = []
-    for name, words, stdin in cases:
+    for name, words, stdin, *_ in cases:
         args = expand(words, trial)
         stdin_path = expand([stdin], trial)[0] if stdin else None
         row = {}
@@ -277,7 +436,7 @@ def lines(folder, suffix):
     return count
 
 
-def report(trial, built, rows):
+def report(trial, built, rows, notes):
     folder = TRIALS / trial
     builds = list(built)
     print(f"\n### {trial}\n")
@@ -288,14 +447,14 @@ def report(trial, built, rows):
         print(f"| {name} | " + " | ".join(cells) + " |")
     sizes = {b: stripped_size(p) for b, p in built.items()}
     print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" for b in builds) + " |")
-    counts = {
-        "SG": lines(folder / "sg", ".sg"),
-        "SG checked": lines(folder / "sg", ".sg"),
-        "Rust": lines(folder / "rust", ".rs"),
-        "Zig": lines(folder / "zig", ".zig"),
-        "Zig safe": lines(folder / "zig", ".zig"),
-    }
-    print("| Lines | " + " | ".join(str(counts[b]) for b in builds) + " |")
+    counts = {"SG": lines(folder / "sg", ".sg"), "Rust": lines(folder / "rust", ".rs"),
+              "Zig": lines(folder / "zig", ".zig")}
+    print("| Lines | " + " | ".join(str(counts[b.split()[0]]) for b in builds) + " |")
+    measured = [name for name, _ in rows]
+    for name in measured:
+        if name in notes:
+            print(f"\n{name}, the size written: " +
+                  ", ".join(f"{b} {notes[name][b]}" for b in builds))
 
 
 def main():
@@ -311,9 +470,10 @@ def main():
     for trial in trials:
         cases = TRIALS_CASES[trial]
         built = build(trial)
-        all_ok &= check(trial, built, cases["check"] + cases["measure"])
+        notes = {}
+        all_ok &= check(trial, built, cases["check"] + cases["measure"], notes)
         if all_ok and not a.check:
-            report(trial, built, measure(trial, built, cases["measure"], a.runs))
+            report(trial, built, measure(trial, built, cases["measure"], a.runs), notes)
     sys.exit(0 if all_ok else 1)
 
 

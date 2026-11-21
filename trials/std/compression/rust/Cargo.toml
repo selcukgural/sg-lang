@@ -1,0 +1,13 @@
+[package]
+name = "compression"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `flate2` as people use it: its default backend is `miniz_oxide`; the feature `zlib-rs` puts the
+# port of zlib-ng to Rust behind it, which is faster, and both are measured (choices 1554, 1632).
+[dependencies]
+flate2 = "1"
+
+[features]
+zlib-rs = ["flate2/zlib-rs"]

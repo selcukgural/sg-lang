@@ -1692,6 +1692,14 @@ toHex(read id, ref text)                         // lent where a slice is expect
 
 The full example is in the [example programs](05-examples.md) file.
 
+A buffer whose size is known only when the program runs is a list, made at its size in one block (1648, 1652):
+
+```
+var window = List<byte>.repeat(0, size)         // `size` zeros; zeros are fresh zeroed memory, nothing written
+var marks = List<bool>.repeat(false, count)     // any Copyable item: Rust's vec![false; count]
+var entries = List<Entry>.withCapacity(count)   // empty, with room for `count`: adding them never moves it
+```
+
 ### Constants and statics
 
 A const is a value known when the program is compiled, with its type written. At the top of a file (`public const` for

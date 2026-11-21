@@ -1,0 +1,29 @@
+// `List<T>.repeat(item, count)`: `count` copies of a `Copyable` item in one block, the list then
+// as any other (choice 1648). Zero items give fresh zeroed memory; others are copied in.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+void main() {
+    var bytes = List<byte>.repeat(0, 5)
+    bytes[2] = 7
+    bytes.add(1)
+    print(bytes)
+    print(List<bool>.repeat(true, 3))
+    nint n = 4
+    var points = List<Point>.repeat(Point { x = 1, y = 2 }, n)
+    points[0].x = 9
+    print($"{points[0].x} {points[1].x} {points[3].y} {points.length()}")
+    print(List<double>.repeat(-0.0, 0).length())
+    print(List<double>.repeat(0.5, 2))
+    print(List<int?>.repeat(null, 2))
+    print(List<char>.repeat('é', 3))
+    var big = List<ulong>.repeat(0, 1 << 20)
+    big[(1 << 20) - 1] = 5
+    ulong sum = 0
+    for v in big {
+        sum += v
+    }
+    print(sum)
+}

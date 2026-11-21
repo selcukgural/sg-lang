@@ -26,14 +26,16 @@ a program reads each entry and decides where it goes.
 |---|---|
 | `Result<ZipReader, ZipError> ZipReader.open(read string path)` | The archive in the file at `path`, checked |
 | `Result<ZipReader, ZipError> ZipReader.of(StreamReader source)` | The archive a reader of a file holds (it seeks, so not a pipe) |
-| `List<ZipEntry> entries(read this)` | The entries, in the order of the archive: a list of the program's own |
+| `read List<ZipEntry> entries(read this)` | The entries, in the order of the archive, where the reader keeps them |
 | `Result<List<byte>, ZipError> readBytes(ref this, read ZipEntry entry, nint limit)` | The bytes of an entry, at most `limit` |
 | `Result<void, ZipError> copyTo(ref this, read ZipEntry entry, ref StreamWriter target, long limit)` | Writes the bytes of an entry to `target`, a block at a time |
 
 A `ZipEntry` has `name` (the path in the archive, with `/` between folders; a folder's ends in `/`), `size`
 (the bytes it opens into), `compressedSize`, `modified` (a `DateTime` in UTC), `isDirectory` and `method` (0
-stored, 8 deflated, another number for a method that is not read). `entries()` gives a list of its own, so the
-reader can read while the program goes over it.
+stored, 8 deflated, another number for a method that is not read). `entries()` lends the reader's own list,
+so nothing is copied to look at them; since reading an entry changes the reader, an entry that is read is
+first copied out with `entry.clone()`: `for i in 0..zip.entries().length() { var entry =
+zip.entries()[i].clone() ... }`. A reader of an archive of 100,000 entries holds about 20 MB.
 
 ## Writing
 
@@ -65,7 +67,8 @@ Result<void, ZipError> main() {
     var path = "notes.zip"
     try write(read path)
     var zip = try ZipReader.open(read path)
-    for entry in zip.entries() {
+    for i in 0..zip.entries().length() {
+        var entry = zip.entries()[i].clone()
         print($"{entry.name}: {entry.size} bytes, {entry.compressedSize} in the archive, {entry.modified}")
         if !entry.isDirectory {
             var bytes = try zip.readBytes(read entry, 1 << 20)
@@ -140,8 +143,8 @@ Result<void, ZipError> main() {
     try zip.close()
 
     var reader = try ZipReader.open("names.zip")
-    var entries = reader.entries()
-    match reader.readBytes(read entries[0], 1000) {
+    var first = reader.entries()[0].clone()
+    match reader.readBytes(read first, 1000) {
         Ok(bytes) => print($"{bytes.length()} bytes")
         Error(e) => print(e)
     }
@@ -169,7 +172,7 @@ cannot forge what a program prints.
 90 ms and 42 ms. Writing takes zlib's own time or less: zlib in C, compressing the same entries with nothing of
 zip around them, takes 125 ms, half of it building the trees of Huffman for every block, which its bytes need.
 Go's compressor is another one and makes other bytes. A large entry opens at the speed of
-[`Deflate`](./compression.md#how-fast), whose decoder takes about 2.6 times zlib's time.
+[`Deflate`](./compression.md#how-fast), whose decoder takes about 1.7 times zlib's time.
 
 Not yet: encryption, methods other than stored and deflated (bzip2, LZMA, Zstandard), the comments of an
 archive, the modes of Unix and links, and an archive held in memory.

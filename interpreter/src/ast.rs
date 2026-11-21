@@ -471,6 +471,10 @@ pub enum Callee {
     FromUtf8,
     /// `string.withCapacity(n)`
     WithCapacity,
+    /// `List<T>.repeat(item, count)`: `count` copies of a `Copyable` item, in one block (1648).
+    ListRepeat,
+    /// `List<T>.withCapacity(n)`: an empty list with room for `n` items, taken at once (1652).
+    ListWithCapacity,
     /// `string.fromCString(p)`: copies the text C ends with a zero byte, checked to be UTF-8.
     FromCString,
     /// `CString.from(text)`: the text with a zero byte after it, for C.

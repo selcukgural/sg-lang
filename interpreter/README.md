@@ -45,7 +45,7 @@ of `tests/Containerfile` has them.
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)`. An enum with numbers names their integer type first: `enum Block : byte, Copyable { Image = 0x2C` / `Trailer = 0x3B }`, its variants carry nothing, and one without a number has one more than the variant above; `(byte)block` gives the number, `Block.fromValue(b)` the variant or `null`, and `: Comparable` orders by the numbers without a `compare` written |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a pattern for each value it carries (a name, `_`, or a pattern inside: `Add(Number(0), right)`, `Word("let")`, `Paint(Red)`), `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters (`match c { '+' => ... _ => ... }`), on a text texts (`match word { "if" => ... _ => ... }`), on a `bool` `true` and `false`. Patterns are joined with `or` (`Add(l, _) or Mul(l, _)`, `'+' or '-'`), and each names the same values; numbers and characters come in ranges that take both ends (`'a'..='z'`, `0..=9`). On a `T?` the patterns are `null` and those of the `T`, also inside a variant (`Node(null, _)`); a name below an arm `null` takes a value that is not `null`. A value no arm takes, or an arm that can never run, is a compile error that names the value: `does not handle Add(Name(_), _)`, `no arm takes 128..=255`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | Interfaces | Seven built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct or an enum can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the type's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the type's `int compare(read this, read T other)`. A `Disposable` struct has a `void dispose(ref this)` that runs by itself, once, where the last owner of the value ends, before its fields end (not on a panic or `exit`; `x.dispose()` is an error, and no field is moved out of it). A `Closable` struct has a `close(this)` that gives a `Result`, and a local of it is closed before it ends, as a `StreamWriter` is |
-| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`, and `xs.copyFrom(s)` copies them over as many. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both); on items in order, `xs.binarySearch(v)` gives the place of the first equal one or `null` by halving, and `xs.lowerBound(v)` and `xs.upperBound(v)` the first place whose item is not less than `v`, or greater than it (`upperBound(b) - lowerBound(a)` counts the items from `a` up to `b`). `string.join(", ", read names)` |
+| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`, `List<byte>.repeat(0, n)` (`n` copies of a `Copyable` item in one block, zeros from `calloc`), `List<T>.withCapacity(n)` (empty, with room for `n`; 1648, 1652); `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`, and `xs.copyFrom(s)` copies them over as many. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both); on items in order, `xs.binarySearch(v)` gives the place of the first equal one or `null` by halving, and `xs.lowerBound(v)` and `xs.upperBound(v)` the first place whose item is not less than `v`, or greater than it (`upperBound(b) - lowerBound(a)` counts the items from `a` up to `b`). `string.join(", ", read names)` |
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
@@ -82,7 +82,7 @@ of `tests/Containerfile` has them.
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Searched by lazy DFAs, forwards for whether and where a match ends and backwards for where it starts, with Pike's machine only for the groups; their states are kept in the `Regex` behind a lock, so one in a `static` serves every task (1535-1539). Written in SG in the module `std` |
 | Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
-| Zip archives | `var zip = try ZipReader.open(read path)` (or `ZipReader.of(reader)` over a file opened another way) reads the central directory and checks it before anything is given: a name that could lead out of a folder (`..`, a root, `\`, `:`, NUL, a name Windows keeps for a device, empty) is `InsecurePath`, two entries of one name `DuplicateName`, entries whose data lie over each other `Overlap` (the bomb of one block of data shared by every entry), more entries than the directory holds `Corrupt`. `zip.entries()` gives a list of `ZipEntry` (`name`, `size`, `compressedSize`, `modified` in UTC, `isDirectory`, `method`), its own, so the reader reads while the program goes over it; `zip.readBytes(read entry, limit)` gives the bytes and `zip.copyTo(read entry, ref writer, limit)` writes them a block at a time: an entry larger than the limit is `TooLarge`, one that opens into another size than the one written `SizeMismatch`, a wrong CRC-32 `ChecksumMismatch`, encryption `Encrypted`, a method other than stored and deflated `UnsupportedMethod`. `var writer = ZipWriter.create(target)`, then `writer.add(name, read bytes, ZipMethod.Deflated, modified)`, `writer.addFrom(name, ref reader, method, modified)` (a block at a time, with a data descriptor), `writer.addDirectory(name, modified)` and `writer.close()`; zip64 where it is needed, the flag of UTF-8 for a name that is not ASCII, the time of DOS in UTC and the field 0x5455, so every machine writes the same bytes; the writer refuses the names a reader refuses. No call unpacks a whole archive to the disk. Written in SG in the module `std` |
+| Zip archives | `var zip = try ZipReader.open(read path)` (or `ZipReader.of(reader)` over a file opened another way) reads the central directory and checks it before anything is given: a name that could lead out of a folder (`..`, a root, `\`, `:`, NUL, a name Windows keeps for a device, empty) is `InsecurePath`, two entries of one name `DuplicateName`, entries whose data lie over each other `Overlap` (the bomb of one block of data shared by every entry), more entries than the directory holds `Corrupt`. `zip.entries()` lends the reader's list of `ZipEntry` (`name`, `size`, `compressedSize`, `modified` in UTC, `isDirectory`, `method`), and `entry.clone()` copies one to keep while the reader reads (1650); `zip.readBytes(read entry, limit)` gives the bytes and `zip.copyTo(read entry, ref writer, limit)` writes them a block at a time: an entry larger than the limit is `TooLarge`, one that opens into another size than the one written `SizeMismatch`, a wrong CRC-32 `ChecksumMismatch`, encryption `Encrypted`, a method other than stored and deflated `UnsupportedMethod`. `var writer = ZipWriter.create(target)`, then `writer.add(name, read bytes, ZipMethod.Deflated, modified)`, `writer.addFrom(name, ref reader, method, modified)` (a block at a time, with a data descriptor), `writer.addDirectory(name, modified)` and `writer.close()`; zip64 where it is needed, the flag of UTF-8 for a name that is not ASCII, the time of DOS in UTC and the field 0x5455, so every machine writes the same bytes; the writer refuses the names a reader refuses. No call unpacks a whole archive to the disk. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -528,8 +528,8 @@ hand with no checks):
 | `sha256`: a gigabyte through `Sha256` of `std`, written in SG, 64 KB of an array at a time (the C calls OpenSSL 3.5's SHA-256, which uses the processor's SHA instructions; the same algorithm written in plain C takes 2.90 s) | 3.138 s | 3.198 s | 0.351 s | 8.93 |
 | `json`: a JSON document of 100,000 records (34 MB) read five times by `Json.parse` of `std`, written in SG, and walked once (the C reads it with cJSON 1.7.19) | 0.773 s | 0.789 s | 0.675 s | 1.15 |
 | `log`: a billion `Log.debug($"...")` calls while the level is `Info`, in a loop that does little else, so no text is built: the static of the level, a load and a compare (the C tests an atomic global the same way; between 1.01 and 1.10 over several runs) | 0.811 s | 0.808 s | 0.805 s | 1.01 |
-| `gzip`: sixteen megabytes of text made of words compressed at level 6 by `Gzip.compress` of `std`, written in SG (the C calls zlib 1.2.12 of macOS; the bytes are the same, so both print the same length and CRC-32) | 0.528 s | 0.528 s | 0.509 s | 1.04 |
-| `gunzip`: the same text compressed at level 1 and opened twenty times by `Gzip.decompress` of `std`, each time with its CRC-32 (the C calls zlib's `inflate`) | 0.950 s | 1.064 s | 0.365 s | 2.60 |
+| `gzip`: sixteen megabytes of text made of words compressed at level 6 by `Gzip.compress` of `std`, written in SG (the C calls zlib 1.2.12 of macOS; the bytes are the same, so both print the same length and CRC-32) | 0.470 s | 0.475 s | 0.493 s | 0.95 |
+| `gunzip`: the same text compressed at level 1 and opened twenty times by `Gzip.decompress` of `std`, each time with its CRC-32 (the C calls zlib's `inflate`) | 0.632 s | 0.820 s | 0.363 s | 1.74 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
 virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
@@ -10345,6 +10345,83 @@ Tested by `the_trial_of_json` and `every_module_of_std_is_measured` (new), and b
 object with `values()`. The whole of the tests passes on macOS and on Linux, with 500 of the 1914 programs
 compiled through C and run clean under the sanitizers, 109 of them under the thread sanitizer.
 
+Choices made in the hundred-and-fiftieth slice (compression and zip measured against Rust and Zig). 1642 to
+1645 were approved at its start, 1646 to 1651 after the profile of the first measurement, and 1652 after a
+second look at the memory of the zip reader, all on 21 November 2026:
+
+1642. **The cases of compression**, chosen before the numbers were seen, at level 6: 100 MB of the log of
+     `inputs/text.sg` compressed in gzip a piece at a time, from a file into a file; the same opened, from a
+     gzip made by Python; 99,640 records of about 370 bytes (the lines of `inputs/json.sg`), each compressed
+     in zlib and opened again in memory; and 100 MB that do not compress (`inputs/bytes.sg`). Each
+     compressor finds its own matches, so what is compressed is not compared: `measure.py` opens what each
+     wrote with Python's `gzip`, holds it to the input, and prints its size under the table. Rust is
+     `flate2` twice, with its default `miniz_oxide` and with `zlib-rs`; Zig is `std.compress.flate`.
+1643. **The cases of zip**: the log cut into 10,001 entries of 10,000 bytes and written deflated; the
+     entries of an archive Python wrote read into memory; and an archive of 100,000 small entries listed by
+     name and size. SG checks every name (1503) and Rust and Zig do not, which is said beside the table and
+     not turned off. Rust is the `zip` crate with its default features, which deflate with `zlib-rs`.
+1644. **Zig writes its archive by hand**: `std.zip` reads archives and does not write them, so the program
+     writes the headers of `std.zip` with the DEFLATE of `std.compress.flate`, rather than a library of C
+     that would compress with zlib.
+1645. **Zig checks the CRC-32 itself**: `std.zip` does not check what it opens, so the program does, with
+     `std.hash.Crc32`, as SG and Rust do.
+1646. **A match is compared eight bytes at a time.** The search of zlib's `longest_match` took four
+     fifths of the time of compressing, comparing a byte at a time; two words of eight bytes are now told
+     apart by the lowest bit of their difference, with a byte at a time for the last bytes before 258. The
+     length found is the one zlib finds, and so are the bytes.
+1647. **A match is copied eight bytes at a time** when it lies 8 bytes back or more: each piece copies
+     bytes already opened, and the last may write past the match into room the next symbols write over, so
+     the output keeps 266 bytes of room, not 258. A profile had put four fifths of the time of opening in
+     that loop, a byte at a time.
+1648. **`List<T>.repeat(item, count)`**: `count` copies of a `Copyable` item in one block, the way to make a
+     buffer whose size is known when the program runs (Rust's `vec![x; n]`, Go's `make`). An item whose
+     bytes are all zero comes from `calloc`, fresh pages not written; another is written into each place;
+     fewer than 0 items is a panic. `std` made its tables of 64 KB by adding 4 KB at a time, which moved
+     them as they grew: setting up a compressor took two fifths of the time of the small records.
+1649. **A call that compresses all at once takes the room of its input.** `Zlib.compress(read data, 6)`
+     made a window of 64 KB, chains of 32,768 places and the symbols of a block for a record of 370 bytes.
+     Its window, chains and symbols are now the size of its input with the 258 bytes past it that a match
+     is compared over (zlib's window is zero there); the sizes zlib counts with are kept, so the bytes are
+     zlib's at every level still, checked against Python's zlib at the ten levels and seventeen sizes.
+     The heads of the chains are all kept, since a hash may fall anywhere.
+1650. **`zip.entries()` lends the reader's list** (`read List<ZipEntry>`), as `JsonObject.values()` does
+     (1640), where it copied every entry with its name. Reading an entry changes the reader, so an entry
+     read while the program goes over them is copied first, with `ZipEntry.clone()`, which became public
+     for it: `for i in 0..zip.entries().length() { var entry = zip.entries()[i].clone() ... }`.
+1651. **What is left of the losses.** The CRC-32 of the processor's instructions, which opening gzip in
+     `zlib-rs` uses, waits for the hundred-and-fifty-first slice, where CRC-32 is measured. `zlib-rs`
+     compresses at level 6 by zlib-ng's own way (its "medium"), 1.7 times SG's speed for 3 per cent more
+     bytes; SG keeps zlib's bytes (1485), so that is written under "Slower than C".
+1652. **`List<T>.withCapacity(n)`**: an empty list with room for `n` items, as `string.withCapacity(n)`
+     is for a text. The zip reader takes the room of its entries at once from the count the central
+     directory gives, which the reader has checked to be at most one for 46 bytes of it, so an archive
+     cannot make it take more than it holds. With it, and with three changes that change nothing a
+     program sees, a reader of 100,000 entries holds about 20 MB, where it held 50: the central directory
+     is read 64 KB at a time, not whole; the bytes of a name are kept apart only when the name is code page
+     437; and two names of one key are found through a hash of the key (FNV-1a, in `zip.sg`), the keys of
+     the two compared when their hashes agree, in place of a set of every key.
+
+Found on the way: a slice of a list in the interpreter copied every item of the list, twice, to cut out a
+few; it now copies the items it takes, and the compressor run by the interpreter, which the slices of 1646
+had made five times slower, is back to its time. The search of 1646 indexes the window where it is rather
+than through a slice of all of it, which the interpreter would copy at every call; compiled, the two take
+the same time within 3 per cent. And `toJson` run by the interpreter took the square of the length of the
+text it wrote: after each number it looked at the whole text written so far through `asBytes()`, which is a
+view in compiled code and a cell for each byte in the interpreter. It looks at the number alone now, and a
+megabyte of records is written back in 1.8 s, not 95 (compiled, 10 ms, where `serde_json` takes 10.5 and
+Zig's `std.json` 10.3); `the_trial_of_json` no longer takes nine minutes.
+
+Tested by `the_trial_of_compression` and `the_trial_of_zip` (new): the SG programs, interpreted and
+compiled, write the same gzip and the same archive, open them back into their input and count the same
+records. `ok_list_repeat`, `ok_list_with_capacity`, `panic_list_repeat_negative`,
+`panic_list_capacity_negative`, `error_list_repeat_not_copyable`, `error_list_repeat_on_value`,
+`error_list_function_unknown` and `error_list_reserve` are new; `ok_zip`, `panic_zip_limit` and the check of
+`tests/zip-suite` copy an entry before reading it; the suite has three archives more, a name written
+composed and decomposed, a name in two cases that is not ASCII, and names that only look alike, which
+every version of `sg` reads alike. The whole of the tests passes on macOS and on Linux, with 504 of the 1922
+programs compiled through C and run clean under the sanitizers, 109 of them under the thread sanitizer; the
+tests of `tests/cli.rs` take 11 s where they took nine minutes, the most of it `the_trial_of_json`.
+
 ## `std`, measured against Rust and Zig
 
 Each module of `std` measured against the crates Rust's people use for the job and against Zig's own
@@ -10354,7 +10431,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in `trials/README.md`; the rules of fairness there (1554) hold here. `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `checksum`, `command_line`, `compression`, `encoding`, `environment`, `files`, `hash`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`, `zip`.
+Not measured yet: `atomic`, `checksum`, `command_line`, `encoding`, `environment`, `files`, `hash`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`.
 
 The trial `grep` measures `Regex.isMatch` already (`trials/README.md`); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
@@ -10387,6 +10464,56 @@ does other work: SG has no mapping (1411). Before 1639 and 1640, SG took 0.590 s
 `copy` holds 95 MB more than `sum`: `toJson` makes the whole text before it is written, where Rust and Zig
 write as they go.
 
+### compression
+
+`trials/std/compression`, at level 6: `compress` reads 100 MB of the log of `trials/inputs/text.sg` and writes
+it in gzip into a file, a piece at a time; `decompress` opens the same, made by Python's `gzip`, on the
+standard output; `records` compresses each of 99,640 lines of `trials/inputs/json.sg` (about 370 bytes) in
+zlib and opens it again in memory; and the last case compresses 100 MB of `trials/inputs/bytes.sg`, which do
+not compress. Apple M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Rust, `zlib-rs` | Zig | Zig, safe |
+|---|---|---|---|---|---|---|
+| 100 MB of a log, compressed | 1.632 s, 2.6 MB | 1.651 s, 2.6 MB | 1.674 s, 2.6 MB | 0.948 s, 2.7 MB | 1.554 s, 2.5 MB | 1.683 s, 2.7 MB |
+| 100 MB of a log, opened | 0.108 s, 2.7 MB | 0.151 s, 2.8 MB | 0.175 s, 2.3 MB | 0.084 s, 2.3 MB | 0.170 s, 2.3 MB | 0.206 s, 2.4 MB |
+| 99,640 records, each compressed and opened | 1.564 s, 2.6 MB | 1.747 s, 2.6 MB | 1.562 s, 2.6 MB | 1.692 s, 2.8 MB | 1.674 s, 2.4 MB | 2.023 s, 2.8 MB |
+| 100 MB that do not compress, compressed | 1.511 s, 2.6 MB | 1.618 s, 2.6 MB | 1.572 s, 2.5 MB | 1.273 s, 2.7 MB | 1.616 s, 2.5 MB | 2.018 s, 2.7 MB |
+| Size, stripped | 115 KB | 132 KB | 435 KB | 483 KB | 394 KB | 474 KB |
+| Lines | 86 | 86 | 89 | 89 | 93 | 93 |
+
+Rust is `flate2` 1.1.11, with its default `miniz_oxide` 0.9.1 and once more with the feature `zlib-rs`
+(0.6.8); Zig is `std.compress.flate`. What is compressed is not compared, since each finds its own matches:
+`measure.py` opens what each wrote and holds it to the input. The log took SG 18,728,988 bytes (zlib's own,
+byte for byte), `miniz_oxide` 18,371,889, `zlib-rs` 19,275,743 and Zig 19,229,859; the records 27,113,059,
+27,110,665, 27,101,349 and 27,112,644; the bytes that do not compress 100,030,523, 100,015,773, 100,030,538
+and 100,167,750. `zlib-rs` compresses at level 6 by zlib-ng's own way, which SG does not take (1485, 1651);
+it opens with the CRC-32 instructions of the processor, which come in the hundred-and-fifty-first slice.
+Before 1646 to 1649, SG took 1.768 s, 0.169 s, 2.253 s and 1.490 s.
+
+### zip
+
+`trials/std/zip`: `write` cuts the same 100 MB of the log into 10,001 entries of 10,000 bytes and writes them
+deflated at level 6; `read` opens every entry of an archive of the same entries made by Python's `zipfile`
+into memory, its CRC-32 checked; `list` prints the name and the size of each of 100,000 small entries. Apple
+M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 100 MB in 10,001 entries, written | 1.086 s, 100.9 MB | 1.223 s, 100.9 MB | 0.772 s, 101.8 MB | 1.192 s, 99.0 MB | 1.320 s, 98.9 MB |
+| 10,001 entries, read | 0.164 s, 4.3 MB | 0.211 s, 4.3 MB | 0.184 s, 4.8 MB | 0.520 s, 2.2 MB | 0.586 s, 2.5 MB |
+| 100,000 entries, listed | 0.026 s, 19.6 MB | 0.026 s, 19.6 MB | 0.250 s, 22.7 MB | 0.008 s, 2.2 MB | 0.011 s, 2.5 MB |
+| Size, stripped | 261 KB | 277 KB | 1678 KB | 394 KB | 490 KB |
+| Lines | 61 | 61 | 66 | 159 | 159 |
+
+Rust is the `zip` crate 9.8.1 with its default features (it deflates with `zlib-rs` 0.6.8, and brings its
+other methods and encryption along, hence its size). Zig's `std.zip` reads archives and does not write them,
+so its `write` writes the headers of `std.zip` itself with `std.compress.flate` (1644), and its `read`
+checks the CRC-32 that `std.zip` does not (1645). The archives written took SG 25,831,364 bytes, Rust
+25,934,270 and Zig 25,809,759, each read back by Python before anything was timed. SG checks every name of
+the archive against the others when it opens it (1503), which Rust and Zig do not; that is the time and the
+memory of the listing, which Zig does without keeping anything. Before 1650 and 1652, SG took 1.191 s,
+0.231 s and 7.2 MB, and 0.048 s and 49.8 MB.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10409,19 +10536,37 @@ check off.
   characters that have none at once. Candidates: the class of each character of a decomposition kept beside
   it in `NORM_DECOMPOSED`, and a run of starters with nothing to change written straight to the output.
 
-- **CRC-32 without the processor's instructions** (`checksum`, 9.67 times zlib on macOS, choice 1415):
+- **CRC-32 without the processor's instructions** (`checksum`, 9.67 times zlib on macOS, choice 1415; taken
+  up in the hundred-and-fifty-first slice, 1651):
   `Crc32` takes sixteen bytes in a step through tables, in the time of the same algorithm written in C,
   while zlib on macOS folds the bytes with the CRC instructions of the processor and multiplication
   without carries. Candidate: a built-in for those instructions, which the C compiler maps to them on
   each machine and to the tables where there are none; until then a program calls zlib's `crc32`.
 
-- **Opening DEFLATE** (`gunzip`, 2.60 times zlib on macOS, choice 1486): the decoder reads its codes from
-  tables as zlib's does, with the bits, the place in the input and the length of the output in locals and the
-  lists looked at through slices, but each byte it writes and each entry it reads is checked against the end
-  of its slice, and a match is copied a byte at a time; zlib's C trusts its pointers and copies three bytes
-  in a step. A profile puts the time in that loop, not in growing the output. Candidates: a copy of a window
-  of a list into itself that the checker allows when the two do not overlap, and checks the compiler can see
-  are needed once a block; until then a program that opens gigabytes calls zlib.
+- **Opening DEFLATE** (`gunzip`, 1.74 times zlib on macOS, 2.60 before choice 1647; choice 1486): the
+  decoder reads its codes from tables as zlib's does, with the bits, the place in the input and the length of
+  the output in locals and the lists looked at through slices, and copies a match eight bytes at a time when
+  it lies 8 back or more (1647), but each byte it writes and each entry it reads is checked against the end
+  of its slice, a literal is decoded one at a time and a match closer than 8 is copied a byte at a time. In
+  the trial of `std/compression` it opens 100 MB in 0.108 s, faster than `flate2`'s default (0.175 s) and
+  Zig (0.170 s), and 1.29 times `zlib-rs` (0.084 s), which also takes the CRC-32 with the processor's
+  instructions (the entry of CRC-32 above). Candidates: two literals decoded in one step, a short distance
+  copied by widening its pattern, and the checks the compiler can see are needed once a block.
+
+- **Compressing as zlib-ng does** (`std/compression`, 1.72 times `flate2` with `zlib-rs` on 100 MB of a log,
+  1.19 times on bytes that do not compress, 1.41 times the `zip` crate writing 10,001 entries; choices 1485,
+  1651): `zlib-rs` is zlib-ng in Rust, whose level 6 is a way of its own (its "medium"): it writes 3 per
+  cent more bytes (19,275,743 against 18,728,988) in 0.58 of the time. SG gives zlib's bytes at every level
+  (1485) and takes the time of `flate2`'s default (`miniz_oxide`, 1.674 s against SG's 1.632 s) and of Zig
+  (1.554 s). Candidate, if speed is wanted over zlib's bytes: zlib-ng's levels as a choice of their own.
+
+- **Listing a zip archive** (`std/zip`, 3.3 times Zig's `std.zip` on 100,000 entries, 0.026 s against
+  0.008 s, and 19.6 MB against 2.2 MB; choices 1503, 1652): Zig reads each record of the central directory
+  as the program asks for the next and keeps nothing, and checks no name against another. SG reads the
+  directory once and checks every name before anything is given (a name that could lead out of a folder,
+  two names of one key in any case and normal form, data that lie over each other), so it keeps the
+  entries; it takes a tenth of the time of Rust's `zip` (0.250 s) in less memory (22.7 MB). Candidate: an
+  entry that keeps its name and its numbers in one block, the size of a record of the directory.
 
 - **SHA-256 without the processor's instructions** (`sha256`, 8.93 times OpenSSL on macOS, choice 1422):
   `Sha256` takes a block of 64 bytes through 64 rounds of plain arithmetic, about the time of the same
@@ -10444,6 +10589,15 @@ check off.
   bytes, with a mask of the bytes set and a table of the ones that hold a pointer); `raw.rs` already reads
   and writes values in that layout. Zig keeps an array of bytes as one slice of bytes too. The work is in
   how the interpreter lends an item that is no longer a cell, so it is a choice of its own.
+- **`asBytes()` in the interpreter makes a cell of every byte** (found on 21 November 2026, in the
+  hundred-and-fiftieth slice): in compiled code `text.asBytes()` is a view of the text, in the interpreter a
+  new list of a cell for each byte, so a function that is given a long text and calls `asBytes()` each
+  time takes the length of the text at every call. `toJson` took the square of its output that way (fixed
+  in this slice, 1.8 s for a megabyte, 95 before); `Regex.findAll` on a long text still does, since
+  `regexDfaForward`, `regexDfaBackward`, `regexInnerAt` and `regexSearch` call it for each match.
+  Compiled programs are not touched. Candidates: `asBytes()` that looks at the bytes of the text where
+  they are, for every program; or `regex.sg` taking the bytes once and handing them down. The next piece
+  of work after this slice.
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
   producer is the same instructions as C's (one more for the bound of the list), and neither taking that
@@ -11101,8 +11255,10 @@ parameters of a function may have default values, which a call that leaves them 
 them (1620-1624), the token of `std` among them (1623), and JSON is written to the depth it is read, which
 `JsonOptions` changes for both (1600, 1617-1619). Every module of `std` is now measured against Rust and
 Zig, and a new one comes in with its measurement (1553, 1629-1637): JSON first, where a `JsonValue` takes 32
-bytes and not 96 and an object gives its values in order (1638-1640), then, a slice for each, compression
-and zip; SHA-256, HMAC, CRC-32 and Adler-32; hex, Base64 and Unicode; time, random numbers and the log; the
+bytes and not 96 and an object gives its values in order (1638-1640), then compression and zip, where a
+match is compared and copied eight bytes at a time, a list is made at its size (`List<T>.repeat`,
+`List<T>.withCapacity`) and a zip reader lends its entries and holds 20 MB for 100,000 of them
+(1642-1652); then, a slice for each, SHA-256, HMAC, CRC-32 and Adler-32 with the processor's CRC-32; hex, Base64 and Unicode; time, random numbers and the log; the
 network; and the command line, the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

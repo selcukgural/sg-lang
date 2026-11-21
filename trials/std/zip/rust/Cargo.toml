@@ -1,0 +1,13 @@
+[package]
+name = "zip-trial"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The `zip` crate as people use it, with its default features: it deflates with `zlib-rs`.
+[dependencies]
+zip = "9"
+
+[[bin]]
+name = "zip"
+path = "src/main.rs"

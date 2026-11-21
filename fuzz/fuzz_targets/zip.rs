@@ -35,7 +35,8 @@ fuzz_target!(|data: &[u8]| {
         panic(\"close\")
     }}
     var back = ZipReader.open({output:?}) ?? panic(\"open\")
-    for entry in back.entries() {{
+    for i in 0..back.entries().length() {{
+        var entry = back.entries()[i].clone()
         var opened = back.readBytes(read entry, 4096) ?? panic(\"read\")
         assert(opened == data)
     }}
@@ -48,7 +49,8 @@ fuzz_target!(|data: &[u8]| {
     match ZipReader.open({input:?}) {{
         Ok(zip) => {{
             var reader = zip
-            for entry in reader.entries() {{
+            for i in 0..reader.entries().length() {{
+                var entry = reader.entries()[i].clone()
                 match reader.readBytes(read entry, 1 << 20) {{
                     Ok(opened) => _ = opened.length()
                     Error(e) => _ = $\"{{e}}\".toString()

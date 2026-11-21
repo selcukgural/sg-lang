@@ -434,7 +434,7 @@ fn is_text_value(ty: &Ty) -> bool {
 /// the change is what they are called for.
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
-        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
+        Callee::Join | Callee::WithCapacity | Callee::ListRepeat | Callee::ListWithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Net(NetCall::Port | NetCall::Reader) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
@@ -12441,6 +12441,35 @@ impl<'a> Checker<'a> {
             *callee = Callee::Parse(radix);
             return Ok(Ty::Result(Box::new(ty), Box::new(Ty::Enum(NUMBER_ERROR.to_string()))));
         }
+        // `List<byte>.repeat(0, n)`: a function of the type, written where `List<byte>()` would
+        // be, without its parentheses (1648).
+        if let ExprKind::Collection { ty, args: none, items: None } = &recv.kind {
+            if none.is_empty() && recv.span.end == ty.span.end {
+                let built = resolve_type(ty, self.names, false)?;
+                let Ty::List(item) = &built else {
+                    return Err(Diag::error(name_span, format!("`{built}` has no function `{name}`")));
+                };
+                // `List<T>.withCapacity(n)`: an empty list with room for `n` items (1652).
+                if name == "withCapacity" {
+                    self.args(name, args, &[Ty::Int(IntTy::Nint)], span)?;
+                    recv.ty = built.clone();
+                    *callee = Callee::ListWithCapacity;
+                    return Ok(built);
+                }
+                if name != "repeat" {
+                    return Err(Diag::error(name_span, format!("`{built}` has no function `{name}`"))
+                        .note("functions for now: repeat, withCapacity; an empty list is `List<T>()`"));
+                }
+                if !item.is_copyable(self.copyable) {
+                    return Err(Diag::error(name_span, format!("`{item}` is not `Copyable`, so one item cannot be put in every place"))
+                        .hint(format!("add the items one by one to a `{built}()`")));
+                }
+                self.args(name, args, &[(**item).clone(), Ty::Int(IntTy::Nint)], span)?;
+                recv.ty = built.clone();
+                *callee = Callee::ListRepeat;
+                return Ok(built);
+            }
+        }
         // A type name in front of the dot: `Stack.create()`.
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
@@ -13763,6 +13792,13 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                // `List<int>().repeat(0, n)`: a function of the type, written on a list (1648).
+                if let (Ty::List(_), "repeat" | "filled" | "fill" | "withLength") = (target, name) {
+                    return Err(diag.hint(format!("a list of `n` copies of an item is made by the type: `{}.repeat(item, n)`", target.strip_borrow())));
+                }
+                if let (Ty::List(_), "withCapacity" | "reserve" | "ensureCapacity") = (target, name) {
+                    return Err(diag.hint(format!("room is taken when the list is made: `{}.withCapacity(n)`", target.strip_borrow())));
+                }
                 Err(match other_name.or_else(|| nearest(name, known.iter().copied())) {
                     Some(close) => diag.hint(format!("`{close}`")),
                     None => diag.note(format!("methods for now: {}", known.join(", "))),

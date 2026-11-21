@@ -20283,6 +20283,54 @@ impl<'a> Emitter<'a> {
                         _ => Ok(called),
                     }
                 }
+                // `List<T>.repeat(item, n)`: one block of `n` items; zeroed by `calloc` when the
+                // item's bytes are all zero, which gives fresh pages without writing them (1648).
+                Callee::ListRepeat => {
+                    let Ty::List(item) = &expr.ty else { unreachable!("the checker makes it a list") };
+                    let name = mangle(&expr.ty).ok_or_else(|| not_yet(expr.span, &format!("`{}.repeat`", expr.ty)))?;
+                    let helper = format!("sg_repeat_{name}");
+                    let (list_c, held) = (self.ctype(&expr.ty, expr.span)?, self.ctype(item, expr.span)?);
+                    if self.made.insert(helper.clone()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {list_c} {helper}({held} item, int64_t count, const char* loc) {{ {list_c} v = {{ 0 }}; \
+                             if (__builtin_expect(count < 0, 0)) sg_panic_line(loc, \"a list cannot have %lld items\", (long long)count); \
+                             if (count == 0) return v; \
+                             if ((uint64_t)count > PTRDIFF_MAX / sizeof({held})) sg_panic_line(loc, \"there is no memory for a list of %lld items\", (long long)count); \
+                             static const {held} zero; \
+                             if (_Alignof({held}) <= 16 && memcmp(&item, &zero, sizeof item) == 0) v.ptr = calloc((size_t)count, sizeof({held})); \
+                             else {{ v.ptr = sg_alloc((size_t)count * sizeof({held}), _Alignof({held})); if (v.ptr) for (int64_t i = 0; i < count; i++) v.ptr[i] = item; }} \
+                             if (!v.ptr) sg_panic_line(loc, \"there is no memory for a list of %lld items\", (long long)count); \
+                             v.len = count; v.cap = count; return v; }}"
+                        );
+                    }
+                    let given = self.value_as(&args[0], item)?;
+                    let count = self.value_as(&args[1], &Ty::Int(IntTy::Nint))?;
+                    let loc = self.loc(expr.span);
+                    Ok(format!("{helper}({given}, {count}, {loc})"))
+                }
+                // `List<T>.withCapacity(n)`: an empty list whose block holds `n` items (1652).
+                Callee::ListWithCapacity => {
+                    let Ty::List(item) = &expr.ty else { unreachable!("the checker makes it a list") };
+                    let name = mangle(&expr.ty).ok_or_else(|| not_yet(expr.span, &format!("`{}.withCapacity`", expr.ty)))?;
+                    let helper = format!("sg_capacity_{name}");
+                    let (list_c, held) = (self.ctype(&expr.ty, expr.span)?, self.ctype(item, expr.span)?);
+                    if self.made.insert(helper.clone()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {list_c} {helper}(int64_t count, const char* loc) {{ {list_c} v = {{ 0 }}; \
+                             if (__builtin_expect(count < 0, 0)) sg_panic_line(loc, \"the capacity of a list cannot be negative: %lld\", (long long)count); \
+                             if (count == 0) return v; \
+                             if ((uint64_t)count > PTRDIFF_MAX / sizeof({held})) sg_panic_line(loc, \"there is no memory for a list of %lld items\", (long long)count); \
+                             v.ptr = sg_alloc((size_t)count * sizeof({held}), _Alignof({held})); \
+                             if (!v.ptr) sg_panic_line(loc, \"there is no memory for a list of %lld items\", (long long)count); \
+                             v.cap = count; return v; }}"
+                        );
+                    }
+                    let count = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;
+                    let loc = self.loc(expr.span);
+                    Ok(format!("{helper}({count}, {loc})"))
+                }
                 // `string.withCapacity(n)`: a block of `n` bytes, or a panic that says why not.
                 Callee::WithCapacity => {
                     let room = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;

@@ -18,6 +18,8 @@ and Zig":
 | Module | What it is | Slice |
 |---|---|---|
 | [std/json](std/json) | A document read and walked, read and written back, and a document a line read | 149 |
+| [std/compression](std/compression) | 100 MB of a log compressed in gzip and opened, 99,640 records each compressed and opened in zlib, 100 MB that do not compress | 150 |
+| [std/zip](std/zip) | 100 MB written as 10,001 entries, the entries of an archive read, 100,000 entries listed | 150 |
 
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
@@ -32,7 +34,13 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
   megabyte and holds them to what Rust and Zig print.
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
-  same bytes on every machine, and [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`.
+  same bytes on every machine, [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`, and
+  [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression`. The gzip and
+  the archives that the programs read are made by Python's `gzip` and `zipfile`, which none of the
+  programs measured is.
+- Where each language may lawfully write other bytes (compressed data, an archive), the program writes
+  into a file, and `measure.py` opens each one with Python and holds it to the input before anything is
+  timed; the size each wrote is printed under its table.
 
 ## Fairness (1554)
 
@@ -71,7 +79,8 @@ The time is the best of five runs after one to warm up, the memory the most the 
 resident set), the size that of the program stripped, and the lines those that are neither blank nor only
 a comment. SG is built with `sg build --release` and once more with its arithmetic checked (the C of
 `sg emit-c` at `-O2`); Rust with `cargo build --release`; Zig twice (1542), `ReleaseFast` and
-`ReleaseSafe`, which keeps its checks of bounds and overflow. No LTO and no profile. The size of Zig's
+`ReleaseSafe`, which keeps its checks of bounds and overflow. `std/compression` builds Rust once more with
+`flate2`'s feature `zlib-rs`, which people turn on for speed (1632). No LTO and no profile. The size of Zig's
 `grep` leaves out PCRE2, which it loads as a shared library (about 650 KB).
 
 ## Results

@@ -1,0 +1,5 @@
+error: `List<int>` has no method `repeat`
+  --> error_list_repeat_on_value.sg:4:8
+ 4 |     xs.repeat(0, 3)
+   |        ^^^^^^
+  hint: a list of `n` copies of an item is made by the type: `List<int>.repeat(item, n)`

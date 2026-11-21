@@ -1126,6 +1126,93 @@ fn the_trial_of_json() {
     }
 }
 
+/// The inputs of the trials of compression and zip: 200,000 bytes of the log of `inputs/text.sg`
+/// and the lines of `inputs/json.sg` up to about 100,000 bytes, each made from the seed 7.
+fn trial_inputs(dir: &Path) -> (Vec<u8>, Vec<u8>) {
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let mut made = Vec::new();
+    for (input, args) in [("text", ["1", "7"].as_slice()), ("json", ["lines", "1", "7"].as_slice())] {
+        let maker = program(dir, &format!("{input}-input")).to_string_lossy().into_owned();
+        let source = trials.join("inputs").join(format!("{input}.sg")).to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(dir, &["build", &source, "--release", "-o", &maker])), (0, String::new(), String::new()));
+        let out = Command::new(&maker).args(args).current_dir(dir).stdin(Stdio::null()).output().unwrap();
+        assert!(out.status.success());
+        made.push(out.stdout);
+    }
+    let text = made[0][..200_000].to_vec();
+    let lines = &made[1];
+    let mut end = 0;
+    while end < 100_000 {
+        end += lines[end..].iter().position(|&b| b == b'\n').unwrap() + 1;
+    }
+    (text, lines[..end].to_vec())
+}
+
+/// The trial of `std`'s compression (choices 1642, 1646-1649), run small: the SG program,
+/// interpreted and compiled, writes the same gzip of the text, opens it back into the text, and
+/// counts the records of the lines as they are, each compressed in zlib and opened again.
+#[test]
+fn the_trial_of_compression() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_compression");
+    let (text, lines) = trial_inputs(&dir);
+    std::fs::write(dir.join("text.log"), &text).unwrap();
+    std::fs::write(dir.join("lines.json"), &lines).unwrap();
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let source = trials.join("std").join("compression").join("sg").join("compression.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "compression").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let compiled = |args: &[&str]| Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    let said = (0, "bytes 200000\n".to_string(), String::new());
+    assert_eq!(ran(&sg(&dir, &[source.as_str(), "compress", "text.log", "interpreted.gz"])), said);
+    assert_eq!(ran(&compiled(&["compress", "text.log", "compiled.gz"])), said);
+    let packed = std::fs::read(dir.join("compiled.gz")).unwrap();
+    assert_eq!(std::fs::read(dir.join("interpreted.gz")).unwrap(), packed, "the same gzip, interpreted and compiled");
+    assert!(packed.len() < text.len() / 3, "the log compresses");
+    let opened = sg(&dir, &[source.as_str(), "decompress", "compiled.gz"]);
+    assert_eq!((opened.status.code(), &opened.stdout), (Some(0), &text), "opened, interpreted");
+    let opened = compiled(&["decompress", "interpreted.gz"]);
+    assert_eq!((opened.status.code(), &opened.stdout), (Some(0), &text), "opened, compiled");
+    let count = lines.iter().filter(|&&b| b == b'\n').count();
+    let bytes = lines.len() - count;
+    let interpreted = ran(&sg(&dir, &[source.as_str(), "records", "lines.json"]));
+    assert_eq!(interpreted, ran(&compiled(&["records", "lines.json"])), "records: interpreted and compiled");
+    assert_eq!(interpreted.1, format!("records {count}\nbytes {bytes}\nsame {count}\n"));
+    assert_eq!(ran(&compiled(&["decompress", "text.log"])).0, 1, "not gzip");
+    assert_eq!(ran(&compiled(&["compress", "text.log"])).0, 2, "a wrong use");
+}
+
+/// The trial of `std`'s zip archives (choices 1643, 1650, 1652), run small: the SG program,
+/// interpreted and compiled, writes the same archive of the text in parts of 10,000 bytes, reads
+/// every entry back and lists them.
+#[test]
+fn the_trial_of_zip() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_zip");
+    let (text, _) = trial_inputs(&dir);
+    std::fs::write(dir.join("text.log"), &text).unwrap();
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let source = trials.join("std").join("zip").join("sg").join("zip.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "zip").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let said = (0, "entries 20\nbytes 200000\n".to_string(), String::new());
+    assert_eq!(ran(&sg(&dir, &[source.as_str(), "write", "text.log", "interpreted.zip"])), said);
+    assert_eq!(compiled(&["write", "text.log", "compiled.zip"]), said);
+    assert_eq!(std::fs::read(dir.join("interpreted.zip")).unwrap(), std::fs::read(dir.join("compiled.zip")).unwrap(), "the same archive");
+    assert_eq!(ran(&sg(&dir, &[source.as_str(), "read", "compiled.zip"])), said);
+    assert_eq!(compiled(&["read", "interpreted.zip"]), said);
+    let listed: String = (0..20).map(|i| format!("logs/part-{i:05}.txt 10000\n")).collect();
+    assert_eq!(ran(&sg(&dir, &[source.as_str(), "list", "compiled.zip"])), (0, listed.clone(), String::new()));
+    assert_eq!(compiled(&["list", "compiled.zip"]), (0, listed, String::new()));
+    assert_eq!(compiled(&["read", "text.log"]).0, 1, "not an archive");
+    assert_eq!(compiled(&["read"]).0, 2, "a wrong use");
+}
+
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
 /// part of its own (`### json`) in the section of the interpreter's README that holds the
 /// measurements, or is named in its list of those not measured yet, which the slices empty.

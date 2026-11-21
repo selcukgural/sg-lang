@@ -2455,7 +2455,11 @@ impl<'a> Parser<'a> {
         }
         let Some(n) = self.type_len(0) else { return false };
         *self.peek_at(n - 1) == Tok::Gt
-            && (*self.peek_at(n) == Tok::LParen || (*self.peek_at(n) == Tok::LBrace && self.struct_literals))
+            && (*self.peek_at(n) == Tok::LParen
+                || (*self.peek_at(n) == Tok::LBrace && self.struct_literals)
+                // `List<byte>.repeat(0, n)`: a function of the type, read as a method of the
+                // collection written without parentheses (1648).
+                || (*self.peek_at(n) == Tok::Dot && matches!(self.peek_at(n + 1), Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::LParen))
     }
 
     /// Whether a type with `<...>` and then `{` is written here: `List<int> { 1, 2 }`.

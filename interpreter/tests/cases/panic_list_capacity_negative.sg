@@ -1,0 +1,6 @@
+// Room for fewer than 0 items is a panic (choice 1652).
+void main(List<string> args) {
+    nint count = (nint)args.length() * 0 - 1
+    var xs = List<int>.withCapacity(count)
+    print(xs)
+}

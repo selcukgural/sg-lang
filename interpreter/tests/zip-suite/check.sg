@@ -19,7 +19,8 @@ Result<void, IoError> main(List<string> args) {
             match ZipReader.open(read Path.join(read path, name)) {
                 Ok(zip) => {
                     var reader = zip
-                    for entry in reader.entries() {
+                    for i in 0..reader.entries().length() {
+                        var entry = reader.entries()[i].clone()
                         var kind = "file"
                         if entry.isDirectory {
                             kind = "folder"
