@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`crc32fast` and `sha2` with the processor's instructions, 1656, 1657).
+Last brought up to date: 21 November 2026, the hundred-and-fifty-second slice (`base64`'s `encode_string` and `decode_vec`, `hex::decode_to_slice`, 1665).
 
 ## Functions and variables
 
@@ -524,6 +524,8 @@ Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`c
 |---|---|---|---|
 | `hex::encode(bytes)`, `hex::decode(text)` | `Hex.encode(read bytes)`, `Hex.decode(text)` | built | In the language's own module, not a crate; decoding gives `Result<List<byte>, DecodeError>` |
 | `write!(s, "{:02x}", b)` in a loop | `Hex.encodeInto(ref s, read bytes)` | built | Appends to the text, no new one made |
+| `STANDARD.encode_string(bytes, &mut s)`, `URL_SAFE_NO_PAD.encode_string(...)` | `Base64.encodeInto(ref s, read bytes)`, `Base64.encodeUrlInto(ref s, read bytes)` | built | Appends to the text |
+| `STANDARD.decode_vec(text, &mut v)`, `hex::decode_to_slice(text, &mut buf)` | `Base64.decodeInto(ref v, text)`, `Base64.decodeUrlInto(ref v, text)`, `Hex.decodeInto(ref v, text)` | built | Adds to a `List<byte>`; an error leaves it as it was |
 | `base64::engine::general_purpose::STANDARD.encode(bytes)`, `.decode(text)` | `Base64.encode(read bytes)`, `Base64.decode(text)` | built | Strict as the crate is: no white space, padding where it belongs, no bits left over |
 | `URL_SAFE_NO_PAD.encode(bytes)`, `.decode(text)` | `Base64.encodeUrl(read bytes)`, `Base64.decodeUrl(text)` | built | `-` and `_`, no padding |
 | `base64::DecodeError::InvalidByte(i, b)`, `InvalidLength` | `DecodeError.InvalidCharacter(position)`, `InvalidLength` | built | The place of the byte, not the byte |

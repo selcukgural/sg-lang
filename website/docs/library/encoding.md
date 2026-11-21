@@ -21,6 +21,7 @@ after they are taken out (`text.replaceAll("\n", "")`).
 | `string Hex.encode(read byte[] data)` | Two lower-case digits for each byte |
 | `void Hex.encodeInto(ref string target, read byte[] data)` | The same digits written at the end of `target`, with no new text made |
 | `Result<List<byte>, DecodeError> Hex.decode(read string text)` | The bytes of the digits, upper or lower case |
+| `Result<void, DecodeError> Hex.decodeInto(ref List<byte> target, read string text)` | The same bytes added at the end of `target`; a text that is not hex leaves it as it was |
 
 ## `Base64`
 
@@ -30,6 +31,8 @@ after they are taken out (`text.replaceAll("\n", "")`).
 | `string Base64.encodeUrl(read byte[] data)` | The alphabet safe in a URL or a file name (`-`, `_`), without padding |
 | `Result<List<byte>, DecodeError> Base64.decode(read string text)` | The bytes of a padded text in the standard alphabet |
 | `Result<List<byte>, DecodeError> Base64.decodeUrl(read string text)` | The bytes of an unpadded text in the URL alphabet |
+| `void Base64.encodeInto(ref string target, read byte[] data)`, `encodeUrlInto` | The digits of `encode` or `encodeUrl` written at the end of `target` |
+| `Result<void, DecodeError> Base64.decodeInto(ref List<byte> target, read string text)`, `decodeUrlInto` | The bytes of `decode` or `decodeUrl` added at the end of `target`; a text that cannot be read leaves it as it was |
 
 ## `DecodeError`
 
@@ -97,3 +100,42 @@ SGVsbG9=: not Base64 at 6
 
 `SGVsbG9=` has a digit whose last bits are not zero: it would read as the same five bytes as `SGVsbG8=`, so it
 is refused.
+
+## Many values, one buffer
+
+`encode` and `decode` make a new text or list for each call. A program that writes or reads many values keeps
+one and gives it to the forms that end in `Into`, clearing it in between: nothing is made for each value.
+
+```sg
+void main() {
+    var text = string.withCapacity(64)
+    var bytes = List<byte>.withCapacity(48)
+    for word in (List<string> { "one", "two", "three" }) {
+        text.clear()
+        Base64.encodeUrlInto(ref text, word.asBytes())
+        bytes.clear()
+        match Base64.decodeUrlInto(ref bytes, read text) {
+            Ok => print($"{word} -> {text} -> {bytes.length()} bytes")
+            Error(cause) => print(cause)
+        }
+    }
+}
+```
+
+It prints:
+
+```text
+one -> b25l -> 3 bytes
+two -> dHdv -> 3 bytes
+three -> dGhyZWU -> 5 bytes
+```
+
+## How fast
+
+A digit is read through a table of 256 values, Base64 goes six bytes or eight digits at a step, and what is
+written goes through a block of 64 bytes on the stack. On an Apple M3 Max, 100 MB go into Base64 in 0.069
+seconds and come back in 0.066, against 0.050 and 0.057 for Rust's `base64`; ten million values of 32 bytes
+go into hex and back in 0.62 seconds, against 1.85 for Rust's `hex` and 0.40 for Zig, and ten million tokens
+into the Base64 of URLs and back in 0.61 seconds, against 0.44 for Rust and Zig ([the
+tables](../benchmarks/library.md#encoding)).
+

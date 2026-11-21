@@ -1,0 +1,70 @@
+// The text the trial of `std`'s Unicode reads (choices 1633, 1661): lines of words of many writings,
+// made from a seed, so the same seed gives the same bytes on every machine and nothing large is kept
+// in the repository. The text is in NFC; `trials/measure.py` makes its NFD with Python's
+// `unicodedata`, a program apart from SG.
+//
+//     sg build trials/inputs/unicode.sg --release -o target/unicode-input
+//     target/unicode-input 100 1 > target/unicode-100.txt      about 100 MB, seed 1
+//
+// A line is about a hundred bytes of words, with a number and a mark between them now and then:
+// Turkish, French, German, Vietnamese (a letter with two marks), Greek with its old accents,
+// Cyrillic, Korean (each syllable two or three letters in NFD), Japanese (a kana with its mark of
+// voicing), Arabic, Devanagari, emoji and plain ASCII.
+//
+//     şehir ἐγένετο 한국어 Tiếng 2026 the phở, がっこう مرحبا 👍🏽 Größe
+
+List<string> words() {
+    return List<string> {
+        "şehir", "güneş", "ağaç", "çiçek", "İstanbul", "öğretmen",
+        "café", "élève", "garçon", "naïve", "être", "où",
+        "Größe", "Straße", "Müller", "über",
+        "Tiếng", "Việt", "người", "phở", "đường", "nước", "những",
+        "ἀρχή", "ἐγένετο", "λόγος", "ὁ", "Θεοῦ", "ᾠδή",
+        "привет", "мир", "ёлка", "Москва", "йогурт",
+        "한국어", "안녕하세요", "서울", "읽다",
+        "日本語", "ひらがな", "カタカナ", "がっこう", "パン",
+        "مرحبا", "العربية", "سلام",
+        "हिन्दी", "नमस्ते", "भारत",
+        "😀", "👍🏽", "🇹🇷",
+        "the", "data", "error", "value", "user", "line",
+    }
+}
+
+List<string> marks() {
+    return List<string> { ",", ".", ";", "!", "?", " -", " (ok)", " «x»", " №", " €5", " ٣" }
+}
+
+void main(List<string> args) {
+    if args.length() != 2 {
+        printError("usage: unicode <megabytes> <seed>")
+        exit(2)
+    }
+    long megabytes = long.parse(read args[0]) ?? panic("the megabytes are a whole number")
+    long seed = long.parse(read args[1]) ?? panic("the seed is a whole number")
+    long wanted = megabytes * 1_000_000
+    var random = Random.fromSeed(seed)
+    var words = words()
+    var marks = marks()
+    long written = 0
+    string line = string.withCapacity(256)
+    while written < wanted {
+        line.clear()
+        int target = random.nextInt(60, 140)
+        while line.length() < target {
+            if line.length() > 0 {
+                line.write(' ')
+            }
+            int pick = random.nextInt(0, 12)
+            if pick == 0 {
+                line.write($"{random.nextInt(0, 10000)}")
+            } else {
+                line.write(words[random.nextInt(0, (int)words.length())])
+            }
+            if pick == 1 {
+                line.write(marks[random.nextInt(0, (int)marks.length())])
+            }
+        }
+        print(line)
+        written += line.length() + 1
+    }
+}

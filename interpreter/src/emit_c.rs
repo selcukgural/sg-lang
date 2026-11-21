@@ -2897,6 +2897,11 @@ static int sg_quote_char(char* out, uint32_t c) {
     return n;
 }
 static void sg_put_quoted_char(sg_string* out, uint32_t c) { char b[16]; sg_put(out, b, sg_quote_char(b, c)); }
+/* `text.write(c)` of a character: an ASCII one into room the text has is one byte, written here. */
+static inline void sg_put_char(sg_string* out, uint32_t c) {
+    if (__builtin_expect(c < 0x80 && out->len < out->cap, 1)) { out->ptr[out->len++] = (uint8_t)c; return; }
+    char b[4]; sg_put(out, b, sg_utf8(b, c));
+}
 SG_COLD static _Noreturn void sg_assert_fail_c(const char* text, uint32_t l, uint32_t r, const char* loc) {
     char a[16], b[16];
     int an = sg_quote_char(a, l), bn = sg_quote_char(b, r);
@@ -19102,6 +19107,10 @@ impl<'a> Emitter<'a> {
     /// What `f.write(x)` and `text.write(x)` become: each piece of `x` added at the end of the
     /// text that `out` points to.
     fn write_into(&mut self, out: &str, arg: &'a Expr) -> Res<String> {
+        if matches!(arg.ty.strip_borrow(), Ty::Char) {
+            let value = self.value(arg)?;
+            return Ok(format!("sg_put_char({out}, {value})"));
+        }
         let mut lines = Vec::new();
         for piece in self.pieces(arg, true)? {
             lines.push(match piece {

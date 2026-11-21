@@ -38,3 +38,12 @@ url Zg==: InvalidCharacter(2)
 true
 true
 true
+id=Zm9vYg== _-8
+read
+read
+read
+[1, 2, 102, 111, 111, 255, 239, 202, 254]
+InvalidCharacter(402), 9 bytes kept
+InvalidCharacter(600), 9 bytes kept
+true
+true

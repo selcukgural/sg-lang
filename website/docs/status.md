@@ -50,7 +50,9 @@ memory. Compression and zip came next: SG opens gzip faster than `flate2`'s defa
 their time with zlib's bytes, reads zip archives faster than the `zip` crate and Zig, and lists 100,000
 entries in less memory than the `zip` crate; `flate2` with `zlib-rs` compresses faster by another algorithm. SHA-256, HMAC, CRC-32 and Adler-32 followed: a compiled program hands them to the processor's own
 instructions where it has them, and takes at most 1.3 times the time of Rust and Zig, where it took six to
-nine.
+nine. Then hex and Base64, made five to seven times faster, to between 1.25 and 1.54 times the faster of Rust
+and Zig and three times as fast as Rust's `hex`; and the categories and normal forms of Unicode, as fast as
+ICU4X or faster.
 
 ## Not yet
 

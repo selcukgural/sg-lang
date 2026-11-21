@@ -26,6 +26,8 @@ and their tables are in [The library against Rust and Zig](../benchmarks/library
 | [std/zip](std/zip) | 100 MB written as 10,001 entries, the entries of an archive read, 100,000 entries listed | 150 |
 | [std/hash](std/hash) | The SHA-256 of 100 MB, ten million hashes chained, an HMAC-SHA-256 of each of 921,952 lines | 151 |
 | [std/checksum](std/checksum) | The CRC-32 and the Adler-32 of 100 MB, the CRC-32 of each of 921,952 lines | 151 |
+| [std/encoding](std/encoding) | 100 MB written in Base64 and read back, ten million values of 32 bytes in hex and back, ten million tokens in the Base64 of URLs and back | 152 |
+| [std/unicode](std/unicode) | The category of each character of 100 MB in many writings, each line into NFC and into NFD, each line checked to be NFC | 152 |
 
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
@@ -35,18 +37,21 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 - Each trial has a folder with `sg/`, `rust/` and `zig/`. Rust uses its standard library and the crates
   people use for the job (`regex`), pinned in `Cargo.lock`, and threads rather than an async runtime. Zig
   uses its standard library, and a library of C where Zig has none, as Zig programs do: `grep` links
-  PCRE2 (with its JIT) through `build.zig` (1541). SG uses only what comes with the language.
+  PCRE2 (with its JIT) through `build.zig` (1541), and `std/unicode` ICU4C, Zig having no categories or
+  normal forms (1659). SG uses only what comes with the language.
 - The three give the same output, byte for byte, on the same input; their errors are worded each in its
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
   megabyte and holds them to what Rust and Zig print.
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
   same bytes on every machine, [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`, and
-  [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression`. The gzip and
-  the archives that the programs read are made by Python's `gzip` and `zipfile`, which none of the
-  programs measured is.
+  [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression` and
+  `std/encoding`, and [`inputs/unicode.sg`](inputs/unicode.sg) the text in many writings of `std/unicode`.
+  The gzip, the archives, the Base64 and the NFD that the programs read are made by Python's `gzip`,
+  `zipfile`, `base64` and `unicodedata`, which none of the programs measured is.
 - Where each language may lawfully write other bytes (compressed data, an archive), the program writes
   into a file, and `measure.py` opens each one with Python and holds it to the input before anything is
-  timed; the size each wrote is printed under its table.
+  timed; the size each wrote is printed under its table. What is too large for the output and must be
+  the same everywhere (Base64, a normal form) goes into a file too, held to what Python makes of the input.
 
 ## Fairness (1554)
 
@@ -55,7 +60,7 @@ No measurement is made, chosen or reported so that it favours SG. The rules are 
 
 ## Measuring
 
-From the repository's root, with Rust, Zig 0.17, PCRE2 and a C compiler installed:
+From the repository's root, with Rust, Zig 0.17, PCRE2, ICU4C and a C compiler installed:
 
 ```
 python3 trials/measure.py               # every trial: checked, then measured

@@ -1,0 +1,131 @@
+// `unicode`: `std`'s categories and normal forms of Unicode measured (choices 1553, 1629-1637,
+// 1659, 1661, 1662). Four ways of using them, each on every line of FILE, without its end (`\n` or
+// `\r\n`):
+//
+//     unicode category FILE      the general category of each character; how many characters of
+//                                each category, in the order of `UnicodeCategory`
+//     unicode nfc FILE OUT       each line in NFC, written into OUT with `\n` after it
+//     unicode nfd FILE OUT       each line in NFD, the same way
+//     unicode check FILE         whether each line is in NFC; how many lines, and how many are
+//
+// `nfc` and `nfd` print how many lines they wrote. A file that cannot be read or written is told on
+// the standard error, with exit code 1; a wrong use, with 2.
+
+// The place of a category in the counts, in the order of `UnicodeCategory`.
+nint place(UnicodeCategory c) {
+    match c {
+        UppercaseLetter => return 0
+        LowercaseLetter => return 1
+        TitlecaseLetter => return 2
+        ModifierLetter => return 3
+        OtherLetter => return 4
+        NonspacingMark => return 5
+        SpacingMark => return 6
+        EnclosingMark => return 7
+        DecimalNumber => return 8
+        LetterNumber => return 9
+        OtherNumber => return 10
+        ConnectorPunctuation => return 11
+        DashPunctuation => return 12
+        OpenPunctuation => return 13
+        ClosePunctuation => return 14
+        InitialPunctuation => return 15
+        FinalPunctuation => return 16
+        OtherPunctuation => return 17
+        MathSymbol => return 18
+        CurrencySymbol => return 19
+        ModifierSymbol => return 20
+        OtherSymbol => return 21
+        SpaceSeparator => return 22
+        LineSeparator => return 23
+        ParagraphSeparator => return 24
+        Control => return 25
+        Format => return 26
+        PrivateUse => return 27
+        Unassigned => return 28
+    }
+}
+
+// Every category, in the order of the counts.
+const UnicodeCategory[29] Categories = {
+    UnicodeCategory.UppercaseLetter, UnicodeCategory.LowercaseLetter, UnicodeCategory.TitlecaseLetter,
+    UnicodeCategory.ModifierLetter, UnicodeCategory.OtherLetter, UnicodeCategory.NonspacingMark,
+    UnicodeCategory.SpacingMark, UnicodeCategory.EnclosingMark, UnicodeCategory.DecimalNumber,
+    UnicodeCategory.LetterNumber, UnicodeCategory.OtherNumber, UnicodeCategory.ConnectorPunctuation,
+    UnicodeCategory.DashPunctuation, UnicodeCategory.OpenPunctuation, UnicodeCategory.ClosePunctuation,
+    UnicodeCategory.InitialPunctuation, UnicodeCategory.FinalPunctuation, UnicodeCategory.OtherPunctuation,
+    UnicodeCategory.MathSymbol, UnicodeCategory.CurrencySymbol, UnicodeCategory.ModifierSymbol,
+    UnicodeCategory.OtherSymbol, UnicodeCategory.SpaceSeparator, UnicodeCategory.LineSeparator,
+    UnicodeCategory.ParagraphSeparator, UnicodeCategory.Control, UnicodeCategory.Format,
+    UnicodeCategory.PrivateUse, UnicodeCategory.Unassigned
+}
+
+Result<void, IoError> category(read string path) {
+    var reader = try File.openText(read path)
+    string line = ""
+    var counts = long[29]
+    while try reader.readLine(ref line) {
+        for c in line.chars() {
+            counts[place(c.category())] += 1
+        }
+    }
+    for i in 0..29 {
+        print($"{Categories[i].abbreviation()} {counts[i]}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> normalize(read string path, read string out, NormalizationForm form) {
+    var reader = try File.openText(read path)
+    var target = try File.createText(read out)
+    string line = ""
+    long lines = 0
+    while try reader.readLine(ref line) {
+        try target.writeLine(line.normalize(form))
+        lines += 1
+    }
+    try target.close()
+    print($"lines {lines}")
+    return Ok()
+}
+
+Result<void, IoError> check(read string path) {
+    var reader = try File.openText(read path)
+    string line = ""
+    long lines = 0
+    long normalized = 0
+    while try reader.readLine(ref line) {
+        if line.isNormalized(NormalizationForm.C) {
+            normalized += 1
+        }
+        lines += 1
+    }
+    print($"lines {lines}\nnormalized {normalized}")
+    return Ok()
+}
+
+void main(List<string> args) {
+    bool one = args.length() == 2 && (args[0] == "category" || args[0] == "check")
+    bool two = args.length() == 3 && (args[0] == "nfc" || args[0] == "nfd")
+    if !one && !two {
+        printError("usage: unicode category FILE | nfc FILE OUT | nfd FILE OUT | check FILE")
+        exit(2)
+    }
+    Result<void, IoError> result = Ok()
+    if args[0] == "category" {
+        result = category(read args[1])
+    } else if args[0] == "check" {
+        result = check(read args[1])
+    } else if args[0] == "nfc" {
+        result = normalize(read args[1], read args[2], NormalizationForm.C)
+    } else {
+        result = normalize(read args[1], read args[2], NormalizationForm.D)
+    }
+    match result {
+        Ok => {}
+        Error(cause) => {
+            printError($"unicode: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

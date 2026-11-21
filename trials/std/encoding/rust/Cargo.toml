@@ -1,0 +1,10 @@
+[package]
+name = "encoding"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `base64` and `hex` as people use them, with their default features (choice 1659).
+[dependencies]
+base64 = "0.22.1"
+hex = "0.4.3"

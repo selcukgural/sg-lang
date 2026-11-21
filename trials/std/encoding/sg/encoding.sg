@@ -1,0 +1,200 @@
+// `encoding`: `std`'s hex and Base64 measured (choices 1553, 1629-1637, 1659, 1660). Four ways of
+// using them:
+//
+//     encoding encode FILE OUT    FILE in Base64, the standard alphabet, padded, written into OUT;
+//                                 FILE is read 48 KB at a time (a multiple of three, so that the
+//                                 pieces written one after another are one text)
+//     encoding decode FILE OUT    FILE, a text in Base64, read back into bytes 64 KB of text at a
+//                                 time and written into OUT
+//     encoding hex COUNT          COUNT values of 32 bytes, each written as hex and read back
+//     encoding tokens COUNT       COUNT tokens of 16 to 48 bytes, each written in the Base64 of URLs
+//                                 and read back
+//
+// Each writes into a text or a list kept from one call to the next (`encodeInto`, `decodeInto`),
+// as the programs in Rust and Zig write into buffers they keep. `encode` and `decode` print how many
+// bytes they wrote. `hex` and `tokens` make their bytes with
+// SplitMix64 from the seed 1 and print how many they made, how many characters the texts had, a
+// sum of one character of each text and every last 8 bytes read back put together with XOR. A file
+// that cannot be read or written is told on the standard error, with exit code 1, as is a text
+// that is not Base64; a wrong use, with 2.
+
+struct SplitMix {
+    ulong state
+
+    ulong next(ref this) {
+        this.state = this.state.wrappingAdd(0x9E3779B97F4A7C15)
+        ulong z = this.state
+        z = (z ^ (z >> 30)).wrappingMultiply(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> 27)).wrappingMultiply(0x94D049BB133111EB)
+        return z ^ (z >> 31)
+    }
+
+    // `count` bytes into `buffer`, from as many values as they need, each value's lowest byte first.
+    void fill(ref this, ref byte[] buffer, nint count) {
+        nint at = 0
+        while at + 8 <= count {
+            ulong z = this.next()
+            for j in 0..8 {
+                buffer[at + j] = (z >> (j * 8)).wrappingToByte()
+            }
+            at += 8
+        }
+        if at < count {
+            ulong z = this.next()
+            for j in 0..count - at {
+                buffer[at + j] = (z >> (j * 8)).wrappingToByte()
+            }
+        }
+    }
+}
+
+// The last 8 bytes of `bytes`, the first of them lowest.
+ulong lastEight(read List<byte> bytes) {
+    ulong value = 0
+    nint end = bytes.length()
+    for j in 0..8 {
+        value |= (ulong)bytes[end - 8 + j] << (j * 8)
+    }
+    return value
+}
+
+Result<void, IoError> encode(read string path, read string out) {
+    var source = try File.openText(read path)
+    var target = try File.createText(read out)
+    var buffer = byte[49152]
+    var text = string.withCapacity(65536)
+    long written = 0
+    while true {
+        nint count = try source.readBytes(ref buffer)
+        if count == 0 {
+            break
+        }
+        text.clear()
+        Base64.encodeInto(ref text, buffer[..count])
+        try target.writeBytes(text.asBytes())
+        written += text.length()
+    }
+    try target.close()
+    print($"bytes {written}")
+    return Ok()
+}
+
+Result<void, IoError> decode(read string path, read string out) {
+    var source = try File.openText(read path)
+    var target = try File.createText(read out)
+    var buffer = byte[65536]
+    var bytes = List<byte>.withCapacity(49152)
+    long offset = 0
+    long written = 0
+    while true {
+        nint count = try source.readBytes(ref buffer)
+        if count == 0 {
+            break
+        }
+        bytes.clear()
+        match string.fromUtf8(buffer[..count]) {
+            Error(_) => notBase64(read path, DecodeError.InvalidCharacter(offset))
+            Ok(text) => match Base64.decodeInto(ref bytes, read text) {
+                Ok => {
+                    try target.writeBytes(read bytes)
+                    written += bytes.length()
+                }
+                Error(InvalidCharacter(at)) => notBase64(read path, DecodeError.InvalidCharacter(offset + at))
+                Error(cause) => notBase64(read path, cause)
+            }
+        }
+        offset += count
+    }
+    try target.close()
+    print($"bytes {written}")
+    return Ok()
+}
+
+void notBase64(read string path, DecodeError cause) {
+    printError($"encoding: {path}: not Base64: {cause}")
+    exit(1)
+}
+
+void hex(long count) {
+    var random = SplitMix { state = 1 }
+    var value = byte[32]
+    var text = string.withCapacity(64)
+    var back = List<byte>.withCapacity(32)
+    long digits = 0
+    ulong sum = 0
+    ulong all = 0
+    for i in 0..count {
+        random.fill(ref value, 32)
+        text.clear()
+        Hex.encodeInto(ref text, value[..])
+        back.clear()
+        match Hex.decodeInto(ref back, read text) {
+            Ok => {}
+            Error(_) => panic("hex reads back")
+        }
+        digits += text.length()
+        sum += text.asBytes()[(nint)(i % text.length())]
+        all ^= lastEight(read back)
+    }
+    print($"values {count}\ndigits {digits}\nsum {sum}\nxor {all:x16}")
+}
+
+void tokens(long count) {
+    var random = SplitMix { state = 1 }
+    var token = byte[48]
+    var text = string.withCapacity(64)
+    var back = List<byte>.withCapacity(48)
+    long characters = 0
+    ulong sum = 0
+    ulong all = 0
+    for i in 0..count {
+        nint length = 16 + (nint)(random.next() % 33)
+        random.fill(ref token, length)
+        text.clear()
+        Base64.encodeUrlInto(ref text, token[..length])
+        back.clear()
+        match Base64.decodeUrlInto(ref back, read text) {
+            Ok => {}
+            Error(_) => panic("Base64 reads back")
+        }
+        characters += text.length()
+        sum += text.asBytes()[(nint)(i % text.length())]
+        all ^= lastEight(read back)
+    }
+    print($"tokens {count}\ncharacters {characters}\nsum {sum}\nxor {all:x16}")
+}
+
+void main(List<string> args) {
+    bool files = args.length() == 3 && (args[0] == "encode" || args[0] == "decode")
+    bool counts = args.length() == 2 && (args[0] == "hex" || args[0] == "tokens")
+    if !files && !counts {
+        printError("usage: encoding encode FILE OUT | decode FILE OUT | hex COUNT | tokens COUNT")
+        exit(2)
+    }
+    if counts {
+        long count = long.parse(read args[1]) ?? -1
+        if count < 0 {
+            printError("usage: encoding encode FILE OUT | decode FILE OUT | hex COUNT | tokens COUNT")
+            exit(2)
+        }
+        if args[0] == "hex" {
+            hex(count)
+        } else {
+            tokens(count)
+        }
+        return
+    }
+    Result<void, IoError> result = Ok()
+    if args[0] == "encode" {
+        result = encode(read args[1], read args[2])
+    } else {
+        result = decode(read args[1], read args[2])
+    }
+    match result {
+        Ok => {}
+        Error(cause) => {
+            printError($"encoding: {args[1]}: {cause}")
+            exit(1)
+        }
+    }
+}

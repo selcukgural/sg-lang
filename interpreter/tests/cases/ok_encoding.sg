@@ -1,6 +1,9 @@
 // Hex and Base64 (choice 1407): the vectors of RFC 4648, the strict reading (a space, a wrong length,
 // padding where it cannot be and bits left over beyond the last byte are errors with their place), and
-// every byte value written and read back in each encoding.
+// every byte value written and read back in each encoding. The forms that write into a text or a
+// list the program keeps (choice 1665): they add at the end, and a text that cannot be read leaves
+// the list as it was, also when the error comes after a block of bytes was added; long texts cross
+// the blocks the functions write through.
 
 void hex(read string text) {
     match Hex.decode(text) {
@@ -20,6 +23,14 @@ void base64Url(read string text) {
     match Base64.decodeUrl(text) {
         Ok(bytes) => print($"url {text}: {bytes}")
         Error(cause) => print($"url {text}: {cause}")
+    }
+}
+
+// What a read into a list gave, as a word.
+string outcome(Result<void, DecodeError> result) {
+    match result {
+        Ok => return "read"
+        Error(cause) => return $"{cause}".toString()
     }
 }
 
@@ -60,4 +71,34 @@ void main() {
     print(backUrl == all)
     var backHex = Hex.decode(read Hex.encode(read all)) ?? List<byte>()
     print(backHex == all)
+    var kept = "id="
+    Base64.encodeInto(ref kept, "foob".asBytes())
+    kept.write(' ')
+    Base64.encodeUrlInto(ref kept, read byte[2] { 0xFF, 0xEF })
+    print(kept)
+    var into = List<byte> { 1, 2 }
+    print(outcome(Base64.decodeInto(ref into, "Zm9v")))
+    print(outcome(Base64.decodeUrlInto(ref into, "_-8")))
+    print(outcome(Hex.decodeInto(ref into, "cafe")))
+    print(into)
+    var long = "QUJD".repeat(100)
+    long.write("QU=D")
+    match Base64.decodeInto(ref into, read long) {
+        Ok => print("read")
+        Error(cause) => print($"{cause}, {into.length()} bytes kept")
+    }
+    var longHex = "ab".repeat(300)
+    longHex.write("zz")
+    match Hex.decodeInto(ref into, read longHex) {
+        Ok => print("read")
+        Error(cause) => print($"{cause}, {into.length()} bytes kept")
+    }
+    var many = List<byte>()
+    for i in 0..1000 {
+        many.add((byte)(i * 7 % 256))
+    }
+    var again = List<byte>()
+    print(outcome(Base64.decodeInto(ref again, read Base64.encode(read many))) == "read" && again == many)
+    again.clear()
+    print(outcome(Hex.decodeInto(ref again, read Hex.encode(read many))) == "read" && again == many)
 }

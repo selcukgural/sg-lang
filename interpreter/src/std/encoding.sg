@@ -3,20 +3,85 @@
 // alphabet or padding where it cannot be is an error with its place, never skipped, so that two
 // programs cannot read one text as two different sets of bytes.
 
-const char[16] HexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
-
-const char[64] Base64Digits = {
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-    'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-    'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
-    'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'
+// The hex digits, as the bytes of their characters.
+const byte[16] HexDigits = {
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102
 }
 
-const char[64] Base64UrlDigits = {
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-    'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-    'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
-    'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '_'
+// The standard Base64 alphabet, as the bytes of its characters.
+const byte[64] Base64Digits = {
+    65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+    81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 97, 98, 99, 100, 101, 102,
+    103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+    119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 43, 47
+}
+
+// The alphabet of URLs.
+const byte[64] Base64UrlDigits = {
+    65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+    81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 97, 98, 99, 100, 101, 102,
+    103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+    119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 45, 95
+}
+
+// The value of each byte as a hex digit, upper or lower case; 255 for one that is not.
+const byte[256] HexValues = {
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255,
+    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+}
+
+// The value of each byte as a digit of the standard Base64 alphabet; 255 for one that is not.
+const byte[256] Base64Values = {
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 62, 255, 255, 255, 63,
+    52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 255, 255, 255, 255, 255, 255,
+    255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 255, 255, 255, 255, 255,
+    255, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+}
+
+// The same for the alphabet of URLs.
+const byte[256] Base64UrlValues = {
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 62, 255, 255,
+    52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 255, 255, 255, 255, 255, 255,
+    255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 255, 255, 255, 255, 63,
+    255, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
 }
 
 // Why a text could not be read back into bytes.
@@ -29,6 +94,10 @@ public enum DecodeError : Copyable, Equatable, Hashable, Formattable {
     InvalidLength
 }
 
+// Each function writes what it makes into a block of 64 bytes on the stack first and puts the block
+// into the text or the list when it is full: a byte written there is one store, where one written
+// into the text itself is a store and a test of its room.
+
 public struct Hex {
     // The bytes as hex, two lower-case digits for each: `Hex.encode("Hi".asBytes())` is `"4869"`.
     public string encode(read byte[] data) {
@@ -39,142 +108,187 @@ public struct Hex {
 
     // The same digits written at the end of `target`, with no text made for them.
     public void encodeInto(ref string target, read byte[] data) {
+        var block = byte[64]
+        nint n = 0
         for b in data {
-            target.write(HexDigits[b >> 4])
-            target.write(HexDigits[b & 15])
+            if n == 64 {
+                target.write(string.fromUtf8(block[..]) ?? "")
+                n = 0
+            }
+            block[n] = HexDigits[b >> 4]
+            block[n + 1] = HexDigits[b & 15]
+            n += 2
         }
+        target.write(string.fromUtf8(block[..n]) ?? "")
     }
 
     // The bytes of a hex text, upper or lower case: two digits for each byte, nothing else.
     public Result<List<byte>, DecodeError> decode(read string text) {
+        var bytes = List<byte>.withCapacity(text.length() / 2)
+        try Hex.decodeInto(ref bytes, text)
+        return Ok(bytes)
+    }
+
+    // The same bytes added at the end of `target`, with no list made for them. A text that is not
+    // hex leaves `target` as it was.
+    public Result<void, DecodeError> decodeInto(ref List<byte> target, read string text) {
         var digits = text.asBytes()
         if digits.length() % 2 != 0 {
             return Error(DecodeError.InvalidLength)
         }
-        var bytes = List<byte>()
+        nint start = target.length()
+        var block = byte[64]
+        nint n = 0
         nint i = 0
         while i < digits.length() {
-            int high = hexValue(digits[i])
-            if high < 0 {
-                return Error(DecodeError.InvalidCharacter((long)i))
-            }
-            int low = hexValue(digits[i + 1])
-            if low < 0 {
+            byte high = HexValues[digits[i]]
+            byte low = HexValues[digits[i + 1]]
+            if (high | low) > 15 {
+                undo(ref target, start)
+                if high > 15 {
+                    return Error(DecodeError.InvalidCharacter((long)i))
+                }
                 return Error(DecodeError.InvalidCharacter((long)(i + 1)))
             }
-            bytes.add((byte)(high * 16 + low))
+            if n == 64 {
+                target.addAll(block[..])
+                n = 0
+            }
+            block[n] = high << 4 | low
+            n += 1
             i += 2
         }
-        return Ok(bytes)
+        target.addAll(block[..n])
+        return Ok()
     }
 }
 
-// The value of one hex digit, or -1.
-int hexValue(byte c) {
-    if c >= '0' && c <= '9' {
-        return c - '0'
+// What a read that failed added to `list` taken out again, back to `length` items.
+void undo(ref List<byte> list, nint length) {
+    while list.length() > length {
+        _ = list.removeLast()
     }
-    if c >= 'a' && c <= 'f' {
-        return c - 'a' + 10
-    }
-    if c >= 'A' && c <= 'F' {
-        return c - 'A' + 10
-    }
-    return -1
 }
+
 
 public struct Base64 {
     // The bytes in the standard alphabet (`+` and `/`), padded with `=` to a multiple of four.
     public string encode(read byte[] data) {
-        return base64Encode(data, false)
+        var text = string.withCapacity((data.length() + 2) / 3 * 4)
+        base64EncodeInto(ref text, data, read Base64Digits, true)
+        return text
     }
 
     // The bytes in the alphabet safe in a URL or a file name (`-` and `_`), without padding.
     public string encodeUrl(read byte[] data) {
-        return base64Encode(data, true)
+        var text = string.withCapacity((data.length() + 2) / 3 * 4)
+        base64EncodeInto(ref text, data, read Base64UrlDigits, false)
+        return text
+    }
+
+    // The digits of `encode` written at the end of `target`, with no text made for them.
+    public void encodeInto(ref string target, read byte[] data) {
+        base64EncodeInto(ref target, data, read Base64Digits, true)
+    }
+
+    // The digits of `encodeUrl` written at the end of `target`.
+    public void encodeUrlInto(ref string target, read byte[] data) {
+        base64EncodeInto(ref target, data, read Base64UrlDigits, false)
     }
 
     // The bytes of a text in the standard alphabet, padded.
     public Result<List<byte>, DecodeError> decode(read string text) {
-        return base64Decode(text, false)
+        var bytes = List<byte>.withCapacity(text.length() / 4 * 3 + 2)
+        try base64DecodeInto(ref bytes, text, read Base64Values, true)
+        return Ok(bytes)
     }
 
     // The bytes of a text in the URL alphabet, unpadded.
     public Result<List<byte>, DecodeError> decodeUrl(read string text) {
-        return base64Decode(text, true)
+        var bytes = List<byte>.withCapacity(text.length() / 4 * 3 + 2)
+        try base64DecodeInto(ref bytes, text, read Base64UrlValues, false)
+        return Ok(bytes)
+    }
+
+    // The bytes of `decode` added at the end of `target`, with no list made for them. A text that
+    // is not Base64 leaves `target` as it was.
+    public Result<void, DecodeError> decodeInto(ref List<byte> target, read string text) {
+        return base64DecodeInto(ref target, text, read Base64Values, true)
+    }
+
+    // The bytes of `decodeUrl` added at the end of `target`, the same way.
+    public Result<void, DecodeError> decodeUrlInto(ref List<byte> target, read string text) {
+        return base64DecodeInto(ref target, text, read Base64UrlValues, false)
     }
 }
 
-string base64Encode(read byte[] data, bool url) {
-    var text = string.withCapacity((data.length() + 2) / 3 * 4)
+// The bytes in the alphabet `digits`, padded with `=` when `pad`, written at the end of `text`.
+void base64EncodeInto(ref string text, read byte[] data, read byte[64] digits, bool pad) {
+    var block = byte[64]
+    nint n = 0
     nint i = 0
+    // Six bytes at a time, eight digits, each step looking at its piece of the data and of the block
+    // once.
+    while i + 6 <= data.length() {
+        if n == 64 {
+            text.write(string.fromUtf8(block[..]) ?? "")
+            n = 0
+        }
+        var from = data[i..i + 6]
+        var to = ref block[n..n + 8]
+        ulong group = (ulong)from[0] << 40 | (ulong)from[1] << 32 | (ulong)from[2] << 24 | (ulong)from[3] << 16 | (ulong)from[4] << 8 | (ulong)from[5]
+        to[0] = digits[(nint)(group >> 42 & 63)]
+        to[1] = digits[(nint)(group >> 36 & 63)]
+        to[2] = digits[(nint)(group >> 30 & 63)]
+        to[3] = digits[(nint)(group >> 24 & 63)]
+        to[4] = digits[(nint)(group >> 18 & 63)]
+        to[5] = digits[(nint)(group >> 12 & 63)]
+        to[6] = digits[(nint)(group >> 6 & 63)]
+        to[7] = digits[(nint)(group & 63)]
+        n += 8
+        i += 6
+    }
     while i + 3 <= data.length() {
+        if n == 64 {
+            text.write(string.fromUtf8(block[..]) ?? "")
+            n = 0
+        }
         uint group = (uint)data[i] << 16 | (uint)data[i + 1] << 8 | (uint)data[i + 2]
-        writeSextets(ref text, group, 4, url)
+        block[n] = digits[(nint)(group >> 18)]
+        block[n + 1] = digits[(nint)(group >> 12 & 63)]
+        block[n + 2] = digits[(nint)(group >> 6 & 63)]
+        block[n + 3] = digits[(nint)(group & 63)]
+        n += 4
         i += 3
     }
+    text.write(string.fromUtf8(block[..n]) ?? "")
     nint left = data.length() - i
     if left == 1 {
-        writeSextets(ref text, (uint)data[i] << 16, 2, url)
-        if !url {
+        uint group = (uint)data[i] << 16
+        text.write((char)digits[(nint)(group >> 18)])
+        text.write((char)digits[(nint)(group >> 12 & 63)])
+        if pad {
             text.write("==")
         }
     } else if left == 2 {
-        writeSextets(ref text, (uint)data[i] << 16 | (uint)data[i + 1] << 8, 3, url)
-        if !url {
+        uint group = (uint)data[i] << 16 | (uint)data[i + 1] << 8
+        text.write((char)digits[(nint)(group >> 18)])
+        text.write((char)digits[(nint)(group >> 12 & 63)])
+        text.write((char)digits[(nint)(group >> 6 & 63)])
+        if pad {
             text.write('=')
         }
     }
-    return text
 }
 
-// The first `count` six-bit groups of a 24-bit group, as digits.
-void writeSextets(ref string text, uint group, int count, bool url) {
-    for k in 0..count {
-        nint sextet = (nint)(group >> (18 - 6 * k) & 63)
-        if url {
-            text.write(Base64UrlDigits[sextet])
-        } else {
-            text.write(Base64Digits[sextet])
-        }
-    }
-}
-
-// The value of one Base64 digit, or -1.
-int sextetValue(byte c, bool url) {
-    if c >= 'A' && c <= 'Z' {
-        return c - 'A'
-    }
-    if c >= 'a' && c <= 'z' {
-        return c - 'a' + 26
-    }
-    if c >= '0' && c <= '9' {
-        return c - '0' + 52
-    }
-    if url {
-        if c == '-' {
-            return 62
-        }
-        if c == '_' {
-            return 63
-        }
-    } else {
-        if c == '+' {
-            return 62
-        }
-        if c == '/' {
-            return 63
-        }
-    }
-    return -1
-}
-
-Result<List<byte>, DecodeError> base64Decode(read string text, bool url) {
+// The bytes of a text in the alphabet whose values are `values`, padded when `padded`, added at the
+// end of `bytes`; on an error `bytes` is left as it was.
+Result<void, DecodeError> base64DecodeInto(ref List<byte> bytes, read string text, read byte[256] values, bool padded) {
     var digits = text.asBytes()
     nint length = digits.length()
     // Padding, in the standard alphabet only: one or two `=` at the end of the last group.
     nint padding = 0
-    if !url {
+    if padded {
         if length % 4 != 0 {
             return Error(DecodeError.InvalidLength)
         }
@@ -188,37 +302,95 @@ Result<List<byte>, DecodeError> base64Decode(read string text, bool url) {
         return Error(DecodeError.InvalidLength)
     }
     nint count = length - padding
-    var bytes = List<byte>()
+    nint start = bytes.length()
+    // Whole groups of four digits, each three bytes.
+    var block = byte[60]
+    nint n = 0
+    nint whole = count - count % 4
+    nint i = 0
+    // Eight digits at a time, six bytes, each step looking at its piece of the text and of the block
+    // once.
+    while i + 8 <= whole {
+        if n == 60 {
+            bytes.addAll(block[..])
+            n = 0
+        }
+        var from = digits[i..i + 8]
+        ulong a = values[from[0]]
+        ulong b = values[from[1]]
+        ulong c = values[from[2]]
+        ulong d = values[from[3]]
+        ulong e = values[from[4]]
+        ulong f = values[from[5]]
+        ulong g = values[from[6]]
+        ulong h = values[from[7]]
+        if (a | b | c | d | e | f | g | h) > 63 {
+            break
+        }
+        ulong group = a << 42 | b << 36 | c << 30 | d << 24 | e << 18 | f << 12 | g << 6 | h
+        var to = ref block[n..n + 6]
+        to[0] = (byte)(group >> 40 & 255)
+        to[1] = (byte)(group >> 32 & 255)
+        to[2] = (byte)(group >> 24 & 255)
+        to[3] = (byte)(group >> 16 & 255)
+        to[4] = (byte)(group >> 8 & 255)
+        to[5] = (byte)(group & 255)
+        n += 6
+        i += 8
+    }
+    // The rest four at a time; a group of eight with a wrong digit is looked at here again, to find
+    // its place.
+    while i < whole {
+        byte a = values[digits[i]]
+        byte b = values[digits[i + 1]]
+        byte c = values[digits[i + 2]]
+        byte d = values[digits[i + 3]]
+        if (a | b | c | d) > 63 {
+            nint wrong = i
+            while values[digits[wrong]] <= 63 {
+                wrong += 1
+            }
+            undo(ref bytes, start)
+            return Error(DecodeError.InvalidCharacter((long)wrong))
+        }
+        if n == 60 {
+            bytes.addAll(block[..])
+            n = 0
+        }
+        uint group = (uint)a << 18 | (uint)b << 12 | (uint)c << 6 | (uint)d
+        block[n] = (byte)(group >> 16)
+        block[n + 1] = (byte)(group >> 8 & 255)
+        block[n + 2] = (byte)(group & 255)
+        n += 3
+        i += 4
+    }
+    bytes.addAll(block[..n])
     uint group = 0
     int held = 0
-    for i in 0..count {
-        int value = sextetValue(digits[i], url)
-        if value < 0 {
-            return Error(DecodeError.InvalidCharacter((long)i))
+    for k in whole..count {
+        byte value = values[digits[k]]
+        if value > 63 {
+            undo(ref bytes, start)
+            return Error(DecodeError.InvalidCharacter((long)k))
         }
         group = group << 6 | (uint)value
         held += 1
-        if held == 4 {
-            bytes.add((byte)(group >> 16))
-            bytes.add((byte)(group >> 8 & 255))
-            bytes.add((byte)(group & 255))
-            group = 0
-            held = 0
-        }
     }
     // A last group of two or three digits gives one or two bytes; the bits it has beyond them must be
     // zero, so that each set of bytes has one text only.
     if held == 2 {
         if group & 15 != 0 {
+            undo(ref bytes, start)
             return Error(DecodeError.InvalidCharacter((long)(count - 1)))
         }
         bytes.add((byte)(group >> 4))
     } else if held == 3 {
         if group & 3 != 0 {
+            undo(ref bytes, start)
             return Error(DecodeError.InvalidCharacter((long)(count - 1)))
         }
         bytes.add((byte)(group >> 10))
         bytes.add((byte)(group >> 2 & 255))
     }
-    return Ok(bytes)
+    return Ok()
 }

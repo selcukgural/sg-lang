@@ -1,0 +1,17 @@
+[package]
+name = "unicode"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# ICU4X as people use it, with its default features: `icu_properties` for the general category and
+# `icu_normalizer` for the normal forms, the fastest of Rust's (choice 1659). The feature
+# `unicode-normalization` builds the normal forms with the crate of that name instead, the one most
+# used; the categories stay ICU4X's.
+[dependencies]
+icu_normalizer = "2.1"
+icu_properties = "2.1"
+unicode-normalization = { version = "0.1.25", optional = true }
+
+[features]
+unicode-normalization = ["dep:unicode-normalization"]

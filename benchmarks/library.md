@@ -7,7 +7,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in [How it is measured](method.md), and so are the rules of fairness (1554). `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `command_line`, `encoding`, `environment`, `files`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`, `unicode`.
+Not measured yet: `atomic`, `command_line`, `environment`, `files`, `log`, `net`, `path`, `process`, `random`, `regex`, `signals`, `time`.
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
@@ -127,3 +127,57 @@ Rust is `crc32fast` 1.5.5 and `adler2` 2.0.1 (the Adler-32 of `miniz_oxide`) wit
 `crc32fast` folds with the processor's carry-less product, as SG does since 1656. Zig's `std.hash.Crc32`
 takes a byte at a time through one table. Reading 100 MB alone takes about 9 ms of each case. Before 1656
 and 1658, SG took 0.035 s, 0.038 s and 0.060 s.
+
+## encoding
+
+`trials/std/encoding`: `encode` writes 100 MB of bytes that do not repeat (`trials/inputs/bytes.sg`) in
+Base64, read 48 KB at a time, and `decode` reads Python's Base64 of them back, 64 KB of text at a time, each
+into a file that must be what Python's `base64` makes; `hex` writes ten million values of 32 bytes, the size
+of a SHA-256, as hex and reads each back, and `tokens` does the same with ten million tokens of 16 to 48
+bytes in the Base64 of URLs, both from SplitMix64 and with no file read. Each program writes into buffers it
+keeps from one call to the next: SG through `encodeInto` and `decodeInto` (1665). Apple M3 Max, 21 November
+2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 100 MB, written in Base64 | 0.069 s, 2.2 MB | 0.095 s, 2.2 MB | 0.050 s, 2.2 MB | 0.070 s, 2.1 MB | 0.072 s, 2.3 MB |
+| 133 MB of Base64, read back | 0.066 s, 2.2 MB | 0.093 s, 2.2 MB | 0.057 s, 2.2 MB | 0.053 s, 2.1 MB | 0.059 s, 2.3 MB |
+| 10,000,000 values of 32 bytes, in hex and back | 0.621 s, 1.9 MB | 0.733 s, 1.9 MB | 1.852 s, 2.0 MB | 0.402 s, 2.0 MB | 1.742 s, 2.1 MB |
+| 10,000,000 tokens, in Base64 for URLs and back | 0.605 s, 1.9 MB | 0.800 s, 1.9 MB | 0.443 s, 2.0 MB | 0.448 s, 2.0 MB | 0.510 s, 2.1 MB |
+| Size, stripped | 67 KB | 83 KB | 369 KB | 361 KB | 474 KB |
+| Lines | 169 | 169 | 137 | 152 | 152 |
+
+Rust is `base64` 0.22.1 and `hex` 0.4.3 with their default features, through `encode_slice`, `decode_slice`,
+`encode_to_slice` and `decode_to_slice`; Zig `std.base64` and `std.fmt.bytesToHex` and `hexToBytes`, whose
+hex of 32 bytes is an array of a size known when the program is compiled. SG reads its Base64 text checked to
+be UTF-8 first, as `decode` takes a `string`. Before 1664 and 1665 SG took 0.437 s, 0.635 s, 3.931 s and
+4.531 s: a character written into a text at a time, each digit read through a row of comparisons, the bytes
+added to a list that grew, and a new text and list for each value. What is still slower is in
+[Slower than C](slower-than-c.md#the-library).
+
+## unicode
+
+`trials/std/unicode`: on each of the 950,206 lines of 100 MB of text in many writings
+(`trials/inputs/unicode.sg`: Turkish, French, German, Vietnamese, Greek with its old accents, Cyrillic,
+Korean, Japanese, Arabic, Devanagari, emoji and ASCII; 43% of the characters past ASCII), `category` counts
+the general category of each character; `nfc` writes each line of the text in NFD (made by Python's
+`unicodedata`, 121 MB) in NFC, and `nfd` each line of the text in NFD, each into a file that must be what
+Python makes; `check` asks of each line whether it is in NFC. Apple M3 Max, 21 November 2026:
+
+| Case | SG | SG, checked | Rust | Rust, `unicode-normalization` | Zig | Zig, safe |
+|---|---|---|---|---|---|---|
+| 100 MB, the category of each character | 0.464 s, 2.0 MB | 0.480 s, 2.0 MB | 0.491 s, 2.1 MB | 0.488 s, 2.1 MB | 0.499 s, 2.2 MB | 0.524 s, 2.3 MB |
+| 121 MB in NFD, each line into NFC | 0.755 s, 2.3 MB | 0.766 s, 2.3 MB | 0.932 s, 2.2 MB | 1.301 s, 2.3 MB | 1.008 s, 2.5 MB | 1.013 s, 2.6 MB |
+| 100 MB in NFC, each line into NFD | 0.650 s, 2.4 MB | 0.660 s, 2.4 MB | 0.657 s, 2.2 MB | 1.087 s, 2.2 MB | 0.753 s, 2.5 MB | 0.766 s, 2.6 MB |
+| 950,206 lines, each checked to be NFC | 0.308 s, 2.0 MB | 0.310 s, 2.0 MB | 0.428 s, 2.2 MB | 0.492 s, 2.1 MB | 0.378 s, 2.4 MB | 0.381 s, 2.6 MB |
+| Size, stripped | 179 KB | 179 KB | 450 KB | 498 KB | 362 KB | 442 KB |
+| Lines | 111 | 111 | 143 | 143 | 133 | 133 |
+
+Rust is ICU4X, `icu_properties` 2.4.0 and `icu_normalizer` 2.4.0, with their default features, writing into
+a text it keeps; built once more with the feature `unicode-normalization`, its normal forms are those of the
+crate `unicode-normalization` 0.1.26, the one most used, and its categories still ICU4X's. Zig's library has
+neither, so the Zig program calls ICU4C 79.1, as the trial of compression calls zlib where Zig has no
+compressor: its normal forms take UTF-16, and each line is turned into UTF-16 and back, which is part of
+what is measured. ICU4C 79 has the tables of Unicode 18.0, SG and Python those of 17.0; no character of the
+text is new in 18.0, and every build writes the same bytes. Nothing had to be made faster for this table.
+

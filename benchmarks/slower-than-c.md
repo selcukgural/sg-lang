@@ -23,7 +23,20 @@ says what is slower, by how much and against what, the choice that measured it, 
   1612, 1613): SG looks up the record of each character a decomposition gives, for its class, and pushes the
   characters of a piece one at a time; ICU4X keeps the classes with the decompositions and copies a run of
   characters that have none at once. Candidates: the class of each character of a decomposition kept beside
-  it in `NORM_DECOMPOSED`, and a run of starters with nothing to change written straight to the output.
+  it in `NORM_DECOMPOSED`, and a run of starters with nothing to change written straight to the output. On the
+  text of the trial of `std/unicode` (choice 1662), each line of 100 MB decomposed on its own, SG takes the
+  time of ICU4X (0.650 s against 0.657 s).
+
+- **Hex and Base64** (`std/encoding`, choices 1660, 1664-1666): 1.54 times Zig on ten million values of 32
+  bytes in hex and back (0.621 s against 0.402 s; Rust's `hex` takes 1.852 s), 1.37 times Rust and Zig on ten
+  million tokens in the Base64 of URLs (0.605 s against 0.443 s), 1.38 times Rust writing 100 MB in Base64
+  (0.069 s against 0.050 s, as Zig) and 1.25 times Zig reading it back (0.066 s against 0.053 s). Each call
+  writes through a block of 64 bytes on the stack, which SG fills with zeros first, as it does every array, and
+  hands the block to the text through `string.fromUtf8` and a copy, or to the list through `addAll`; for 32
+  bytes that is most of the work. Zig's `bytesToHex` gives an array whose size is known when the program is
+  compiled, with nothing made or copied, and Rust's `base64` writes eight digits into the buffer it is given
+  with one store. Candidates: an array that is not filled with zeros where every byte of it is written before
+  it is read, which the compiler can prove here; bytes written into a text where they are known to be ASCII.
 
 - **CRC-32 of short pieces, and of much at once** (`std/checksum`, 1.26 times `crc32fast` on the 921,952
   lines of the log, 0.044 s against 0.035 s, and 1.3 times on 100 MB, 0.013 s against 0.010 s; choices

@@ -1252,6 +1252,102 @@ fn the_trials_of_hash_and_checksum() {
     }
 }
 
+/// The trial of `std`'s hex and Base64 (choices 1660, 1665), run small: the SG program, interpreted
+/// and compiled, writes the text in Base64 and reads it back into the same bytes, and gives for
+/// 1,000 values and tokens, made from the seed 1, what Python's `bytes.hex` and `base64` give (the
+/// values below).
+#[test]
+fn the_trial_of_encoding() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_encoding");
+    let (text, _) = trial_inputs(&dir);
+    std::fs::write(dir.join("text.log"), &text).unwrap();
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let source = trials.join("std").join("encoding").join("sg").join("encoding.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "encoding").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&sg(&dir, &words))
+    };
+    let written = (0, "bytes 266668\n".to_string(), String::new());
+    assert_eq!(interpreted(&["encode", "text.log", "interpreted.b64"]), written);
+    assert_eq!(compiled(&["encode", "text.log", "compiled.b64"]), written);
+    let encoded = std::fs::read(dir.join("compiled.b64")).unwrap();
+    assert_eq!(std::fs::read(dir.join("interpreted.b64")).unwrap(), encoded, "the same Base64, interpreted and compiled");
+    assert!(encoded.starts_with(b"MjAyNi0xMS0wMVQwMDowMDowMlogREVCVUcgbWFy"), "what Python's `base64` writes");
+    let read = (0, "bytes 200000\n".to_string(), String::new());
+    assert_eq!(interpreted(&["decode", "compiled.b64", "interpreted.bin"]), read);
+    assert_eq!(compiled(&["decode", "interpreted.b64", "compiled.bin"]), read);
+    assert_eq!(std::fs::read(dir.join("interpreted.bin")).unwrap(), text, "read back, interpreted");
+    assert_eq!(std::fs::read(dir.join("compiled.bin")).unwrap(), text, "read back, compiled");
+    let cases: [(&[&str], &str); 2] = [
+        (&["hex", "1000"], "values 1000\ndigits 64000\nsum 70274\nxor 3d9a57b94c0389b7\n"),
+        (&["tokens", "1000"], "tokens 1000\ncharacters 43427\nsum 86011\nxor b502de436bbdaa56\n"),
+    ];
+    for (args, expected) in cases {
+        assert_eq!(interpreted(args), compiled(args), "{args:?}: interpreted and compiled");
+        assert_eq!(compiled(args), (0, expected.to_string(), String::new()), "{args:?}");
+    }
+    assert_eq!(compiled(&["decode", "text.log", "x.bin"]).0, 1, "not Base64");
+    assert_eq!(compiled(&["hex", "many"]).0, 2, "a wrong use");
+}
+
+/// The trial of `std`'s categories and normal forms of Unicode (choices 1661, 1662), run small, on
+/// the first 1,907 lines of `trials/inputs/unicode.sg` with the seed 7: the SG program, interpreted
+/// and compiled, counts the categories as Python's `unicodedata` does, writes each line in NFD as
+/// many bytes as Python does, finds no line of that in NFC, and brings it back to the text, which is.
+#[test]
+fn the_trial_of_unicode() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_unicode");
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let maker = program(&dir, "unicode-input").to_string_lossy().into_owned();
+    let input = trials.join("inputs").join("unicode.sg").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &input, "--release", "-o", &maker])), (0, String::new(), String::new()));
+    let made = Command::new(&maker).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    assert!(made.status.success());
+    let mut end = 0;
+    while end < 200_000 {
+        end += made.stdout[end..].iter().position(|&b| b == b'\n').unwrap() + 1;
+    }
+    let text = &made.stdout[..end];
+    std::fs::write(dir.join("text.txt"), text).unwrap();
+    let source = trials.join("std").join("unicode").join("sg").join("unicode.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "unicode").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&sg(&dir, &words))
+    };
+    let counts = "Lu 2816\nLl 64445\nLt 0\nLm 0\nLo 19144\nMn 1097\nMc 1113\nMe 0\nNd 7577\nNl 0\nNo 0\nPc 0\nPd 184\nPs 164\nPe 164\n\
+                  Pi 165\nPf 165\nPo 907\nSm 0\nSc 141\nSk 367\nSo 1606\nZs 21530\nZl 0\nZp 0\nCc 0\nCf 0\nCo 0\nCn 0\n";
+    assert_eq!(interpreted(&["category", "text.txt"]), (0, counts.to_string(), String::new()));
+    assert_eq!(compiled(&["category", "text.txt"]), (0, counts.to_string(), String::new()));
+    let lines = (0, "lines 1907\n".to_string(), String::new());
+    assert_eq!(interpreted(&["nfd", "text.txt", "interpreted.nfd"]), lines);
+    assert_eq!(compiled(&["nfd", "text.txt", "compiled.nfd"]), lines);
+    let decomposed = std::fs::read(dir.join("compiled.nfd")).unwrap();
+    assert_eq!(std::fs::read(dir.join("interpreted.nfd")).unwrap(), decomposed, "the same NFD, interpreted and compiled");
+    assert_eq!(decomposed.len(), 241_608, "as many bytes as Python's NFD");
+    assert_eq!(compiled(&["check", "text.txt"]), (0, "lines 1907\nnormalized 1907\n".to_string(), String::new()));
+    assert_eq!(interpreted(&["check", "compiled.nfd"]), (0, "lines 1907\nnormalized 0\n".to_string(), String::new()));
+    assert_eq!(interpreted(&["nfc", "compiled.nfd", "interpreted.nfc"]), lines);
+    assert_eq!(compiled(&["nfc", "interpreted.nfd", "compiled.nfc"]), lines);
+    assert_eq!(std::fs::read(dir.join("interpreted.nfc")).unwrap(), text, "back in NFC, interpreted");
+    assert_eq!(std::fs::read(dir.join("compiled.nfc")).unwrap(), text, "back in NFC, compiled");
+    assert_eq!(compiled(&["check", "missing.txt"]).0, 1, "a missing file");
+    assert_eq!(compiled(&["nfkc", "text.txt", "x"]).0, 2, "a wrong use");
+}
+
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
 /// part of its own (`## json`) in `benchmarks/library.md`, which holds the measurements, or is named
 /// in its list of those not measured yet, which the slices empty.

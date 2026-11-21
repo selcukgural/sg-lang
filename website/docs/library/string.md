@@ -313,6 +313,10 @@ fi2
 false
 ```
 
+Each line of 100 MB of text in many writings goes into NFC, into NFD or through `isNormalized` as fast as
+Rust's ICU4X or faster, and `c.category()` of every character takes 0.46 seconds on an Apple M3 Max, against
+0.49 for ICU4X ([the tables](../benchmarks/library.md#unicode)).
+
 ## Writing values into text
 
 Inside `$"..."` a width and a letter may follow a value, as in C#: `{n,5}` takes at least five characters with

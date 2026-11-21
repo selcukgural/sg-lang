@@ -8,6 +8,7 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py std/json      only the module of `std`
     python3 trials/measure.py std/compression std/zip
     python3 trials/measure.py std/hash std/checksum
+    python3 trials/measure.py std/encoding std/unicode
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -15,7 +16,10 @@ For each case the standard output and the exit code of the three must be the sam
 the standard error is not compared, since each language words its errors its own way. Where the
 programs write what they may each write their own way (compressed data, an archive), the case
 names a check that opens what each wrote into `{out}` with Python's `gzip` or `zipfile` and
-holds it to the input, and the size each wrote is shown under the table (1634, 1642, 1643).
+holds it to the input, and the size each wrote is shown under the table (1634, 1642, 1643). What
+must come out the same everywhere but is too large for the standard output (Base64, normal forms
+of Unicode) is written into `{out}` too and held to what Python's `base64` and `unicodedata` make
+of the input (1660, 1662).
 Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
@@ -30,6 +34,7 @@ is reported, also those SG loses.
 """
 
 import argparse
+import functools
 import os
 import shutil
 import subprocess
@@ -82,7 +87,15 @@ OTHER_INPUTS = {
     "small-parts": "parts-2.zip",
     "many": "many-100000.zip",
     "small-many": "many-1000.zip",
+    "small-random": "random-2.bin",
+    "random-b64": "random-100.b64",
+    "small-random-b64": "random-2.b64",
+    "unicode": "unicode-100.txt",
+    "small-unicode": "unicode-2.txt",
+    "unicode-nfd": "unicode-100-nfd.txt",
+    "small-unicode-nfd": "unicode-2-nfd.txt",
 }
+UNICODE_SEED = 1
 DOS_TIME = (2026, 11, 20, 13, 45, 30)
 
 
@@ -105,11 +118,27 @@ def other_input(placeholder):
     path = OUT / OTHER_INPUTS[placeholder]
     if path.exists():
         return path
-    if placeholder == "random":
+    if placeholder in ("random", "small-random"):
         maker = OUT / "bytes-input"
-        run([SG, "build", TRIALS / "inputs" / "bytes.sg", "--release", "-o", maker])
+        if not maker.exists():
+            run([SG, "build", TRIALS / "inputs" / "bytes.sg", "--release", "-o", maker])
         with open(path, "wb") as f:
-            subprocess.run([maker, "100", "1"], stdout=f, check=True)
+            subprocess.run([maker, "100" if placeholder == "random" else "2", "1"], stdout=f, check=True)
+    elif placeholder in ("random-b64", "small-random-b64"):
+        import base64
+        source = other_input(placeholder.removesuffix("-b64"))
+        path.write_bytes(base64.b64encode(source.read_bytes()))
+    elif placeholder in ("unicode", "small-unicode"):
+        maker = OUT / "unicode-input"
+        if not maker.exists():
+            run([SG, "build", TRIALS / "inputs" / "unicode.sg", "--release", "-o", maker])
+        with open(path, "wb") as f:
+            megabytes = "100" if placeholder == "unicode" else "2"
+            subprocess.run([maker, megabytes, str(UNICODE_SEED)], stdout=f, check=True)
+    elif placeholder in ("unicode-nfd", "small-unicode-nfd"):
+        import unicodedata
+        source = other_input(placeholder.removesuffix("-nfd"))
+        path.write_bytes(unicodedata.normalize("NFD", source.read_text(encoding="utf-8")).encode())
     elif placeholder in ("text-gz", "small-gz"):
         source = text_input() if placeholder == "text-gz" else small_input()
         path.write_bytes(gzip.compress(source.read_bytes(), compresslevel=6, mtime=0))
@@ -252,11 +281,49 @@ TRIALS_CASES = {
             ("921,952 lines, each a CRC-32", ["lines", "{text}"], None),
         ],
     },
+    "std/encoding": {
+        "check": [
+            ("2 MB, written in Base64", ["encode", "{small-random}", "{out}"], None, "base64"),
+            ("an empty file, written in Base64", ["encode", "{empty}", "{out}"], None, "base64"),
+            ("2.7 MB of Base64, read back", ["decode", "{small-random-b64}", "{out}"], None, "unbase64"),
+            ("1,000 values, in hex and back", ["hex", "1000"], None),
+            ("1,000 tokens, in Base64 for URLs and back", ["tokens", "1000"], None),
+            ("not Base64", ["decode", "{readme}", "{out}"], None),
+            ("a missing file", ["encode", "missing.bin", "{out}"], None),
+            ("a wrong use", ["hex", "many"], None),
+        ],
+        "measure": [
+            ("100 MB, written in Base64", ["encode", "{random}", "{out}"], None, "base64"),
+            ("133 MB of Base64, read back", ["decode", "{random-b64}", "{out}"], None, "unbase64"),
+            ("10,000,000 values of 32 bytes, in hex and back", ["hex", "10000000"], None),
+            ("10,000,000 tokens, in Base64 for URLs and back", ["tokens", "10000000"], None),
+        ],
+    },
+    "std/unicode": {
+        "check": [
+            ("the categories of a small text", ["category", "{small-unicode}"], None),
+            ("a small text in NFD, into NFC", ["nfc", "{small-unicode-nfd}", "{out}"], None, "nfc"),
+            ("a small text in NFC, into NFD", ["nfd", "{small-unicode}", "{out}"], None, "nfd"),
+            ("a small text, checked to be NFC", ["check", "{small-unicode}"], None),
+            ("a small text in NFD, checked to be NFC", ["check", "{small-unicode-nfd}"], None),
+            ("the categories of a log", ["category", "{small}"], None),
+            ("not UTF-8", ["category", "{small-random}"], None),
+            ("a missing file", ["check", "missing.txt"], None),
+            ("a wrong use", ["nfkc", "{small}", "{out}"], None),
+        ],
+        "measure": [
+            ("100 MB, the category of each character", ["category", "{unicode}"], None),
+            ("121 MB in NFD, each line into NFC", ["nfc", "{unicode-nfd}", "{out}"], None, "nfc"),
+            ("100 MB in NFC, each line into NFD", ["nfd", "{unicode}", "{out}"], None, "nfd"),
+            ("950,206 lines, each checked to be NFC", ["check", "{unicode}"], None),
+        ],
+    },
 }
 
 # Rust built once more with a feature: trial -> (name of the build, arguments of `cargo build`).
 RUST_FEATURES = {
     "std/compression": [("Rust zlib-rs", ["--features", "zlib-rs"])],
+    "std/unicode": [("Rust unicode-normalization", ["--features", "unicode-normalization"])],
 }
 
 
@@ -370,11 +437,26 @@ def run_once(program, args, stdin_path, capture, errors=None):
     return process.returncode, output, seconds, peak
 
 
+@functools.cache
+def expected(kind, path):
+    """What Python makes of the input of a case whose `{out}` must be exactly that: its Base64
+    (`base64`), the bytes of its Base64 (`unbase64`), its NFC or NFD (`nfc`, `nfd`)."""
+    import base64
+    import unicodedata
+    source = Path(path).read_bytes()
+    if kind == "base64":
+        return base64.b64encode(source)
+    if kind == "unbase64":
+        return base64.b64decode(source, validate=True)
+    return unicodedata.normalize(kind.upper(), source.decode()).encode()
+
+
 def verify(kind, args, error):
     """What a build wrote that the others may write another way, checked: (what it says, the
-    note shown under the table). `gzip`: `{out}` opens to the file compressed; `zip`: `{out}` is an
-    archive whose every entry is the part of the file it should be, its CRC-32 right; `stderr`:
-    the last word of the standard error, the bytes the program counted compressed."""
+    note shown under the table, or None). `gzip`: `{out}` opens to the file compressed; `zip`:
+    `{out}` is an archive whose every entry is the part of the file it should be, its CRC-32 right;
+    `stderr`: the last word of the standard error, the bytes the program counted compressed;
+    `base64`, `unbase64`, `nfc`, `nfd`: `{out}` is what Python makes of the input."""
     import gzip
     import zipfile
     if kind == "stderr":
@@ -384,6 +466,10 @@ def verify(kind, args, error):
     if not out.exists():
         return b"nothing written", "-"
     size = out.stat().st_size
+    if kind in ("base64", "unbase64", "nfc", "nfd"):
+        same = out.read_bytes() == expected(kind, args[1])
+        out.unlink()
+        return f"what it wrote opens to its input: {same}".encode(), None
     source = Path(args[1]).read_bytes()
     if kind == "gzip":
         try:
@@ -417,7 +503,8 @@ def check(trial, built, cases, notes):
                     ok = False
                     print(f"  WRONG {trial} / {name}: {build}: {said.decode()}")
                 output += said
-                notes.setdefault(name, {})[build] = note
+                if note is not None:
+                    notes.setdefault(name, {})[build] = note
             results[build] = (code, output)
         first = next(iter(results.values()))
         for build, result in results.items():

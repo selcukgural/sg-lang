@@ -332,12 +332,16 @@ bytes and not 96 and an object gives its values in order (1638-1640), then compr
 match is compared and copied eight bytes at a time, a list is made at its size (`List<T>.repeat`,
 `List<T>.withCapacity`) and a zip reader lends its entries and holds 20 MB for 100,000 of them
 (1642-1652), then SHA-256, HMAC, CRC-32 and Adler-32, which go through the processor's own instructions
-where it has them and lose to Rust and Zig by at most 1.3 times, from six to nine (1653-1658).
+where it has them and lose to Rust and Zig by at most 1.3 times, from six to nine (1653-1658), then hex,
+Base64 and Unicode, where hex and Base64 go through tables and blocks on the stack, a character is written
+into a text without a call, and a text or a list kept by the program takes what they write (`encodeInto`,
+`decodeInto`), from nine to twelve times slower down to 1.25 to 1.54, and the categories and normal forms
+of Unicode were ahead of ICU4X and ICU4C as they stood (1659-1666).
 
 ## Next
 
 Next comes a slice
-for each of hex, Base64 and Unicode; time, random numbers and the log; the network; and the command line,
+for each of time, random numbers and the log; the network; and the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
