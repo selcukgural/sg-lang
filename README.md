@@ -25,6 +25,20 @@ It is still being designed. There is a checker, an interpreter and a back end th
 through C, all of them a few days old. Nothing is released and everything can change. This
 repository is the design, the code and the background reading behind both, kept in the open.
 
+## Where to find what
+
+| To | Read |
+|---|---|
+| Learn the language | The [tour](https://sg-lang.org/docs/learn/tour) and the [book](https://sg-lang.org/docs/learn/book/getting-started) on the site, [SG for Rust programmers](design/06-rust-to-sg.md), and the [example programs](interpreter/examples) |
+| See what runs today | [What runs today](interpreter/docs/features/README.md), by topic: [the language](interpreter/docs/features/language.md) · [ownership and borrowing](interpreter/docs/features/ownership.md) · [collections](interpreter/docs/features/collections.md) · [numbers and text](interpreter/docs/features/numbers-and-text.md) · [tasks and async](interpreter/docs/features/concurrency.md) · [C and the machine](interpreter/docs/features/c-and-the-machine.md) · [the library](interpreter/docs/features/library.md) · [tests and the editor](interpreter/docs/features/tools.md) |
+| See what is missing | [Not here yet](interpreter/docs/not-here-yet.md), and in short the [status page](https://sg-lang.org/docs/status) |
+| Know the rules a program is held to | [Rules already enforced](interpreter/docs/rules-enforced.md) |
+| Know why it is so | [Decisions and open questions](design/04-decisions-and-open-questions.md), and [the choices of each slice](design/decisions/README.md), day by day |
+| Follow how it was built, and what comes next | [How far it has come, and what is next](interpreter/docs/progress.md) |
+| See how fast it is | [Benchmarks](benchmarks/README.md): [against C](benchmarks/against-c.md) · [programs against Rust and Zig](benchmarks/programs.md) · [the library against Rust and Zig](benchmarks/library.md) · [slower than C](benchmarks/slower-than-c.md) · [how it is measured](benchmarks/method.md) |
+| Build it, run it, change it | [The interpreter](interpreter/README.md): [the C back end](interpreter/docs/c-back-end.md) · [how it is built](interpreter/docs/architecture.md) · [how it is tested](interpreter/docs/testing.md) |
+| Read the background | [Essays on C, Rust, Zig and Go](topics) and the [reading list](sources/reading-list.md) |
+
 ## A taste
 
 ```
@@ -213,7 +227,7 @@ SG rules out. It is taken up when the language is further along.
 | Folder | What it holds |
 |---|---|
 | [design](design/README.md) | The language itself, on paper, and [every choice made while building it](design/decisions/README.md), slice by slice |
-| [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests, and the programs measured against C |
+| [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests, and the programs measured against C; [its documents](interpreter/docs/README.md) |
 | [benchmarks](benchmarks/README.md) | The measurements: SG against C, Rust and Zig, where it is still slower, and how it is measured |
 | [trials](trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library (JSON, compression, zip, SHA-256 and CRC-32 so far) in SG, Rust and Zig, measured against each other ([the numbers](benchmarks/README.md)) |
 | [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |

@@ -200,7 +200,7 @@ Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`c
 | `match x { A(n) if n > 0 => ..., _ => ... }` | `match x { A(n) when n > 0 => ..., _ => ... }` | built | One arm per line |
 | `A \| B` | `A or B` | built | |
 | `'a'..='z'` | `'a'..='z'` | built | |
-| `n @ A(_)` | none | not in SG | Not decided yet; listed in the interpreter README under "Not here yet" |
+| `n @ A(_)` | none | not in SG | Not decided yet; listed in [Not here yet](../interpreter/docs/not-here-yet.md) |
 | `if let Some(c) = x.circle()` | `if x is Circle(r)` | built | The names reach along `&&` |
 | `let Ok(v) = r else { return };` | `if r is not Ok(v) { return }`, then `v` | built | |
 | `Option<T>` | `T?` | built | `T` itself is never `null` |
@@ -242,7 +242,7 @@ Last brought up to date: 21 November 2026, the hundred-and-fifty-first slice (`c
 | drop check: a value with `Drop` that borrows outlives what it borrows | the same for a `Disposable` value | built | Its `dispose` at the end of the block is a use of the borrow; an owner declared after it is an error |
 | two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it. The same for every value made of parts: a struct, `with`, a variant, a list, `==`, `??`, `$"..."` (1592) |
 | `f(&mut v[0..2], &v[2..4])` is an error | `f(ref xs[0..2], xs[2..4])`, the same error | built | A range lent as `ref` lends its whole list or array: two ranges of one place clash in one call however far apart they are (1610) |
-| `let (a, b) = v.split_at_mut(2)` | none | not in SG | Not looked at yet: two `ref` windows of one place at once; noted in "Not here yet" (1610) |
+| `let (a, b) = v.split_at_mut(2)` | none | not in SG | Not looked at yet: two `ref` windows of one place at once; noted in [Not here yet](../interpreter/docs/not-here-yet.md) (1610) |
 | `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |

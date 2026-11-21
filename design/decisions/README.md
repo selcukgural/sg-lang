@@ -13,7 +13,7 @@ while the slice was built and how it was tested. This folder is that record, one
   each. A few numbers are not here: choices about the design itself (703-718, for one) went straight into 04.
 - To find a choice by its number, look for it in the column *Choices* below, or search this folder for `886.`;
   a choice approved in one slice is sometimes written in a later one, so the ranges of two slices can overlap.
-- What is not built yet is in the interpreter's [Not here yet](../../interpreter/README.md#not-here-yet).
+- What is not built yet is in the interpreter's [Not here yet](../../interpreter/docs/not-here-yet.md).
 
 ## By day
 

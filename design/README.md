@@ -1,7 +1,7 @@
 # Design
 
 The language on paper: what was decided and why. The code that builds it is in
-[`interpreter/`](../interpreter/README.md), and how fast it runs is in [`benchmarks/`](../benchmarks/README.md).
+[`interpreter/`](../interpreter/README.md) (what runs today: [its documents](../interpreter/docs/README.md)), and how fast it runs is in [`benchmarks/`](../benchmarks/README.md).
 
 ## The pages
 

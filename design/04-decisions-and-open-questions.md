@@ -744,7 +744,7 @@ over a channel that a sender of the same function would keep from ending is a co
 being told; no task forgotten or left running, and no error of one lost; no deadlock from waiting for async code the wrong
 way and no pool starved by a call that blocks, which C# and Rust both allow; and one runtime. A logic race (a value read in one
 `lock` block and written in another, changed by another task in between) is not caught; a two-step change is written in one
-block. These are promises of the design until they are built and tested; the README says so only then.
+block. These are promises of the design until they are built and tested; [what runs today](../interpreter/docs/features/README.md) says so only then.
 
 ### Reaching what C reaches, the direction
 

@@ -57,4 +57,4 @@ Generics of your own and a full standard library. Closures are left out on purpo
 function value is the address of a named function. On this site, the reference of
 the language is still to be written, and the pages of the library are written by hand until `sg doc` makes them
 from the source. The repository keeps the full list:
-[Not here yet](https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#not-here-yet).
+[Not here yet](https://github.com/selcukgural/sg-lang/blob/main/interpreter/docs/not-here-yet.md).
