@@ -1,0 +1,5 @@
+error: `copyFrom` changes the slice, but it is reached through a `read` borrow
+  --> error_copy_from_read.sg:3:5
+ 3 |     into.copyFrom(from)
+   |     ^^^^
+  hint: lend it as a `ref int[]`: `ref xs` or `ref xs[a..b]`

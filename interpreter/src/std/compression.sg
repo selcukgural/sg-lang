@@ -183,9 +183,7 @@ public struct Decompressor {
             return Ok(0)
         }
         nint count = (this.ready() - this.given).min(buffer.length())
-        for i in 0..count {
-            buffer[i] = this.inflater.out[this.given + i]
-        }
+        buffer[0..count].copyFrom(this.inflater.out[this.given..this.given + count])
         this.given += count
         return Ok(count)
     }
@@ -332,9 +330,7 @@ public struct Decompressor {
         nint held = (nint)(this.inflater.bits >> 3)
         nint start = this.inflater.inPos - held
         nint unread = this.inflater.inEnd - start
-        for i in 0..unread {
-            this.inflater.input[i] = this.inflater.input[start + i]
-        }
+        this.inflater.input[0..unread].copyFrom(this.inflater.input[start..start + unread])
         this.inflater.inBase += (long)start
         this.inflater.inPos = held
         this.inflater.inEnd = unread
@@ -362,9 +358,7 @@ public struct Decompressor {
         }
         this.inflater.checksum()
         nint rest = this.inflater.outLen - cut
-        for i in 0..rest {
-            this.inflater.out[i] = this.inflater.out[cut + i]
-        }
+        this.inflater.out[0..rest].copyFrom(this.inflater.out[cut..cut + rest])
         this.inflater.outLen = rest
         this.inflater.outBase += (long)cut
         this.inflater.counted -= cut
@@ -751,9 +745,7 @@ void deflateRun(ref DeflateState s, read byte[] input, bool finish) {
 
 // zlib's `read_buf`: `count` bytes of the input into the window at `to`, counted in the checksum.
 void deflateRead(ref DeflateState s, read byte[] input, ref nint at, nint to, nint count) {
-    for k in 0..count {
-        s.window[to + k] = input[at + k]
-    }
+    s.window[to..to + count].copyFrom(input[at..at + count])
     if s.format == DeflateZlib {
         s.adler.update(input[at..at + count])
     } else if s.format == DeflateGzip {
@@ -765,9 +757,7 @@ void deflateRead(ref DeflateState s, read byte[] input, ref nint at, nint to, ni
 
 // The window's upper half moved down to its lower one.
 void slideWindow(ref DeflateState s, nint count) {
-    for k in 0..count {
-        s.window[k] = s.window[k + DeflateWSize]
-    }
+    s.window[0..count].copyFrom(s.window[DeflateWSize..DeflateWSize + count])
 }
 
 // zlib's `slide_hash`: every place of the chains moved down with the window.
@@ -1113,9 +1103,7 @@ int deflateStored(ref DeflateState s, read byte[] input, ref nint at, bool finis
     used -= input.length() - at
     if used > 0 {
         if used >= DeflateWSize {
-            for k in 0..DeflateWSize {
-                s.window[k] = input[at - DeflateWSize + k]
-            }
+            s.window[0..DeflateWSize].copyFrom(input[at - DeflateWSize..at])
             s.strstart = DeflateWSize
             s.insert = s.strstart
         } else {
@@ -1126,9 +1114,7 @@ int deflateStored(ref DeflateState s, read byte[] input, ref nint at, bool finis
                     s.insert = s.strstart
                 }
             }
-            for k in 0..used {
-                s.window[s.strstart + k] = input[at - used + k]
-            }
+            s.window[s.strstart..s.strstart + used].copyFrom(input[at - used..at])
             s.strstart += used
             s.insert += used.min(DeflateWSize - s.insert)
         }
@@ -1897,11 +1883,7 @@ struct Inflater {
                 }
                 nint count = this.storedLeft.min(this.inEnd - this.inPos).min(stop - this.outLen)
                 this.room(count, stop)
-                var o = ref this.out[this.outLen..this.outLen + count]
-                var from = this.input[this.inPos..this.inPos + count]
-                for k in 0..count {
-                    o[k] = from[k]
-                }
+                this.out[this.outLen..this.outLen + count].copyFrom(this.input[this.inPos..this.inPos + count])
                 this.outLen += count
                 this.inPos += count
                 this.storedLeft -= count
@@ -2133,9 +2115,7 @@ struct Inflater {
             this.mode = InflateStored
         } else if kind == 1 {
             if !this.fixedTables {
-                for n in 0..288 {
-                    this.lens[n] = DeflateStaticLength[n]
-                }
+                this.lens[0..288].copyFrom(read DeflateStaticLength)
                 this.lenBits = inflateTable(TableLengths, this.lens[0..288], ref this.lenTable, ref this.work, 9)
                 for n in 0..32 {
                     this.lens[n] = 5

@@ -1628,6 +1628,9 @@ scores[2..5].sort()                              // a range in front of sort or 
                                                  // those items are put in order where they are
 void sortAll(ref int[] items) { items.sort() }   // sort and reverse through a ref T[] and on an array;
                                                  // through a read T[] it is an error. Hint: ref xs
+window[0..4].copyFrom(block[8..12])              // the items copied over as many: one memmove. Rust:
+                                                 // copy_from_slice. Lengths that differ: a panic
+buf[0..n].copyFrom(buf[k..k + n])                // two windows of one place: read first, as memmove does
 var at = sorted.binarySearch(42)                 // nint?: the first item equal to 42, found by halving the
                                                  // items, which are in order (not checked); null if none
 var from = sorted.lowerBound(10)                 // nint: the first place whose item is not less than 10

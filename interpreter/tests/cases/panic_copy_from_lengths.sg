@@ -1,0 +1,6 @@
+// The two windows of `copyFrom` have the same length (choice 1597).
+void main() {
+    var into = List<int> { 1, 2, 3 }
+    var from = int[2] { 7, 8 }
+    into.copyFrom(read from)
+}

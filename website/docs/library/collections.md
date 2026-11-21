@@ -88,6 +88,7 @@ For the same reason a collection that a `for` goes over by borrowing cannot be c
 | `void reverse(ref this)` | Puts the items in the other order |
 | `nint? indexOf(read this, read T item)`, `bool contains(read this, read T item)` | Where the first equal item is; for `Equatable` items |
 | `void sort(ref this)` | Puts `Comparable` items in order (numbers and text are) |
+| `void copyFrom(ref this, read T[] items)` | Copies `Copyable` items over as many; a panic if the lengths differ. The two may look at one place, as `memmove` |
 | `nint? binarySearch(read this, read T item)` | On items in order: the place of the first equal one, or `null`, found by halving |
 | `nint lowerBound(read this, read T item)`, `nint upperBound(read this, read T item)` | On items in order: the first place whose item is not less than `item`, or is greater than it |
 
@@ -139,7 +140,7 @@ An array has its length in its type and lies where it is kept: in a variable, or
 | `byte[16](255)` | One value in every item |
 | `byte[16]` | Zeros: 0, `false` or `null` in every item; a type with no zero value (text) needs the items written |
 | `xs[i]`, `xs[i] = v` | Reads or writes one item |
-| `length`, `get`, `indexOf`, `contains`, `binarySearch`, `lowerBound`, `upperBound`, `sort`, `reverse` | As on a `List` |
+| `length`, `get`, `indexOf`, `contains`, `binarySearch`, `lowerBound`, `upperBound`, `sort`, `reverse`, `copyFrom` | As on a `List` |
 
 An array of items that can be copied is copied like a number; any other is moved.
 
@@ -176,7 +177,7 @@ list or array, as in Rust: `f(ref xs[0..2], xs[2..4])` is an error, however far 
 |---|---|
 | `s[i]`, `s.length()`, `s.get(i)`, `for x in s` | As on a list; a slice lends its items |
 | `indexOf`, `contains`, `binarySearch`, `lowerBound`, `upperBound` | As on a list, the places counted from the start of the slice |
-| `sort`, `reverse`, `s[i] = v` | Only through a `ref T[]`; `xs[2..5].sort()` sorts those items where they are |
+| `sort`, `reverse`, `copyFrom`, `s[i] = v` | Only through a `ref T[]`; `xs[2..5].sort()` sorts those items where they are, `buf[0..n].copyFrom(buf[k..k + n])` copies inside one list |
 
 ```sg
 int sum(read int[] items) {

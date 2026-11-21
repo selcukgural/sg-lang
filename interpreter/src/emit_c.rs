@@ -13824,6 +13824,17 @@ impl<'a> Emitter<'a> {
                 );
                 self.sigs.insert(helper.clone(), Vec::new());
             }
+            // The items are `Copyable`, so a copy of their bytes is a copy of them; the two
+            // windows may look at one place (choice 1609), so the bytes are moved as `memmove`
+            // moves them.
+            "copyFrom" => {
+                let _ = writeln!(
+                    self.glue,
+                    "static inline void {helper}(const char* loc, {window} v, {window} from) {{ if (v.len != from.len) sg_panicf(loc, \"`copyFrom` is given %lld item(s) to copy over %lld\\n  the two have the same length: copy over a window of as many, `xs[a..a + n].copyFrom(ys)`\", (long long)from.len, (long long)v.len); \
+                     if (v.len) memmove(v.ptr, from.ptr, (size_t)v.len * sizeof({held})); }}"
+                );
+                self.sigs.insert(helper.clone(), vec![Ty::Read(Box::new(slice.clone()))]);
+            }
             // The first place whose item is not less than the value (`upper`: greater than it),
             // found by halving with one test of the order at each step; `binarySearch` gives it
             // if the item there is equal, and -1 otherwise. A list's are the same on its window.
@@ -16903,7 +16914,7 @@ impl<'a> Emitter<'a> {
                     // A list is only read by these.
                     Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound") => Effect::Reads,
                     Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
-                    Callee::Plain if items_behind(&recv.ty).is_some() && matches!(name.as_str(), "sort" | "reverse") => Effect::Changes,
+                    Callee::Plain if items_behind(&recv.ty).is_some() && matches!(name.as_str(), "sort" | "reverse" | "copyFrom") => Effect::Changes,
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => Effect::Changes,
@@ -20122,6 +20133,25 @@ impl<'a> Emitter<'a> {
                         _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     };
                     Ok(sequence(&names, called))
+                }
+                // The items of a window copied over those of a list, an array or a window.
+                Callee::Plain if name == "copyFrom" && (list_behind(&recv.ty).is_some() || items_behind(&recv.ty).is_some()) => {
+                    let item = match list_behind(&recv.ty) {
+                        Some((Ty::List(item), _)) => item.clone(),
+                        _ => match items_behind(&recv.ty) {
+                            Some(Ty::Array(item, _) | Ty::Slice(item)) => item.clone(),
+                            _ => unreachable!("just tested"),
+                        },
+                    };
+                    let slice = Ty::Slice(item);
+                    self.ctype(&slice, expr.span)?;
+                    let helper = self.window_helper(&slice, "copyFrom", expr.span)?;
+                    let loc = self.loc(expr.span);
+                    let at = Part { ctype: "const char*".to_string(), value: loc, effect: Effect::Reads, settled: true, pre: (self.pre.len(), self.pre.len()), leaves: false, span: expr.span };
+                    let before = self.mark();
+                    let window = self.window(recv)?;
+                    let receiver = self.part(recv, &Ty::Ref(Box::new(slice.clone())), window, before);
+                    self.call_with(helper, vec![at, receiver], args, false, &Ty::Void)
                 }
                 // The searches in items that are in order, on a list, an array or a window,
                 // each through the window of its items.

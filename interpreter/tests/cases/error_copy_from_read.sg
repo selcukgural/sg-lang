@@ -1,0 +1,8 @@
+// `copyFrom` changes the items, and a `read` window only looks (choice 1597).
+void fill(read int[] into, read int[] from) {
+    into.copyFrom(from)
+}
+void main() {
+    var xs = int[2] { 1, 2 }
+    fill(read xs, read xs)
+}

@@ -125,7 +125,7 @@ fn key_of(expr: &Expr) -> Option<String> {
 
 /// The methods of the built-in types that change their receiver.
 pub(crate) fn changes(name: &str) -> bool {
-    matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort" | "write" | "next")
+    matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort" | "copyFrom" | "write" | "next")
 }
 
 /// Whether a pattern gives names.

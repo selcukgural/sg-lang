@@ -1,0 +1,5 @@
+panic: `copyFrom` is given 2 item(s) to copy over 3
+  the two have the same length: copy over a window of as many, `xs[a..a + n].copyFrom(ys)`
+  --> panic_copy_from_lengths.sg:5:5
+ 5 |     into.copyFrom(read from)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^

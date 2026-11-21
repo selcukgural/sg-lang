@@ -2655,9 +2655,7 @@ void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint
                 while m.caps.length() < at + 2 * m.slotCount {
                     m.caps.add(-1)
                 }
-                for k in 0..m.slotCount {
-                    m.caps[at + k] = m.scratch[k]
-                }
+                m.caps[at..at + m.slotCount].copyFrom(m.scratch[0..m.slotCount])
                 break
             }
         }
@@ -2754,9 +2752,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
             int op = inst.op
             if op == RegexOpMatch {
                 nint at = (2 * m.threadOf[base + i] + side) * slotCount
-                for k in 0..slotCount {
-                    m.found[k] = m.caps[at + k]
-                }
+                m.found[0..slotCount].copyFrom(m.caps[at..at + slotCount])
                 matched = true
                 if any {
                     return true
@@ -2780,9 +2776,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
             }
             if ok {
                 nint at = (2 * m.threadOf[base + i] + side) * slotCount
-                for k in 0..slotCount {
-                    m.scratch[k] = m.caps[at + k]
-                }
+                m.scratch[0..slotCount].copyFrom(m.caps[at..at + slotCount])
                 regexAddThread(re, ref m, other, pc + 1, position + width, bytes)
             }
         }

@@ -486,9 +486,7 @@ bool v6Of(read string host, ref int[] groups) {
         if count != 8 {
             return false
         }
-        for i in 0..8 {
-            groups[i] = found[i]
-        }
+        groups.copyFrom(read found)
         return true
     }
     if count > 7 {
@@ -497,13 +495,9 @@ bool v6Of(read string host, ref int[] groups) {
     for i in 0..8 {
         groups[i] = 0
     }
-    for i in 0..gap {
-        groups[i] = found[i]
-    }
+    groups[0..gap].copyFrom(found[0..gap])
     var after = count - gap
-    for i in 0..after {
-        groups[8 - after + i] = found[gap + i]
-    }
+    groups[8 - after..8].copyFrom(found[gap..count])
     return true
 }
 

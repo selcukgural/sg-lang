@@ -1,0 +1,7 @@
+// `copyFrom` copies bytes, and a `string` is not `Copyable` (choice 1597).
+void main() {
+    var into = List<string> { "a", "b" }
+    var from = List<string> { "c", "d" }
+    into.copyFrom(read from)
+    print(into)
+}

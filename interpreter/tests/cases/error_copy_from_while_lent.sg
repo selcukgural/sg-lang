@@ -1,0 +1,7 @@
+// The items `copyFrom` writes over are not looked at by a borrow used after it (choice 1597).
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    var first = read xs[0]
+    xs[0..2].copyFrom(xs[1..3])
+    print(first)
+}

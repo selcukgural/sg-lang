@@ -1,0 +1,9 @@
+error: `xs` cannot be changed here: `first` borrows from it and is used again later
+  --> error_copy_from_while_lent.sg:5:5
+ 5 |     xs[0..2].copyFrom(xs[1..3])
+   |     ^^
+  `first` borrowed it here:
+  --> error_copy_from_while_lent.sg:4:17
+ 4 |     var first = read xs[0]
+   |                 ^^^^^^^^^^
+  hint: finish with `first` before this line: a borrow ends at its last use

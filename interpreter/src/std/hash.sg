@@ -49,11 +49,9 @@ public struct Sha256 {
         nint i = 0
         this.length += (ulong)n
         if this.filled > 0 {
-            while i < n && this.filled < 64 {
-                this.block[this.filled] = data[i]
-                this.filled += 1
-                i += 1
-            }
+            i = (64 - this.filled).min(n)
+            this.block[this.filled..this.filled + i].copyFrom(data[0..i])
+            this.filled += i
             if this.filled < 64 {
                 return
             }
@@ -63,11 +61,8 @@ public struct Sha256 {
         nint whole = (n - i) / 64 * 64
         sha256Blocks(ref this.state, data[i..i + whole])
         i += whole
-        while i < n {
-            this.block[this.filled] = data[i]
-            this.filled += 1
-            i += 1
-        }
+        this.block[0..n - i].copyFrom(data[i..n])
+        this.filled = n - i
     }
 
     // The hash of the bytes taken in so far. The hash itself does not change: more bytes may be
@@ -91,16 +86,12 @@ public struct Sha256 {
             filled += 1
         }
         var bits = this.length.wrappingMultiply(8).toBigEndian()
-        for k in 0..8 {
-            block[56 + k] = bits[k]
-        }
+        block[56..64].copyFrom(read bits)
         sha256Blocks(ref state, read block)
         var hash = byte[32]
         for k in 0..8 {
             var word = state[k].toBigEndian()
-            for j in 0..4 {
-                hash[k * 4 + j] = word[j]
-            }
+            hash[k * 4..k * 4 + 4].copyFrom(read word)
         }
         return hash
     }
@@ -166,13 +157,9 @@ public struct Hmac {
         var padded = byte[64]
         if key.length() > 64 {
             var hashed = Sha256.of(key)
-            for i in 0..32 {
-                padded[i] = hashed[i]
-            }
+            padded[0..32].copyFrom(read hashed)
         } else {
-            for i in 0..key.length() {
-                padded[i] = key[i]
-            }
+            padded[0..key.length()].copyFrom(key)
         }
         var inner = byte[64]
         var outer = byte[64]

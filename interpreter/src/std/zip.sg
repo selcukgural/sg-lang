@@ -248,9 +248,7 @@ public struct ZipReader {
                 if inflater.outLen > 4 * DeflateWSize {
                     nint cut = inflater.outLen - DeflateWSize
                     nint rest = inflater.outLen - cut
-                    for i in 0..rest {
-                        inflater.out[i] = inflater.out[cut + i]
-                    }
+                    inflater.out[0..rest].copyFrom(inflater.out[cut..cut + rest])
                     inflater.outLen = rest
                     inflater.outBase += (long)cut
                     inflater.counted = 0
@@ -630,9 +628,7 @@ Result<void, ZipError> feed(ref StreamReader source, ref Inflater inflater, ref 
     nint held = (nint)(inflater.bits >> 3)
     nint first = inflater.inPos - held
     nint unread = inflater.inEnd - first
-    for i in 0..unread {
-        inflater.input[i] = inflater.input[first + i]
-    }
+    inflater.input[0..unread].copyFrom(inflater.input[first..first + unread])
     inflater.inBase += (long)first
     inflater.inPos = held
     inflater.inEnd = unread

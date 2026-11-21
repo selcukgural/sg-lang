@@ -5019,7 +5019,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Plain => {
                     // An array that is put in order is the one in its place, not a copy of it.
                     let mark = self.guards.len();
-                    let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse") {
+                    let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse" | "copyFrom") {
                         true => owned(self.place(recv, frame)?.borrow().clone()),
                         false => owned(self.expr(recv, frame)?),
                     };
@@ -5039,6 +5039,20 @@ impl<'a, 'e> Interp<'a, 'e> {
                         values.push(strip(self.expr(arg, frame)?));
                     }
                     self.change_reserved(mark..lent)?;
+                    // The items given are read before any is written over, as C's `memmove`.
+                    if name == "copyFrom" {
+                        let into = cells_of(&recv);
+                        let given: Vec<Value> = cells_of(&values[0]).iter().map(|item| fresh(&item.borrow())).collect();
+                        if given.len() != into.len() {
+                            return Err(Diag::panic(expr.span, format!("`copyFrom` is given {} item(s) to copy over {}", given.len(), into.len()))
+                                .note("the two have the same length: copy over a window of as many, `xs[a..a + n].copyFrom(ys)`")
+                                .into());
+                        }
+                        for (item, value) in into.iter().zip(given) {
+                            *item.borrow_mut() = value;
+                        }
+                        return Ok(Value::Void);
+                    }
                     // An array or a slice keeps its cells, which are those of its owner; the
                     // values move between them.
                     if let (Value::Array(cells) | Value::Slice(cells), "sort" | "reverse") = (&recv, name.as_str()) {

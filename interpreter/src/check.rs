@@ -12437,7 +12437,7 @@ impl<'a> Checker<'a> {
 
         // `xs[a..b].sort()`: a range in front of a method that changes the items is lent as
         // the method needs, as a variable in front of it is; the range is then `ref xs[a..b]`.
-        if matches!(name, "sort" | "reverse") {
+        if matches!(name, "sort" | "reverse" | "copyFrom") {
             if let ExprKind::Slice { recv: inner, from, to } = &mut recv.kind {
                 let (window, writable) = self.range(inner, from, to)?;
                 let Ty::Read(behind) = window else { unreachable!("a range is a `read` window") };
@@ -12457,7 +12457,7 @@ impl<'a> Checker<'a> {
         // `Task.whenAll(tasks).wait()`: waits for the task of the call where it is written.
         let when = name == "wait" && is_when(recv);
         let (recv_ty, mut writable, is_place) = match &recv.kind {
-            ExprKind::Slice { .. } if matches!(name, "sort" | "reverse") => (recv.ty.clone(), true, false),
+            ExprKind::Slice { .. } if matches!(name, "sort" | "reverse" | "copyFrom") => (recv.ty.clone(), true, false),
             _ if when => {
                 self.awaiting = true;
                 let ty = self.expr(recv, None);
@@ -12754,16 +12754,18 @@ impl<'a> Checker<'a> {
             let target = target.clone();
             return self.net_method(recv, &target, writable, shared, name, name_span, args, callee, span, awaited);
         }
-        // An array and a slice have the methods of a list that only look, and the two that
-        // change the order of the items without changing how many there are.
+        // An array and a slice have the methods of a list that only look, the two that
+        // change the order of the items, and the one that copies over them, none changing how
+        // many there are.
         if let Ty::Array(item, _) | Ty::Slice(item) = target {
-            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound" | "sort" | "reverse") {
+            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound" | "sort" | "reverse" | "copyFrom") {
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match name {
                     "add" | "addAll" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
-                    _ => match search_name(name).or_else(|| nearest(name, ["length", "get", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "reverse"].into_iter())) {
+                    "copyFromSlice" | "copy_from_slice" => diag.hint("`copyFrom`"),
+                    _ => match search_name(name).or_else(|| nearest(name, ["length", "get", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "reverse", "copyFrom"].into_iter())) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("methods for now: length, get, indexOf, contains, binarySearch, lowerBound, upperBound, sort, reverse"),
+                        None => diag.note("methods for now: length, get, indexOf, contains, binarySearch, lowerBound, upperBound, sort, reverse, copyFrom"),
                     },
                 });
             }
@@ -13365,7 +13367,7 @@ impl<'a> Checker<'a> {
             Ty::Slice(_) => "slice",
             _ => "set",
         };
-        let changing = matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort");
+        let changing = matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort" | "copyFrom");
         if changing && writable {
             self.not_locked(recv, Access::Write)?;
         }
@@ -13442,6 +13444,27 @@ impl<'a> Checker<'a> {
                 }
                 self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(item.clone())))], span)?;
                 self.written_into_itself(recv, &args[0])?;
+                Ok(Ty::Void)
+            }
+            // The items of a window of as many, copied over these: one `memmove` in compiled
+            // code, so the two may be windows of one place (choice 1609). Lengths that differ
+            // are a panic, as Rust's `copy_from_slice` and Zig's `@memcpy`.
+            (Ty::List(item), "copyFrom") => {
+                arity(1)?;
+                changes()?;
+                if self.holds(item) {
+                    return Err(Diag::error(name_span, format!("`copyFrom` on items of `{item}` is not in the language yet: the items carry borrows"))
+                        .hint("copy them one by one: `xs[i] = ys[i]`"));
+                }
+                if !item.is_copyable(self.copyable) {
+                    let diag = Diag::error(name_span, format!("`copyFrom` copies the items, and `{item}` is not `Copyable`"));
+                    return Err(match &**item {
+                        Ty::Str => diag.hint("copy them one by one, each a copy: `xs[i] = ys[i].clone()`"),
+                        Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable`, or copy the items one by one")),
+                        _ => diag.hint("copy them one by one"),
+                    });
+                }
+                self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(item.clone())))], span)?;
                 Ok(Ty::Void)
             }
             // `null` where `xs[i]` would panic.
@@ -13556,13 +13579,14 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::List(_) => &["add", "addAll", "get", "length", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "removeLast", "reverse", "clear"],
+                    Ty::List(_) => &["add", "addAll", "get", "length", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "removeLast", "reverse", "clear", "copyFrom"],
                     Ty::Map(..) => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
                     _ => &["add", "contains", "remove", "length", "clear"],
                 };
                 // Names the same thing has in other languages.
                 let other_name = match (target, name) {
                     (Ty::List(_), "extend" | "extendFromSlice" | "addRange" | "pushAll" | "appendAll" | "concat") => Some("addAll"),
+                    (Ty::List(_), "copyFromSlice" | "copy_from_slice") => Some("copyFrom"),
                     (_, "push" | "append" | "insert" | "put" | "set") => Some("add"),
                     (_, "count" | "size" | "len" | "Count") => Some("length"),
                     (Ty::List(_), "pop") => Some("removeLast"),

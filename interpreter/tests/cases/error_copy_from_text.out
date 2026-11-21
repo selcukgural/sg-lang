@@ -1,0 +1,5 @@
+error: `copyFrom` copies the items, and `string` is not `Copyable`
+  --> error_copy_from_text.sg:5:10
+ 5 |     into.copyFrom(read from)
+   |          ^^^^^^^^
+  hint: copy them one by one, each a copy: `xs[i] = ys[i].clone()`
