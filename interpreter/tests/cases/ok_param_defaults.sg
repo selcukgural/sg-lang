@@ -1,0 +1,62 @@
+// Default values of parameters (choices 1620-1622): a call leaves out arguments at its end, and
+// each is given as if it were written there.
+
+const int Base = 80
+
+struct Options : Copyable {
+    int depth = 128
+    int? indent = null
+}
+
+struct Server {
+    string host
+
+    // A method, and a function of the type with a lent text.
+    void connect(read this, int port = Base, int retries = 3) {
+        print($"{this.host}:{port} x{retries}")
+    }
+
+    Server make(read string host = "localhost") {
+        return Server { host = host.clone() }
+    }
+}
+
+struct Counter {
+    int start
+
+    // `create` too: `Counter()` is `Counter.create()`.
+    Counter create(int start = 10) {
+        return Counter { start = start }
+    }
+}
+
+// A literal that gives no field, `null`, an empty collection, a const and a text.
+void show(read string name, Options options = Options {}, string? note = null, List<int> xs = List<int>(), char mark = '*', string tail = "end") {
+    print($"{name} {options.depth} {options.indent ?? -1} {note ?? "-"} {xs.length()} {mark} {tail}")
+}
+
+// The token that is never cancelled.
+async int work(int n, read CancellationToken token = CancellationToken.None) {
+    if token.isCancelled() {
+        return -1
+    }
+    return n * 2
+}
+
+async void main() {
+    show("a")
+    show("b", Options { indent = 2 })
+    show("c", Options { depth = 4 }, "n")
+    show("d", Options {}, null, List<int> { 1, 2 }, '+')
+    var s = Server.make()
+    s.connect()
+    s.connect(8080)
+    s.connect(8080, 5)
+    Server.make("x").connect()
+    print(Counter().start)
+    print(Counter(3).start)
+    print(await work(4))
+    var source = CancellationSource()
+    source.cancel()
+    print(await work(4, read source.token()))
+}

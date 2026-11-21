@@ -1,0 +1,12 @@
+// `Json.parse` looks at its options too, though it does not indent: a negative indentation is
+// a panic there as well.
+void main() {
+    match Json.parse("[1]", JsonOptions { indent = 2 }) {
+        Ok(value) => print(value)
+        Error(e) => print(e)
+    }
+    match Json.parse("[1]", JsonOptions { indent = -1 }) {
+        Ok(value) => print(value)
+        Error(e) => print(e)
+    }
+}

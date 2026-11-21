@@ -1,0 +1,4 @@
+error: `equals` is called by `==` and `!=`, which gives it every argument, so `other` has no default value
+  --> error_default_param_equals.sg:5:39
+ 5 |     bool equals(read this, read Point other = Point { x = 0 }) {
+   |                                       ^^^^^

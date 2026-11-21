@@ -22,3 +22,11 @@ public struct Account : Formattable {
         return Account { owner = owner }
     }
 }
+
+// The default values of parameters are put into the calls of other modules: a private const and a
+// literal of this module, found here (choices 1620-1622).
+const int Tries = 3
+
+public string describe(read string host, int port = BasePort + 80, int tries = Tries, Item item = Item {}, List<int> extra = List<int>()) {
+    return $"{host}:{port} x{tries} {item} {extra.length()}".toString()
+}

@@ -1,0 +1,11 @@
+// A public function whose default value builds a struct with a field that is not public: a call of
+// another module could not write it, so the default is refused where it is written.
+
+public struct Hidden : Copyable, Formattable {
+    public int a = 1
+    int b = 2
+}
+
+public void take(Hidden h = Hidden {}) {
+    print(h)
+}

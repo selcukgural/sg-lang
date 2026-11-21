@@ -53,7 +53,7 @@ public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
 
     // `lookup` without holding the thread, for an async function: the name is looked up on a thread
     // of its own. A cancel ends the wait at once and leaves the lookup to its thread.
-    public async Result<List<SocketAddress>, IoError> lookupAsync(read string address, read CancellationToken token) {
+    public async Result<List<SocketAddress>, IoError> lookupAsync(read string address, read CancellationToken token = CancellationToken.None) {
         try token.check()
         var colon = colonOf(address)
         if colon < 0 || colon == 0 {
@@ -291,25 +291,25 @@ public struct UdpSocket : Disposable {
 
     // `sendTo` without holding the thread, for an async function. A token cancelled before the call
     // sends nothing.
-    public async Result<void, IoError> sendToAsync(read this, read byte[] bytes, SocketAddress to, read CancellationToken token) {
+    public async Result<void, IoError> sendToAsync(read this, read byte[] bytes, SocketAddress to, read CancellationToken token = CancellationToken.None) {
         return await System.udpSendAsync(this.fd, bytes, true, to.isV6(), to.high, to.low, to.number, read token)
     }
 
     // `receiveFrom` without holding the thread, for an async function. A cancel ends the wait at once;
     // a datagram that comes later stays for the next receive.
-    public async Result<Received, IoError> receiveFromAsync(read this, ref byte[] buffer, read CancellationToken token) {
+    public async Result<Received, IoError> receiveFromAsync(read this, ref byte[] buffer, read CancellationToken token = CancellationToken.None) {
         var bits = ulong[5]
         try await System.udpReceiveAsync(this.fd, ref buffer, ref bits, read token)
         return Ok(Received { count = (nint)bits[0], from = SocketAddress.given(read bits, 1) })
     }
 
     // `send` without holding the thread, for an async function.
-    public async Result<void, IoError> sendAsync(read this, read byte[] bytes, read CancellationToken token) {
+    public async Result<void, IoError> sendAsync(read this, read byte[] bytes, read CancellationToken token = CancellationToken.None) {
         return await System.udpSendAsync(this.fd, bytes, false, false, 0, 0, 0, read token)
     }
 
     // `receive` without holding the thread, for an async function.
-    public async Result<nint, IoError> receiveAsync(read this, ref byte[] buffer, read CancellationToken token) {
+    public async Result<nint, IoError> receiveAsync(read this, ref byte[] buffer, read CancellationToken token = CancellationToken.None) {
         var bits = ulong[5]
         try await System.udpReceiveAsync(this.fd, ref buffer, ref bits, read token)
         return Ok((nint)bits[0])

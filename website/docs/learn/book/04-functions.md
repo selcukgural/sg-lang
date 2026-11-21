@@ -65,8 +65,57 @@ error: `sign` does not return a value on every path; it must return `int`
 ```
 
 An `else { return 0 }` at the end makes it whole. Each function has one name: there is no overloading, so
-`int f(int x)` and `int f(long x)` in one program are an error (`function f is defined twice`), and a
-parameter has no default value.
+`int f(int x)` and `int f(long x)` in one program are an error (`function f is defined twice`).
+
+## Default values
+
+The last parameters may have default values. A call that leaves them out gets them, as if it had written
+them there:
+
+```sg
+void connect(read string host, int port = 80, int retries = 3) {
+    print($"{host}:{port}, {retries} tries")
+}
+
+void main() {
+    connect("example.org")
+    connect("example.org", 8080)
+    connect("example.org", 8080, 5)
+}
+```
+
+```text
+example.org:80, 3 tries
+example.org:8080, 3 tries
+example.org:8080, 5 tries
+```
+
+A call leaves arguments out only at its end, so a parameter after one with a default value needs one too;
+there are no named arguments. A default is a value known when the program is compiled, as a const is (a
+number, a text, a const, a struct of them), or `null`, an empty collection (`List<int>()`), a literal that
+gives no field (`Options {}`), or `CancellationToken.None`. It calls no function, so a call never runs what it
+does not show:
+
+```sg error
+int roll() {
+    return 4
+}
+
+void play(int seed = roll()) {
+    print(seed)
+}
+
+void main() {
+    play()
+}
+```
+
+```text
+error: the default value of a parameter calls no function
+```
+
+A `ref` parameter has no default value, since it is given a place to change, and neither has a function of C.
+A call through a `Func` value gives every argument.
 
 ## Parameters by value
 

@@ -35,7 +35,7 @@ of `tests/Containerfile` has them.
 
 | Area | Supported |
 |---|---|
-| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
+| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line. The last parameters may have default values, which a call that leaves them out gets as if it wrote them: `void connect(read string host, int port = 80, int retries = 3)`, then `connect("a")`, `connect("a", 8080)`; a default is what a const can be, `null`, an empty collection, a literal that gives no field (`Options {}`) or `CancellationToken.None` |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program. Packages: an `sg.project` beside the program names them, `require xml example.com/ada/xml 1.4.0`; `sg add`, `sg update`, `sg remove` and `sg lock` fetch them with `git` into a cache and pin each by the SHA-256 of its files in `sg.lock`, and `local xml ../xml` takes one from a folder; `use xml` and `use xml.reader` name its modules, and inside it `use reader` names its own. `unsafe` in a package is allowed only by the program's `require` line. A folder `internal` is named only from inside the folder that holds it |
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `CLong` and `CULong` (C's `long` and `unsigned long`), `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, pointers to functions of C `CFunc<A, R>`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
@@ -78,7 +78,7 @@ of `tests/Containerfile` has them.
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece; `Adler32` is zlib's checksum, used the same way. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
-| JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
+| JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJson(JsonOptions { indent = 2 })` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128, written to 128 too, `JsonOptions { maxDepth = 512 }` given to `toJson` and `Json.parse` for more; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
 | Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Regular expressions | `Regex.of("""(\d+)-(\d+)""")` for a pattern written in the program, checked when the program is compiled (one that is not a regular expression is a compile error), and kept in a `static` to be compiled once; `Regex.compile(pattern)` for one made when the program runs, a `Result<Regex, RegexError>` (`column 3: missing closing )`). `re.isMatch(text)`; `re.find(text)` gives a `Match?` (`start` and `end` in bytes, `m.of(text)` the text); `re.findAll(text)` a `List<Match>`; `re.captures(text)` a `Captures?` (`caps.get(1)`, `caps.named("year")`); `re.replaceAll(text, "$2-$1")` (`${name}`, `$$`) and `re.split(text)`. The meaning of RE2, as in Go and Rust: the time of a match grows with the text and no more, so there are no back references and no look-around. Go's syntax: `[...]`, `\d \w \s \b` (ASCII), `\p{Lu}` `\pL` `\PL` by the general category of Unicode, `[[:alpha:]]`, `(?<name>...)`, `{n,m}`, `*?`, `(?i)` `(?m)` `(?s)` `(?U)`; `(?i)` compares by Unicode's simple case folding. Searched by lazy DFAs, forwards for whether and where a match ends and backwards for where it starts, with Pike's machine only for the groups; their states are kept in the `Regex` behind a lock, so one in a `static` serves every task (1535-1539). Written in SG in the module `std` |
 | Compression | `Gzip.compress(read data, 6)` and `Gzip.decompress(read data, limit)`, a `Result<List<byte>, CompressError>`; `Zlib` and `Deflate` the same (RFC 1950 and 1951). The bytes are zlib's at every level, 0 to 9: the compressor is zlib 1.3.1's, written again in SG. Opening always takes a limit, and data that opens into more is `TooLarge`, so a bomb is refused; `Corrupt(position)`, `Truncated`, `ChecksumMismatch`, `TrailingData`. `Gzip.writer(target, level)` gives a `Compressor` (`writeBytes`, `close`) over a `StreamWriter`, `Gzip.reader(source, limit)` a `Decompressor` (`readSome`, `readBytes`, `readLine`, `readText`) over a `StreamReader`. Several members of gzip open as one. A level written in the program outside 0 to 9 is a compile error. Written in SG in the module `std` |
@@ -3471,7 +3471,8 @@ checker and the interpreter), approved on 15 November 2026:
 404. **The names take C#'s way, with `Async` at the end, and a token that may come last**, also chosen before
      the slice: `File.readTextAsync(read path)` or `File.readTextAsync(read path, read token)`,
      `Stdin.readLineAsync(ref line)`. Only a built-in function leaves an argument out; a function of the
-     program takes what it declares.
+     program takes what it declares. (Since the hundred-and-forty-eighth slice, 1623, any function can: a
+     parameter has a default value, `read CancellationToken token = CancellationToken.None`.)
 405. **Methods, not properties**: `source.token()`, `source.isCancelled()`, `token.isCancelled()`. SG has no
      properties (`text.length()`, `xs.length()`), so the design's `source.token` is written with parentheses
      now, in its example too. The token that is never cancelled is a constant, `CancellationToken.None`, as
@@ -4938,7 +4939,9 @@ during it, 628 was confirmed by the user during it, and 629 comes from the slice
 627. **A function or a method of the language's own module may leave out a last `read CancellationToken`**,
      chosen by the user with 626: `CancellationToken.None` is put there, so `await cmd.runAsync()` and
      `await cmd.runAsync(read token)` are one method, as the built-in async functions are (404). A function
-     of the program still takes what it declares.
+     of the program still takes what it declares. (Since the hundred-and-forty-eighth slice, 1623, the rule
+     is gone: `std` writes `read CancellationToken token = CancellationToken.None`, a default value of a
+     parameter, which any function can have.)
 628. **The end of a program is waited for on the loop of the network**, as decided before the slice and
      confirmed by the user during it, after a first version that waited on a thread of input and output
      held for each program (Go's way, which a server waiting for many long programs would have filled the
@@ -8819,7 +8822,8 @@ with 1406; 1434-1442 the same day, before the slice was written:
 1441. **Strict in the small things**: a byte order mark before the value is an error (Go and serde_json refuse
      it too); the spaces are the space, the tab, `\n` and `\r`; arrays and objects count together toward the
      128 levels; `\u0000` is read, since a `string` holds a zero byte. The writer has no limit of depth: the
-     program built the value.
+     program built the value. (Since the hundred-and-forty-eighth slice, 1600, it writes 128 levels too, as
+     many as are read, and `JsonOptions` gives another depth to both.)
 1442. **Tested with JSONTestSuite**: its 318 parsing cases are kept in `tests/json-suite` with their licence
      (MIT); each `y_` file must be read, each `n_` refused, each `i_` as these rules decide, and a file that is
      not UTF-8 is refused when it is made a `string`. Measured against cJSON.
@@ -9912,6 +9916,7 @@ text that repeats, `printError` to a pipe that is gone) waits for 1595:
      - **Written down, not changed**: `JsonObject.remove` keeps the order, so it is linear, as
        `IndexMap.shift_remove`; a JSON text takes 50 to 200 bytes a byte once read, as a tree of values
        does in Go and Rust; `toJson` writes any depth and `Json.parse` reads 128. Each in its page.
+       (Since the hundred-and-forty-eighth slice, 1600, `toJson` writes 128 too.)
 
 Tested by `ok_compression_streams`, `ok_regex_limits`, `ok_text_hidden` (new), and by
 `ok_command_line`, `ok_path_roots` and `ok_path_join_inside` (with their Windows output), the archives
@@ -10208,6 +10213,75 @@ and in upper case: both are `DuplicateName`, and the archive is the same bytes. 
 the tests passes on macOS and on Linux, with 495 of the 1899 programs compiled through C and run clean under
 the sanitizers, 108 of them under the thread sanitizer.
 
+Choices made in the hundred-and-forty-eighth slice (the default values of parameters, and the depth of
+JSON that is written). 1600 was approved during the hundred-and-forty-second slice; 1616 to 1619 at the start
+of this one, and 1620 to 1623 after them, when the user chose to give the methods there were a parameter of
+options instead of new methods; 1616 fell with that. 1624 to 1628 came while it was built, approved the same day:
+
+1620. **The last parameters of a function may have default values**, written as C# writes them:
+     `void connect(read string host, int port = 80, int retries = 3)`. A call leaves arguments out only at
+     its end, so a parameter after one with a default value has one too (`` `port` comes after `host`, which
+     has a default value, so it needs one too ``). There are no named arguments. The language had no
+     overloads and no default values (04, "No overloads"); this was the second of the two doors written
+     there, and costs nothing at run time. Rust, Go, Zig and C have neither; Rust and Go write a second name
+     (`to_string_pretty`, `MarshalIndent`) or a struct of options, Zig a struct of options given on every
+     call (`.{}`), C#, C++ and Kotlin default values.
+1621. **A default value is what the default value of a field can be**: a value found when the program is
+     compiled, held by a const of its own, or `null`, or an empty collection. The call that leaves the
+     argument out gets it as if it were written there: the compiled C of `v.toJson()` and of
+     `v.toJson(JsonOptions {})` is the same but for the text of the place a panic names. A call is refused as
+     in a const (`the default value of a parameter calls no function`, 1606): a value found when the program
+     runs is given by the call. The names in a default are found where it is written, so a function of
+     another module may have a private const as its default (`ok_param_defaults_module`).
+1622. **Where.** A function, a method, a function of a type and `create` have them; a parameter taken by value
+     or with `read`. A `ref` parameter has none (it is given a place, not a value), nor a function of C (C
+     is given every argument), nor a method the language calls by itself, which is given every argument:
+     `format`, `equals`, `hash`, `compare` and `dispose`. A call through a `Func` gives every argument: the
+     value does not know the defaults of the function it holds, as a pointer to a function of C does not.
+1623. **The token of `std` is a default value, and `toJsonIndented` is gone.** A function of `std` whose last
+     parameter was `read CancellationToken` could be called without it, by a rule of the checker for `std`
+     alone (627); the eleven of them now write `read CancellationToken token = CancellationToken.None`, the
+     rule is gone, and a function of the program can do the same. The built-in async functions written in
+     Rust (404) take their token or not, as before, as if declared so. JSON has one method to write and one
+     to read: `v.toJson(JsonOptions options = JsonOptions {})` and `Json.parse(read text, JsonOptions options
+     = JsonOptions {})`; `v.toJsonIndented(2)` is `v.toJson(JsonOptions { indent = 2 })`.
+1600. **The JSON that is written stops at the depth that is read**: 128 levels of arrays and objects, and one
+     more is a panic, as writing NaN is: `JSON nested deeper than 128 cannot be written: toJson(JsonOptions {
+     maxDepth = ... }) writes deeper`. What `toJson` writes, `Json.parse` reads back. serde_json writes any
+     depth and reads 128 unless `disable_recursion_limit` is called; C#'s `System.Text.Json` stops at 64 both
+     ways unless `MaxDepth` says another depth.
+1617. **`JsonOptions`** has `int maxDepth = 128` and `int? indent = null`: `null` writes on one line, a number
+     of spaces on lines, as `toJsonIndented` did. A `maxDepth` below 1 or an indentation below 0 is a panic,
+     in writing and in reading; there is no 0 that means "the default", as C# has.
+1618. **`JsonErrorKind.TooDeep(int limit)`**: the error says the depth it stopped at (`nested deeper than 4`).
+1619. **Reading and writing count alike**: with `maxDepth = n`, n arrays and objects in one another are
+     written and read, the next is a panic in writing and a `TooDeep` in reading. There is no upper bound:
+     each level takes some of the stack, in reading and in writing, which the page says.
+1624. **`T {}`, a literal that gives no field, and `CancellationToken.None` are default values too**, put
+     into the call as written, as `null` is: a const cannot hold an `int?` (`JsonOptions` has one) or a
+     token. `T {}` is made of the default values of its fields, each found already, and it is checked where
+     it is written (`` `Range` is missing `low` ``). A field may have one as its default as well.
+1625. **`JsonOptions` is `Copyable` and given by value**, not with `read`: a value made in the call is lent
+     only with `read` written (`read JsonOptions { indent = 2 }`), and its 12 bytes cost no more than a pointer.
+1626. **A struct of `std` whose fields are all public, and none `readonly`, is built field by field** in any
+     module, as a struct of another module is. `JsonOptions` is the first; the others of `std` are still
+     made by their functions (`JsonError`, whose fields are `readonly`, and `Directory`, which has none).
+1627. **The default `T {}` of a public function is open to the modules that call it**: one of `T`'s fields
+     that is not public is refused where the default is written (`` `take` is public, and a call of another
+     module cannot build a `Hidden` field by field: `b` is not public ``), before the call that would meet it.
+1628. **`close` is not among the methods of 1622**: the language never calls it (`Closable` asks that the
+     program does), so a `close` with a default value is a method like any other.
+
+Tested by `ok_param_defaults`, `error_default_param_order`, `error_default_param_ref`,
+`error_default_param_call`, `error_default_param_func_value`, `error_default_param_count`,
+`error_default_param_null`, `error_default_param_equals`, `error_default_param_extern`,
+`error_default_param_literal`, `panic_json_write_deep`, `panic_json_options`, `panic_json_options_indent`
+(new), the modules `ok_param_defaults_module` and `error_default_param_hidden` (new), and by `ok_json`
+(the depth of 4, 300 levels written and read back, the options kept and given again) and
+`panic_json_indent`, which now write `toJson(JsonOptions { indent = n })`. The whole of the tests passes on
+macOS and on Linux, with 500 of the 1914 programs compiled through C and run clean under the sanitizers,
+109 of them under the thread sanitizer.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -10380,6 +10454,9 @@ check off.
 
 ## Not here yet
 
+- **Of default values of parameters (1620-1628)**: named arguments (`connect("a", retries: 5)`), so a call
+  can leave out a parameter that is not last; a default found when the program runs (Kotlin and C++ run
+  any expression at each call); a default carried by a `Func` value.
 - **Two `ref` windows of one place at once (1610)**: a call is lent one range of a list or an array as `ref`,
   and nothing else of it; Rust's `split_at_mut`, which gives two that do not overlap, has no partner yet.
 
@@ -10914,8 +10991,10 @@ A const is made of constant expressions alone, with no calls, as in C# and Go (1
 as `ref` is counted among what a call lends (1610), and `copyFrom` copies the items of a window over as many,
 inside one place too (1597, 1609), and Pike's machine copies a thread's slots once, as Rust's does (1598).
 A text is put in a normal form of Unicode by the compiler's own tables, as its case is, and every line of
-Unicode's tests gives what it should (1599, 1611-1614); zip names are compared in it (1615). Next comes a
-bound on the depth of the JSON that is written (1600). Then
+Unicode's tests gives what it should (1599, 1611-1614); zip names are compared in it (1615). The last
+parameters of a function may have default values, which a call that leaves them out gets as if it wrote
+them (1620-1624), the token of `std` among them (1623), and JSON is written to the depth it is read, which
+`JsonOptions` changes for both (1600, 1617-1619). Then
 every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

@@ -1,0 +1,5 @@
+error: `port` comes after `host`, which has a default value, so it needs one too
+  a call leaves arguments out only at its end, so the parameters with a default value come last
+  --> error_default_param_order.sg:3:50
+ 3 | void connect(read string host = "localhost", int port) {
+   |                                                  ^^^^

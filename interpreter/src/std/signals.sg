@@ -92,7 +92,7 @@ public struct SignalListener : Disposable {
 
     // `next` without holding the thread, for an async function. A cancel ends the wait; a signal
     // that comes later stays for the next call.
-    public async Result<Signal, Cancelled> nextAsync(ref this, read CancellationToken token) {
+    public async Result<Signal, Cancelled> nextAsync(ref this, read CancellationToken token = CancellationToken.None) {
         var kind = long[1]
         try await System.signalNextAsync(this.id, read token, ref kind)
         return Ok(signalOf(kind[0]))

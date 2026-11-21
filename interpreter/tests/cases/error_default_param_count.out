@@ -1,0 +1,5 @@
+error: `connect` takes 1 to 3 argument(s), 0 given
+  the last 2 have default values
+  --> error_default_param_count.sg:6:5
+ 6 |     connect()
+   |     ^^^^^^^^^

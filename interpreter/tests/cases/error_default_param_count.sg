@@ -1,0 +1,7 @@
+// Too few arguments, past the parameters that have a default value.
+void connect(read string host, int port = 80, int retries = 3) {
+}
+
+void main() {
+    connect()
+}

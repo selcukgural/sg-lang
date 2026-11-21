@@ -3,5 +3,5 @@
 ]
 panic: JSON cannot be indented by -2 spaces
   --> panic_json_indent.sg:5:11
- 5 |     print(value.toJsonIndented(-2))
-   |           ^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 |     print(value.toJson(JsonOptions { indent = -2 }))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

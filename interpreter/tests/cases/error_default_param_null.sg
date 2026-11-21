@@ -1,0 +1,6 @@
+// `null` is a default value only of a type that can be missing.
+void connect(int port = null) {
+}
+
+void main() {
+}

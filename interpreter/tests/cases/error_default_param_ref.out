@@ -1,0 +1,5 @@
+error: a `ref` parameter has no default value: there would be nothing for the function to change
+  a call that leaves an argument out is given a value, and a `ref` parameter is given a place
+  --> error_default_param_ref.sg:2:21
+ 2 | void bump(ref int n = 0) {
+   |                     ^

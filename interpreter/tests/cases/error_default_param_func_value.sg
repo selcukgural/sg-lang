@@ -1,0 +1,11 @@
+// A call through a `Func` is given every argument: the value does not know the defaults of the
+// function it holds.
+void add(int a, int b = 1) {
+    print(a + b)
+}
+
+void main() {
+    var f = add
+    f(5, 1)
+    f(5)
+}

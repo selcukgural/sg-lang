@@ -1,0 +1,12 @@
+// `equals` is called by `==`, which gives it every argument.
+struct Point : Equatable {
+    int x
+
+    bool equals(read this, read Point other = Point { x = 0 }) {
+        return this.x == other.x
+    }
+}
+
+void main() {
+    print(Point { x = 1 } == Point { x = 1 })
+}

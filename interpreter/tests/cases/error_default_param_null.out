@@ -1,0 +1,5 @@
+error: `int` cannot be `null`
+  --> error_default_param_null.sg:2:25
+ 2 | void connect(int port = null) {
+   |                         ^^^^
+  hint: a value that may be missing has the type `int?`

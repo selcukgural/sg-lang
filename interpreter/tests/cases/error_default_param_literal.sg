@@ -1,0 +1,12 @@
+// `T {}` as a default value builds a value from the default values of its fields: every field
+// has one.
+struct Range {
+    int low
+    int high = 10
+}
+
+void count(Range range = Range {}) {
+}
+
+void main() {
+}

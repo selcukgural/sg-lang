@@ -1,0 +1,5 @@
+[1]
+panic: JSON cannot be indented by -1 spaces
+  --> panic_json_options_indent.sg:8:11
+ 8 |     match Json.parse("[1]", JsonOptions { indent = -1 }) {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

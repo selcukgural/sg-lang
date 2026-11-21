@@ -1,0 +1,7 @@
+// A function of C is given every argument, as C asks.
+extern "c" {
+    int abs(int n = 0)
+}
+
+void main() {
+}

@@ -1,0 +1,8 @@
+// A parameter after one with a default value has one too: a call leaves arguments out only at
+// its end.
+void connect(read string host = "localhost", int port) {
+}
+
+void main() {
+    connect("a", 1)
+}

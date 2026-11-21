@@ -1,0 +1,15 @@
+// A value nested deeper than 128 is a panic in writing, as `Json.parse` would refuse what is
+// written; `toJson` with a larger `maxDepth` writes it.
+void main() {
+    var text = string.withCapacity(300)
+    for _ in 0..129 {
+        text.write('[')
+    }
+    for _ in 0..129 {
+        text.write(']')
+    }
+    var options = JsonOptions { maxDepth = 129 }
+    var value = Json.parse(read text, options) ?? JsonValue.Null
+    print(value.toJson(options).length())
+    print(value.toJson().length())
+}

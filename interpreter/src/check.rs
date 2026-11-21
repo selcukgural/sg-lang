@@ -668,6 +668,9 @@ struct FuncSig {
     holder: Option<(Ty, String)>,
     params: Vec<Ty>,
     param_names: Vec<String>,
+    /// What a call that leaves the argument out gives, parameter by parameter (choices
+    /// 1620-1622); only the last ones have one.
+    defaults: Vec<Option<FieldDefault>>,
     ret: Ty,
     /// For a function that returns a borrow, or a value that carries one: where it may come
     /// from. Empty when it can only be a constant.
@@ -711,11 +714,46 @@ fn carrier<'n>(ty: &Ty, names: &'n Names) -> Option<(&'n str, &'n str)> {
 }
 
 /// `owner`: the struct whose body the function is written in.
+/// Whether `T {}`, written as the default value of a field or a parameter, builds a value of
+/// `ty` (a `T?` too).
+fn literal_of(written: &str, ty: &Ty) -> bool {
+    match ty {
+        Ty::Nullable(inner) => literal_of(written, inner),
+        Ty::Struct(full) => full == written || short_name(full) == written,
+        _ => false,
+    }
+}
+
 fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
     let mut params = Vec::new();
     for param in &func.params {
-        params.push(resolve_type(&param.ty, names, false)?);
+        let ty = resolve_type(&param.ty, names, false)?;
+        // `null` and an empty collection are checked here, where they are written, and not only
+        // in the calls that leave the argument out, as the default value of a field is.
+        if let Some(FieldDefault::Expr(written)) = &param.default {
+            let held = ty.strip_borrow();
+            match &written.kind {
+                ExprKind::Null if !matches!(held, Ty::Nullable(_)) => {
+                    return Err(Diag::error(written.span, format!("`{held}` cannot be `null`")).hint(format!("a value that may be missing has the type `{held}?`")));
+                }
+                ExprKind::Collection { ty: made, .. } => {
+                    let made = resolve_type(made, names, false)?;
+                    if made != *held {
+                        return Err(Diag::error(written.span, format!("expected `{held}`, found `{made}`")));
+                    }
+                }
+                ExprKind::StructLit { name, .. } if !literal_of(name, held) => {
+                    return Err(Diag::error(written.span, format!("expected `{held}`, found `{name}`")));
+                }
+                ExprKind::Field { .. } if !matches!(held, Ty::Token) => {
+                    return Err(Diag::error(written.span, format!("expected `{held}`, found `CancellationToken`")));
+                }
+                _ => {}
+            }
+        }
+        params.push(ty);
     }
+    let defaults = func.params.iter().map(|param| param.default.clone()).collect();
     let ret = resolve_type(&func.ret, names, true)?;
     let holder = match (&func.this_ty, owner) {
         (Some(written), Some(owner)) => {
@@ -811,7 +849,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some(), export: func.export, variadic: func.variadic })
+    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, defaults, ret, sources, foreign: func.foreign.is_some(), export: func.export, variadic: func.variadic })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -1080,6 +1118,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                             return Err(Diag::error(written.span, format!("expected `{field_ty}`, found `{made}`")));
                         }
                     }
+                    ExprKind::StructLit { name, .. } if !literal_of(name, &field_ty) => {
+                        return Err(Diag::error(written.span, format!("expected `{field_ty}`, found `{name}`")));
+                    }
                     _ => {}
                 }
             }
@@ -1221,6 +1262,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 
     disposal_rules(prog, &structs, &copyable)?;
     async_method_rules(prog)?;
+    default_method_rules(prog)?;
+    public_defaults(prog, &structs, &names)?;
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
     for func in &prog.funcs {
@@ -1477,20 +1520,24 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // running the initializers when the program is compiled.
     prog.plain = plain_types(&structs);
     let mut const_table = ConstTable { embeds: prog.embeds.iter().map(|embed| embed.bytes.as_ref().map_or(0, |bytes| bytes.len())).collect(), ..ConstTable::default() };
-    // The consts the parser made for the default values of fields speak of the field.
-    let field_defaults: HashSet<String> = prog
+    // The consts the parser made for the default values of fields and of parameters speak of
+    // the field or the parameter.
+    let const_of = |default: &Option<FieldDefault>| match default {
+        Some(FieldDefault::Const(full)) => Some(full.clone()),
+        _ => None,
+    };
+    let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods));
+    let defaults: HashMap<String, &str> = prog
         .structs
         .iter()
         .flat_map(|decl| &decl.fields)
-        .filter_map(|field| match &field.default {
-            Some(FieldDefault::Const(full)) => Some(full.clone()),
-            _ => None,
-        })
+        .filter_map(|field| const_of(&field.default).map(|full| (full, "a field")))
+        .chain(prog.funcs.iter().chain(methods).flat_map(|func| &func.params).filter_map(|param| const_of(&param.default).map(|full| (full, "a parameter"))))
         .collect();
     let of_field = |decl: &ConstDecl, mut diag: Diag| {
-        if field_defaults.contains(&decl.name) {
-            diag.msg = diag.msg.replacen("a const cannot hold a", "the default value of a field cannot be a", 1).replacen("a const cannot read it", "the default value of a field cannot read it", 1);
-            diag.notes = vec![FIELD_DEFAULT.to_string()];
+        if let Some(what) = defaults.get(&decl.name) {
+            diag.msg = diag.msg.replacen("a const cannot hold a", &format!("the default value of {what} cannot be a"), 1).replacen("a const cannot read it", &format!("the default value of {what} cannot read it"), 1);
+            diag.notes = vec![default_note(what)];
         }
         diag
     };
@@ -1546,26 +1593,27 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             extern_arg: false,
             seen: crate::unread::Seen::default(),
         };
-        let is_field = field_defaults.contains(&decl.name);
-        checker.typed(&mut decl.init, &ty).map_err(|diag| match diag.msg.starts_with("there is no variable named") {
-            true if is_field => diag.note(FIELD_DEFAULT),
-            true => diag.note("a const sees other consts, not variables: its value is found when the program is compiled"),
-            false if is_field && diag.msg.contains("a const cannot read it") => {
+        let default_of = defaults.get(&decl.name).copied();
+        checker.typed(&mut decl.init, &ty).map_err(|diag| match (diag.msg.starts_with("there is no variable named"), default_of) {
+            (true, Some(what)) => diag.note(default_note(what)),
+            (true, None) => diag.note("a const sees other consts, not variables: its value is found when the program is compiled"),
+            (false, Some(what)) if diag.msg.contains("a const cannot read it") => {
                 let mut diag = diag;
-                diag.msg = diag.msg.replacen("a const cannot read it", "the default value of a field cannot read it", 1);
+                diag.msg = diag.msg.replacen("a const cannot read it", &format!("the default value of {what} cannot read it"), 1);
                 diag.hint = None;
-                diag.note(FIELD_DEFAULT)
+                diag.note(default_note(what))
             }
-            false => diag,
+            (false, _) => diag,
         })?;
         constant_only(&decl.init, decl.assert.is_some()).map_err(|mut diag| {
             // A const the parser made speaks of what was written.
             if diag.msg == CALLS_NONE {
                 match () {
-                    _ if is_field => {
-                        diag.msg = "the default value of a field calls no function".to_string();
+                    _ if default_of.is_some() => {
+                        let what = default_of.unwrap_or_default();
+                        diag.msg = format!("the default value of {what} calls no function");
                         diag.hint = None;
-                        diag.notes = vec![FIELD_DEFAULT.to_string()];
+                        diag.notes = vec![default_note(what)];
                     }
                     _ if numbers.contains(&decl.name) => {
                         diag.msg = "the number of a variant calls no function".to_string();
@@ -1644,6 +1692,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             checker.find("this").expect("just declared").param = true;
         }
         for (param, ty) in func.params.iter().zip(&sig.params) {
+            // A default written as it is, `Options {}` above all, is checked once here, where it
+            // is written, and not only in the calls that leave the argument out.
+            if let Some(FieldDefault::Expr(written)) = &param.default {
+                checker.typed(&mut written.clone(), ty.strip_borrow())?;
+            }
             if let Some(what) = std_stream(&param.name) {
                 return Err(Diag::error(param.span, format!("`{}` is {what} of the program, so a parameter cannot have its name", param.name)));
             }
@@ -2285,21 +2338,6 @@ fn disposal_rules(prog: &Program, structs: &HashMap<String, StructInfo>, copyabl
     Ok(())
 }
 
-/// A function or a method of the language's own module whose last parameter is `read
-/// CancellationToken` may be called without it, as a built-in async function is (choice 404):
-/// the token that is never cancelled is put there. `owner` is the full name of the function, or
-/// of the type of the method.
-fn fill_token(owner: &str, sig: &FuncSig, args: &mut Vec<Expr>, span: Span) {
-    let in_std = owner == STD_MODULE || owner.starts_with(&format!("{STD_MODULE}."));
-    if !in_std || args.len() + 1 != sig.params.len() || sig.params.last() != Some(&Ty::Read(Box::new(Ty::Token))) {
-        return;
-    }
-    let at = Span::new(span.end, span.end);
-    let made = |kind: ExprKind| Expr { kind, span: at, ty: Ty::Void, moved: false };
-    let none = made(ExprKind::Field { recv: Box::new(made(ExprKind::Var("CancellationToken".to_string()))), name: "None".to_string(), name_span: at, index: 0 });
-    args.push(made(ExprKind::Borrow { mutable: false, expr: Box::new(none) }));
-}
-
 /// The methods the language calls by itself are not async: it calls them where it does not
 /// await (`T(...)`, `print`, `==`, `sort`, a key of a map). `dispose` and `close` say so where
 /// their shapes are checked.
@@ -2321,6 +2359,53 @@ fn async_method_rules(prog: &Program) -> Res<()> {
                 "create" => diag.hint("an async function of the type gives one when it is awaited: `public async T load(...)`, then `await T.load(...)`"),
                 _ => diag,
             });
+        }
+    }
+    Ok(())
+}
+
+/// The methods the language calls by itself are given every argument, so none of their
+/// parameters has a default value (choice 1622).
+fn default_method_rules(prog: &Program) -> Res<()> {
+    let typed = prog.structs.iter().map(|decl| (&decl.interfaces, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.interfaces, &decl.methods)));
+    for (interfaces, methods) in typed {
+        let said = |interface: &str| interfaces.iter().any(|(name, _)| name == interface);
+        for method in methods {
+            let Some(param) = method.params.iter().find(|param| param.default.is_some()) else { continue };
+            let used_by = match method.name.as_str() {
+                "format" if said("Formattable") => "`print` and `$\"...\"`",
+                "equals" if said("Equatable") => "`==` and `!=`",
+                "hash" if said("Hashable") => "a `HashMap` and a `HashSet`",
+                "compare" if said("Comparable") => "`<` and `sort`",
+                "dispose" if said("Disposable") => "the end of the value",
+                _ => continue,
+            };
+            return Err(Diag::error(param.span, format!("`{}` is called by {used_by}, which gives it every argument, so `{}` has no default value", method.name, param.name)));
+        }
+    }
+    Ok(())
+}
+
+/// A public function's default `T {}` is built by the calls of other modules, so every field of
+/// `T` is open to them; found before any body, since a call may be checked before the function.
+fn public_defaults(prog: &Program, structs: &HashMap<String, StructInfo>, names: &Names) -> Res<()> {
+    let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods));
+    for func in prog.funcs.iter().chain(methods).filter(|func| func.public) {
+        for param in &func.params {
+            let Some(FieldDefault::Expr(written)) = &param.default else { continue };
+            if !matches!(written.kind, ExprKind::StructLit { .. }) {
+                continue;
+            }
+            let built = match resolve_type(&param.ty, names, false)?.strip_borrow().clone() {
+                Ty::Nullable(inner) => *inner,
+                held => held,
+            };
+            let Ty::Struct(full) = built else { continue };
+            let Some(info) = structs.get(&full) else { continue };
+            if let Some(position) = info.open.iter().position(|open| !open) {
+                return Err(Diag::error(written.span, format!("`{}` is public, and a call of another module cannot build a `{}` field by field: `{}` is not public", short_name(&func.name), short_name(&full), info.fields[position].0))
+                    .note("a default value is put into the call that leaves the argument out, as if it were written there"));
+            }
         }
     }
     Ok(())
@@ -2903,7 +2988,15 @@ fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructI
 }
 
 /// What the default value of a field can be.
-const FIELD_DEFAULT: &str = "the default value of a field is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, or an empty collection such as `List<int>()`";
+/// What the default value of a field or of a parameter can be (`what`: "a field" or "a
+/// parameter").
+fn default_note(what: &str) -> String {
+    let rest = match what {
+        "a parameter" => ", a literal that gives no field such as `Options {}`, or `CancellationToken.None`; a value found when the program runs is given by the call",
+        _ => ", or a literal that gives no field such as `Options {}`",
+    };
+    format!("the default value of {what} is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, an empty collection such as `List<int>()`{rest}")
+}
 
 /// Why a const cannot hold a value of this type, if it cannot. `top`: the const itself, where a
 /// text may be.
@@ -3398,7 +3491,7 @@ fn number_compare(decl: &EnumDecl, numbers: IntTy) -> Func {
         name_span: span,
         this: Some(This::Read),
         this_ty: None,
-        params: vec![Param { ty: ty(Some(Mode::Read), short_name(&decl.name)), name: "other".to_string(), span }],
+        params: vec![Param { ty: ty(Some(Mode::Read), short_name(&decl.name)), name: "other".to_string(), span, default: None }],
         from: Vec::new(),
         body: vec![Stmt { kind: StmtKind::Return(Some(compared)), span }],
         foreign: None,
@@ -4967,7 +5060,10 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         let short = short_name(name);
-        if module_of(name) == STD_MODULE {
+        // A struct of options (`JsonOptions`) has every field public and none `readonly`: the
+        // program writes what it wants. The others of `std` are made by their functions.
+        let options = !info.open.is_empty() && info.open.iter().all(|open| *open) && !info.readonly.iter().any(|readonly| *readonly);
+        if module_of(name) == STD_MODULE && !options {
             return Err(Diag::error(span, format!("a `{short}` is made by its functions, not field by field")).hint(std_makers(short)));
         }
         if let Some(position) = info.open.iter().position(|open| !open) {
@@ -10333,6 +10429,37 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The arguments a call leaves out at its end, given the default values of their parameters,
+    /// as if they were written there (choices 1620-1622): `null` and an empty collection as
+    /// written, any other value by its const; lent for a `read` parameter.
+    fn fill_defaults(&mut self, name: &str, sig: &FuncSig, args: &mut Vec<Expr>, span: Span) -> Res<()> {
+        let required = sig.defaults.iter().take_while(|default| default.is_none()).count();
+        if required == sig.params.len() {
+            return Ok(());
+        }
+        if args.len() < required || args.len() > sig.params.len() {
+            return Err(Diag::error(span, format!("`{name}` takes {required} to {} argument(s), {} given", sig.params.len(), args.len()))
+                .note(format!("the last {} have default values", sig.params.len() - required)));
+        }
+        let at = Span::new(span.end, span.end);
+        let made = |kind: ExprKind| Expr { kind, span: at, ty: Ty::Void, moved: false };
+        for position in args.len()..sig.params.len() {
+            let value = match &sig.defaults[position] {
+                Some(FieldDefault::Expr(written)) => Expr { span: at, ..written.clone() },
+                Some(FieldDefault::Const(full)) => match self.consts.values.get(full) {
+                    Some((_, ConstVal::Str(text))) => made(ExprKind::Str(text.clone())),
+                    _ => made(ExprKind::Const(full.clone())),
+                },
+                None => unreachable!("only the last parameters have default values"),
+            };
+            args.push(match sig.params[position] {
+                Ty::Read(_) => made(ExprKind::Borrow { mutable: false, expr: Box::new(value) }),
+                _ => value,
+            });
+        }
+        Ok(())
+    }
+
     fn args(&mut self, name: &str, args: &mut [Expr], params: &[Ty], span: Span) -> Res<()> {
         if args.len() != params.len() {
             return Err(Diag::error(span, format!("`{name}` takes {} argument(s), {} given", params.len(), args.len())));
@@ -10366,7 +10493,10 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(name_span, format!("`{name}` is a `{held}`, not a function, and cannot be called")));
             };
             self.live_var(name, name_span)?;
-            self.args(name, args, &params, span)?;
+            self.args(name, args, &params, span).map_err(|diag| match args.len() < params.len() {
+                true => diag.note(format!("a call through a `Func` is given every argument: `{name}` does not know the default values of the function it holds")),
+                false => diag,
+            })?;
             *callee = Callee::Value;
             return Ok(*ret);
         }
@@ -10475,7 +10605,7 @@ impl<'a> Checker<'a> {
                 if sig.foreign {
                     return self.foreign_call(name, args, sig, callee, span);
                 }
-                fill_token(name, sig, args, span);
+                self.fill_defaults(name, sig, args, span)?;
                 if !sig.is_async {
                     self.args(name, args, &sig.params, span)?;
                     return Ok(sig.ret.clone());
@@ -10775,7 +10905,7 @@ impl<'a> Checker<'a> {
                 .hint(format!("call it on a `{owner}` value: `value.{name}(...)`")));
         }
         let bits = owner == format!("{STD_MODULE}.SecureRandom") && name == "nextLong" && args.is_empty();
-        fill_token(owner, sig, args, span);
+        self.fill_defaults(name, sig, args, span)?;
         self.args(name, args, &sig.params, span).map_err(|diag| match bits {
             true => diag.hint("`SecureRandom.nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
             false => diag,
@@ -12653,7 +12783,7 @@ impl<'a> Checker<'a> {
                         }
                         _ => {}
                     }
-                    fill_token(owner, sig, args, span);
+                    self.fill_defaults(name, sig, args, span)?;
                     self.args(name, args, &sig.params, span)?;
                     if is_place && this == This::Read {
                         self.lent_twice(Some((recv, false)), args, &sig.params)?;
@@ -12695,7 +12825,7 @@ impl<'a> Checker<'a> {
                     This::Value => {}
                 }
                 let bits = owner == &format!("{STD_MODULE}.Random") && name == "nextLong" && args.is_empty();
-                fill_token(owner, sig, args, span);
+                self.fill_defaults(name, sig, args, span)?;
                 self.args(name, args, &sig.params, span).map_err(|diag| match bits {
                     true => diag.hint("`nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
                     false => diag,

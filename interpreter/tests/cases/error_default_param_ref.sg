@@ -1,0 +1,7 @@
+// A `ref` parameter has no default value: it is given a place, not a value.
+void bump(ref int n = 0) {
+    n += 1
+}
+
+void main() {
+}

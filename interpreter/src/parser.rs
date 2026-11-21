@@ -731,7 +731,11 @@ impl<'a> Parser<'a> {
                         .hint(format!("`{} name`", &self.src[ty.span.start..ty.span.end])));
                 }
                 let (name, span) = self.ident("a parameter name")?;
-                params.push(Param { ty, name, span });
+                if *self.peek() == Tok::Assign {
+                    return Err(Diag::error(self.span(), "a parameter of a C function has no default value: C is given every argument")
+                        .hint("a function of your own that calls it can have one"));
+                }
+                params.push(Param { ty, name, span, default: None });
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -893,6 +897,8 @@ impl<'a> Parser<'a> {
         match &init.kind {
             ExprKind::Null => return Ok(FieldDefault::Expr(init)),
             ExprKind::Collection { args, items: None, .. } if args.is_empty() => return Ok(FieldDefault::Expr(init)),
+            // `Options {}`: made of the default values of its fields, each found already.
+            ExprKind::StructLit { fields, .. } if fields.is_empty() => return Ok(FieldDefault::Expr(init)),
             _ => {}
         }
         let mut ty = ty.clone();
@@ -901,6 +907,41 @@ impl<'a> Parser<'a> {
         }
         let full = format!("{field}#{}", span.start);
         self.consts_found.push(ConstDecl { public: false, name: full.clone(), name_span: span, ty, init, local: Some(format!("{owner}.{field}")), visible, assert: None });
+        Ok(FieldDefault::Const(full))
+    }
+
+    /// `int port = 80` in the parameters of a function: what a call that leaves the argument
+    /// out gives (choices 1620-1622). The rule of the default value of a field: `null` and an
+    /// empty collection are put into the call as written; anything else is a value known when
+    /// the program is compiled, held by a const of its own, of the type the parameter has
+    /// without `read` and its `?`.
+    fn param_default(&mut self, func: &str, param: &str, span: Span, ty: &TypeExpr) -> Res<FieldDefault> {
+        let assign = self.bump().span;
+        if ty.mode == Some(Mode::Ref) {
+            return Err(Diag::error(assign, "a `ref` parameter has no default value: there would be nothing for the function to change")
+                .note("a call that leaves an argument out is given a value, and a `ref` parameter is given a place"));
+        }
+        let visible: Vec<(String, String)> = self.visible.iter().flatten().cloned().collect();
+        self.in_const = true;
+        let init = self.expr();
+        self.in_const = false;
+        let init = init?;
+        match &init.kind {
+            ExprKind::Null => return Ok(FieldDefault::Expr(init)),
+            ExprKind::Collection { args, items: None, .. } if args.is_empty() => return Ok(FieldDefault::Expr(init)),
+            // `Options {}`: made of the default values of its fields, each found already.
+            ExprKind::StructLit { fields, .. } if fields.is_empty() => return Ok(FieldDefault::Expr(init)),
+            // The token that is never cancelled, which a const cannot hold.
+            ExprKind::Field { recv, name, .. } if name == "None" && matches!(&recv.kind, ExprKind::Var(owner) if owner == "CancellationToken") => return Ok(FieldDefault::Expr(init)),
+            _ => {}
+        }
+        let mut ty = ty.clone();
+        ty.mode = None;
+        if ty.suffixes.last() == Some(&Suffix::Nullable) {
+            ty.suffixes.pop();
+        }
+        let full = format!("{param}#{}", span.start);
+        self.consts_found.push(ConstDecl { public: false, name: full.clone(), name_span: span, ty, init, local: Some(format!("{func}({param})")), visible, assert: None });
         Ok(FieldDefault::Const(full))
     }
 
@@ -1065,6 +1106,7 @@ impl<'a> Parser<'a> {
     /// The rest of a function after its return type and name. In a struct body the first
     /// parameter may be `this`, `read this` or `ref this`.
     fn func(&mut self, ret: TypeExpr, name: String, name_span: Span, in_struct: bool) -> Res<Func> {
+        let name_text = name.clone();
         self.expect(Tok::LParen, "`(`")?;
         let mut this = None;
         let mut this_ty = None;
@@ -1119,7 +1161,18 @@ impl<'a> Parser<'a> {
                     this_ty = Some(ty);
                 } else {
                     let (name, span) = self.ident("a parameter name")?;
-                    params.push(Param { ty, name, span });
+                    let default = match *self.peek() == Tok::Assign {
+                        true => Some(self.param_default(&name_text, &name, span, &ty)?),
+                        false => None,
+                    };
+                    // A call leaves arguments out only at its end (choice 1620).
+                    if default.is_none() {
+                        if let Some(before) = params.iter().rev().find(|param| param.default.is_some()) {
+                            return Err(Diag::error(span, format!("`{name}` comes after `{}`, which has a default value, so it needs one too", before.name))
+                                .note("a call leaves arguments out only at its end, so the parameters with a default value come last"));
+                        }
+                    }
+                    params.push(Param { ty, name, span, default });
                 }
             }
             if !self.eat(&Tok::Comma) {

@@ -372,14 +372,15 @@ pub struct FieldDecl {
     pub default: Option<FieldDefault>,
 }
 
-/// The default value of a field.
+/// The default value of a field or of a parameter.
 #[derive(Clone)]
 pub enum FieldDefault {
     /// A value known when the program is compiled, held by a const the parser makes for it, by
     /// its full name (`port#812`).
     Const(String),
-    /// `null`, or an empty collection (`List<int>()`), which allocates nothing: put into the
-    /// literal as if it were written there.
+    /// `null`, an empty collection (`List<int>()`), which allocates nothing, or a literal that
+    /// gives no field (`Options {}`), made of the default values of the fields: put into the
+    /// literal or the call as if it were written there.
     Expr(Expr),
 }
 
@@ -1055,6 +1056,8 @@ pub struct Param {
     pub ty: TypeExpr,
     pub name: String,
     pub span: Span,
+    /// `int port = 80`: what a call that leaves the argument out gives (choices 1620-1622).
+    pub default: Option<FieldDefault>,
 }
 
 pub type Block = Vec<Stmt>;

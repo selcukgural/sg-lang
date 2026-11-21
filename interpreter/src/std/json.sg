@@ -1,13 +1,15 @@
 // JSON (RFC 8259) read into values and written back (choices 1411, 1434-1442). Written in SG and
 // brought along by the language. Reading is strict, as the RFC writes it: no comments, no trailing
 // commas, no NaN, no byte order mark, a key twice in one object is an error, a `\u` surrogate must
-// have its other half, and nesting stops at 128. A whole number that fits a `long` is an `Integer`,
+// have its other half, and nesting stops at 128, in writing too, unless `JsonOptions` says another
+// depth (choices 1600, 1617-1619, 1623). A whole number that fits a `long` is an `Integer`,
 // so that an id above 2^53 survives; every other number is a `Number`. Nothing maps a struct of the
 // program on its own: the program writes its `toJson` and `fromJson` by hand.
 
 const char[16] JsonHexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
 
-// How deep arrays and objects may be nested in a text that is read.
+// How deep arrays and objects may be nested in a text that is read or written, unless
+// `JsonOptions.maxDepth` says another depth.
 const int JsonDepthLimit = 128
 
 // An object finds a name by looking at each while it has this many members or fewer, and through
@@ -103,21 +105,14 @@ public enum JsonValue : Equatable, Formattable {
         }
     }
 
-    // The value as JSON with no spaces: `{"name":"Ada","tags":[1,2]}`.
-    public string toJson(read this) {
+    // The value as JSON: with no spaces, `{"name":"Ada","tags":[1,2]}`, or on lines, each level
+    // `indent` spaces further in, `"name": value` in an object, an empty array or object staying
+    // `[]` or `{}`. Arrays and objects nested deeper than `maxDepth`, 128 unless said, are a panic,
+    // as `Json.parse` with the same options reads no deeper.
+    public string toJson(read this, JsonOptions options = JsonOptions {}) {
+        options.check()
         var text = string.withCapacity(64)
-        writeJsonValue(ref text, this, -1, 0)
-        return text
-    }
-
-    // The value as JSON on lines, each level `spaces` further in, `"name": value` in an object;
-    // an empty array or object stays `[]` or `{}`.
-    public string toJsonIndented(read this, int spaces) {
-        if spaces < 0 {
-            panic($"JSON cannot be indented by {spaces} spaces")
-        }
-        var text = string.withCapacity(64)
-        writeJsonValue(ref text, this, spaces, 0)
+        writeJsonValue(ref text, this, options.indent ?? -1, 0, options.maxDepth)
         return text
     }
 
@@ -350,8 +345,8 @@ public enum JsonErrorKind : Equatable, Formattable {
     ControlCharacter
     // A name given twice in one object.
     DuplicateKey(string name)
-    // Arrays and objects nested deeper than 128.
-    TooDeep
+    // Arrays and objects nested deeper than `limit`: 128, or the `maxDepth` of `JsonOptions`.
+    TooDeep(int limit)
     // Something other than spaces after the value.
     TrailingText
 
@@ -373,7 +368,7 @@ public enum JsonErrorKind : Equatable, Formattable {
             LoneSurrogate => f.write("half of a surrogate pair without the other")
             ControlCharacter => f.write("control character in a string, which is written escaped")
             DuplicateKey(name) => f.write($"duplicate key {jsonQuoted(name)}")
-            TooDeep => f.write($"nested deeper than {JsonDepthLimit}")
+            TooDeep(limit) => f.write($"nested deeper than {limit}")
             TrailingText => f.write("text after the value")
         }
     }
@@ -391,12 +386,35 @@ public struct JsonError : Equatable, Formattable {
     }
 }
 
+// How JSON is written and read, when not on one line and to 128 levels:
+// `v.toJson(JsonOptions { indent = 2 })`, `Json.parse(text, JsonOptions { maxDepth = 512 })`.
+// Each level of arrays and objects takes some of the stack, in reading and in writing.
+public struct JsonOptions : Copyable {
+    // How deep arrays and objects may be nested: as many are written and read, one more is a panic
+    // in writing and a `TooDeep` in reading. At least 1.
+    public int maxDepth = JsonDepthLimit
+    // `null` for one line with no spaces; otherwise each level this many spaces further in.
+    public int? indent = null
+
+    void check(read this) {
+        if this.maxDepth < 1 {
+            panic($"JsonOptions.maxDepth is {this.maxDepth}: it is at least 1")
+        }
+        int spaces = this.indent ?? 0
+        if spaces < 0 {
+            panic($"JSON cannot be indented by {spaces} spaces")
+        }
+    }
+}
+
 public struct Json {
-    // The value a JSON text holds, spaces allowed around it.
-    public Result<JsonValue, JsonError> parse(read string text) {
+    // The value a JSON text holds, spaces allowed around it, nested to the `maxDepth` of
+    // `options`, 128 unless said; their `indent` is not looked at.
+    public Result<JsonValue, JsonError> parse(read string text, JsonOptions options = JsonOptions {}) {
+        options.check()
         var bytes = text.asBytes()
         nint position = 0
-        var parsed = jsonValue(text, bytes, ref position, 0)
+        var parsed = jsonValue(text, bytes, ref position, 0, options.maxDepth)
         match parsed {
             Ok(value) => {
                 jsonSkipSpaces(bytes, ref position)
@@ -479,7 +497,7 @@ void jsonSkipSpaces(read byte[] bytes, ref nint position) {
     }
 }
 
-Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref nint position, int depth) {
+Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
     jsonSkipSpaces(bytes, ref position)
     if position >= bytes.length() {
         return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
@@ -493,16 +511,16 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
         return jsonNumber(text, bytes, ref position)
     }
     if c == '{' {
-        if depth >= JsonDepthLimit {
-            return Error(jsonFault(position, JsonErrorKind.TooDeep))
+        if depth >= limit {
+            return Error(jsonFault(position, JsonErrorKind.TooDeep(limit)))
         }
-        return jsonObject(text, bytes, ref position, depth + 1)
+        return jsonObject(text, bytes, ref position, depth + 1, limit)
     }
     if c == '[' {
-        if depth >= JsonDepthLimit {
-            return Error(jsonFault(position, JsonErrorKind.TooDeep))
+        if depth >= limit {
+            return Error(jsonFault(position, JsonErrorKind.TooDeep(limit)))
         }
-        return jsonArray(text, bytes, ref position, depth + 1)
+        return jsonArray(text, bytes, ref position, depth + 1, limit)
     }
     if c == 't' {
         try jsonWord(bytes, ref position, "true")
@@ -531,7 +549,7 @@ Result<void, JsonFault> jsonWord(read byte[] bytes, ref nint position, read stri
     return Ok()
 }
 
-Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref nint position, int depth) {
+Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
     position += 1
     var items = List<JsonValue>()
     jsonSkipSpaces(bytes, ref position)
@@ -540,7 +558,7 @@ Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref 
         return Ok(JsonValue.Array(items))
     }
     while true {
-        var item = try jsonValue(text, bytes, ref position, depth)
+        var item = try jsonValue(text, bytes, ref position, depth, limit)
         items.add(item)
         jsonSkipSpaces(bytes, ref position)
         if position < bytes.length() {
@@ -559,7 +577,7 @@ Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref 
     return Error(jsonUnexpected(bytes, position))
 }
 
-Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref nint position, int depth) {
+Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
     position += 1
     var members = JsonObject()
     jsonSkipSpaces(bytes, ref position)
@@ -579,7 +597,7 @@ Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref
             return Error(jsonUnexpected(bytes, position))
         }
         position += 1
-        var value = try jsonValue(text, bytes, ref position, depth)
+        var value = try jsonValue(text, bytes, ref position, depth, limit)
         if members.find(read name) is not null {
             return Error(jsonFault(keyPosition, JsonErrorKind.DuplicateKey(name)))
         }
@@ -892,8 +910,15 @@ void writeJsonBreak(ref string target, int spaces, int level) {
     }
 }
 
-// `spaces` is -1 for one line with no spaces.
-void writeJsonValue(ref string target, read JsonValue value, int spaces, int level) {
+void jsonCheckDepth(int level, int limit) {
+    if level >= limit {
+        panic($"JSON nested deeper than {limit} cannot be written: `toJson(JsonOptions {{ maxDepth = ... }})` writes deeper")
+    }
+}
+
+// `spaces` is -1 for one line with no spaces. An array or an object at `level` `limit` would be
+// nested one deeper than `limit`, which a reader with the same limit refuses.
+void writeJsonValue(ref string target, read JsonValue value, int spaces, int level, int limit) {
     match value {
         Null => target.write("null")
         Bool(b) => {
@@ -907,13 +932,14 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
         Number(d) => writeJsonNumber(ref target, d)
         String(s) => writeJsonString(ref target, s)
         Array(items) => {
+            jsonCheckDepth(level, limit)
             target.write('[')
             for i in 0..items.length() {
                 if i > 0 {
                     target.write(',')
                 }
                 writeJsonBreak(ref target, spaces, level + 1)
-                writeJsonValue(ref target, items[i], spaces, level + 1)
+                writeJsonValue(ref target, items[i], spaces, level + 1, limit)
             }
             if items.length() > 0 {
                 writeJsonBreak(ref target, spaces, level)
@@ -921,6 +947,7 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
             target.write(']')
         }
         Object(members) => {
+            jsonCheckDepth(level, limit)
             target.write('{')
             for i in 0..members.keys.length() {
                 if i > 0 {
@@ -932,7 +959,7 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
                 if spaces >= 0 {
                     target.write(' ')
                 }
-                writeJsonValue(ref target, members.values[i], spaces, level + 1)
+                writeJsonValue(ref target, members.values[i], spaces, level + 1, limit)
             }
             if members.keys.length() > 0 {
                 writeJsonBreak(ref target, spaces, level)

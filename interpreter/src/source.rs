@@ -36,7 +36,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("checksum.sg", include_str!("std/checksum.sg"), &["Crc32", "Adler32"]),
     ("hash.sg", include_str!("std/hash.sg"), &["Sha256", "Hmac", "Bytes"]),
     ("command_line.sg", include_str!("std/command_line.sg"), &["CommandLine", "Arguments", "CommandLineError"]),
-    ("json.sg", include_str!("std/json.sg"), &["Json", "JsonValue", "JsonObject", "JsonError", "JsonErrorKind"]),
+    ("json.sg", include_str!("std/json.sg"), &["Json", "JsonValue", "JsonObject", "JsonOptions", "JsonError", "JsonErrorKind"]),
     ("log.sg", include_str!("std/log.sg"), &["Log", "LogLevel"]),
     ("unicode.sg", include_str!("std/unicode.sg"), &["UnicodeCategory", "NormalizationForm"]),
     ("regex.sg", include_str!("std/regex.sg"), &["Regex", "RegexError", "RegexErrorKind", "Match", "Captures"]),

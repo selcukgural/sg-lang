@@ -1,0 +1,5 @@
+258
+panic: JSON nested deeper than 128 cannot be written: `toJson(JsonOptions { maxDepth = ... })` writes deeper
+  --> panic_json_write_deep.sg:14:11
+ 14 |     print(value.toJson().length())
+    |           ^^^^^^^^^^^^^^

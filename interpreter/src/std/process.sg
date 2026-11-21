@@ -210,7 +210,7 @@ public struct Command {
 
     // `run` without holding the thread, for an async function. A cancel stops the program; with a
     // token cancelled before, it does not start.
-    public async Result<void, ProcessError> runAsync(read this, read CancellationToken token) {
+    public async Result<void, ProcessError> runAsync(read this, read CancellationToken token = CancellationToken.None) {
         try Command.unless(read token)
         var status = try await this.statusAsync(read token)
         if status.success() {
@@ -221,7 +221,7 @@ public struct Command {
 
     // `output` without holding the thread, for an async function. A cancel stops the program; with
     // a token cancelled before, it does not start.
-    public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token) {
+    public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
         try Command.unless(read token)
         long input = 1
         if this.fed {
@@ -240,7 +240,7 @@ public struct Command {
 
     // `status` without holding the thread, for an async function. A cancel stops the program; with
     // a token cancelled before, it does not start.
-    public async Result<ExitStatus, IoError> statusAsync(read this, read CancellationToken token) {
+    public async Result<ExitStatus, IoError> statusAsync(read this, read CancellationToken token = CancellationToken.None) {
         try token.check()
         long input = 0
         if this.fed {
@@ -251,7 +251,7 @@ public struct Command {
     }
 
     // `IoError.Cancelled` when the token is cancelled already, so that the program does not start.
-    Result<void, IoError> unless(read CancellationToken token) {
+    Result<void, IoError> unless(read CancellationToken token = CancellationToken.None) {
         try token.check()
         return Ok()
     }
@@ -495,7 +495,7 @@ public struct Process : Disposable {
     }
 
     // `wait` without holding the thread, for an async function. A cancel stops the program.
-    public async Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token) {
+    public async Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token = CancellationToken.None) {
         this.leave()
         var ended = long[2]
         try await System.waitAsync(this.handle, read token, ref ended)

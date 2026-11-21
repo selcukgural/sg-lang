@@ -1,5 +1,5 @@
 error: the default value of a field cannot be a `List<int>`: a `List<int>` is not known when the program is compiled
-  the default value of a field is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, or an empty collection such as `List<int>()`
+  the default value of a field is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, an empty collection such as `List<int>()`, or a literal that gives no field such as `Options {}`
   --> error_field_default_list.sg:3:5
  3 |     List<int> lines = List<int> { 1 }
    |     ^^^^^^^^^

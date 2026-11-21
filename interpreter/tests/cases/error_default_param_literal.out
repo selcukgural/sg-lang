@@ -1,0 +1,5 @@
+error: `Range` is missing `low`
+  every field gets a value; there is no uninitialized memory
+  --> error_default_param_literal.sg:8:26
+ 8 | void count(Range range = Range {}) {
+   |                          ^^^^^^^^

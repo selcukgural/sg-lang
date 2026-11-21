@@ -173,7 +173,7 @@ are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is writt
 
 - **The language**: integers of every width, `float` and `double`, `char` and UTF-8 text, structs, enums
   and `match`, `T?` and `Result<T, E>`, modules, consts computed when the program compiles, statics,
-  arrays, slices, lists, maps and sets.
+  default values of fields and parameters, arrays, slices, lists, maps and sets.
 - **Memory safety without a collector**: one owner for each value, `read` and `ref` borrows checked when
   the program compiles, `shared` values with several owners; `unsafe` marks raw memory and C.
 - **Tasks**: threads and `async`/`await`, locks, channels and atomics with the orders of C11.

@@ -1,0 +1,12 @@
+// A default value is found when the program is compiled, as a const's is: it calls no function.
+int roll() {
+    return 4
+}
+
+void play(int seed = roll()) {
+    print(seed)
+}
+
+void main() {
+    play()
+}

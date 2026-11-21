@@ -1,0 +1,10 @@
+// The default values of the parameters of a function of another module: the names in them are
+// found where they are written.
+
+use defaults
+
+void main() {
+    print(describe("a"))
+    print(describe("b", 1))
+    print(describe("c", 1, 2, Item { count = 7 }))
+}

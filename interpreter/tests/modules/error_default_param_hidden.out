@@ -1,0 +1,5 @@
+error: `take` is public, and a call of another module cannot build a `Hidden` field by field: `b` is not public
+  a default value is put into the call that leaves the argument out, as if it were written there
+  --> hiddendefault/hidden.sg:9:29
+ 9 | public void take(Hidden h = Hidden {}) {
+   |                             ^^^^^^^^^

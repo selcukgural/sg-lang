@@ -1,0 +1,5 @@
+error: the default value of a parameter calls no function
+  the default value of a parameter is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, an empty collection such as `List<int>()`, a literal that gives no field such as `Options {}`, or `CancellationToken.None`; a value found when the program runs is given by the call
+  --> error_default_param_call.sg:6:22
+ 6 | void play(int seed = roll()) {
+   |                      ^^^^

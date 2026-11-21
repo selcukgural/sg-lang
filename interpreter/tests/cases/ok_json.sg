@@ -52,8 +52,8 @@ void main() {
         """
     var doc = Json.parse(read text) ?? panic("not JSON")
     print(doc)
-    print(doc.toJsonIndented(2))
-    print(doc.toJsonIndented(0))
+    print(doc.toJson(JsonOptions { indent = 2 }))
+    print(doc.toJson(JsonOptions { indent = 0 }))
 
     // Looking into it: `null` for what is not there, or not of the kind asked.
     print($"{doc.get("name")?.asString() ?? "-"} {doc.get("id")?.asLong() ?? 0} {doc.get("ratio")?.asDouble() ?? 0.0}")
@@ -153,7 +153,7 @@ void main() {
     var written = doc.toJson()
     var again = Json.parse(read written) ?? panic("again")
     print($"{again == doc}")
-    var indented = doc.toJsonIndented(4)
+    var indented = doc.toJson(JsonOptions { indent = 4 })
     var againIndented = Json.parse(read indented) ?? panic("again indented")
     print($"{againIndented == doc}")
 
@@ -203,7 +203,7 @@ void main() {
     // The kind of the error, compared as a value.
     match Json.parse("{\"a\":1,\"a\":2}") {
         Ok(_) => print("read")
-        Error(e) => print($"{e.line} {e.column} {e.kind == JsonErrorKind.DuplicateKey("a")} {e.kind == JsonErrorKind.TooDeep}")
+        Error(e) => print($"{e.line} {e.column} {e.kind == JsonErrorKind.DuplicateKey("a")} {e.kind == JsonErrorKind.TooDeep(128)}")
     }
 
     // Nesting: 128 levels are read, 129 are not.
@@ -221,4 +221,43 @@ void main() {
         Ok(_) => print("read")
         Error(e) => print(e)
     }
+    // The same 128 levels are written, as `Json.parse` reads them.
+    print(parsedDeep.toJson(JsonOptions { indent = 0 }).length())
+
+    // Options: another depth, in reading and in writing; an indentation or one line.
+    var deep4 = JsonOptions { maxDepth = 4 }
+    match Json.parse("[[[[1]]]]", deep4) {
+        Ok(value) => print($"read: {value.toJson(deep4)}")
+        Error(e) => print(e)
+    }
+    match Json.parse("[{\"a\":[[1]]}]", deep4) {
+        Ok(value) => print($"read: {value.toJson(deep4)}")
+        Error(e) => print(e)
+    }
+    match Json.parse("[[[[[1]]]]]", deep4) {
+        Ok(_) => print("read")
+        Error(e) => print($"{e} {e.kind == JsonErrorKind.TooDeep(4)}")
+    }
+    var options = JsonOptions { maxDepth = 300 }
+    var deep300 = $"[{deeper}]".toString()
+    for _ in 0..170 {
+        deep300 = $"[{deep300}]".toString()
+    }
+    match Json.parse(read deep300, options) {
+        Ok(value) => {
+            var deepText = value.toJson(options)
+            print($"{deepText.length()} {deepText == deep300}")
+            var deepBack = Json.parse(read deepText, options) ?? JsonValue.Null
+            print(deepBack == value)
+        }
+        Error(e) => print(e)
+    }
+    var small = Json.parse("{\"name\":\"Ada\",\"tags\":[1,{}],\"none\":[]}") ?? JsonValue.Null
+    print(small.toJson(JsonOptions {}) == small.toJson())
+    print(small.toJson(JsonOptions { indent = null }) == small.toJson())
+    print(small.toJson(JsonOptions { indent = 0 }))
+    // Options kept and given again; a `Copyable` struct, given by value.
+    var kept = JsonOptions { maxDepth = 512, indent = 1 }
+    print(small.toJson(kept))
+    print(Json.parse(read small.toJson(kept), kept) ?? JsonValue.Null)
 }

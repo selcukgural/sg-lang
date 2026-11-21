@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-seventh slice (the normal forms of Unicode, `text.normalize(form)`, 1599 and 1611-1615).
+Last brought up to date: 21 November 2026, the hundred-and-forty-eighth slice (default values of parameters, `JsonOptions`, 1600 and 1617-1628).
 
 ## Functions and variables
 
@@ -168,7 +168,8 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-seventh slice (
 | `struct P { x: i32 }` | `struct P { int x }` | built | One field per line |
 | `P { x: 1 }` | `P { x = 1 }` | built | |
 | `impl P { fn len(&self) -> i32 }` | `int len(read this)` in the struct body | built | Fields are `this.x` |
-| `struct Config { port: u16 = 80 }` (`default_field_values`, not stable yet), `Config { ..Default::default() }` | `struct Config { int port = 80 }`, `Config {}` | built | No `..` at the literal. A default is what a const can be (found when the program is compiled), `null` or an empty collection |
+| `struct Config { port: u16 = 80 }` (`default_field_values`, not stable yet), `Config { ..Default::default() }` | `struct Config { int port = 80 }`, `Config {}` | built | No `..` at the literal. A default is what a const can be (found when the program is compiled), `null`, an empty collection or a literal that gives no field |
+| `fn connect(host: &str, port: Option<u16>)` called with `None`, or a builder, or a second name (`connect_with_port`) | `void connect(read string host, int port = 80)`, `connect("a")`, `connect("a", 8080)` | built | Rust has no default values of parameters. The last parameters have them; a default is what the default of a field can be, or `CancellationToken.None`; no named arguments |
 | `Point { x: 3, ..p }` | `p with { x = 3 }` | built | C#'s notation. `p` is moved, or copied when it is `Copyable`; what the fields written held is dropped there. A struct with a field another module does not see is not copied with `with` there, as in Rust |
 | `&mut self`, `self` | `ref this`, `this` | built | |
 | `P::new(1)` | `P.create(1)`, or `P(1)` for short | built | A function without `this` is called on the type |
@@ -560,7 +561,8 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-seventh slice (
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `serde_json::from_str::<Value>(text)` | `Json.parse(read text)` | built | A `Result<JsonValue, JsonError>`; strict, a name twice is an error |
+| `serde_json::from_str::<Value>(text)` | `Json.parse(read text)` | built | A `Result<JsonValue, JsonError>`; strict, a name twice is an error; 128 levels, as serde_json |
+| `Deserializer::from_str(text)` with `disable_recursion_limit()` | `Json.parse(read text, JsonOptions { maxDepth = 10000 })` | built | A depth of the program's choice, never none; each level takes stack |
 | `Value::Null`, `Bool`, `Number`, `String`, `Array`, `Object` | `JsonValue.Null`, `Bool`, `Integer`, `Number`, `String`, `Array`, `Object` | built | A whole number that fits a `long` is an `Integer`, every other a `Number` |
 | `serde_json::Map` (with `preserve_order`) | `JsonObject` | built | Members in order; `add` panics on a name that is there, `set` replaces |
 | `v.get("name")`, `v.get(0)` | `v.get("name")`, `v.at(0)` | built | `null` when not there, never a panic |
@@ -569,7 +571,7 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-seventh slice (
 | `map.insert(k, v)` | `o.set(k, v)`; `o.add(k, v)` for a new name | built | |
 | `map.shift_remove(k)` | `o.remove(k)` | built | The others keep their order |
 | `serde_json::to_string(&v)` | `v.toJson()`, `$"{v}"` | built | |
-| `serde_json::to_string_pretty(&v)` | `v.toJsonIndented(2)` | built | |
+| `serde_json::to_string_pretty(&v)` | `v.toJson(JsonOptions { indent = 2 })` | built | serde_json writes any depth; `toJson` writes 128 levels, as many as `Json.parse` reads, and `JsonOptions { maxDepth = n }` more |
 | `json!({"a": 1})` | `var o = JsonObject()`, `o.add("a", JsonValue.Integer(1))` | built | No macros |
 | `#[derive(Serialize, Deserialize)]` | `toJson` and `fromJson` written by hand | | No reflection or macros |
 | `serde_json::Deserializer::from_reader(...).into_iter()` | none yet | | The whole text is read first |

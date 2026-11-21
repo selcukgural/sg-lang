@@ -1,0 +1,6 @@
+// A `maxDepth` below 1 is a panic: there is no value of 0 that means "the default".
+void main() {
+    var value = JsonValue.Array(List<JsonValue> { JsonValue.Integer(1) })
+    print(value.toJson(JsonOptions { maxDepth = 1 }))
+    print(value.toJson(JsonOptions { maxDepth = 0 }))
+}

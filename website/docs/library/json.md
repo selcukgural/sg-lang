@@ -30,9 +30,9 @@ same kind.
 
 | Signature | What it does |
 |---|---|
-| `Result<JsonValue, JsonError> Json.parse(read string text)` | The value the text holds, spaces allowed around it |
-| `string v.toJson()` | The value on one line, with no spaces; `$"{v}"` writes the same |
-| `string v.toJsonIndented(int spaces)` | The value on lines, each level `spaces` further in; negative is a panic |
+| `Result<JsonValue, JsonError> Json.parse(read string text, JsonOptions options = JsonOptions {})` | The value the text holds, spaces allowed around it, nested to 128 levels unless `options` says more |
+| `string v.toJson(JsonOptions options = JsonOptions {})` | The value on one line, with no spaces, `$"{v}"` writes the same; on lines with `JsonOptions { indent = 2 }` |
+| `JsonOptions { maxDepth = 128, indent = null }` | How deep arrays and objects may be nested, in writing and in reading, and the spaces of each level (`null`: one line). A `maxDepth` below 1 or a negative `indent` is a panic |
 | `read JsonValue? v.get(read string name)` | The member of an object, `null` when there is none or `v` is not an object |
 | `read JsonValue? v.at(nint index)` | The item of an array, `null` when there is none or `v` is not an array |
 | `read string? v.asString()` | The text of a string, `null` for anything else |
@@ -60,7 +60,7 @@ void main() {
             print(doc.get("score")?.asDouble() ?? 0.0)
             print(doc.get("user")?.get("email") is null)
             print(doc.get("score")?.asLong() is null)
-            print(doc.toJsonIndented(2))
+            print(doc.toJson(JsonOptions { indent = 2 }))
         }
         Error(e) => print(e)
     }
@@ -171,7 +171,7 @@ It prints:
 
 `Json.parse` gives a `JsonError`: `e.line` and `e.column`, counted from 1, the column in characters, and
 `e.kind`, a `JsonErrorKind`: `UnexpectedEnd`, `UnexpectedCharacter(found)`, `InvalidNumber`,
-`NumberOutOfRange`, `InvalidEscape`, `LoneSurrogate`, `ControlCharacter`, `DuplicateKey(name)`, `TooDeep` or
+`NumberOutOfRange`, `InvalidEscape`, `LoneSurrogate`, `ControlCharacter`, `DuplicateKey(name)`, `TooDeep(limit)` or
 `TrailingText`. `{e}` writes them on one line.
 
 ```sg
@@ -215,7 +215,8 @@ What is refused:
 - a control character in a string that is not escaped, an escape JSON does not have, and half of a surrogate
   pair (`\ud800` alone);
 - a name twice in one object;
-- arrays and objects nested deeper than 128, so that a text cannot exhaust the stack.
+- arrays and objects nested deeper than 128 (or the `maxDepth` of `JsonOptions`), so that a text cannot
+  exhaust the stack.
 
 Writing escapes only what JSON needs: the quote, the backslash and the control characters (`\n`, `\t`, others
 as `\u001b`). Other characters stay as they are, in UTF-8. Writing a `Number` that is NaN or infinite is a
@@ -230,5 +231,33 @@ the length of the text before it reads it.
 
 A key in an error is shown with the characters a reader does not see escaped (`duplicate key "a\u202eb"`).
 `remove` keeps the order of the others, so it takes a time that grows with the members after the one taken
-out, as `shift_remove` of Rust's `IndexMap` does. `toJson` writes a value nested at any depth, and `Json.parse`
-reads 128 levels: a value made in the program deeper than that is written, but not read back.
+out, as `shift_remove` of Rust's `IndexMap` does.
+
+`toJson` writes as many levels as `Json.parse` reads, 128, and a value made in the program that is nested
+deeper is a panic, as NaN is: what is written is read back. `JsonOptions { maxDepth = n }` given to both
+writes and reads deeper. There is no upper bound, but each level takes some of the stack, in reading and in
+writing:
+
+```sg
+void main() {
+    var options = JsonOptions { maxDepth = 300 }
+    var text = string.withCapacity(600)
+    for _ in 0..300 {
+        text.write('[')
+    }
+    for _ in 0..300 {
+        text.write(']')
+    }
+    match Json.parse(read text) {
+        Ok(_) => print("read")
+        Error(e) => print(e)
+    }
+    var value = Json.parse(read text, options) ?? JsonValue.Null
+    print(value.toJson(options).length())
+}
+```
+
+```text
+line 1, column 129: nested deeper than 128
+600
+```

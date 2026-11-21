@@ -313,7 +313,8 @@ A source cancels; its tokens are looked at by the work, where the work chooses.
 
 In a function that returns an `IoError`, `try token.check()` turns `Cancelled` into `IoError.Cancelled(...)`.
 The async calls of files, the network, channels, `Task.delay` and other programs take a `read
-CancellationToken` last.
+CancellationToken` last, which may be left out: a function of the program does the same with a default value,
+`read CancellationToken token = CancellationToken.None`.
 
 ```sg
 Result<int, IoError> sum(read List<int> xs, read CancellationToken token) {

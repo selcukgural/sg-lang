@@ -1,0 +1,8 @@
+// The default value of a public function is put into the calls of other modules, so what it
+// builds is open to them.
+
+use hiddendefault
+
+void main() {
+    take()
+}

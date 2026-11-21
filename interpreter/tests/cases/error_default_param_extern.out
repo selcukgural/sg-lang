@@ -1,0 +1,5 @@
+error: a parameter of a C function has no default value: C is given every argument
+  --> error_default_param_extern.sg:3:19
+ 3 |     int abs(int n = 0)
+   |                   ^
+  hint: a function of your own that calls it can have one

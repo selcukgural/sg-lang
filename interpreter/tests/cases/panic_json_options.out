@@ -1,0 +1,5 @@
+[1]
+panic: JsonOptions.maxDepth is 0: it is at least 1
+  --> panic_json_options.sg:5:11
+ 5 |     print(value.toJson(JsonOptions { maxDepth = 0 }))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

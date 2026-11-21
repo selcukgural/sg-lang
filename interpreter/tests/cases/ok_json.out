@@ -112,3 +112,28 @@ line 1, column 1: unexpected character U+0001
 1 8 true false
 256
 line 1, column 129: nested deeper than 128
+510
+read: [[[[1]]]]
+read: [{"a":[[1]]}]
+line 1, column 5: nested deeper than 4 true
+600 true
+true
+true
+true
+{
+"name": "Ada",
+"tags": [
+1,
+{}
+],
+"none": []
+}
+{
+ "name": "Ada",
+ "tags": [
+  1,
+  {}
+ ],
+ "none": []
+}
+{"name":"Ada","tags":[1,{}],"none":[]}

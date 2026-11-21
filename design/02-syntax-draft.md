@@ -880,8 +880,8 @@ var a = Config {}
 var b = Config { port = 8080 }
 ```
 
-A default is what a const can be, found once when the program is compiled (a call included), or `null`, or an empty
-collection; nothing runs where the literal is. A field that is not `public` still keeps a literal out of other modules,
+A default is what a const can be, found once when the program is compiled, or `null`, or an empty collection, or a
+literal that gives no field (`Options {}`); nothing runs where the literal is. A field that is not `public` still keeps a literal out of other modules,
 with or without a default. A field that borrows, and one of a union, has none.
 
 `with` makes a new value from a struct, with the fields written changed (C#'s `with`, Rust's `Point { x: 3, ..p }`):
@@ -1564,6 +1564,26 @@ for i in (0..3) { }                              // error: a range in brackets i
 ```
 
 Rust writes `(0..n).rev()`, Swift `(0..<n).reversed()`.
+
+### Default values of parameters
+
+The last parameters of a function may have default values, which a call that leaves them out gets as if it wrote
+them, as in C#:
+
+```
+void connect(read string host, int port = 80, int retries = 3) { ... }
+
+connect("example.org")                           // 80, 3
+connect("example.org", 8080)                     // 8080, 3
+
+string toJson(read this, JsonOptions options = JsonOptions {})
+async Result<string, IoError> fetch(read string url, read CancellationToken token = CancellationToken.None)
+```
+
+A default is what the default value of a field can be, or `CancellationToken.None`; it calls no function, so a call
+runs nothing it does not show. A call leaves arguments out only at its end, and there are no named arguments. A `ref`
+parameter has none, nor a function of C, nor a method the language calls by itself (`format`, `equals`, `hash`,
+`compare`, `dispose`). A call through a `Func` gives every argument.
 
 ### Function values
 
