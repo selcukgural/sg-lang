@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a range lent as `ref` lends its whole list or array, 1610; `copyFrom`, 1597 and 1609).
+Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a range lent as `ref` lends its whole list or array, 1610; `copyFrom`, 1597 and 1609; Pike's machine copies a thread's slots once, 1598).
 
 ## Functions and variables
 
@@ -594,7 +594,7 @@ Last brought up to date: 21 November 2026, the hundred-and-forty-sixth slice (a 
 | `Regex::new(&pattern)` | `Regex.compile(read pattern)` | built | A `Result<Regex, RegexError>`; the error has the column |
 | `re.is_match(text)`, `re.find(text)` | `re.isMatch(text)`, `re.find(text)` | built | A `Match?`: `start`, `end`, `m.of(text)`. Searched by lazy DFAs, as Rust's, after an inner text every match holds; Pike's machine only for the groups |
 | `re.find_iter(text).collect()` | `re.findAll(text)` | built | A `List<Match>`; no iterator |
-| `re.captures(text)`, `caps.get(1)`, `caps.name("y")` | `re.captures(text)`, `caps.get(1)`, `caps.named("y")` | built | |
+| `re.captures(text)`, `caps.get(1)`, `caps.name("y")` | `re.captures(text)`, `caps.get(1)`, `caps.named("y")` | built | Found as Rust finds them: where the match starts and ends first, then Pike's machine of every group only there, copying a thread's slots once, as Rust's PikeVM (1598) |
 | `re.replace_all(text, "$2-$1")` | `re.replaceAll(text, "$2-$1")` | built | `$1x` is group 1 and `x`; a group the pattern lacks is a panic |
 | `re.split(text)` | `re.split(text)` | built | As Go's `Split`: a `List<string>` |
 | `\d`, `\w`, `\s` (Unicode) | `\d`, `\w`, `\s` (ASCII) | built | `\p{Nd}`, `\pL` for Unicode |

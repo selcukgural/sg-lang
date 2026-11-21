@@ -10064,8 +10064,8 @@ test, which needs a Clang that knows RISC-V, on Linux alone), with 492 of the 18
 and run clean under the sanitizers, 108 of them under the thread sanitizer.
 
 Choices made in the hundred-and-forty-sixth slice (a range lent as `ref` is counted among what a call
-lends; `copyFrom`). 1597 was approved during the hundred-and-forty-second slice, 1609 and 1610 at the start of
-this one:
+lends; `copyFrom`; a Pike machine that copies a thread's slots once). 1597 and 1598 were approved during the
+hundred-and-forty-second slice, 1609 and 1610 at the start of this one:
 
 1597. **`dst.copyFrom(src)` copies the items of a window over as many.** `dst` is a list, an array, a
      `ref T[]` or a range in front of the method, lent as `ref` as in front of `sort`
@@ -10088,6 +10088,25 @@ this one:
      a `Copyable` item holds nothing a write could free, and nothing grows. Rust has a second method for it
      (`copy_within`), Zig a second builtin (`@memmove`); Go's `copy` allows it, as here.
 
+1598. **Pike's machine copies a thread's slots once, as Rust's PikeVM does.** The closure of a thread, which
+     follows its splits, jumps and saves, now walks on the thread's own slots: a save writes over one and the
+     machine's stack gives the old value back as it unwinds, and the slots are copied only to a step that
+     reads a character or matches. Before, they were copied out to a scratch row and back for every thread.
+     `captures` and `replaceAll` find where the match starts and ends first, as Rust's do: by the DFAs, or,
+     when the DFAs give up (a pattern of thousands of steps empties them too often), by Pike's machine with
+     two slots, which copies little; the machine of every group's slots then starts its threads at that start
+     alone and stops at that end. Before, DFAs that gave up left that machine to search from the text's
+     start, starting a thread at each place: half as many copies again. `replaceAll` ran Pike's machine
+     alone for each match; it now goes through the DFAs as `find` does, and keeps its machine in the
+     `Regex` as `captures` does. The slots of the threads of the machine's two lists are kept in blocks of
+     16 threads, one list's after the other's: slots copied to the place right after them copied 1.5 times
+     slower, measured in C on the same machine. `(a?)` written 4,000 times, then `a` 4,000 times, on 4,000
+     `a`s, compiled with `--release` on an Apple M3 Max: 13.9 s and 0.53 GB, from 60.6 s and 1.04 GB.
+     Rust's `regex` 1.13.2 takes 27.0 s and 2.57 GB as it comes, and 13.8 s and 2.62 GB when its DFAs may
+     take a gigabyte (`dfa_size_limit`); the two copy the same bytes, 16 million copies of 64 KB. Rust keeps
+     slots for every state of the program, SG for the threads alive. At 1,000 groups the two take 0.37 s and
+     0.33 s.
+
 1610. **A range lent as `ref` lends its whole list or array.** `ref xs[0..2]` is kept as the range alone, and
      the check of what one call lends did not see it: beside it, another range of the same list
      (`f(ref xs[0..2], xs[1..3])`), the list itself (`read xs`) or an item of it (`read xs[2]`) was taken.
@@ -10107,6 +10126,14 @@ programs read freed memory under the address sanitizer; after it, none of 1061. 
 compiled through C and run clean under the sanitizers, 108 of them under the thread sanitizer. One run on Linux
 saw `ok_net_errors` connect to the port of a listener it had closed, which another test had taken in the
 meantime; the test passed 60 times of 60 alone and the whole run passed again.
+
+1598 is tested by RE2's search tests, interpreted and compiled, and by `a_regex_dfa_that_gives_up` in
+`tests/cli.rs`, which now takes groups and a replacement from a match that starts after the text's start,
+where the DFAs give up; what it prints is what Rust's `regex` prints. 30,072 random patterns and texts, among
+them patterns of up to 4,000 groups that the DFAs give up on, give the same groups and replacements as the
+code before this change, compiled; 3,000 of them interpreted too. They take 2.1 s where they took 5.8 s.
+The whole of the tests passes again on macOS and on Linux, with the same 494 of 1895 programs compiled
+through C and run clean under the sanitizers, 108 of them under the thread sanitizer.
 
 ## Slower than C, and could be better
 
@@ -10806,8 +10833,8 @@ what others write hold on what they are given (1594); compiled code does what th
 it did not (1595, 1601-1603); and the tool holds on what a program or a folder gives it (1596, 1604).
 A const is made of constant expressions alone, with no calls, as in C# and Go (1606-1608), and a range lent
 as `ref` is counted among what a call lends (1610), and `copyFrom` copies the items of a window over as many,
-inside one place too (1597, 1609). Next come a Pike machine that copies a thread's places once
-(1598), the normal forms of Unicode (1599) and a bound on the depth of the JSON that is written (1600). Then
+inside one place too (1597, 1609), and Pike's machine copies a thread's slots once, as Rust's does (1598).
+Next come the normal forms of Unicode (1599) and a bound on the depth of the JSON that is written (1600). Then
 every module of `std` is measured against Rust and Zig and made right (1553); then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

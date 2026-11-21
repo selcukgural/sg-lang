@@ -22,6 +22,10 @@ const int RegexDepthLimit = 250
 // The most steps a compiled pattern may have, so that `((a{1000}){1000}){1000}` is an error and
 // not a gigabyte.
 const nint RegexSizeLimit = 100000
+// Pike's machine keeps the slots of the threads of its two lists in blocks of this many threads,
+// one list's after the other's: a thread's slots copied to those of the next list then do not
+// land right after them, which copies them half as fast again (measured on Apple M chips).
+const nint RegexBlock = 16
 
 // The kinds of a node of the tree.
 const int RegexEmpty = 0
@@ -257,16 +261,16 @@ struct RegexMachine {
     nint slotCount
     List<nint> dense
     List<nint> sparse
-    // The slots of thread `t` of list `side`, one that reads a character or matches, start at
-    // `(2 * t + side) * slotCount`; `threadOf` gives the thread of each place of a list. They grow
-    // with the threads alive, not with the program: a pattern of many groups would ask for its
-    // size times their number at once.
+    // The slots of thread `t` of list `side`, one that reads a character or matches, are at
+    // `regexSlotsAt`; `threadOf` gives the thread of each place of a list. They grow with the
+    // threads alive, not with the program: a pattern of many groups would ask for its size times
+    // their number at once. The first `slotCount` are a thread's that has saved nothing yet, all
+    // -1: a search starts its threads from them.
     List<nint> caps
     List<nint> threadOf
     List<nint> threads
     List<nint> counts
     List<RegexFrame> stack
-    List<nint> scratch
     List<nint> found
 }
 
@@ -439,16 +443,7 @@ public struct Regex : Formattable {
         bool matched = false
         lock this.cache as c {
             var m = c.groups.take() ?? regexMachine(this, 2 * this.names.length())
-            nint start = 0
-            nint end = 0
-            // The DFAs find where the match starts; Pike's machine runs from there for the groups.
-            int found = regexDfaFind(this, ref c, text, 0, ref start, ref end)
-            if found != 0 {
-                if found == 2 {
-                    start = 0
-                }
-                matched = regexSearch(this, text, start, false, ref m, ref slots)
-            }
+            matched = regexGroups(this, ref c, text, 0, ref m, ref slots)
             c.groups = m
         }
         if !matched {
@@ -467,31 +462,11 @@ public struct Regex : Formattable {
     public string replaceAll(read this, read string text, read string replacement) {
         var out = string.withCapacity(text.length())
         var slots = List<nint>()
-        var m = regexMachine(this, 2 * this.names.length())
-        nint lastEnd = 0
-        nint position = 0
-        while position <= text.length() {
-            slots.clear()
-            if !regexSearch(this, text, position, false, ref m, ref slots) {
-                break
-            }
-            nint start = slots[0]
-            nint end = slots[1]
-            out.write(text[lastEnd..start])
-            if end > lastEnd || start == 0 {
-                regexExpand(this, ref out, text, read slots, replacement)
-            }
-            lastEnd = end
-            nint width = regexWidthAt(text, position)
-            if position + width > end {
-                position += width
-            } else if position + 1 > end {
-                position += 1
-            } else {
-                position = end
-            }
+        lock this.cache as c {
+            var m = c.groups.take() ?? regexMachine(this, 2 * this.names.length())
+            regexReplaceAll(this, ref c, text, replacement, ref m, ref slots, ref out)
+            c.groups = m
         }
-        out.write(text[lastEnd..])
         return out
     }
 
@@ -2515,12 +2490,64 @@ void regexAll(read Regex re, ref RegexCache c, read string text, ref RegexMachin
     }
 }
 
+// The slots of the first match from `from` added to `found`, as Rust finds them: where the match
+// starts and ends first, by the DFAs or, when they gave up, by Pike's machine with two slots,
+// which copies little; then the machine of every group's slots runs only there.
+bool regexGroups(read Regex re, ref RegexCache c, read string text, nint from, ref RegexMachine m, ref List<nint> found) {
+    nint start = 0
+    nint end = 0
+    int kind = regexDfaFind(re, ref c, text, from, ref start, ref end)
+    if kind == 0 {
+        return false
+    }
+    if kind == 2 {
+        var two = c.two.take() ?? regexMachine(re, 2)
+        var bounds = List<nint>()
+        bool matched = regexSearch(re, text, from, -1, false, ref two, ref bounds)
+        c.two = two
+        if !matched {
+            return false
+        }
+        start = bounds[0]
+        end = bounds[1]
+    }
+    return regexSearch(re, text, start, end, false, ref m, ref found)
+}
+
+// The text of `replaceAll` written to `out`.
+void regexReplaceAll(read Regex re, ref RegexCache c, read string text, read string replacement, ref RegexMachine m, ref List<nint> slots, ref string out) {
+    nint lastEnd = 0
+    nint position = 0
+    while position <= text.length() {
+        slots.clear()
+        if !regexGroups(re, ref c, text, position, ref m, ref slots) {
+            break
+        }
+        nint start = slots[0]
+        nint end = slots[1]
+        out.write(text[lastEnd..start])
+        if end > lastEnd || start == 0 {
+            regexExpand(re, ref out, text, read slots, replacement)
+        }
+        lastEnd = end
+        nint width = regexWidthAt(text, position)
+        if position + width > end {
+            position += width
+        } else if position + 1 > end {
+            position += 1
+        } else {
+            position = end
+        }
+    }
+    out.write(text[lastEnd..])
+}
+
 // ---- Running the program: Pike's machine ----
 
 // The machine is made for this one search.
 bool regexRun(read Regex re, read string text, nint start, bool any, nint slotCount, ref List<nint> found) {
     var m = regexMachine(re, slotCount)
-    return regexSearch(re, text, start, any, ref m, ref found)
+    return regexSearch(re, text, start, -1, any, ref m, ref found)
 }
 
 Match? regexFindAt(read Regex re, read string text, nint start, ref RegexMachine m) {
@@ -2535,7 +2562,7 @@ Match? regexFindAt(read Regex re, read string text, nint start, ref RegexMachine
         return Match { start = start + at, end = start + at + re.prefix.length() }
     }
     var slots = List<nint>()
-    if !regexSearch(re, text, start, false, ref m, ref slots) {
+    if !regexSearch(re, text, start, -1, false, ref m, ref slots) {
         return null
     }
     return Match { start = slots[0], end = slots[1] }
@@ -2607,8 +2634,10 @@ bool regexInRanges(read List<int> ranges, int c) {
 }
 
 // Adds the thread at `pc0` to the list `side`, following splits, jumps, saves and assertions
-// with the machine's own stack, in the order of preference.
-void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint position, read byte[] bytes) {
+// with the machine's own stack, in the order of preference. The thread's slots are those at
+// `work` in `m.caps`, which the saves change as it goes and give back as the stack unwinds, as
+// in Rust's PikeVM: they are copied once, to each step that reads a character or matches.
+void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint position, read byte[] bytes, nint work) {
     m.stack.add(RegexFrame { pc = pc0, slot = -1, value = 0 })
     nint base = side * m.size
     while true {
@@ -2617,7 +2646,7 @@ void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint
             break
         }
         if top.slot >= 0 {
-            m.scratch[top.slot] = top.value
+            m.caps[top.slot] = top.value
             continue
         }
         nint pc = top.pc
@@ -2638,8 +2667,9 @@ void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint
                 pc = inst.a
             } else if inst.op == RegexOpSave {
                 if inst.a < m.slotCount {
-                    m.stack.add(RegexFrame { pc = 0, slot = inst.a, value = m.scratch[inst.a] })
-                    m.scratch[inst.a] = position
+                    nint slot = work + inst.a
+                    m.stack.add(RegexFrame { pc = 0, slot = slot, value = m.caps[slot] })
+                    m.caps[slot] = position
                 }
                 pc += 1
             } else if inst.op == RegexOpAssert {
@@ -2651,15 +2681,21 @@ void regexAddThread(read Regex re, ref RegexMachine m, nint side, nint pc0, nint
                 nint thread = m.threads[side]
                 m.threads[side] = thread + 1
                 m.threadOf[base + count] = thread
-                nint at = (2 * thread + side) * m.slotCount
-                while m.caps.length() < at + 2 * m.slotCount {
+                nint at = regexSlotsAt(thread, side, m.slotCount)
+                while m.caps.length() < regexSlotsAt(thread | (RegexBlock - 1), 1, m.slotCount) + m.slotCount {
                     m.caps.add(-1)
                 }
-                m.caps[at..at + m.slotCount].copyFrom(m.scratch[0..m.slotCount])
+                m.caps[at..at + m.slotCount].copyFrom(m.caps[work..work + m.slotCount])
                 break
             }
         }
     }
+}
+
+// Where the slots of thread `thread` of list `side` start in a machine's `caps`: see
+// `RegexBlock`.
+nint regexSlotsAt(nint thread, nint side, nint slotCount) {
+    return ((thread / RegexBlock * 2 + side) * RegexBlock + thread % RegexBlock + 1) * slotCount
 }
 
 // A machine for the program of `re` that keeps `slotCount` slots, made once for every search of
@@ -2676,7 +2712,6 @@ RegexMachine regexMachine(read Regex re, nint slotCount) {
         threads = List<nint> { 0, 0 },
         counts = List<nint> { 0, 0 },
         stack = List<RegexFrame>(),
-        scratch = List<nint>(),
         found = List<nint>()
     }
     for _ in 0..2 * size {
@@ -2685,17 +2720,23 @@ RegexMachine regexMachine(read Regex re, nint slotCount) {
         m.threadOf.add(0)
     }
     for _ in 0..slotCount {
-        m.scratch.add(-1)
+        m.caps.add(-1)
         m.found.add(-1)
     }
     return m
 }
 
 // Searches `text` from `start` for the leftmost match the pattern prefers; the slots of `m`
-// are added to `found`. With `any`, stops at the first match of any kind.
-bool regexSearch(read Regex re, read string text, nint start, bool any, ref RegexMachine m, ref List<nint> found) {
+// are added to `found`. With `any`, stops at the first match of any kind. An `end` of 0 or more
+// is where the DFAs found that the match starting at `start` ends, as Rust does: the threads
+// start there only and stop at `end`, though the assertions still see the text around them.
+bool regexSearch(read Regex re, read string text, nint start, nint end, bool any, ref RegexMachine m, ref List<nint> found) {
     var bytes = text.asBytes()
     nint length = bytes.length()
+    nint stop = length
+    if end >= 0 {
+        stop = end
+    }
     nint size = m.size
     nint slotCount = m.slotCount
     m.counts[0] = 0
@@ -2709,14 +2750,18 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
     // `position` or after.
     nint innerAt = -1
     while true {
-        if !matched && (!re.anchored || position == 0) {
-            if m.counts[side] == 0 && re.inner.length() > 0 && innerAt < position {
+        bool begin = !re.anchored || position == 0
+        if end >= 0 {
+            begin = position == start
+        }
+        if !matched && begin {
+            if m.counts[side] == 0 && end < 0 && re.inner.length() > 0 && innerAt < position {
                 innerAt = regexInnerAt(re, text, position)
                 if innerAt < 0 {
                     break
                 }
             }
-            if m.counts[side] == 0 && re.prefix.length() > 0 {
+            if m.counts[side] == 0 && end < 0 && re.prefix.length() > 0 {
                 // No thread is alive: the next match starts where the prefix is next.
                 if position > length {
                     break
@@ -2727,10 +2772,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
                 }
                 position += next
             }
-            for k in 0..slotCount {
-                m.scratch[k] = -1
-            }
-            regexAddThread(re, ref m, side, 0, position, bytes)
+            regexAddThread(re, ref m, side, 0, position, bytes, 0)
         }
         if m.counts[side] == 0 {
             break
@@ -2751,7 +2793,7 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
             var inst = re.code[pc]
             int op = inst.op
             if op == RegexOpMatch {
-                nint at = (2 * m.threadOf[base + i] + side) * slotCount
+                nint at = regexSlotsAt(m.threadOf[base + i], side, slotCount)
                 m.found[0..slotCount].copyFrom(m.caps[at..at + slotCount])
                 matched = true
                 if any {
@@ -2775,12 +2817,12 @@ bool regexSearch(read Regex re, read string text, nint start, bool any, ref Rege
                 }
             }
             if ok {
-                nint at = (2 * m.threadOf[base + i] + side) * slotCount
-                m.scratch[0..slotCount].copyFrom(m.caps[at..at + slotCount])
-                regexAddThread(re, ref m, other, pc + 1, position + width, bytes)
+                // The thread's own slots are the closure's: no other thread reads them.
+                nint at = regexSlotsAt(m.threadOf[base + i], side, slotCount)
+                regexAddThread(re, ref m, other, pc + 1, position + width, bytes, at)
             }
         }
-        if position >= length {
+        if position >= stop {
             break
         }
         position += width

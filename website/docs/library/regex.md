@@ -195,7 +195,10 @@ a state of the automaton is made the first time a search needs it and kept in th
 up to about 2 MB for each DFA, counted in the bytes its states and moves hold; past that its states are let
 go and made again, and a search that lets them go too often finishes with Pike's machine. One DFA says whether
 there is a match (`isMatch`), one finds where the match the pattern prefers ends, and one, running the pattern
-backwards from there, where it starts; the groups are found after that, over the match alone. Plain text that every match holds is looked for first, so a text without
+backwards from there, where it starts; the groups are found after that, over the match alone, by Pike's
+machine, which copies the groups of a thread once for each character it reads, as Rust's does. When the DFAs
+let go too often, Pike's machine finds where the match starts and ends first, keeping only those two places,
+and the groups are found over the match alone after it. Plain text that every match holds is looked for first, so a text without
 it is passed over at the speed of a search for text. Over 100 MB of a log, `isMatch` of
 `[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 1.5 times what Rust's `regex` takes and 1.8
 times what PCRE2 takes with its JIT; a pattern with a rarer inner text, such as `in [0-9]{4} ms: .*日本`,
@@ -206,7 +209,8 @@ counted with every copy it writes (`x*` writes its `x` once, `x{1000}` a thousan
 that is `TooLarge`, and groups nest 250 deep at most. The groups of a match take room for each thread of Pike's
 machine that is alive, not for every step of the program: a pattern of 4,000 empty groups takes a few
 kilobytes. A pattern that keeps many threads alive with many groups, such as `(a?)` written 4,000 times, still
-takes their product, about 500 MB, as Go's `regexp` does.
+takes their product, about 500 MB, as Go's `regexp` does. Followed by 4,000 `a`s and searched over 4,000 `a`s,
+it takes 13.9 s on an Apple M3 Max; Rust's `regex` takes 13.8 s and 2.6 GB at its fastest.
 
 ## What it leaves out
 

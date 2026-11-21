@@ -967,7 +967,9 @@ fn builds_with_the_compiler_cc_names() {
 
 /// A pattern with so many states that the DFAs of `Regex` empty their cache more often than they
 /// may in one search, and leave it to Pike's machine (1536, 1539): compiled only, as the
-/// interpreter takes minutes over it. What it prints is Go's.
+/// interpreter takes minutes over it. What it prints is Go's; the groups and the replacement,
+/// found where the match starts after the text's start by Pike's machine with two slots and then
+/// by the one of every group (1598), are Rust's.
 #[test]
 fn a_regex_dfa_that_gives_up() {
     if !has_compiler() {
@@ -986,6 +988,11 @@ fn a_regex_dfa_that_gives_up() {
     }
     var re = Regex.of("(a|b)*a(a|b){16}")
     print($"{re.find(read text) ?? panic("a match")} {re.isMatch(read text)} {Regex.of("a(a|b){16}b").findAll(read text).length()}")
+    var later = $"xy{text}".toString()
+    var groups = Regex.of("((a|b)*)a((a|b){16})")
+    var caps = groups.captures(read later) ?? panic("a match")
+    print($"{caps.get(0) ?? panic("0")} {caps.get(1) ?? panic("1")} {caps.get(3) ?? panic("3")} {caps.get(4) ?? panic("4")}")
+    print(groups.replaceAll(read later, "[$3]"))
 }
 "#;
     let dir = work("a_regex_dfa_that_gives_up");
@@ -993,7 +1000,8 @@ fn a_regex_dfa_that_gives_up() {
     let out = program(&dir, "many").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", "many.sg", "--release", "-o", &out])), (0, String::new(), String::new()));
     let run = Command::new(&out).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
-    assert_eq!(ran(&run), (0, "0..60000 true 2869\n".to_string(), String::new()));
+    let expected = "0..60000 true 2869\n2..60002 2..59985 59986..60002 60001..60002\nxy[aabaabaabaaaaabb]\n";
+    assert_eq!(ran(&run), (0, expected.to_string(), String::new()));
 }
 
 /// The trials of `trials/` (1418, 1529): `grep` and `wc` written in SG, interpreted and compiled, on
