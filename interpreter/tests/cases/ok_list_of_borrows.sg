@@ -1,0 +1,120 @@
+// A `List<read T>` holds borrows and copies nothing (choice 1732): every source it borrows from
+// is followed on its own, a `clear()` lets go of all of them (1733), and what `removeLast` takes
+// out borrows the sources, not the list. In C the items are pointers, and a `read string` or a
+// window is the pair of a start and a length.
+struct Point : Formattable, Equatable, Comparable {
+    int x
+    public int compare(read this, read Point other) {
+        return this.x - other.x
+    }
+}
+
+struct Picked<from source> {
+    List<read string> words
+}
+
+// The words of `text` that are longer than `shortest`, as borrows of `text`.
+List<read string> longer(read string text, nint shortest) from text {
+    var found = List<read string>()
+    for word in text.split(' ') {
+        if word.length() > shortest {
+            found.add(word)
+        }
+    }
+    return found
+}
+
+Picked pick(read string text) from text {
+    return Picked { words = longer(text, 3) }
+}
+
+async void sendAll() {
+    var out = List<byte>()
+    var pieces = List<read byte[]>()
+    var tail = "!\n".clone()
+    for i in 0..3 {
+        // Cleared before `out` changes, the list holds nothing of the round before.
+        pieces.clear()
+        out.clear()
+        out.add((byte)(65 + i))
+        pieces.add(out[0..1])
+        await Task.delay(1)
+        pieces.add(tail.asBytes())
+        long n = 0
+        for piece in read pieces {
+            n += piece.length()
+        }
+        print($"{n} {pieces}")
+    }
+}
+
+void main() {
+    var a = "b".clone()
+    var b = "a".clone()
+    var c = "c".clone()
+    var names = List<read string>()
+    names.add(read a)
+    names.add(read b)
+    names.add(read c)
+    print(names)
+    print($"{names.contains("c")} {names.indexOf("b") ?? -1} {names.get(1) ?? "none"} {names.get(9) ?? "none"}")
+    names.sort()
+    print($"{names} {names.binarySearch("b") ?? -1}")
+    var last = names.removeLast()
+    names.add(read a)
+    print($"{last ?? "none"} {names}")
+    names.reverse()
+    print(names[0..2])
+    var copy = List<read string>()
+    copy.add(names[0])
+    copy.add(names[1])
+    copy.add(names[2])
+    print(copy == names)
+
+    var p1 = Point { x = 3 }
+    var p2 = Point { x = 1 }
+    var points = List<read Point>()
+    points.add(read p1)
+    points.add(read p2)
+    print($"{points} {points[0].x + points[1].x} {points.contains(read p2)}")
+    points.sort()
+    print($"{points} {points.indexOf(read p1) ?? -1}")
+    var first = points.get(0)
+    if first is not null {
+        print(first.x)
+    }
+    for p in read points {
+        print(p)
+    }
+
+    var numbers = List<int> { 5, 2, 9 }
+    var lent = List<read int>()
+    for i in 0..numbers.length() {
+        lent.add(read numbers[i])
+    }
+    lent.sort()
+    print($"{lent} {lent.indexOf(read 9) ?? -1}")
+
+    var bytes = List<byte> { 1, 2, 3, 4, 5 }
+    var pieces = List<read byte[]>()
+    pieces.add(bytes[0..2])
+    pieces.add(bytes[2..5])
+    print($"{pieces} {pieces.contains(bytes[2..5])} {pieces[1].length()}")
+
+    // Changed once the list has let go of it.
+    var s = "abc".clone()
+    var held = List<read string>()
+    held.add(read s)
+    print(held.length())
+    held.clear()
+    s = "changed".clone()
+    held.add(read s)
+    print(held[0])
+
+    var text = "a list holds borrows of words".clone()
+    print(longer(read text, 4))
+    var picked = pick(read text)
+    print(picked.words.length())
+
+    sendAll().wait()
+}

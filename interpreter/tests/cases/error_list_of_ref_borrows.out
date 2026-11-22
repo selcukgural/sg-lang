@@ -1,0 +1,6 @@
+error: a `List` of `ref` borrows is not in the language
+  a list lends its items with `read`; two `ref` borrows in one list could reach one place
+  --> error_list_of_ref_borrows.sg:2:19
+ 2 |     var xs = List<ref string>()
+   |                   ^^^^^^^^^^
+  hint: keep the values themselves in the list, and change them through it: `xs[i].field = v`

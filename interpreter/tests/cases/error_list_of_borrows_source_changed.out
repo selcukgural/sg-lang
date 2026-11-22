@@ -1,0 +1,9 @@
+error: `b` cannot be changed here: `names` borrows from it and is used again later
+  --> error_list_of_borrows_source_changed.sg:7:5
+ 7 |     b = "changed".clone()
+   |     ^
+  `names` borrowed it here:
+  --> error_list_of_borrows_source_changed.sg:6:15
+ 6 |     names.add(read b)
+   |               ^^^^^^
+  hint: finish with `names` before this line: a borrow ends at its last use

@@ -1,0 +1,5 @@
+error: `words` returns a `List<read string>`, which carries a borrow, so it says where that comes from
+  --> error_list_of_borrows_returned.sg:1:19
+ 1 | List<read string> words(read string text) {
+   |                   ^^^^^
+  hint: after the parameters: `from text`

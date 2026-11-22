@@ -12638,6 +12638,15 @@ fn is_task_list(ty: &Ty) -> bool {
     matches!(ty, Ty::List(item) if matches!(**item, Ty::Task(_)))
 }
 
+/// Whether the items of the list behind this type are borrows that C keeps as pointers
+/// (1732): not a `read string` or a window, which are values of their own.
+fn lent_item(ty: &Ty) -> bool {
+    match list_behind(ty) {
+        Some((Ty::List(item), _)) => matches!(**item, Ty::Read(_)) && !is_text_view(item) && !is_window(item),
+        _ => false,
+    }
+}
+
 fn mangle(ty: &Ty) -> Option<String> {
     Some(match ty {
         Ty::Int(ty) => ty.name().to_string(),
@@ -12681,6 +12690,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Read(_) | Ty::Ref(_) if is_window(ty) => mangle(flat(ty).strip_borrow())?,
         // A look at a text, where it is held by something else: `Result<read string, E>`.
         Ty::Read(_) | Ty::Ref(_) if is_text_view(ty) => "str".to_string(),
+        // The item of a list of borrows (1732): a pointer to what it reads.
+        Ty::Read(inner) if !is_option(inner) => format!("R_{}", mangle(inner)?),
         Ty::Set(item) => format!("H_{}", mangle(item)?),
         Ty::Map(key, value) => {
             let key = mangle(key)?;
@@ -14676,11 +14687,12 @@ impl<'a> Emitter<'a> {
                 }
                 body.push_str(" default: break; }");
             }
+            // A list of borrows (1732) is written as what its items point at.
             Ty::List(item) => {
                 let _ = write!(
                     body,
-                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {}(out, &v->ptr[i]); }} sg_put(out, \"]\", 1);",
-                    self.shower(item, span)?
+                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {} }} sg_put(out, \"]\", 1);",
+                    self.show_at(item, "v->ptr[i]", span)?
                 );
             }
             // An array and a window are written like a list.
@@ -14691,8 +14703,8 @@ impl<'a> Emitter<'a> {
                 };
                 let _ = write!(
                     body,
-                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < {count}; i++) {{ if (i) sg_put(out, \", \", 2); {}(out, &v->{items}[i]); }} sg_put(out, \"]\", 1);",
-                    self.shower(item, span)?
+                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < {count}; i++) {{ if (i) sg_put(out, \", \", 2); {} }} sg_put(out, \"]\", 1);",
+                    self.show_at(item, &format!("v->{items}[i]"), span)?
                 );
             }
             Ty::Map(key, value) => {
@@ -14810,8 +14822,8 @@ impl<'a> Emitter<'a> {
             Ty::List(item) => {
                 let _ = write!(
                     body,
-                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}(&a->ptr[i], &b->ptr[i])) return false; return true;",
-                    self.equaler(item, span)?
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}) return false; return true;",
+                    self.same_at(item, "a->ptr[i]", "b->ptr[i]", span)?
                 );
             }
             Ty::Array(item, length) => {
@@ -14821,8 +14833,8 @@ impl<'a> Emitter<'a> {
             Ty::Slice(item) => {
                 let _ = write!(
                     body,
-                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}(&a->ptr[i], &b->ptr[i])) return false; return true;",
-                    self.equaler(item, span)?
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}) return false; return true;",
+                    self.same_at(item, "a->ptr[i]", "b->ptr[i]", span)?
                 );
             }
             // Two tables are equal when they hold the same, in whatever order.
@@ -14937,6 +14949,8 @@ impl<'a> Emitter<'a> {
                     Ty::Int(_) | Ty::Bool | Ty::Char => (held.clone(), "v.ptr[i] == item".to_string()),
                     Ty::Float(_) => (held.clone(), "sg_feq(v.ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v.ptr[i]), item)".to_string()),
+                    // A list of borrows (1732) is given a borrow, and compares what they point at.
+                    Ty::Read(_) => (held.clone(), self.same_at(item, "v.ptr[i]", "item", span)?),
                     _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.equaler(item, span)?)),
                 };
                 let _ = writeln!(
@@ -14979,6 +14993,7 @@ impl<'a> Emitter<'a> {
                     Ty::Int(_) | Ty::Char => (held.clone(), "((v.ptr[i] > item) - (v.ptr[i] < item))".to_string()),
                     Ty::Float(_) => (held.clone(), "sg_fcmp(v.ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_cmp(sg_view(&v.ptr[i]), item)".to_string()),
+                    Ty::Read(_) => (held.clone(), format!("{}(&v.ptr[i], &item)", self.item_compare(item, slice, span)?)),
                     _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.item_compare(item, slice, span)?)),
                 };
                 let _ = writeln!(
@@ -14992,7 +15007,7 @@ impl<'a> Emitter<'a> {
             "binarySearch" | "lowerBound" | "upperBound" => {
                 let bound = self.window_helper(slice, "bound", span)?;
                 let given = match &**item {
-                    Ty::Int(_) | Ty::Char | Ty::Float(_) => held.clone(),
+                    Ty::Int(_) | Ty::Char | Ty::Float(_) | Ty::Read(_) => held.clone(),
                     Ty::Str => "sg_str".to_string(),
                     _ => format!("{held} const*"),
                 };
@@ -15186,6 +15201,17 @@ impl<'a> Emitter<'a> {
         }
         let nint = Ty::Int(IntTy::Nint);
         match what {
+            // On a list of borrows (1732) the borrow itself, or none: a `read T?`.
+            "get" | "pop" if matches!(**item, Ty::Read(_)) => {
+                let option = Ty::Nullable(Box::new(item.strip_borrow().clone()));
+                let lent_c = self.ctype(&Ty::Read(Box::new(option.clone())), span)?;
+                let none = self.lent_none(&option);
+                let _ = match what {
+                    "get" => writeln!(self.glue, "static inline {lent_c} {helper}(const {list_c}* v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v->len) return {none}; return v->ptr[at]; }}"),
+                    _ => writeln!(self.glue, "static inline {lent_c} {helper}({list_c}* v) {{ if (v->len == 0) return {none}; v->len--; return v->ptr[v->len]; }}"),
+                };
+                self.sigs.insert(helper.clone(), if what == "get" { vec![nint] } else { Vec::new() });
+            }
             "get" | "pop" => {
                 let option = Ty::Nullable(item.clone());
                 if mangle(&option).is_none() {
@@ -15226,6 +15252,8 @@ impl<'a> Emitter<'a> {
                     Ty::Int(_) | Ty::Bool | Ty::Char => (held.clone(), "v->ptr[i] == item".to_string()),
                     Ty::Float(_) => (held.clone(), "sg_feq(v->ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v->ptr[i]), item)".to_string()),
+                    // A list of borrows (1732) is given a borrow, and compares what they point at.
+                    Ty::Read(_) => (held.clone(), self.same_at(item, "v->ptr[i]", "item", span)?),
                     // Any other item is compared through a pointer, by the helper of its type.
                     _ => (format!("{held} const*"), format!("{}(&v->ptr[i], item)", self.equaler(item, span)?)),
                 };
@@ -15275,6 +15303,9 @@ impl<'a> Emitter<'a> {
             Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
             Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
             Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
+            // A list of borrows (1732) is put in the order of what its items point at.
+            _ if is_text_view(item) => "return sg_cmp(*(const sg_str*)a, *(const sg_str*)b);".to_string(),
+            Ty::Read(inner) => format!("return {}(*(const void* const*)a, *(const void* const*)b);", self.item_compare(inner, holder, span)?),
             _ => return Err(not_yet(span, &format!("putting the items of a `{holder}` in order"))),
         };
         let _ = writeln!(self.glue, "static int {helper}(const void* a, const void* b) {{ {compare} }}");
@@ -19825,12 +19856,16 @@ impl<'a> Emitter<'a> {
                         format!("sg_at_{name}({address}, {at}, {})", self.loc(expr.span))
                     }
                 };
+                // An item of a list of borrows (1732) stands for what it points at, as a
+                // borrowed variable does.
+                let lent = lent_item(&recv.ty);
+                let place = |at: String| if lent { format!("(**{at})") } else { format!("(*{at})") };
                 if !once {
-                    return Ok(format!("(*{found})"));
+                    return Ok(place(found));
                 }
                 let temp = self.temp();
                 self.pre.push(format!("{held}* {temp} = {found};"));
-                Ok(format!("(*{temp})"))
+                Ok(place(temp))
             }
             // An item of an array or of a window, where it is: the index is checked.
             ExprKind::Index { recv, index, kind: IndexKind::Array } => {
@@ -20831,6 +20866,9 @@ impl<'a> Emitter<'a> {
                     (to, _) => Ok(format!("(({})({inner}))", self.ctype(to, expr.span)?)),
                 }
             }
+            // An item of a list of borrows (1732) is, as a value, the pointer it holds; as a
+            // place it stands for what that points at.
+            ExprKind::Index { recv, kind: IndexKind::List, .. } if lent_item(&recv.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
             ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array | IndexKind::Raw, .. } => self.lvalue(expr),
             ExprKind::Unsafe(inner) => self.value(inner),
             // `(raw byte)p`: the same address, read as another pointer.
@@ -21444,7 +21482,7 @@ impl<'a> Emitter<'a> {
                     let before = self.mark();
                     let window = self.window(recv)?;
                     let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
-                    let called = if matches!(*item, Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str) {
+                    let called = if matches!(*item, Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str | Ty::Read(_)) {
                         self.call(helper, Some(receiver), args, false, &Ty::Int(IntTy::Nint))?
                     } else {
                         self.by_pointer(&helper, receiver, &args[0], &item)?
@@ -21475,7 +21513,7 @@ impl<'a> Emitter<'a> {
                     let before = self.mark();
                     let address = self.list_address(recv)?;
                     let Ty::List(item) = &list else { unreachable!("it is a list") };
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Read(_));
                     let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
                     let called = if by_pointer {
                         self.by_pointer(&helper, receiver, &args[0], item)?
@@ -21524,7 +21562,7 @@ impl<'a> Emitter<'a> {
                     };
                     let before = self.mark();
                     let window = self.window(recv)?;
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Read(_));
                     let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
                     let called = if by_pointer {
                         self.by_pointer(&helper, receiver, &args[0], item)?

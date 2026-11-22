@@ -1,5 +1,0 @@
-error: a `List` that holds borrows is not in the interpreter yet
-  it needs the borrow check, which is not here yet
-  --> error_list_of_borrows.sg:2:19
- 2 |     var xs = List<read string>()
-   |                   ^^^^^^^^^^^

@@ -1,0 +1,4 @@
+void main() {
+    var xs = List<ref string>()
+    print(xs.length())
+}

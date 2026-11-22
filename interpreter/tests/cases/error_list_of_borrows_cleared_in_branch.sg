@@ -1,0 +1,14 @@
+// Cleared in some rounds only, the list may still hold the borrow of the round before.
+void main() {
+    var out = List<byte>()
+    var pieces = List<read byte[]>()
+    for i in 0..3 {
+        if i > 0 {
+            pieces.clear()
+        }
+        out.clear()
+        out.add((byte)i)
+        pieces.add(out[0..1])
+        print(pieces.length())
+    }
+}

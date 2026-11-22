@@ -1,0 +1,5 @@
+error: `get` on a `List<read byte[]>` is not in the language yet: it would give a slice that may be missing
+  --> error_list_of_borrows_window_get.sg:5:24
+ 5 |     var first = pieces.get(0)
+   |                        ^^^
+  hint: test the index against `length()`, then take the item with `xs[i]`

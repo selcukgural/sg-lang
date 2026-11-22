@@ -370,11 +370,16 @@ their connections in a group. A token made and used in one line no longer keeps 
 no longer be put on the heap where nobody waits for it, and `CancellationSource.after(0)` is cancelled at once
 in the interpreter too (1715-1730). The group costs nothing on the servers' numbers; a limit on the time of a request costs 3 to 4% of the
 answers, and beside 10,000 slow clients answers the busy ones within 807 µs at p99 where `tokio` takes 2.47 ms.
+The hundred-and-fifty-ninth begins with a list of borrows, `List<read T>`, which follows each source on its own
+and which `clear()` lets go of, so one list of pieces is filled again in every round of a loop (1731-1745).
+Before it, a thread of the pool that went to sleep on its own loop of the network could lose the wake sent to
+it, when the clock's watch held that loop for a short round just then, and wait for ever; it now looks at its
+flag once it holds the loop.
 
 ## Next
 
-Next comes the rest of what a server needs from the library (a reader that lends slices and `writev`, which
-need a list of borrows), the tests of robustness, then HTTP/1.1; and a slice for the command line,
+Next comes the rest of the hundred-and-fifty-ninth (a reader that lends slices and `sendPieces`, the system's
+`writev`, both built on the list of borrows), the tests of robustness, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

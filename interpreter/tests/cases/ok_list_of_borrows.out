@@ -1,0 +1,20 @@
+["b", "a", "c"]
+true 0 a none
+["a", "b", "c"] 1
+c ["a", "b", "b"]
+["b", "b"]
+true
+[Point { x = 3 }, Point { x = 1 }] 4 true
+[Point { x = 1 }, Point { x = 3 }] 1
+1
+Point { x = 1 }
+Point { x = 3 }
+[2, 5, 9] 2
+[[1, 2], [3, 4, 5]] true 3
+1
+changed
+["holds", "borrows", "words"]
+4
+3 [[65], [33, 10]]
+3 [[66], [33, 10]]
+3 [[67], [33, 10]]

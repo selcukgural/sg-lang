@@ -138,6 +138,60 @@ It prints:
 
 `addAll` on text is refused, since a `string` is not copied silently; the hint is `more.add(item.clone())`.
 
+### A list of borrows
+
+A `List<read T>` holds borrows and copies nothing. Each value it borrowed from is followed on its own: changing
+one, or letting it end, while the list is used later is a compile error. `clear()` lets go of every borrow, so a
+list made outside a loop is filled again in each round, with no memory taken for it, when it is cleared before
+the round changes what it borrowed from. `get` and `removeLast` give a `read T?`, and what `removeLast` takes out
+borrows what the list borrowed, not the list. The searches take a borrow too: `numbers.indexOf(read 9)`.
+
+```sg
+struct Order {
+    string customer
+    long amount
+}
+
+void main() {
+    var orders = List<Order> {
+        Order { customer = "ada", amount = 1200 },
+        Order { customer = "grace", amount = 300 },
+        Order { customer = "ada", amount = 80 }
+    }
+    var large = List<read Order>()
+    for o in read orders {
+        if o.amount >= 100 {
+            large.add(o)
+        }
+    }
+    print($"{large.length()} {large[0].customer} {large[1].amount}")
+
+    var out = List<byte>()
+    var pieces = List<read byte[]>()
+    var tail = "\n".clone()
+    for i in 0..2 {
+        pieces.clear()
+        out.clear()
+        out.add((byte)('a' + i))
+        pieces.add(out[0..1])
+        pieces.add(tail.asBytes())
+        print(pieces)
+    }
+}
+```
+
+It prints:
+
+```text
+2 ada 300
+[[97], [10]]
+[[98], [10]]
+```
+
+In C the items are pointers, and a `read string` or a window is a start and a length, so a `List<read byte[]>`
+is laid out as the array of pieces the system's `writev` takes. There is no `List<ref T>`, and a list of windows
+has no `get` or `removeLast`, which would give a slice that may be missing.
+
 ## `T[N]`
 
 An array has its length in its type and lies where it is kept: in a variable, or inside a struct.

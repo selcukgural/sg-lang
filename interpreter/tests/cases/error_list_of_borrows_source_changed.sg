@@ -1,0 +1,9 @@
+void main() {
+    var a = "abc".clone()
+    var b = "xyz".clone()
+    var names = List<read string>()
+    names.add(read a)
+    names.add(read b)
+    b = "changed".clone()
+    print(names.length())
+}

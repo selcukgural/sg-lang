@@ -2596,7 +2596,12 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             let [item] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`List` is written with the type of its items: `List<T>`"));
             };
-            no_borrow(item, "List")?;
+            // A list of `read` borrows (1732); a list of `ref` borrows is not in the language.
+            if item.mode == Some(Mode::Ref) {
+                return Err(Diag::error(item.span, "a `List` of `ref` borrows is not in the language")
+                    .note("a list lends its items with `read`; two `ref` borrows in one list could reach one place")
+                    .hint("keep the values themselves in the list, and change them through it: `xs[i].field = v`"));
+            }
             Ty::List(Box::new(resolve_type(item, names, false)?))
         }
         // The type of a function: what it takes, then what it returns.
@@ -4012,6 +4017,11 @@ fn reaches_item(place: &Expr) -> bool {
     }
 }
 
+/// A local list of borrows, which `clear()` lets go of (1733).
+fn clears(var: &Var) -> bool {
+    !var.param && matches!(&var.declared, Ty::List(item) if item.is_borrow())
+}
+
 /// Whether two loans lend the same place in the same way.
 fn same_loan(a: &Loan, b: &Loan) -> bool {
     a.root == b.root && a.path == b.path && a.mutable == b.mutable && a.held == b.held
@@ -4057,6 +4067,8 @@ struct Clash {
     copy_as: Option<String>,
     /// The loops that were open where the holder was declared.
     holder_loops: Vec<usize>,
+    /// The holder is a local list of borrows, which `clear()` lets go of (1733).
+    clears: bool,
     loan: Loan,
     access: Access,
     span: Span,
@@ -4087,6 +4099,9 @@ struct Borrows {
     opening: bool,
     /// The uses that are the `dispose` of a value at the end of its block, by `Point::seq`.
     disposed: Vec<usize>,
+    /// Every `clear` of a local collection that let go of what its items borrowed (1733): the
+    /// variable, how many touches came before it, and where.
+    released: Vec<(usize, usize, Point)>,
 }
 
 struct Var {
@@ -5437,6 +5452,9 @@ impl<'a> Checker<'a> {
                         Some(source) => self.lent_by(recv, source.held, mutable),
                         None => Vec::new(),
                     },
+                    // What `removeLast` takes out is no longer in the list: it borrows what the
+                    // list borrowed (1732), and the list is free to change.
+                    (None, Callee::Plain) if name == "removeLast" => self.lent_by(recv, true, mutable),
                     (None, Callee::Plain) => self.lent_by(recv, false, mutable),
                     (None, _) => Vec::new(),
                 };
@@ -5612,6 +5630,7 @@ impl<'a> Checker<'a> {
                         closed: false,
                         copy_as: copy_as.clone().filter(|_| loan.path.is_empty()),
                         holder_loops: var.decl_loops.clone(),
+                        clears: clears(var),
                         loan: loan.clone(),
                         access,
                         span,
@@ -5668,6 +5687,9 @@ impl<'a> Checker<'a> {
             // before (choice 1381).
             if clash.loan.span.start >= clash.span.start && !clash.at.loops.is_empty() {
                 diag = diag.note(format!("the loop comes round again, and `{holder}` still holds the borrow of the round before"));
+                if clash.clears {
+                    return Err(diag.hint(format!("`{holder}.clear()` in every round before this line: a list with no items borrows nothing")));
+                }
             }
             // Used by the place of the assignment whose right side touched it.
             if later.placed.is_some_and(|from| clash.at.placed.is_none() && (from..=later.pos).contains(&clash.at.pos)) {
@@ -5964,6 +5986,7 @@ impl<'a> Checker<'a> {
                         closed: owner.opened,
                         copy_as: None,
                         holder_loops: holder.decl_loops.clone(),
+                        clears: false,
                         loan: loan.clone(),
                         access: Access::Gone,
                         span: loan.span,
@@ -7340,6 +7363,23 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// `xs.clear()` on a local collection that holds borrows: with no items left it borrows
+    /// nothing, so its source is free again (1733), and a loop that clears it before it
+    /// touches the source does not clash with the borrows of the round before. Not through a
+    /// parameter, whose items are the caller's.
+    fn release(&mut self, recv: &Expr) {
+        let ExprKind::Var(name) = &recv.kind else { return };
+        let at = self.point(recv.span.start);
+        let mark = self.borrows.touched.len();
+        let Some(var) = self.find(name) else { return };
+        if var.param || var.declared.is_borrow() {
+            return;
+        }
+        var.loans.clear();
+        let id = var.id;
+        self.borrows.released.push((id, mark, at));
+    }
+
     /// A variable from outside the loop that a round leaves with a new borrow holds it when
     /// the next round starts: what the body touches of that place may clash with it, as a
     /// touch in the same round would. `mark`: where the touches of the body start.
@@ -7348,9 +7388,20 @@ impl<'a> Checker<'a> {
         for (scope, (saved, now)) in self.scopes.iter().zip(before.iter().zip(start)) {
             for ((var, was), then) in scope.vars.iter().zip(saved).zip(now) {
                 for loan in then.loans.iter().filter(|loan| !loan.held && !was.loans.iter().any(|old| same_loan(old, loan))) {
-                    for (root, path, access, span, at) in &self.borrows.touched[mark..] {
+                    for (index, (root, path, access, span, at)) in self.borrows.touched.iter().enumerate().skip(mark) {
                         let overlaps = path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
                         if *root != loan.root || *root == var.id || !overlaps || (!loan.mutable && *access == Access::Read) {
+                            continue;
+                        }
+                        // Cleared earlier in every round that comes to the touch: what the round
+                        // before borrowed is let go of by then.
+                        let cleared = self.borrows.released.iter().any(|(holder, before, cleared_at)| {
+                            *holder == var.id
+                                && (mark..=index).contains(before)
+                                && cleared_at.branches.iter().all(|branch| at.branches.contains(branch))
+                                && cleared_at.loops.iter().all(|inner| at.loops.contains(inner))
+                        });
+                        if cleared {
                             continue;
                         }
                         found.push(Clash {
@@ -7360,6 +7411,7 @@ impl<'a> Checker<'a> {
                             closed: false,
                             copy_as: None,
                             holder_loops: var.decl_loops.clone(),
+                            clears: clears(var),
                             loan: loan.clone(),
                             access: *access,
                             span: *span,
@@ -13773,7 +13825,8 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let can_equal = item.is_some_and(|item| has(item, self.equatable, true));
-        let can_order = item.is_some_and(|item| match item {
+        // A list of borrows (1732) orders by what its items point at.
+        let can_order = item.is_some_and(|item| match item.strip_borrow() {
             Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str => true,
             Ty::Struct(name) | Ty::Enum(name) => self.comparable.contains(name),
             _ => false,
@@ -13806,6 +13859,7 @@ impl<'a> Checker<'a> {
             (_, "clear") => {
                 arity(0)?;
                 changes()?;
+                self.release(recv);
                 Ok(Ty::Void)
             }
             (Ty::List(item), "add") => {
@@ -13859,15 +13913,28 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Void)
             }
             // `null` where `xs[i]` would panic.
+            // A list of windows (1732) has no `read byte[]?` to give: a slice that may be
+            // missing is not in the language.
+            (Ty::List(item), "get" | "removeLast") if matches!(item.strip_borrow(), Ty::Slice(_)) => {
+                Err(Diag::error(name_span, format!("`{name}` on a `{target}` is not in the language yet: it would give a slice that may be missing"))
+                    .hint(match name {
+                        "get" => "test the index against `length()`, then take the item with `xs[i]`",
+                        _ => "take the last item with `xs[xs.length() - 1]`, then make the list shorter",
+                    }))
+            }
+            // On a list of borrows (1732) both give the borrow itself, or `null`: `read T?`.
             (Ty::List(item), "get") => {
                 arity(1)?;
                 self.index(&mut args[0], "an index")?;
-                Ok(Ty::Read(Box::new(nullable(item))))
+                Ok(Ty::Read(Box::new(nullable(item.strip_borrow()))))
             }
             (Ty::List(item), "removeLast") => {
                 arity(0)?;
                 changes()?;
-                Ok(nullable(item))
+                Ok(match &**item {
+                    Ty::Read(inner) => Ty::Read(Box::new(nullable(inner))),
+                    _ => nullable(item),
+                })
             }
             (Ty::List(_), "reverse") => {
                 arity(0)?;

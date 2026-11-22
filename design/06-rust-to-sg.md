@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-eighth slice (`TaskGroup` for `JoinSet` and a `Semaphore` of connections, `cancelAfter` for a timeout set again, 1715-1730).
+Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`List<read T>` for `Vec<&T>`, 1732-1733).
 
 ## Functions and variables
 
@@ -137,6 +137,7 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-eighth slice (`
 | Rust | SG | Status | Note |
 |---|---|---|---|
 | `Vec<T>` | `List<T>` | built | |
+| `Vec<&T>`, `Vec<&[u8]>` | `List<read T>`, `List<read byte[]>` | built | Each source is followed on its own, not under one lifetime; `xs.clear()` on a local list lets go of all of them, so one list is filled again in every round of a loop, which a `Vec<&'a T>` cannot be. No `List<ref T>` (1732, 1733) |
 | `Vec::new()`, `vec![1, 2]` | `List<int>()`, `List<int> { 1, 2 }` | built | |
 | `vec![0u8; n]`, `vec![x; n]` | `List<byte>.repeat(0, n)`, `List<T>.repeat(x, n)` | built | The item is `Copyable`; zeros come from `calloc`, as Rust's do |
 | `Vec::with_capacity(n)` | `List<T>.withCapacity(n)` | built | No `reserve` on a list made already |

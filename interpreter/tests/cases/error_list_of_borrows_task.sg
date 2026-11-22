@@ -1,0 +1,11 @@
+async int count(List<read string> names) {
+    return (int)names.length()
+}
+
+void main() {
+    var s = "abc".clone()
+    var names = List<read string>()
+    names.add(read s)
+    var task = count(names)
+    print(task.wait())
+}

@@ -1,0 +1,10 @@
+List<read string> words(read string text) {
+    var found = List<read string>()
+    found.add(text)
+    return found
+}
+
+void main() {
+    var text = "a b".clone()
+    print(words(read text).length())
+}

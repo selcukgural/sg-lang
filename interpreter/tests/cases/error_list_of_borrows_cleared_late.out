@@ -1,0 +1,10 @@
+error: `out` cannot be changed here: `pieces` borrows from it and is used again later
+  the loop comes round again, and `pieces` still holds the borrow of the round before
+  --> error_list_of_borrows_cleared_late.sg:7:9
+ 7 |         out.clear()
+   |         ^^^
+  `pieces` borrowed it here:
+  --> error_list_of_borrows_cleared_late.sg:10:20
+ 10 |         pieces.add(out[0..1])
+    |                    ^^^^^^^^^
+  hint: `pieces.clear()` in every round before this line: a list with no items borrows nothing

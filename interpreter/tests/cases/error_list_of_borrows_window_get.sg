@@ -1,0 +1,7 @@
+void main() {
+    var bytes = List<byte> { 1, 2, 3 }
+    var pieces = List<read byte[]>()
+    pieces.add(bytes[0..2])
+    var first = pieces.get(0)
+    print(first is null)
+}

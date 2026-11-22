@@ -152,8 +152,10 @@
   the module with their names in a comment, since SG has no constants of its own.
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
-  `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
-  carries a borrow works); a `match` used as a value that gives a borrow is not followed.
+  `where r from name`); a borrow as the error of a `Result`; a `match` used as a value that gives a borrow
+  is not followed. A list of borrows is `List<read T>` only: no `List<ref T>`, and no borrows in a map, a
+  set or an array (1732). A list of windows (`List<read byte[]>`) has no `get` and no `removeLast`, which
+  would give a slice that may be missing (1743).
 - `swap(ref a, ref b)`.
 - A text constant has the type `string` here, not the design's `read string` (04, "String constant"). What the
   design wants of it is here all the same: it is not allocated or freed, has no capacity, and its first write or
@@ -194,7 +196,7 @@
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
-- Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
+- `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - What Unicode has beyond the tables of 635 and the normal forms (1599): grapheme clusters, sorting by a language, the width
   of a character, the title case, the Turkish and Azeri case mappings (640), and names in Unicode in the
