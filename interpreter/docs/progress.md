@@ -356,11 +356,16 @@ an HTTP server, each in SG, Rust, Zig and C under one load written in C, idle, u
 and on one core answers more than C, but on four it gets 0.64 times the answers of Zig's threads with few
 connections, because a request is read on one core and served on another; the pool now counts the cores the
 program may run on, and `is Ok(text)` on a borrowed text names a `read string` (1698-1707).
+The hundred-and-fifty-seventh gave each thread of the pool a loop of the network of its own, which a thread with
+nothing to do waits on and is woken through; a socket goes on the loop of the thread with the fewest and stays
+there, and the clock's thread looks at the loop of a thread busy with one task for long. With 50 connections
+the store answers 1,342,000 times a second on Linux where it answered 578,000, 1.49 times Zig's threads and 0.91
+times C, and the three systems work the same way; at 70% of the load the tail grew to C's, and two ends that talk inside one program
+lost to `tokio`, both kept to be mended (1708-1714).
 
 ## Next
 
-Next comes the scheduler of the server lane: a loop of the network on each thread of the pool, so a
-connection stays on its core, then what a server needs from the library (time limits, a limit on
+Next comes what a server needs from the library (time limits, a limit on
 connections, a graceful end, a reader that lends slices, `writev`, a group of tasks that takes its ended
 tasks out by itself), the tests of robustness, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case

@@ -7,11 +7,11 @@ faster. How the numbers are taken, and the rules that keep them fair, are in
 
 ## In short
 
-Of the 61 programs, 37 take the time of C within 5% (the middle of all is 1.00),
-13 are faster and 11 are slower.
+Of the 61 programs, 36 take the time of C within 5% (the middle of all is 1.00),
+13 are faster and 12 are slower.
 
-- **Slower:** `tree` 1.53, `queue` 1.39, `gunzip` 1.31, `signals` 1.27, `tasklist` 1.24, `counts` 1.20, `asynclines` 1.18, `sha256` 1.17, `json` 1.15, `netlines` 1.09, `async` 1.08. Each is in [Slower than C](slower-than-c.md), with what would fix it.
-- **Faster:** `floats` 0.23, `dates` 0.29, `show` 0.47, `table` 0.52, `copy` 0.54, `checksum` 0.69, `bits` 0.79, `lines` 0.79, `rewrite` 0.86, `classes` 0.87, `echo` 0.89, `bitfields` 0.91, `bytes` 0.94. Several of these are C's library (`printf`, `gmtime_r`) against SG's
+- **Slower:** `tree` 1.53, `queue` 1.39, `gunzip` 1.31, `signals` 1.27, `tasklist` 1.24, `counts` 1.20, `asynclines` 1.18, `sha256` 1.17, `json` 1.15, `netlines` 1.09, `async` 1.08, `echo` 1.06. Each is in [Slower than C](slower-than-c.md), with what would fix it.
+- **Faster:** `floats` 0.23, `dates` 0.29, `show` 0.47, `table` 0.52, `copy` 0.54, `asynccopy` 0.59, `checksum` 0.69, `bits` 0.79, `lines` 0.79, `rewrite` 0.86, `classes` 0.87, `bitfields` 0.91, `bytes` 0.94. Several of these are C's library (`printf`, `gmtime_r`) against SG's
   own code, not something C cannot do; the notes below say so program by program.
 
 The numbers move by a few percent from run to run, and sixty small programs are not a benchmark suite.
@@ -54,8 +54,8 @@ arm64: the best of five runs, `-O2` for all three, the C written by hand with no
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
 | `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.104 s | 0.105 s | 0.088 s | 1.18 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
-| `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.283 s | 0.284 s | 0.271 s | 1.04 |
-| `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 1.004 s | 1.009 s | 1.129 s | 0.89 |
+| `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.170 s | 0.169 s | 0.289 s | 0.59 |
+| `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 1.588 s | 1.599 s | 1.497 s | 1.06 |
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 | `echowork`: `echo` with work in it, the server going through 300,000 steps of arithmetic for each message before it sends it back, and each client sending 300 (the C is that of `echo`, with the same work) | 0.376 s | 0.372 s | 0.369 s | 1.02 |
 | `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.088 s | 0.088 s | 0.081 s | 1.09 |

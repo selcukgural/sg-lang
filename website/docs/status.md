@@ -55,14 +55,15 @@ and Zig and three times as fast as Rust's `hex`; and the categories and normal f
 ICU4X or faster. Then time, random numbers and the log: dates are written in the time of `chrono`, where they
 took 2.4 times as long, and numbers and lines of a log in the time of Rust and Zig; a moment in a time zone,
 which SG asks of the C library each time, takes four times `chrono`'s. Then the network, against `std::net`,
-`tokio` and Zig: in their time where the functions block, 1.01 to 1.12 times the best of them the async way,
-1,000 connections at once in the memory of `tokio`'s, and addresses read and written in the time of Zig and
-faster than Rust. On the network SG is never to be worse than the best rival, under load or not. Servers
-are measured on Linux against Rust, Zig and C ([the tables](benchmarks/server.md)): a store that speaks a part
-of Redis's protocol and an HTTP server hold less memory in SG than in Rust and Zig, 100,000 idle connections at
-4.96 KB each, and give the best tail where many connections wait, but with few connections on four cores SG
-answers 0.64 times as often as Zig's threads, because a request is read on one core and served on another;
-that is the next slice, and what is still slower is listed.
+`tokio` and Zig: in their time where the functions block, 0.92 to 1.06 times the best of them the async way, but
+1.25 to 1.30 times `tokio` where the two ends talk inside one program, 1,000 connections at once in the memory of
+`tokio`'s, and addresses read and written in the time of Zig and faster than Rust. On the network SG is never to
+be worse than the best rival, under load or not. Servers are measured on Linux against Rust, Zig and C
+([the tables](benchmarks/server.md)): a store that speaks a part of Redis's protocol and an HTTP server hold less
+memory in SG than in Rust and Zig in all but two cases, 100,000 idle connections at 4.96 KB each, and since each
+thread of the pool has a loop of the network of its own, 50 connections get 1.49 times the answers of Zig's
+threads and 0.91 times C's. At 70% of the load the tail is C's, not `tokio`'s, and what is still slower is
+listed.
 
 ## Not yet
 

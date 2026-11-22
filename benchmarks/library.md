@@ -274,37 +274,41 @@ each program writes of 1,000 of them to what Python's `ipaddress` writes. Apple 
 
 | Case | SG | SG, checked | Rust | Zig | Zig safe |
 |---|---|---|---|---|---|
-| echo, 64 bytes, async | 1.208 s, 2.2 MB | 1.214 s, 2.2 MB | 1.196 s, 2.9 MB | 1.480 s, 2.9 MB | 1.470 s, 3.2 MB |
-| echo, 64 bytes, blocking | 1.475 s, 2.2 MB | 1.477 s, 2.2 MB | 1.496 s, 2.5 MB | 1.488 s, 2.8 MB | 1.483 s, 3.0 MB |
-| echo, 4 KB, async | 1.245 s, 2.3 MB | 1.247 s, 2.3 MB | 1.215 s, 3.0 MB | 1.512 s, 2.9 MB | 1.497 s, 3.2 MB |
-| echo, 4 KB, blocking | 1.482 s, 2.3 MB | 1.485 s, 2.3 MB | 1.483 s, 2.6 MB | 1.479 s, 2.9 MB | 1.524 s, 3.2 MB |
-| echo, 64 KB, async | 3.573 s, 3.7 MB | 3.570 s, 3.7 MB | 3.454 s, 4.4 MB | 3.589 s, 4.3 MB | 3.580 s, 4.8 MB |
-| echo, 64 KB, blocking | 3.608 s, 3.7 MB | 3.614 s, 3.7 MB | 3.611 s, 4.0 MB | 3.597 s, 4.2 MB | 3.630 s, 4.8 MB |
-| 1,000 connections at once, async | 0.788 s, 3.8 MB | 0.788 s, 3.8 MB | 0.772 s, 3.8 MB | 0.945 s, 9.5 MB | 0.940 s, 12.3 MB |
-| 50,000 connections one after another, async | 4.460 s, 2.2 MB | 4.713 s, 2.2 MB | 4.838 s, 2.9 MB | 4.061 s, 2.1 MB | 4.044 s, 2.2 MB |
-| 50,000 connections one after another, blocking | 4.214 s, 2.1 MB | 4.150 s, 2.1 MB | 4.203 s, 2.1 MB | 4.169 s, 2.1 MB | 4.188 s, 2.2 MB |
-| 1 GB in pieces of 4 KB, async | 0.448 s, 2.1 MB | 0.447 s, 2.1 MB | 0.452 s, 2.9 MB | 0.416 s, 2.1 MB | 0.432 s, 2.2 MB |
-| 1 GB in pieces of 4 KB, blocking | 0.414 s, 2.0 MB | 0.417 s, 2.0 MB | 0.411 s, 2.1 MB | 0.429 s, 2.1 MB | 0.436 s, 2.2 MB |
-| 1 GB in pieces of 64 KB, async | 0.172 s, 2.2 MB | 0.174 s, 2.2 MB | 0.153 s, 3.0 MB | 0.172 s, 2.2 MB | 0.169 s, 2.3 MB |
-| 1 GB in pieces of 64 KB, blocking | 0.168 s, 2.1 MB | 0.170 s, 2.1 MB | 0.166 s, 2.3 MB | 0.172 s, 2.2 MB | 0.167 s, 2.3 MB |
-| 100 MB in lines, async | 0.050 s, 97.6 MB | 0.050 s, 97.6 MB | 0.067 s, 98.3 MB | 0.036 s, 97.6 MB | 0.037 s, 97.7 MB |
-| 100 MB in lines, blocking | 0.047 s, 97.4 MB | 0.047 s, 97.4 MB | 0.070 s, 97.6 MB | 0.035 s, 97.6 MB | 0.036 s, 97.7 MB |
-| datagrams of 64 bytes, async | 1.687 s, 2.2 MB | 1.739 s, 2.2 MB | 1.674 s, 2.9 MB | 1.610 s, 2.5 MB | 1.627 s, 2.7 MB |
-| datagrams of 64 bytes, blocking | 1.600 s, 2.0 MB | 1.574 s, 2.1 MB | 1.578 s, 2.3 MB | 1.598 s, 2.5 MB | 1.598 s, 2.7 MB |
-| datagrams of 1 KB, async | 1.725 s, 2.2 MB | 1.753 s, 2.2 MB | 1.707 s, 2.9 MB | 1.641 s, 2.5 MB | 1.636 s, 2.7 MB |
-| datagrams of 1 KB, blocking | 1.617 s, 2.1 MB | 1.616 s, 2.1 MB | 1.608 s, 2.3 MB | 1.631 s, 2.5 MB | 1.630 s, 2.7 MB |
-| datagrams of 8 KB, async | 1.838 s, 2.3 MB | 1.830 s, 2.3 MB | 1.788 s, 3.0 MB | 1.714 s, 2.6 MB | 1.725 s, 2.8 MB |
-| datagrams of 8 KB, blocking | 1.702 s, 2.2 MB | 1.702 s, 2.2 MB | 1.701 s, 2.5 MB | 1.724 s, 2.6 MB | 1.714 s, 2.8 MB |
-| 10,000,000 addresses, read and written | 1.487 s, 2.0 MB | 1.625 s, 2.0 MB | 2.006 s, 2.2 MB | 1.535 s, 2.1 MB | 2.107 s, 2.2 MB |
-| Size, stripped | 150 KB | 166 KB | 938 KB | 377 KB | 474 KB |
+| echo, 64 bytes, async | 1.546 s, 2.4 MB | 1.527 s, 2.4 MB | 1.185 s, 2.9 MB | 1.473 s, 2.8 MB | 1.464 s, 3.1 MB |
+| echo, 64 bytes, blocking | 1.439 s, 2.2 MB | 1.451 s, 2.2 MB | 1.440 s, 2.5 MB | 1.464 s, 2.8 MB | 1.465 s, 3.2 MB |
+| echo, 4 KB, async | 1.572 s, 2.5 MB | 1.548 s, 2.5 MB | 1.207 s, 3.0 MB | 1.483 s, 2.8 MB | 1.490 s, 3.2 MB |
+| echo, 4 KB, blocking | 1.471 s, 2.3 MB | 1.478 s, 2.3 MB | 1.484 s, 2.6 MB | 1.495 s, 2.9 MB | 1.493 s, 3.2 MB |
+| echo, 64 KB, async | 3.699 s, 3.9 MB | 3.709 s, 3.9 MB | 3.491 s, 4.4 MB | 3.579 s, 4.2 MB | 3.588 s, 4.8 MB |
+| echo, 64 KB, blocking | 3.577 s, 3.8 MB | 3.599 s, 3.7 MB | 3.592 s, 4.0 MB | 3.586 s, 4.2 MB | 3.576 s, 4.8 MB |
+| 1,000 connections at once, async | 0.959 s, 3.9 MB | 0.928 s, 3.9 MB | 0.765 s, 3.8 MB | 0.945 s, 9.5 MB | 0.956 s, 12.3 MB |
+| 50,000 connections one after another, async | 4.000 s, 2.5 MB | 4.244 s, 2.6 MB | 4.690 s, 2.9 MB | 3.972 s, 2.1 MB | 4.046 s, 2.2 MB |
+| 50,000 connections one after another, blocking | 3.946 s, 2.1 MB | 3.991 s, 2.1 MB | 4.073 s, 2.1 MB | 4.082 s, 2.1 MB | 4.086 s, 2.2 MB |
+| 1 GB in pieces of 4 KB, async | 0.425 s, 2.4 MB | 0.399 s, 2.4 MB | 0.451 s, 2.9 MB | 0.413 s, 2.1 MB | 0.438 s, 2.2 MB |
+| 1 GB in pieces of 4 KB, blocking | 0.414 s, 2.0 MB | 0.416 s, 2.0 MB | 0.380 s, 2.1 MB | 0.440 s, 2.1 MB | 0.427 s, 2.2 MB |
+| 1 GB in pieces of 64 KB, async | 0.140 s, 2.5 MB | 0.141 s, 2.5 MB | 0.153 s, 3.1 MB | 0.165 s, 2.2 MB | 0.177 s, 2.3 MB |
+| 1 GB in pieces of 64 KB, blocking | 0.166 s, 2.1 MB | 0.170 s, 2.1 MB | 0.166 s, 2.3 MB | 0.176 s, 2.2 MB | 0.168 s, 2.3 MB |
+| 100 MB in lines, async | 0.053 s, 97.8 MB | 0.053 s, 97.8 MB | 0.067 s, 98.3 MB | 0.037 s, 97.5 MB | 0.035 s, 97.7 MB |
+| 100 MB in lines, blocking | 0.047 s, 97.4 MB | 0.047 s, 97.5 MB | 0.070 s, 97.6 MB | 0.035 s, 97.5 MB | 0.036 s, 97.7 MB |
+| datagrams of 64 bytes, async | 1.655 s, 2.3 MB | 1.662 s, 2.4 MB | 1.667 s, 2.9 MB | 1.600 s, 2.5 MB | 1.602 s, 2.7 MB |
+| datagrams of 64 bytes, blocking | 1.585 s, 2.1 MB | 1.587 s, 2.1 MB | 1.595 s, 2.3 MB | 1.609 s, 2.5 MB | 1.589 s, 2.7 MB |
+| datagrams of 1 KB, async | 1.683 s, 2.4 MB | 1.698 s, 2.4 MB | 1.700 s, 2.9 MB | 1.636 s, 2.5 MB | 1.629 s, 2.7 MB |
+| datagrams of 1 KB, blocking | 1.613 s, 2.1 MB | 1.619 s, 2.1 MB | 1.614 s, 2.3 MB | 1.643 s, 2.5 MB | 1.628 s, 2.7 MB |
+| datagrams of 8 KB, async | 1.781 s, 2.5 MB | 1.800 s, 2.5 MB | 1.786 s, 3.0 MB | 1.727 s, 2.6 MB | 1.724 s, 2.8 MB |
+| datagrams of 8 KB, blocking | 1.713 s, 2.2 MB | 1.709 s, 2.2 MB | 1.701 s, 2.5 MB | 1.726 s, 2.6 MB | 1.739 s, 2.8 MB |
+| 10,000,000 addresses, read and written | 1.488 s, 2.0 MB | 1.658 s, 2.0 MB | 2.018 s, 2.2 MB | 1.548 s, 2.1 MB | 2.120 s, 2.2 MB |
+| Size, stripped | 150 KB | 183 KB | 938 KB | 377 KB | 474 KB |
 | Lines | 559 | 559 | 529 | 331 | 331 |
 
 Rust is `std::net` where the functions block, a thread for each task, and `tokio` 1.54.1 with the runtime of
 several threads `#[tokio::main]` makes where they are async; Zig is `std.Io.net` on `Io.Threaded`, its default,
 whose async functions are threads too (its loop on kqueue was not done on macOS). SG's lines are text, each
 checked to be UTF-8, as Rust's `read_line` checks it; Zig's `takeDelimiter` gives bytes, and without the check
-SG reads them in Zig's time. The async stream of 64 KB pieces takes 1.12 times `tokio`'s time, and 50,000
-connections one after another, async, 1.10 times Zig's: the time is in the calls of the system, and the
-difference lies most likely in where the tasks run, which [Slower than C](slower-than-c.md) keeps for the work on
-servers. Before choices 1687 to 1690 the addresses took 2.262 s, a text made for every host, and 1,000
-connections at once held 6.6 MB, each task carrying 600 bytes for each call of the network it waits in.
+SG reads them in Zig's time. Since the 157th slice each thread of the pool has a loop of the network of its own
+and a socket stays on the loop it was put on (1708-1714): the stream of 64 KB pieces now takes 0.92 times
+`tokio`'s time (1.12 before) and 50,000 connections one after another 1.01 times Zig's (1.10 before), but where
+the server and its clients talk back and forth inside one program, their sockets lie on the loops of different
+threads and each message wakes another core: the echo of 64 bytes takes 1.30 times `tokio`'s time (1.01 before,
+1.208 s) and 1,000 connections at once 1.25 times (0.788 s before). `tokio` waits on one loop, which keeps both
+ends on one thread; [Slower than C](slower-than-c.md) keeps the case. Before choices 1687 to 1690 the addresses
+took 2.262 s, a text made for every host, and 1,000 connections at once held 6.6 MB, each task carrying 600 bytes
+for each call of the network it waits in.

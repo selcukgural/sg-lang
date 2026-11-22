@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-sixth slice (servers measured against Rust, Zig and C; the pool counts the cores a program may run on, as `available_parallelism` does, 1698-1707).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-seventh slice (a loop of the network on each thread of the pool, unlike tokio's one driver, 1708-1714).
 
 ## Functions and variables
 
@@ -370,7 +370,7 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-sixth slice (se
 | `writer.write_all(b).await`, `writer.flush().await` | `await writer.writeLineAsync(x)`, `writeAsync`, `writeBytesAsync`, `flushAsync()` | built | What the block of 64 KB can take is written in place, as tokio's `BufWriter` does; a full block goes out on a thread of input and output. On `Stdout` and `Stderr` too, in order with `print` |
 | `writer.shutdown().await` | `try await writer.closeAsync()` | built | Takes the writer; a local writer left open is a compile error (`Closable`), as without async |
 | a `BufWriter` dropped without `flush` (what it holds is lost) | a writer dropped in an async function | built | Written and closed on a thread of input and output, awaited where it is dropped: Rust has no async drop |
-| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads), and the network on epoll or kqueue, waited on by a thread of the pool that has nothing to do, one at a time, as tokio's driver; one idle thread at a time is woken to look for work, as in tokio; a socket goes on the loop once, edge-triggered, and its tasks wait in its slot, as tokio's registration; each thread has a ring of 256 tasks that the others steal half of, and a slot for the task just woken, as tokio's `multi_thread` scheduler. Unlike tokio: a thread that looks for work takes from the slots of the others too, and the one that finds work wakes the next only if work is left |
+| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads), and the network on epoll, kqueue or an I/O completion port, one loop for each thread of the pool, which waits on its own when it has nothing to do and keeps the sockets first waited for there (tokio has one driver, waited on by one thread at a time); one idle thread at a time is woken to look for work, as in tokio; a socket goes on the loop once, edge-triggered, and its tasks wait in its slot, as tokio's registration; each thread has a ring of 256 tasks that the others steal half of, and a slot for the task just woken, as tokio's `multi_thread` scheduler. Unlike tokio: a thread that looks for work takes from the slots of the others too, and the one that finds work wakes the next only if work is left; the clock's thread looks at the loop of a thread busy with one task, as Go's `sysmon` does |
 
 ## Modules
 

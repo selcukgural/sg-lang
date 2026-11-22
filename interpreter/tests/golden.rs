@@ -1038,6 +1038,100 @@ fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: imp
 }
 
 /// A program of one file compiled into `target/compiled` as `stem`, held to the warnings.
+/// A task that keeps its thread of the pool for long does not hold up the sockets on that thread's
+/// loop of the network: the clock's thread looks at a loop nobody has looked at for a while, and
+/// another thread runs the task it wakes (choice 1711). `hold` waits once on a shared datagram
+/// socket, which puts the socket on the loop of its thread, and then keeps that thread until `hear`
+/// has had a second datagram on the same socket; were nobody to look at that loop, the program
+/// would never end. A pool of two threads; compiled code alone, since the interpreter runs every
+/// task on one thread.
+#[test]
+fn compiled_long_task_leaves_its_loop() {
+    const PROGRAM: &str = r#"
+struct Flag {
+    bool holding
+    bool heard
+}
+
+bool isHolding(shared locked Flag flag) {
+    lock flag as f {
+        return f.holding
+    }
+}
+
+bool isHeard(shared locked Flag flag) {
+    lock flag as f {
+        return f.heard
+    }
+}
+
+async Result<nint, IoError> hold(shared UdpSocket socket, shared locked Flag flag) {
+    var buffer = byte[64]
+    var got = try await socket.receiveFromAsync(ref buffer)
+    lock flag as f {
+        f.holding = true
+    }
+    while !isHeard(share flag) {
+        Atomic.spinLoop()
+    }
+    return Ok(got.count)
+}
+
+async Result<nint, IoError> hear(shared UdpSocket socket, shared locked Flag flag) {
+    var buffer = byte[64]
+    var got = try await socket.receiveFromAsync(ref buffer)
+    lock flag as f {
+        f.heard = true
+    }
+    return Ok(got.count)
+}
+
+async Result<void, IoError> main() {
+    var flag = new shared locked Flag { holding = false, heard = false }
+    var server = new shared (try UdpSocket.bind("127.0.0.1:0"))
+    var to = server.localAddress()
+    var client = try UdpSocket.bind("127.0.0.1:0")
+    var holder = hold(share server, share flag)
+    await Task.delay(10)
+    try await client.sendToAsync("one".asBytes(), to)
+    while !isHolding(share flag) {
+        await Task.delay(1)
+    }
+    var hearer = hear(share server, share flag)
+    await Task.delay(10)
+    try await client.sendToAsync("second".asBytes(), to)
+    var heard = try await hearer
+    var held = try await holder
+    print($"heard {heard} bytes while a task held its thread with {held}")
+    return Ok()
+}
+"#;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("compiled");
+    std::fs::create_dir_all(&work).unwrap();
+    let stem = "long-task-leaves-its-loop";
+    let (c_file, binary) = (work.join(format!("{stem}.c")), program_at(&work, stem));
+    std::fs::write(&c_file, sg::emit_c(PROGRAM, &format!("{stem}.sg"), true).unwrap()).unwrap();
+    let cc = c_command().args(["-std=c11", "-O1", "-DSG_POOL_MOST=2"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let mut child = std::process::Command::new(&binary).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            let _ = child.kill();
+            panic!("{stem} still ran after 20 seconds: the sockets of a thread busy with one task were not looked at");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut out).unwrap();
+    assert!(status.success(), "{stem} failed: {out}");
+    assert_eq!(out, "heard 6 bytes while a task held its thread with 3\n");
+}
+
 fn build_compiled(source: &str, stem: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let work = root.join("target").join("compiled");

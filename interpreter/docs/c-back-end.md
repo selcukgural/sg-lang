@@ -105,8 +105,10 @@ together: a list of tasks has a group that its tasks tell as they end (441-452).
 list and closed on a thread of input and output where the task awaits it (453-465). So was the
 sixty-fifth (the network: `TcpListener` and `TcpStream`, and a cancel that ends a wait for a socket or for
 the input): one thread waits for every socket a task waits for, with epoll or kqueue (466-479; since the
-eighty-first slice that thread is one of the pool, 667-677, and since the eighty-second a socket goes on
-the loop once, 678-688). So was the
+eighty-first slice that thread is one of the pool, 667-677, since the eighty-second a socket goes on
+the loop once, 678-688, and since the hundred-and-fifty-seventh each thread of the pool has a loop of its
+own, which a socket stays on, and the clock's thread looks at the loop of a thread busy with one task,
+1708-1714). So was the
 sixty-sixth (lines over a connection): `conn.reader()` is a `StreamReader` that borrows the connection
 and keeps what has come in its block until a read can take all it needs, `send` goes through a `read`
 borrow, and `readSome` gives what is there (480-490). The sixty-seventh made no new feature: it checks the

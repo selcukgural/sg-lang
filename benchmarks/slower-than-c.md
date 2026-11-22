@@ -167,17 +167,24 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## Tasks, async and signals
 
-- **The network the async way, against Tokio and Zig** (`net`, choice 1689): a stream of 1 GB in pieces of
-  64 KB takes 0.172 s against 0.153 s for `tokio` (1.12 times), 50,000 connections one after another 4.460 s
-  against 4.061 s for Zig (1.10), datagrams 1.05 to 1.07 times Zig's threads, and echoes 1.01 to 1.03 times
-  `tokio`; the same programs with functions that block take the time of the best of the two. The time is in
-  the calls of the system: `tokio` spends a third of SG's time in `recvfrom` for the stream, most likely
-  because the task that sends and the one that receives run on one thread there, while the bytes are still in
-  its cache. A send the socket takes only part of and a receive that gives fewer bytes than there was room
-  for already mark the socket not ready, as `tokio` does (1687). Candidates: keep a task woken by the loop on
-  the thread that woke it, as `tokio`'s slot does for the driver, and measure on Linux, where the servers run
-  and epoll may place them otherwise. A red line since 22 November 2026: on the network SG is never to be
-  worse than the best rival, under load or not.
+- **The network the async way, against Tokio and Zig** (`net`, choices 1689 and 1708-1714): since each thread
+  has a loop of the network of its own (the 157th slice), a stream of 1 GB in pieces of 64 KB takes 0.140 s
+  against 0.153 s for `tokio`, and 50,000 connections one after another 4.000 s against 3.972 s for Zig (1.01
+  times); datagrams take 1.03 times Zig's threads. Where the two ends talk inside one program, see below. A
+  red line since 22 November 2026: on the network SG is never to be worse than the best rival, under load or
+  not.
+- **Two ends that talk inside one program** (`net`, `echo`, `udpecho`, the 157th slice, choices 1708-1714): the
+  echo of 64 bytes, server and clients tasks of one program, takes 1.546 s against 1.185 s for `tokio` (1.30
+  times; 1.208 s before the slice), 1,000 connections at once 0.959 s against 0.765 s (1.25 times; 0.788 s
+  before), and on Linux the datagrams of `udpecho` take 0.78 s where they took 0.41 s, now C's time. A socket
+  goes on the loop of the thread with the fewest, so the two ends of a connection lie on the loops of two
+  threads, and every message wakes the other's core, which slept in its loop, and reaches it with cold caches;
+  `tokio` waits on one loop, whose thread runs both ends. Put on one loop, the sockets of `udpecho` take 0.45 s
+  and those of `echo` on Linux 0.44 s, but then a server with outside clients is not spread over the cores, and
+  putting a socket on the loop of the thread that first waits for it spreads neither (50 connections of the
+  store get 382,000 answers a second). Candidates: the two ends of a connection made inside the program put on
+  one loop, and a thread that looks at its loop a little longer before it sleeps while another thread works,
+  which a first try of 50 µs made the tail at a fixed rate worse with (below).
 
 - **Each connection of async code holds 1.4 KB** (`net`, choice 1690): 1,000 connections at once, a task
   on each side, hold 3.8 MB as `tokio`'s, but each further connection costs 1.39 KB against 0.80 KB for
@@ -187,38 +194,43 @@ says what is slower, by how much and against what, the choice that measured it, 
   once share a field, as the calls of the network now share one, and the wait for a socket carries only what
   it uses.
 
-- **A server on more than one core** (the server lane, [Servers](server.md), choice 1698): 50 connections
-  with a request in flight on each get 578,000 answers a second from SG's store, 607,000 from `tokio`'s, 900,000
-  from Zig's thread for each connection and 1,472,000 from C's thread on each core (0.64 times the best rival,
-  0.39 times C); HTTP the same. On one core SG answers 396,000 a second, more than C (349,000) and Rust (360,000):
-  the program is not slow, the spread over cores is. Each answer costs SG 2.7 µs of the kernel on four cores and
-  1.4 µs on one, C 1.4 µs on both, with the same calls of the system: SG's loop of the network is waited on by
-  one thread, which wakes the tasks of the sockets onto its ring, and the other threads take them from there, so
-  a request is read by one core and served by another (a wake of `futex`, the socket's data in another core's
-  cache). `tokio` is built the same way and does the same. Candidates: a loop of the network on each thread,
-  each socket on the loop of the thread that first waits for it and kept there, tasks taken by another thread
-  only when one has too many; the wakes of other tasks through an `eventfd` on each loop.
+- **A server on more than one core** (the server lane, [Servers](server.md), choices 1698 and 1708-1714): since
+  each thread of the pool has a loop of the network of its own and a socket stays on the loop it was put on (the
+  157th slice), 50 connections with a request in flight on each get 1,342,000 answers a second from SG's store,
+  against 1,478,000 from C's thread on each core (0.91 times) and 903,000 from Zig's (1.49 times Zig), where
+  they got 578,000 before; with 1,000 connections 1,331,000 against C's 1,503,000 (0.89 times). Not looked into
+  yet; C has a listener on each thread and no pool, so no task moves between threads.
 - **The tail with 1,000 connections and 16 requests in flight on each** (the server lane): the answers a second
-  are those of the others (2.1 million, the load's own limit), but p99 is 15.0 ms and p99.9 19.2 ms, against
-  10.4 and 10.9 ms for C and 11.3 and 11.9 ms for `tokio`: some connections wait while others are served.
-  Candidates: those of the server on more than one core, and a look at the slot of the last task woken, which
-  runs a woken task before those waiting.
+  are those of the others (2.0 million, the load's own limit), but p99 is 15.8 ms, against 10.5 ms for C and
+  11.3 ms for `tokio`: some connections wait while others are served. Candidate: a look at the slot of the last
+  task woken, which runs a woken task before those waiting.
 - **A server that takes each connection through one task** (the server lane): with a connection for each
-  request SG answers 149,000 a second, Zig 198,000, C 202,000, with the least time of the processor of all
-  (5.0 ms for each thousand, Zig 14.4): every connection goes through the task that holds the list of tasks, a
+  request SG answers 171,000 a second, as many as `tokio`, against Zig's 200,000 and C's 203,000, with the least time of the processor of all
+  (4.0 ms for each thousand, C 9.3, Zig 14.6): every connection goes through the task that holds the list of tasks, a
   task to take the next connection and one for the connection, and `Task.whenAny` looks for the task that ended
   through the list and moves those after it, so a server with many connections pays for each that ends.
   Candidates: a group of tasks that takes its ended tasks out by itself, which a server hands its connections
   to, and `whenAny` that finds its task without a search.
-- **One connection, and smaller gaps** (the server lane; one run, which the median of three is to confirm): one
-  connection with a request in flight gets 27,000 answers a second from SG, 34,000 from Zig and 33,000 from C and
-  `tokio`, and with 16 in flight 497,000 from SG and 580,000 from `tokio`; HTTP at 70% of the slowest's answers a
-  second has a p99 of 292 µs in SG and 189 µs in hyper; 10,000 connections that each ask once a second hold
-  53.2 MB in SG and 50.5 MB in `tokio`; in the long run of 30 minutes (1,000 connections, each opened again after
-  1,000 answers) SG holds 22.2 MB and `tokio` 13.3 MB, neither growing. Not looked into yet; the first is likely the wake between cores of the
-  server on more than one core.
+- **One connection with 16 requests in flight, and memory** (the server lane; one run, which the median of three
+  is to confirm): one connection with 16 requests in flight on it gets 477,000 answers a second from SG and
+  580,000 from `tokio` (504,000 before the 157th slice, by the median of three); 10,000 connections that each ask
+  once a second hold 53.2 MB in SG and 47.8 MB in `tokio`, and 1,000 connections with 16 in flight 10.0 MB
+  against 9.8 MB; in the long run of 30 minutes (1,000 connections, each opened again after 1,000 answers, with
+  the runtime before the 157th slice) SG holds 22.2 MB and `tokio` 13.3 MB, neither growing. Not looked into
+  yet.
+- **The tail at a fixed rate since a loop on each thread** (the server lane, the 157th slice, choices
+  1708-1714): with 100 connections at 70% of the slowest's answers a second over HTTP, p99 is 1.01 ms in SG
+  against 195 µs in hyper (441 µs before the slice), and with 10,000 idle connections beside 100 busy ones 805
+  µs against 339 µs for `tokio` (364 µs before); 10,000 connections that each ask once a second wait 6.8 ms at
+  p99, against 2.1 ms for Zig and 3.0 ms for C (1.9 ms before). C, with a loop on each thread too, has a p99 near
+  SG's in the first two (997 and 668 µs), and the p50 is lower than `tokio`'s (51 µs against 67): a request that
+  comes to the loop of a thread that is busy, or asleep in a core of the virtual machine that takes about a
+  millisecond to wake, waits, where with one loop any thread awake took it. Neither a look at the loops of the
+  other threads before sleeping, nor a look at its own for 50 µs more, nor the watch taken out mended it (each
+  measured, the first two worse). To be measured on a machine of its own before more; a candidate is a loop
+  whose ready sockets a thread with nothing to do hears of at once (an epoll of the loops' epolls).
 - **100,000 idle connections are not quite idle** (the server lane): in 10 seconds with every connection silent
-  SG spends 0.45 s of the processor, `tokio` 0.36 s and C 0.22 s. Not looked into yet.
+  SG spends 0.42 s of the processor, `tokio` 0.32 s and C 0.21 s. Not looked into yet.
 
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
@@ -248,34 +260,23 @@ says what is slower, by how much and against what, the choice that measured it, 
   fills the next block while the task reads this one (reading ahead), a larger block for a reader read
   the async way, and a task that goes on on the thread that woke it.
 
-- **Copying a file the async way** (`asynccopy`, 1.04 times C, choice 464; 1.09 before choice 491; 0.83 without async): the
-  same hand-over as above, for the reader's blocks and the writer's: each block of 64 KB filled or
-  written out goes to a thread of input and output and the task is woken through the pool after it,
-  about 0.04 s for some four thousand blocks. Candidates: those of the reader, and for the writer, a
-  block written out while the task fills the next one (writing behind), waited for only when that one
-  is full too.
-
 - **Taking tasks out of a list** (`tasklist`, 1.24 times C, choice 451; the same tasks awaited one by one
   take 1.06): each list makes a group with a mutex and a condition, and each task takes its lock once when
   it ends and once when it is taken. Candidates: no group for a list whose tasks had all ended when they
   were added (a count is enough), a group kept from a list that ended for the next one, and room for the
   tasks reserved at once when the list is filled in a loop.
 
-- **Waiting for the network the async way** (`echo`, 0.89 times C on macOS and 7.4 times on Linux in a
-  container, choices 478, 674, 688 and 700; 1.03 and 0.91 without async): since the eighty-first slice the
-  thread the system wakes for a socket runs the task, since the eighty-second a socket goes on the loop
-  once, and since the eighty-third each thread of the pool has a queue of its own that the others steal
-  from. Tokio's echo takes 0.42 s on Linux and 0.97 s on macOS, against 0.55 s and 1.00 s for SG. What is
-  left on Linux is mostly wakes, about 450,000 calls of `futex`: a round of the loop that wakes more than
-  one task wakes a thread to take some, and a thread that takes a task while nobody waits on the loop
-  wakes one to wait there (676, 0.03 s of it). Candidates: Tokio's way of letting the loop go to the next
-  thread that parks instead of waking one (676 was taken so that a long task does not keep the other
-  connections waiting), and a thread that spins a little before it sleeps. Most of the distance from C on
-  Linux is the C's: blocking threads woken by the system directly are cheap there (0.074 s), and Tokio is
-  5.5 times C too.
+- **Waiting for the network the async way** (`echo`, 1.06 times C on macOS and 7.5 times on Linux in a
+  container, choices 478, 674, 688, 700 and 1708-1714; 1.00 and 0.91 without async): since the 157th slice each
+  thread of the pool waits on a loop of its own, and the server's end and the client's of a connection lie on
+  the loops of two threads, so each message wakes the other's thread (0.89 times C on macOS and 7.2 times on
+  Linux before); see the two ends that talk inside one program, above. Put on one loop, the sockets take 0.44 s
+  on Linux, against 0.60 s now. Most of the distance from C on Linux is the C's: blocking threads woken by the
+  system directly are cheap there (0.080 s), and Tokio was 5.5 times C too.
 
-- **Datagrams the async way** (`udpecho`, 1.06 times C on macOS and 0.57 on Linux, choices 664, 674, 688
-  and 700; 1.01 and 1.00 without async): what is left of `echo` on macOS. Candidates: those of `echo`.
+- **Datagrams the async way** (`udpecho`, 1.07 times C on macOS and 1.05 on Linux, choices 664, 674, 688,
+  700 and 1708-1714; 1.01 and 1.00 without async): what is left of `echo`. On Linux the datagrams took 0.55
+  times C with one loop, before the 157th slice. Candidates: those of `echo`.
 
 ## On Windows only
 

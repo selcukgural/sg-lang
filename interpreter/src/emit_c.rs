@@ -4706,18 +4706,27 @@ SG_COLD static _Noreturn void sg_when_any_empty(const char* loc) {
    wait for the end of a long task (in Tokio the slot is the thread's own). A task woken outside
    the pool (the main thread, a thread of `Task.run`, the clock, the threads of input and output)
    goes on the queue the threads share, under a lock, and so does half a ring that is full. Every
-   61 tasks a thread looks there first, and at the loop of the network if no thread waits on it.
-   A program on the network has no thread of its own for the loop (see `NET_ASYNC_RUNTIME`): a
-   thread of the pool that finds nothing to do waits on the loop itself, one at a time (the
-   driver), so the thread the system wakes for a socket is the one that runs the task. The tasks
-   the loop wakes go on its own ring, and if there is more than one, another thread is woken.
+   61 tasks a thread looks there first, and at its loop of the network.
+   A program on the network has a loop of the network for each thread of the pool (1708, see
+   `NET_ASYNC_RUNTIME`), and every thread is started when the loops open. A socket goes on the loop
+   of the thread that holds the fewest the first time a task waits for it, and stays there (1710),
+   so the task of a connection runs where its socket is read, as C's thread on each core does it
+   with a listener of its own. A thread with nothing to do waits on its own loop, not on a
+   condition, and is woken there (1709: an `eventfd` on Linux, `EVFILT_USER` on macOS, a packet on
+   Windows). The tasks a loop wakes go on the ring of the thread in its round, and another thread is
+   woken to take some only when more than `SG_SHARE_AT` wait there. A thread busy with one long task
+   does not look at its loop: the clock's thread looks at the loops (`sg_pool_watch`), and takes
+   what is ready on one that nobody has looked at for a while; another thread then runs it (1711).
    Threads are woken by Tokio's rule: while there is work, one thread at most is woken to look for
    it (it searches), the one that finds it wakes the next, and half the threads at most search at
    once. With one queue under one lock for every thread, an echo over eight connections made a
-   million calls of the system's lock (`futex`) on Linux. */
+   million calls of the system's lock (`futex`) on Linux; with one loop for every thread, 50
+   connections got 0.64 times the answers of Zig's thread for each connection on four cores. */
 #define SG_RING 256
 #define SG_LIFO_MOST 3
 #define SG_POOL_EVERY 61
+#define SG_SHARE_AT 1
+#define SG_LOOK_SKIP 4
 typedef struct sg_worker {
     /* The ring: this thread alone puts at `tail`; it and the threads that steal take at `head`,
        by exchange; every entry is read and written atomically. */
@@ -4725,14 +4734,20 @@ typedef struct sg_worker {
     _Alignas(64) uint32_t tail;
     sg_task* slot;
     sg_task* ring[SG_RING];
-    /* Under `sg_pool_lock`: the thread is asleep (on `sg_pool_asleep`), in the loop of the
-       network, and woken to search. */
+    /* Under `sg_pool_lock`: the thread is asleep (on `sg_pool_asleep`; read atomically by the
+       watch), waiting on its loop of the network, and woken to search. */
     _Alignas(64) sg_cnd wake;
     struct sg_worker* next_asleep;
     bool asleep;
     bool driving;
     bool notified;
     uint32_t rand;
+    /* Its loop of the network: whether a thread is in a round of it (one at a time), the rounds
+       it has had, those the watch saw last (the clock's thread alone), and its sockets. */
+    _Alignas(64) int polling;
+    uint32_t rounds;
+    uint32_t watched;
+    int64_t sockets;
 } sg_worker;
 static sg_mtx sg_pool_lock = SG_MTX_INIT;
 /* The queue the threads share, and its length, read without the lock. */
@@ -4747,18 +4762,25 @@ static sg_worker* sg_pool_asleep = NULL;
    in one word, so that both are seen at once. */
 static uint64_t sg_pool_state = 0;
 #define SG_SEARCHING ((uint64_t)1 << 32)
-/* The loop of the network, once a program opens it: one round of it (waiting or not), the call
-   that wakes the thread waiting in it, and whether a thread is in a round. */
-static void (*sg_pool_driver)(bool wait) = NULL;
-static void (*sg_pool_kick)(void) = NULL;
-static int sg_pool_driving = 0;
+/* The loops of the network, once a program opens them: one round of the loop of thread `i`
+   (waiting or not), and the call that wakes the thread waiting in it. */
+static void (*sg_pool_poll)(int i, bool wait) = NULL;
+static void (*sg_pool_kick)(int i) = NULL;
 /* The thread of the pool this is, whether a task it wakes goes in its slot, and whether it is in
-   a round of the loop (the tasks it wakes go on its ring, and nobody is woken meanwhile). */
+   a round of a loop (the tasks it wakes go on its ring, and nobody is woken meanwhile). */
 static _Thread_local sg_worker* sg_worker_now = NULL;
 static _Thread_local bool sg_lifo_on = true;
 static _Thread_local bool sg_driving_now = false;
 static void sg_job_run(sg_task* job);
 static SG_THREAD_MAIN(sg_worker_main, self);
+static void sg_watch_wake(void);
+static inline void sg_pool_pause(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#endif
+}
 /* Under the lock: the threads the pool may have, the number of cores. */
 static void sg_pool_size(void) {
     if (sg_workers) return;
@@ -4882,8 +4904,15 @@ static sg_task* sg_pool_take_shared(sg_worker* w, bool more) {
     sg_mtx_unlock(&sg_pool_lock);
     return job;
 }
-/* Work is there: one more thread searches, unless one does or none is asleep. A thread asleep is
-   woken (one in the loop of the network last: it would leave it), or a new one started. */
+/* Under the lock: thread `i` of the pool starts, searching. */
+static void sg_pool_start(int i, const char* at) {
+    __atomic_store_n(&sg_pool_threads, i + 1, __ATOMIC_RELEASE);
+    sg_thread thread;
+    int code = sg_thread_start(&thread, sg_worker_main, &sg_workers[i], true);
+    if (code != 0) sg_refused(code, "the pool of async tasks", at ? at : "");
+}
+/* Work is there: one more thread searches, unless one does or none is asleep. The thread asleep
+   last is woken (in its loop of the network, or on its condition), or a new one started. */
 static void sg_pool_notify(const char* at) {
     int most = __atomic_load_n(&sg_pool_most, __ATOMIC_ACQUIRE);
     uint64_t state = __atomic_fetch_add(&sg_pool_state, 0, __ATOMIC_SEQ_CST);
@@ -4894,22 +4923,16 @@ static void sg_pool_notify(const char* at) {
         sg_mtx_unlock(&sg_pool_lock);
         return;
     }
-    sg_worker** at_w = &sg_pool_asleep;
-    for (sg_worker** p = &sg_pool_asleep; *p; p = &(*p)->next_asleep) {
-        at_w = p;
-        if (!(*p)->driving) break;
-    }
-    sg_worker* w = *at_w;
+    sg_worker* w = sg_pool_asleep;
     __atomic_add_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
     if (w) {
-        *at_w = w->next_asleep;
-        w->asleep = false;
-        w->notified = true;
+        sg_pool_asleep = w->next_asleep;
+        __atomic_store_n(&w->asleep, false, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&w->notified, true, __ATOMIC_RELEASE);
         bool driving = w->driving;
-        void (*kick)(void) = __atomic_load_n(&sg_pool_kick, __ATOMIC_ACQUIRE);
         if (!driving) sg_cnd_signal(&w->wake);
         sg_mtx_unlock(&sg_pool_lock);
-        if (driving) kick();
+        if (driving) sg_pool_kick((int)(w - sg_workers));
         return;
     }
     int i = sg_pool_threads;
@@ -4918,10 +4941,7 @@ static void sg_pool_notify(const char* at) {
         sg_mtx_unlock(&sg_pool_lock);
         return;
     }
-    __atomic_store_n(&sg_pool_threads, i + 1, __ATOMIC_RELEASE);
-    sg_thread thread;
-    int code = sg_thread_start(&thread, sg_worker_main, &sg_workers[i], true);
-    if (code != 0) sg_refused(code, "the pool of async tasks", at ? at : "");
+    sg_pool_start(i, at);
     sg_mtx_unlock(&sg_pool_lock);
 }
 /* Whether any task waits for a thread: the last thread to stop searching looks once more before
@@ -4957,22 +4977,28 @@ static sg_task* sg_pool_steal(sg_worker* w, bool* searching) {
     }
     return sg_pool_take_shared(w, true);
 }
-/* A round of the loop of the network on this thread; afterwards, if it woke more than one task,
-   another thread searches. */
-static void sg_pool_round(sg_worker* w, bool wait) {
+/* A round of the loop of the network of thread `l` on this thread, unless another thread is in
+   one: whether it was. The tasks it wakes go on this thread's ring, or from the clock's thread on
+   the shared queue. */
+static bool sg_pool_round(sg_worker* l, bool wait) {
+    int none = 0;
+    if (!__atomic_compare_exchange_n(&l->polling, &none, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return false;
+    bool was = sg_driving_now;
     sg_driving_now = true;
-    sg_pool_driver(wait);
-    sg_driving_now = false;
-    __atomic_store_n(&sg_pool_driving, 0, __ATOMIC_RELEASE);
-    if (sg_ring_len(w) > 1) sg_pool_notify(NULL);
+    sg_pool_poll((int)(l - sg_workers), wait);
+    sg_driving_now = was;
+    __atomic_add_fetch(&l->rounds, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&l->polling, 0, __ATOMIC_RELEASE);
+    return true;
 }
-/* A thread with nothing to do sleeps, or waits on the loop of the network if no thread does,
-   until it is woken to search or the loop wakes tasks for it. It says whether it searches. */
+/* A thread with nothing to do waits on its loop of the network, or sleeps on its condition in a
+   program without one, until it is woken to search or its loop wakes tasks for it. It says
+   whether it searches. */
 static bool sg_pool_park(sg_worker* w, bool searching) {
     sg_mtx_lock(&sg_pool_lock);
     uint64_t before = __atomic_fetch_sub(&sg_pool_state, (searching ? SG_SEARCHING : 0) + 1, __ATOMIC_SEQ_CST);
-    w->asleep = true;
-    w->notified = false;
+    __atomic_store_n(&w->asleep, true, __ATOMIC_RELAXED);
+    __atomic_store_n(&w->notified, false, __ATOMIC_RELEASE);
     w->next_asleep = sg_pool_asleep;
     sg_pool_asleep = w;
     sg_mtx_unlock(&sg_pool_lock);
@@ -4981,18 +5007,17 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
     for (;;) {
         if (w->notified) {
             sg_mtx_unlock(&sg_pool_lock);
+            if (sg_pool_poll) sg_watch_wake();
             return true;
         }
-        int none = 0;
-        if (__atomic_load_n(&sg_pool_driver, __ATOMIC_ACQUIRE) && __atomic_compare_exchange_n(&sg_pool_driving, &none, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        if (__atomic_load_n(&sg_pool_poll, __ATOMIC_ACQUIRE)) {
             w->driving = true;
             sg_mtx_unlock(&sg_pool_lock);
-            sg_driving_now = true;
-            sg_pool_driver(true);
-            sg_driving_now = false;
+            /* The clock's thread may be in a short round of this loop (it read the thread awake
+               before it slept): it is soon done. */
+            while (!sg_pool_round(w, true)) sg_pool_pause();
             sg_mtx_lock(&sg_pool_lock);
             w->driving = false;
-            __atomic_store_n(&sg_pool_driving, 0, __ATOMIC_RELEASE);
             if (w->notified || !sg_worker_has(w)) continue;
             /* The loop woke tasks for this thread: it is awake again, not searching. */
             for (sg_worker** p = &sg_pool_asleep; *p; p = &(*p)->next_asleep) {
@@ -5001,10 +5026,11 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
                     break;
                 }
             }
-            w->asleep = false;
+            __atomic_store_n(&w->asleep, false, __ATOMIC_SEQ_CST);
             __atomic_add_fetch(&sg_pool_state, 1, __ATOMIC_SEQ_CST);
             sg_mtx_unlock(&sg_pool_lock);
-            if (sg_ring_len(w) > 1) sg_pool_notify(NULL);
+            sg_watch_wake();
+            if (sg_ring_len(w) > SG_SHARE_AT) sg_pool_notify(NULL);
             return false;
         }
         sg_cnd_wait(&w->wake, &sg_pool_lock);
@@ -5036,8 +5062,19 @@ static SG_THREAD_MAIN(sg_worker_main, self) {
     sg_worker* w = self;
     sg_worker_now = w;
     bool searching = true;
+    int skip = 0;
     for (uint32_t tick = 1;; tick++) {
         sg_task* job = sg_pool_next(w, tick);
+        /* Its own sockets before another thread's tasks, which run better where they are; after a
+           look that found nothing, the next SG_LOOK_SKIP are left out, the call wasted. */
+        if (!job && __atomic_load_n(&sg_pool_poll, __ATOMIC_ACQUIRE)) {
+            if (skip > 0) {
+                skip--;
+            } else if (sg_pool_round(w, false)) {
+                job = sg_pool_next(w, 1);
+                if (!job) skip = SG_LOOK_SKIP;
+            }
+        }
         if (!job) job = sg_pool_steal(w, &searching);
         if (!job) {
             searching = sg_pool_park(w, searching);
@@ -5051,13 +5088,9 @@ static SG_THREAD_MAIN(sg_worker_main, self) {
             searching = false;
             wake = __atomic_fetch_sub(&sg_pool_state, SG_SEARCHING, __ATOMIC_SEQ_CST) >> 32 == 1 && sg_pool_any_work();
         }
-        if (__atomic_load_n(&sg_pool_driver, __ATOMIC_ACQUIRE)) {
-            int none = 0;
-            if (tick % SG_POOL_EVERY == 0 && __atomic_compare_exchange_n(&sg_pool_driving, &none, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) sg_pool_round(w, false);
-            /* Nobody waits on the loop while this thread runs the task, which may be long: a
-               thread that searches and finds nothing waits on it. */
-            if (!__atomic_load_n(&sg_pool_driving, __ATOMIC_ACQUIRE)) wake = true;
-        }
+        /* Nobody waits on this thread's loop while it runs the task, which may be long: it looks
+           every 61 tasks, and the clock's thread looks when it does not (`sg_pool_watch`). */
+        if (tick % SG_POOL_EVERY == 0 && __atomic_load_n(&sg_pool_poll, __ATOMIC_ACQUIRE) && sg_pool_round(w, false) && sg_ring_len(w) > SG_SHARE_AT) wake = true;
         if (wake) sg_pool_notify(job->at);
         sg_pool_run(w, job);
     }
@@ -5093,15 +5126,65 @@ static void sg_pool_put(sg_task* job) {
     sg_mtx_unlock(&sg_pool_lock);
     sg_pool_notify(at);
 }
-/* The loop of the network is open (`round` and `kick`, see `NET_ASYNC_RUNTIME`): a thread
-   searches and, finding nothing, waits on it; if every thread is busy, the first done does. */
-static void sg_pool_drive(void (*round)(bool wait), void (*kick)(void), const char* at) {
+/* The threads the pool has, a loop of the network for each (see `NET_ASYNC_RUNTIME`). */
+static int sg_pool_count(void) {
+    sg_mtx_lock(&sg_pool_lock);
+    sg_pool_size();
+    int most = sg_pool_most;
+    sg_mtx_unlock(&sg_pool_lock);
+    return most;
+}
+/* The loops of the network are open (`poll` and `kick`): every thread of the pool starts, since a
+   socket may go on the loop of any, and those asleep on their condition go to wait on their loop. */
+static void sg_pool_drive(void (*poll)(int i, bool wait), void (*kick)(int i), const char* at) {
     sg_mtx_lock(&sg_pool_lock);
     sg_pool_size();
     __atomic_store_n(&sg_pool_kick, kick, __ATOMIC_RELEASE);
-    __atomic_store_n(&sg_pool_driver, round, __ATOMIC_RELEASE);
+    __atomic_store_n(&sg_pool_poll, poll, __ATOMIC_RELEASE);
+    for (sg_worker* w = sg_pool_asleep; w; w = w->next_asleep) sg_cnd_signal(&w->wake);
+    while (sg_pool_threads < sg_pool_most) {
+        __atomic_add_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
+        sg_pool_start(sg_pool_threads, at);
+    }
     sg_mtx_unlock(&sg_pool_lock);
-    sg_pool_notify(at);
+}
+/* The socket that goes on a loop now goes on that of the thread with the fewest, this thread's
+   when it has no more than the others (1710); the count is its owner's until it is closed. */
+static int sg_pool_place(void) {
+    int n = __atomic_load_n(&sg_pool_most, __ATOMIC_ACQUIRE);
+    int start = sg_worker_now ? (int)(sg_worker_now - sg_workers) : 0;
+    int best = start;
+    int64_t fewest = INT64_MAX;
+    for (int k = 0; k < n; k++) {
+        int i = (start + k) % n;
+        int64_t c = __atomic_load_n(&sg_workers[i].sockets, __ATOMIC_RELAXED);
+        if (c < fewest) {
+            fewest = c;
+            best = i;
+        }
+    }
+    __atomic_add_fetch(&sg_workers[best].sockets, 1, __ATOMIC_RELAXED);
+    return best;
+}
+static void sg_pool_unplace(int i) { __atomic_sub_fetch(&sg_workers[i].sockets, 1, __ATOMIC_RELAXED); }
+/* The watch, on the clock's thread (1711): the loop of a thread that is awake and has had no
+   round since the watch looked last, busy with one task for long, is looked at without waiting,
+   and the tasks it wakes go on the shared queue, for another thread. Whether any thread was awake;
+   the clock's thread looks again soon if one was, later and later if none was. */
+static bool sg_pool_watch(void) {
+    if (!__atomic_load_n(&sg_pool_poll, __ATOMIC_ACQUIRE)) return false;
+    int n = __atomic_load_n(&sg_pool_threads, __ATOMIC_ACQUIRE);
+    bool awake = false;
+    for (int i = 0; i < n; i++) {
+        sg_worker* w = &sg_workers[i];
+        uint32_t rounds = __atomic_load_n(&w->rounds, __ATOMIC_ACQUIRE);
+        if (!__atomic_load_n(&w->asleep, __ATOMIC_SEQ_CST)) {
+            awake = true;
+            if (rounds == w->watched) (void)sg_pool_round(w, false);
+        }
+        w->watched = __atomic_load_n(&w->rounds, __ATOMIC_ACQUIRE);
+    }
+    return awake;
 }
 /* Whatever an async task waited for is there: it runs again, now if it is waiting, or once
    more after the round it is in. */
@@ -5276,40 +5359,107 @@ static inline void sg_clock_poke(void) {
     sg_cnd_signal(&sg_clock_wait);
 #endif
 }
+/* The watch of the loops of the network (see `sg_pool_watch`), under the clock's lock: when it
+   looks next (-1: not until a thread of the pool wakes, `sg_watch_idle`), how often, and how long
+   no thread has been awake. It looks every millisecond while a thread is awake, then every 2, 4,
+   up to 10 ms, and stops after a second with no thread awake, as Go's `sysmon` slows down. */
+#define SG_WATCH_FIRST 1000000
+#define SG_WATCH_MOST 10000000
+#define SG_WATCH_QUIET 1000000000
+static int64_t sg_watch_at = -1;
+static int64_t sg_watch_every = SG_WATCH_FIRST;
+static int64_t sg_watch_quiet = 0;
+static bool sg_watch_idle = false;
+/* A look of the watch, the clock's lock held (and let go meanwhile). */
+static void sg_watch_look(void) {
+    sg_mtx_unlock(&sg_clock_lock);
+    bool awake = sg_pool_watch();
+    sg_mtx_lock(&sg_clock_lock);
+    if (awake) {
+        sg_watch_every = SG_WATCH_FIRST;
+        sg_watch_quiet = 0;
+    } else {
+        sg_watch_quiet += sg_watch_every;
+        sg_watch_every = sg_watch_every * 2 > SG_WATCH_MOST ? SG_WATCH_MOST : sg_watch_every * 2;
+    }
+    if (!awake && sg_watch_quiet >= SG_WATCH_QUIET) {
+        /* A thread that wakes after this is seen by the look below, or sees the watch idle and
+           sets the next look itself, once this thread lets go of the lock. */
+        __atomic_store_n(&sg_watch_idle, true, __ATOMIC_SEQ_CST);
+        sg_mtx_unlock(&sg_clock_lock);
+        awake = sg_pool_watch();
+        sg_mtx_lock(&sg_clock_lock);
+        if (!awake) {
+            sg_watch_at = -1;
+            return;
+        }
+        (void)__atomic_exchange_n(&sg_watch_idle, false, __ATOMIC_SEQ_CST);
+        sg_watch_every = SG_WATCH_FIRST;
+        sg_watch_quiet = 0;
+    }
+    sg_watch_at = sg_now() + sg_watch_every;
+}
+/* A thread of the pool woke while the watch was idle: the watch looks again. */
+static void sg_watch_wake(void) {
+    if (!__atomic_load_n(&sg_watch_idle, __ATOMIC_SEQ_CST) || !__atomic_exchange_n(&sg_watch_idle, false, __ATOMIC_SEQ_CST)) return;
+    sg_mtx_lock(&sg_clock_lock);
+    sg_watch_every = SG_WATCH_FIRST;
+    sg_watch_quiet = 0;
+    sg_watch_at = sg_now() + sg_watch_every;
+    sg_clock_poke();
+    sg_mtx_unlock(&sg_clock_lock);
+}
 static SG_THREAD_MAIN(sg_clock_main, unused) {
     (void)unused;
     sg_mtx_lock(&sg_clock_lock);
     for (;;) {
+        int64_t now = sg_now();
+        if (sg_watch_at >= 0 && sg_watch_at <= now) {
+            sg_watch_look();
+            continue;
+        }
         if (sg_heap_len == 0) {
-            sg_clock_sleep(-1);
+            sg_clock_sleep(sg_watch_at < 0 ? -1 : sg_watch_at - now);
             continue;
         }
         sg_delay* first = sg_heap[0];
-        int64_t now = sg_now();
         if (first->due <= now) {
             sg_heap_remove(first);
             sg_delay_end(first, SG_OVER);
         } else {
-            sg_clock_sleep(first->due - now);
+            int64_t until = first->due;
+            if (sg_watch_at >= 0 && sg_watch_at < until) until = sg_watch_at;
+            sg_clock_sleep(until - now);
         }
     }
     return SG_THREAD_END;
 }
 /* Puts a delay of `ms` on the clock; the clock's lock is held. */
-static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
-    if (!sg_clock_started) {
+/* The clock's thread starts, the clock's lock held. */
+static void sg_clock_start(const char* loc) {
+    if (sg_clock_started) return;
 #if defined(_WIN32)
-        sg_clock_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        sg_clock_told = CreateEventW(NULL, FALSE, FALSE, NULL);
-        if (!sg_clock_timer || !sg_clock_told) sg_refused_timer(loc);
+    sg_clock_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    sg_clock_told = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!sg_clock_timer || !sg_clock_told) sg_refused_timer(loc);
 #else
-        sg_cnd_init_timed(&sg_clock_wait);
+    sg_cnd_init_timed(&sg_clock_wait);
 #endif
-        sg_thread thread;
-        int code = sg_thread_start(&thread, sg_clock_main, NULL, true);
-        if (code != 0) sg_refused(code, "the clock of delays", loc);
-        sg_clock_started = true;
-    }
+    sg_thread thread;
+    int code = sg_thread_start(&thread, sg_clock_main, NULL, true);
+    if (code != 0) sg_refused(code, "the clock of delays", loc);
+    sg_clock_started = true;
+}
+/* The loops of the network are open: the clock's thread starts, and watches them. */
+static void sg_watch_start(const char* loc) {
+    sg_mtx_lock(&sg_clock_lock);
+    sg_clock_start(loc);
+    sg_watch_at = sg_now() + SG_WATCH_FIRST;
+    sg_clock_poke();
+    sg_mtx_unlock(&sg_clock_lock);
+}
+static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
+    sg_clock_start(loc);
     d->due = sg_now() + ms * 1000000;
     d->order = sg_clock_order++;
     if (!sg_heap) SG_KEPT(1);
@@ -6733,10 +6883,11 @@ static bool sg_udp_lookup_ready(sg_io_lookup* x) {
 }
 "#;
 
-/// The network for async tasks: a thread of the pool that has nothing to do waits for every
-/// socket a task waits for, with epoll (Linux), kqueue (macOS) or AFD on an I/O completion port
-/// (Windows), and wakes the task when it is ready. A socket goes on the loop once, the first time a
-/// task waits for it, and a wait after is no call of the system: the loop writes what is ready into
+/// The network for async tasks: each thread of the pool has a loop, epoll (Linux), kqueue (macOS)
+/// or AFD on an I/O completion port (Windows), waits on it when it has nothing to do, and wakes the
+/// tasks of its sockets when they are ready (choices 1708-1713). A socket goes on the loop of the
+/// thread with the fewest once, the first time a task waits for it, and stays there; a wait after
+/// is no call of the system: the loop writes what is ready into
 /// the slot of the socket, where its tasks wait. On Windows the driver is asked again each time a
 /// task finds the socket not ready. A cancel takes the task out of the slot and wakes it. A name is looked up on a thread of
 /// input and output, which a cancel leaves. After `ASYNC_IO_RUNTIME`.
@@ -6785,17 +6936,22 @@ typedef struct sg_afd_poll {
 } sg_afd_poll;
 static sg_mtx sg_loop_lock = SG_MTX_INIT;
 static int sg_loop_open_now = 0;
-static HANDLE sg_loop = NULL;
+/* The loops, an I/O completion port for each thread of the pool (1708, 1713). */
+static HANDLE* sg_loops = NULL;
 #else
 #if defined(__linux__)
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #else
 #include <sys/event.h>
 #endif
 static sg_mtx sg_loop_lock = SG_MTX_INIT;
 static int sg_loop_open_now = 0;
-static int sg_loop = -1;
-static int sg_loop_pipe[2];
+/* The loops, one for each thread of the pool (1708): epoll or kqueue, and on Linux the `eventfd`
+   that wakes the thread waiting in it (on macOS an `EVFILT_USER` of the kqueue itself). The ends
+   of programs wait on the first. */
+typedef struct { int fd; int kick; } sg_loop_of;
+static sg_loop_of* sg_loops = NULL;
 #endif
 #if !defined(_WIN32)
 /* The waits for the end of a program that a cancel ended (see `sg_proc_cut`). */
@@ -6811,8 +6967,10 @@ static sg_wait* sg_loop_cut = NULL;
    On Windows the driver answers a question once: `on` is what the question out asks (`poll`),
    and it is asked again, of what tasks still wait for, when its answer has come. A socket is
    asked through its base handle (`base`), under any layer put over it, and through a handle of
-   the driver that 32 numbers share (`afd`, kept in the first slot of the 32), as mio shares one.
-   A handle of Windows is a multiple of 4: its slot is its number over 4. */
+   the driver that 32 numbers share on the loop of each thread (`afds`, kept in the first slot of
+   the 32), as mio shares one. A handle of Windows is a multiple of 4: its slot is its number over 4.
+   `owner` is the thread of the pool whose loop the socket is on, one up (0: none yet, see
+   `sg_pool_place`). */
 #define SG_SLOT_BLOCK 1024
 #define SG_SLOT_BLOCKS 16384
 #define SG_SLOT_LOCKS 256
@@ -6825,11 +6983,12 @@ typedef struct {
     uint8_t ready;
     /* A datagram socket that no longer blocks (see `sg_udp_nonblock`). */
     uint8_t nb;
+    int32_t owner;
     sg_wait* waits[2];
 #if defined(_WIN32)
     sg_afd_poll* poll;
     HANDLE base;
-    HANDLE afd;
+    HANDLE* afds;
 #endif
 } sg_slot;
 #if defined(_WIN32)
@@ -6869,8 +7028,12 @@ static sg_slot* sg_slot_make(int fd) {
     return &block[i % SG_SLOT_BLOCK];
 }
 #if defined(_WIN32)
-/* The handle of the driver that the group of 32 numbers of `fd` shares, NULL until it is opened. */
-static inline HANDLE sg_afd_of(int fd, sg_slot* s) { return __atomic_load_n(&(s - (SG_SLOT_INDEX(fd) & 31))->afd, __ATOMIC_ACQUIRE); }
+/* The handle of the driver that the group of 32 numbers of `fd` shares on the loop of its owner,
+   NULL until it is opened. */
+static inline HANDLE sg_afd_of(int fd, sg_slot* s) {
+    HANDLE* afds = __atomic_load_n(&(s - (SG_SLOT_INDEX(fd) & 31))->afds, __ATOMIC_ACQUIRE);
+    return afds && s->owner ? __atomic_load_n(&afds[s->owner - 1], __ATOMIC_ACQUIRE) : NULL;
+}
 #endif
 /* Socket `fd` is closed (see `sg_net_close`): its slot is let go of first, so a socket that then
    gets its number goes on the loop afresh. No task waits for it: its owner is closing it. */
@@ -6893,6 +7056,10 @@ static void sg_slot_forget(int fd) {
     }
     s->base = NULL;
 #endif
+    if (s->owner) {
+        sg_pool_unplace(s->owner - 1);
+        s->owner = 0;
+    }
     sg_mtx_unlock(m);
 }
 /* A datagram socket stops blocking the first time an async call uses it, as a connection does,
@@ -7025,14 +7192,14 @@ static void sg_afd_done(sg_afd_poll* p) {
     (free)(p);
     sg_slot_wake(woken);
 }
-/* One round of the loop, on the thread of the pool that waits on it (see `TASK_RUNTIME`): it
-   sleeps until the driver answers or the loop is woken (with `wait`; without it, every 61 tasks
-   of a busy thread, it only looks), and wakes the tasks. A packet without a question is a wake
-   (`sg_loop_kick`). */
-static void sg_loop_round(bool wait) {
+/* One round of loop `i`, on a thread of the pool or the clock's thread (see `TASK_RUNTIME`): it
+   sleeps until the driver answers or the loop is woken (with `wait`; without it, every 61 tasks of
+   a busy thread or for the watch, it only looks), and wakes the tasks. A packet without a question
+   is a wake (`sg_loop_kick`). */
+static void sg_loop_round(int i, bool wait) {
     OVERLAPPED_ENTRY events[64];
     ULONG n = 0;
-    if (!GetQueuedCompletionStatusEx(sg_loop, events, 64, &n, wait ? INFINITE : 0, FALSE)) {
+    if (!GetQueuedCompletionStatusEx(sg_loops[i], events, 64, &n, wait ? INFINITE : 0, FALSE)) {
         if (GetLastError() != WAIT_TIMEOUT) abort();
         n = 0;
     }
@@ -7040,9 +7207,8 @@ static void sg_loop_round(bool wait) {
         if (events[i].lpOverlapped) sg_afd_done((sg_afd_poll*)events[i].lpOverlapped);
     }
 }
-/* The thread waiting on the loop is woken: work for a pool whose other threads are busy (see
-   `sg_pool_notify`). */
-static void sg_loop_kick(void) { PostQueuedCompletionStatus(sg_loop, 0, 0, NULL); }
+/* The thread waiting on loop `i` is woken: it is to search (see `sg_pool_notify`). */
+static void sg_loop_kick(int i) { PostQueuedCompletionStatus(sg_loops[i], 0, 0, NULL); }
 SG_COLD static _Noreturn void sg_loop_refused(const char* loc) {
     SG_PANIC_START();
     fprintf(stderr, "panic: the system refused the loop of the network (os error %lu)\n", (unsigned long)GetLastError());
@@ -7050,6 +7216,7 @@ SG_COLD static _Noreturn void sg_loop_refused(const char* loc) {
 }
 static void sg_loop_open(const char* loc) {
     if (__atomic_load_n(&sg_loop_open_now, __ATOMIC_ACQUIRE)) return;
+    bool opened = false;
     sg_mtx_lock(&sg_loop_lock);
     if (!sg_loop_open_now) {
         HMODULE nt = GetModuleHandleW(L"ntdll.dll");
@@ -7060,18 +7227,29 @@ static void sg_loop_open(const char* loc) {
             sg_RtlNtStatusToDosError = (sg_nt_error)(void (*)(void))GetProcAddress(nt, "RtlNtStatusToDosError");
         }
         if (!sg_NtCreateFile || !sg_NtDeviceIoControlFile || !sg_NtCancelIoFileEx || !sg_RtlNtStatusToDosError) sg_loop_refused(loc);
-        sg_loop = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-        if (!sg_loop) sg_loop_refused(loc);
+        int most = sg_pool_count();
+        sg_loops = calloc((size_t)most, sizeof *sg_loops);
+        if (!sg_loops) abort();
+        SG_KEPT(1);
+        for (int i = 0; i < most; i++) {
+            sg_loops[i] = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+            if (!sg_loops[i]) sg_loop_refused(loc);
+        }
         for (int i = 0; i < SG_SLOT_LOCKS; i++) sg_mtx_init(&sg_slot_locks[i]);
         __atomic_store_n(&sg_net_forget, sg_slot_forget, __ATOMIC_RELEASE);
-        sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
         __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
+        opened = true;
     }
     sg_mtx_unlock(&sg_loop_lock);
+    /* Outside the loops' lock, which a cancel takes under the clock's (see `sg_proc_cut`). */
+    if (opened) {
+        sg_watch_start(loc);
+        sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
+    }
 }
-/* A handle of the driver, on the loop: 0, or the code of the system. Its answers do not set the
+/* A handle of the driver, on loop `i`: 0, or the code of the system. Its answers do not set the
    handle as an event, which nobody waits for. */
-static int sg_afd_open(HANDLE* out) {
+static int sg_afd_open(HANDLE* out, int i) {
     static wchar_t name[] = L"\\Device\\Afd\\SgLang";
     sg_nt_name text = { (USHORT)(sizeof name - sizeof(wchar_t)), (USHORT)sizeof name, name };
     sg_nt_object object = { sizeof object, NULL, &text, 0, NULL, NULL };
@@ -7079,7 +7257,7 @@ static int sg_afd_open(HANDLE* out) {
     HANDLE h = NULL;
     LONG status = sg_NtCreateFile(&h, SYNCHRONIZE, &object, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, SG_FILE_OPEN, 0, NULL, 0);
     if (status < 0) return (int)sg_RtlNtStatusToDosError(status);
-    if (!CreateIoCompletionPort(h, sg_loop, 0, 0)) {
+    if (!CreateIoCompletionPort(h, sg_loops[i], 0, 0)) {
         int code = sg_win_error();
         CloseHandle(h);
         return code;
@@ -7099,12 +7277,25 @@ static int sg_slot_arm(int fd, sg_slot* s, int bit) {
         if (WSAIoctl(SG_SOCK(fd), SIO_BASE_HANDLE, NULL, 0, &base, sizeof base, &got, NULL, NULL) != 0 || base == INVALID_SOCKET) base = SG_SOCK(fd);
         s->base = (HANDLE)base;
     }
+    if (!s->owner) s->owner = sg_pool_place() + 1;
     HANDLE afd = sg_afd_of(fd, s);
     if (!afd) {
         sg_slot* lead = s - (SG_SLOT_INDEX(fd) & 31);
+        int code = 0;
         sg_mtx_lock(&sg_loop_lock);
-        int code = lead->afd ? 0 : sg_afd_open(&lead->afd);
-        afd = lead->afd;
+        if (!lead->afds) {
+            HANDLE* afds = calloc((size_t)sg_pool_most, sizeof *afds);
+            if (!afds) abort();
+            SG_KEPT(1);
+            __atomic_store_n(&lead->afds, afds, __ATOMIC_RELEASE);
+        }
+        HANDLE* at = &lead->afds[s->owner - 1];
+        if (!*at) {
+            HANDLE h = NULL;
+            code = sg_afd_open(&h, s->owner - 1);
+            if (!code) __atomic_store_n(at, h, __ATOMIC_RELEASE);
+        }
+        afd = *at;
         sg_mtx_unlock(&sg_loop_lock);
         if (code) return code;
     }
@@ -7136,46 +7327,50 @@ static int sg_slot_arm(int fd, sg_slot* s, int bit) {
     return 0;
 }
 #else
-/* One round of the loop, on the thread of the pool that waits on it (see `TASK_RUNTIME`): it
-   sleeps until a socket is ready or the pipe is written (with `wait`; without it, every 61 tasks
-   of a busy thread, it only looks), and wakes the tasks. An event names a
-   socket (an odd tag: its number and `gen`), the end of a program (the wait itself, see
-   `PROCESS_ASYNC_RUNTIME`), or the pipe (0). One thread at a time waits on the loop, so the waits
-   for a program that a cancel ended are let go of after the events that could name them. */
-static void sg_loop_round(bool wait) {
+/* One round of loop `i`, on a thread of the pool or the clock's thread (see `TASK_RUNTIME`): it
+   sleeps until a socket is ready or the loop is woken (with `wait`; without it, every 61 tasks of
+   a busy thread or for the watch, it only looks), and wakes the tasks. An event names a socket (an
+   odd tag: its number and `gen`), the end of a program (the wait itself, see
+   `PROCESS_ASYNC_RUNTIME`), or the wake (0). One thread at a time is in a round of a loop, so the
+   waits for a program that a cancel ended are let go of after the events of the first loop that
+   could name them. */
+static void sg_loop_round(int i, bool wait) {
 #if defined(__linux__)
     struct epoll_event events[64];
-    int n = epoll_wait(sg_loop, events, 64, wait ? -1 : 0);
+    int n = epoll_wait(sg_loops[i].fd, events, 64, wait ? -1 : 0);
 #else
     struct kevent events[64];
     struct timespec now = { 0, 0 };
-    int n = kevent(sg_loop, NULL, 0, events, 64, wait ? NULL : &now);
+    int n = kevent(sg_loops[i].fd, NULL, 0, events, 64, wait ? NULL : &now);
 #endif
     if (n < 0) {
         if (errno == EINTR) return;
         abort();
     }
-    for (int i = 0; i < n; i++) {
+    for (int k = 0; k < n; k++) {
 #if defined(__linux__)
-        uint64_t tag = events[i].data.u64;
-        uint32_t ev = events[i].events;
+        uint64_t tag = events[k].data.u64;
+        uint32_t ev = events[k].events;
         int bits = ((ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) ? 1 : 0) | ((ev & (EPOLLOUT | EPOLLHUP | EPOLLERR)) ? 2 : 0);
         /* The other side closed, or the socket failed: 4, which stays (see `sg_slot_dry`). */
         if (ev & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) bits |= 4;
 #else
-        uint64_t tag = (uint64_t)(uintptr_t)events[i].udata;
-        int bits = events[i].filter == EVFILT_READ ? 1 : events[i].filter == EVFILT_WRITE ? 2 : 0;
-        if (events[i].filter == EVFILT_READ && (events[i].flags & (EV_EOF | EV_ERROR))) bits |= 4;
+        uint64_t tag = (uint64_t)(uintptr_t)events[k].udata;
+        int bits = events[k].filter == EVFILT_READ ? 1 : events[k].filter == EVFILT_WRITE ? 2 : 0;
+        if (events[k].filter == EVFILT_READ && (events[k].flags & (EV_EOF | EV_ERROR))) bits |= 4;
 #endif
         if (tag & 1) {
             sg_slot_event(tag, bits);
         } else if (tag) {
             sg_proc_ready((sg_wait*)(uintptr_t)tag);
         } else {
-            char drained[64];
-            while (read(sg_loop_pipe[0], drained, sizeof drained) > 0) {}
+#if defined(__linux__)
+            uint64_t count;
+            while (read(sg_loops[i].kick, &count, sizeof count) < 0 && errno == EINTR) {}
+#endif
         }
     }
+    if (i != 0) return;
     /* The waits a cancel ended: the events above were the last that could name them. */
     sg_mtx_lock(&sg_loop_lock);
     sg_wait* w = sg_loop_cut;
@@ -7191,41 +7386,55 @@ static void sg_loop_round(bool wait) {
         w = next;
     }
 }
-/* The thread waiting on the loop is woken: a cancel of a wait for a program, or work for a pool
-   whose other threads are busy (see `sg_pool_notify`). */
-static void sg_loop_kick(void) {
-    char one = 1;
-    while (write(sg_loop_pipe[1], &one, 1) < 0 && errno == EINTR) {}
+/* The thread waiting on loop `i` is woken: it is to search (see `sg_pool_notify`), or a wait for a
+   program on the first loop was cancelled. */
+static void sg_loop_kick(int i) {
+#if defined(__linux__)
+    uint64_t one = 1;
+    while (write(sg_loops[i].kick, &one, sizeof one) < 0 && errno == EINTR) {}
+#else
+    struct kevent k;
+    EV_SET(&k, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    kevent(sg_loops[i].fd, &k, 1, NULL, 0, NULL);
+#endif
 }
 static void sg_loop_open(const char* loc) {
     if (__atomic_load_n(&sg_loop_open_now, __ATOMIC_ACQUIRE)) return;
+    bool opened = false;
     sg_mtx_lock(&sg_loop_lock);
     if (!sg_loop_open_now) {
+        int most = sg_pool_count();
+        sg_loops = calloc((size_t)most, sizeof *sg_loops);
+        if (!sg_loops) abort();
+        SG_KEPT(1);
+        for (int i = 0; i < most; i++) {
 #if defined(__linux__)
-        sg_loop = epoll_create1(EPOLL_CLOEXEC);
+            sg_loops[i].fd = epoll_create1(EPOLL_CLOEXEC);
+            sg_loops[i].kick = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+            if (sg_loops[i].fd < 0 || sg_loops[i].kick < 0) sg_refused(errno, "the loop of the network", loc);
+            struct epoll_event e = { .events = EPOLLIN, .data.u64 = 0 };
+            if (epoll_ctl(sg_loops[i].fd, EPOLL_CTL_ADD, sg_loops[i].kick, &e) != 0) sg_refused(errno, "the loop of the network", loc);
 #else
-        sg_loop = kqueue();
+            sg_loops[i].fd = kqueue();
+            sg_loops[i].kick = -1;
+            if (sg_loops[i].fd < 0) sg_refused(errno, "the loop of the network", loc);
+            fcntl(sg_loops[i].fd, F_SETFD, FD_CLOEXEC);
+            struct kevent k;
+            EV_SET(&k, 0, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+            if (kevent(sg_loops[i].fd, &k, 1, NULL, 0, NULL) != 0) sg_refused(errno, "the loop of the network", loc);
 #endif
-        if (sg_loop < 0 || pipe(sg_loop_pipe) != 0) sg_refused(errno, "the loop of the network", loc);
-        for (int i = 0; i < 2; i++) {
-            fcntl(sg_loop_pipe[i], F_SETFL, fcntl(sg_loop_pipe[i], F_GETFL) | O_NONBLOCK);
-            fcntl(sg_loop_pipe[i], F_SETFD, FD_CLOEXEC);
         }
         for (int i = 0; i < SG_SLOT_LOCKS; i++) sg_mtx_init(&sg_slot_locks[i]);
-#if defined(__linux__)
-        struct epoll_event e = { .events = EPOLLIN, .data.u64 = 0 };
-        epoll_ctl(sg_loop, EPOLL_CTL_ADD, sg_loop_pipe[0], &e);
-#else
-        fcntl(sg_loop, F_SETFD, FD_CLOEXEC);
-        struct kevent k;
-        EV_SET(&k, sg_loop_pipe[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
-        kevent(sg_loop, &k, 1, NULL, 0, NULL);
-#endif
         __atomic_store_n(&sg_net_forget, sg_slot_forget, __ATOMIC_RELEASE);
-        sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
         __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
+        opened = true;
     }
     sg_mtx_unlock(&sg_loop_lock);
+    /* Outside the loops' lock, which a cancel takes under the clock's (see `sg_proc_cut`). */
+    if (opened) {
+        sg_watch_start(loc);
+        sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
+    }
 }
 #endif
 #if !defined(_WIN32)
@@ -7233,15 +7442,17 @@ static void sg_loop_open(const char* loc) {
    at once on Linux; one filter at a time with kqueue, which a pipe may not have both of. */
 static int sg_slot_arm(int fd, sg_slot* s, int bit) {
     uint64_t tag = ((uint64_t)s->gen << 32) | ((uint64_t)(uint32_t)fd << 1) | 1;
+    if (!s->owner) s->owner = sg_pool_place() + 1;
+    int loop = sg_loops[s->owner - 1].fd;
 #if defined(__linux__)
     (void)bit;
     struct epoll_event e = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.u64 = tag };
-    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, fd, &e) != 0 && (errno != EEXIST || epoll_ctl(sg_loop, EPOLL_CTL_MOD, fd, &e) != 0)) return sg_os_error();
+    if (epoll_ctl(loop, EPOLL_CTL_ADD, fd, &e) != 0 && (errno != EEXIST || epoll_ctl(loop, EPOLL_CTL_MOD, fd, &e) != 0)) return sg_os_error();
     s->on = 3;
 #else
     struct kevent k;
     EV_SET(&k, fd, bit == 1 ? EVFILT_READ : EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, (void*)(uintptr_t)tag);
-    if (kevent(sg_loop, &k, 1, NULL, 0, NULL) != 0) return sg_os_error();
+    if (kevent(loop, &k, 1, NULL, 0, NULL) != 0) return sg_os_error();
     s->on |= (uint8_t)bit;
 #endif
     return 0;
@@ -7731,11 +7942,11 @@ typedef struct { sg_wait w; int state; int pidfd; bool away; } sg_io_proc;
 static int sg_proc_arm(sg_wait* w) {
 #if defined(__linux__)
     struct epoll_event e = { .events = EPOLLIN | EPOLLONESHOT, .data.u64 = (uint64_t)(uintptr_t)w };
-    return epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) == 0 ? 0 : sg_os_error();
+    return epoll_ctl(sg_loops[0].fd, EPOLL_CTL_ADD, w->on.fd, &e) == 0 ? 0 : sg_os_error();
 #else
     struct kevent k;
     EV_SET(&k, w->on.fd, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, w);
-    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
+    return kevent(sg_loops[0].fd, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
 #endif
 }
 /* A cancel, under the clock's lock: the program comes off the loop, and the loop wakes the task
@@ -7743,17 +7954,17 @@ static int sg_proc_arm(sg_wait* w) {
 static void sg_proc_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
 #if defined(__linux__)
-    epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
+    epoll_ctl(sg_loops[0].fd, EPOLL_CTL_DEL, w->on.fd, NULL);
 #else
     struct kevent k;
     EV_SET(&k, w->on.fd, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
-    kevent(sg_loop, &k, 1, NULL, 0, NULL);
+    kevent(sg_loops[0].fd, &k, 1, NULL, 0, NULL);
 #endif
     sg_mtx_lock(&sg_loop_lock);
     w->cut = sg_loop_cut;
     sg_loop_cut = w;
     sg_mtx_unlock(&sg_loop_lock);
-    sg_loop_kick();
+    sg_loop_kick(0);
 }
 /* The task running now waits for the end of program `pid`. */
 static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, const char* loc) {
