@@ -82,6 +82,12 @@ error: `task` is not waited for at this `return`
   hint: `task.wait()`
 ```
 
+The one exception is a way out with an error (`try`, `return Error(...)`): the tasks left there are let go,
+then waited for. A wait in them that can say it was cancelled, on the network or a file, or a delay or a
+channel given a token, ends at once with `Cancelled`, and each task goes out by its own way of an error, so a
+server task that waits for clients does not hold the program for ever once the function has failed
+([An exit with an error lets the tasks go](../../library/tasks.md#an-exit-with-an-error-lets-the-tasks-go)).
+
 What a task is given, and what it gives back, owns all it holds. A borrow cannot go to a task, since the task
 could outlive what it borrows from:
 

@@ -1,5 +1,6 @@
 // A function that ends with an error waits, before it returns, for the tasks it started
-// and did not await: no task is cut off, and its error is the one that counts.
+// and did not await, and its error is the one that counts. It lets them go first (1691), but a
+// delay without a token cannot say it was cancelled, so it runs on (1693): the late task ends.
 async void note(string text, int ms) {
     await Task.delay(ms)
     print(text)

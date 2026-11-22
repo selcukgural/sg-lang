@@ -167,6 +167,9 @@ struct ChanWait {
     fiber: usize,
     chan: Rc<Chan>,
     sends: bool,
+    /// Given a token, so it can say it was cancelled: a task let go by an exit with an error
+    /// ends it (choice 1692).
+    told: bool,
 }
 
 /// What a fiber waits for outside the run: a socket to be ready to read (or, `true`, to
@@ -200,6 +203,9 @@ pub struct Task {
     started: Span,
     /// The fibers that wait for it to end.
     waiters: Vec<usize>,
+    /// The fiber of an async task: an exit with an error that lets the task go ends the waits
+    /// in it that can say so (1691). A task of `Task.run` is not let go, as a thread is not.
+    fiber: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -275,6 +281,12 @@ struct State {
     lock_waits: Vec<LockWait>,
     /// The fibers that wait on a channel, in the order they began.
     chan_waits: Vec<ChanWait>,
+    /// The fibers of the async tasks an exit with an error let go (1691): every wait in them
+    /// that can say so ends with `Cancelled`, now and from then on.
+    cut_fibers: BTreeSet<usize>,
+    /// The tasks each fiber waits for (`await`, `Task.whenAny`, `Task.whenAll`), so that a
+    /// task let go lets them go too.
+    awaiting: HashMap<usize, Vec<std::rc::Weak<RefCell<Task>>>>,
 }
 
 /// A fiber that waits in `lock ... when`: a `lock` block that ends on one of its values wakes
@@ -325,6 +337,8 @@ impl Sched {
             lazy: Vec::new(),
             lock_waits: Vec::new(),
             chan_waits: Vec::new(),
+            cut_fibers: BTreeSet::new(),
+            awaiting: HashMap::new(),
         };
         Sched { state: Mutex::new(state) }
     }
@@ -540,6 +554,45 @@ impl Sched {
                     Self::end_timer(state, &task, failed(cancelled()));
                 }
             }
+        }
+    }
+
+    /// An exit with an error lets `task` go (1691, 1692): a delay given a token ends with
+    /// `Error(Cancelled { })`; an async task is marked, the wait it is in ends if it can say so
+    /// (a socket, work on a thread, a channel given a token), and the tasks it waits for are let
+    /// go in turn. A delay without a token, and a task of `Task.run`, run on (1693).
+    fn cut(state: &mut State, task: &Rc<RefCell<Task>>) {
+        if matches!(task.borrow().state, TaskState::Running) {
+            let delay = state
+                .timers
+                .iter()
+                .find(|(_, (_, timer))| matches!(timer, Timer::Delay { task: of, token: Some(_) } if std::ptr::eq(of.as_ptr(), Rc::as_ptr(task))))
+                .map(|(key, _)| *key);
+            if let Some(key) = delay {
+                if let Some((_, Timer::Delay { token: Some(source), .. })) = state.timers.remove(&key) {
+                    if let Some(source) = source.upgrade() {
+                        source.borrow_mut().delays.retain(|other| *other != key);
+                    }
+                }
+                Self::end_timer(state, task, failed(cancelled()));
+                return;
+            }
+        }
+        let Some(fiber) = task.borrow().fiber else { return };
+        if matches!(task.borrow().state, TaskState::Done(_)) || !state.cut_fibers.insert(fiber) {
+            return;
+        }
+        if state.outside.remove(&fiber).is_some() {
+            state.cut.insert(fiber);
+            state.ready.push_back(fiber);
+        } else if let Some(at) = state.chan_waits.iter().position(|wait| wait.fiber == fiber && wait.told) {
+            state.chan_waits.remove(at);
+            state.cut.insert(fiber);
+            state.ready.push_back(fiber);
+        }
+        let awaited = state.awaiting.get(&fiber).cloned().unwrap_or_default();
+        for other in awaited.iter().filter_map(std::rc::Weak::upgrade) {
+            Self::cut(state, &other);
         }
     }
 
@@ -2805,9 +2858,28 @@ impl<'a, 'e> Interp<'a, 'e> {
         while let Some(at) = self.started.iter().position(|task| Rc::strong_count(task) == 1) {
             let task = self.started.remove(at);
             let started = task.borrow().started;
+            // It is let go first, so that a wait in it that can say so ends (1691).
+            Sched::cut(&mut self.io.sched.lock(), &task);
             self.await_task(&task, started)?;
         }
         Ok(())
+    }
+
+    /// Whether this fiber's task was let go by an exit with an error (1691).
+    fn cut_now(&self) -> bool {
+        self.io.sched.lock().cut_fibers.contains(&self.me)
+    }
+
+    /// This fiber waits for `tasks`: a task let go lets them go too (1691), now if it has been
+    /// let go already, or when it is.
+    fn awaits(&self, tasks: &[Rc<RefCell<Task>>]) {
+        let mut state = self.io.sched.lock();
+        state.awaiting.insert(self.me, tasks.iter().map(Rc::downgrade).collect());
+        if state.cut_fibers.contains(&self.me) {
+            for task in tasks {
+                Sched::cut(&mut state, task);
+            }
+        }
     }
 
     /// Waits for a task, `wait` and `await` alike, and gives what its function returned. A
@@ -2825,7 +2897,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 TaskState::Running => {
                     task.borrow_mut().waiters.push(self.me);
-                    self.io.sched.block(self.me, at)?;
+                    self.awaits(std::slice::from_ref(task));
+                    let waited = self.io.sched.block(self.me, at);
+                    self.io.sched.lock().awaiting.remove(&self.me);
+                    waited?;
                 }
             }
         }
@@ -2873,13 +2948,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                     task.waiters.push(self.me);
                 }
             }
+            self.awaits(&tasks);
             let lazy = tasks.iter().find(|task| matches!(task.borrow().state, TaskState::Lazy(..)));
             let waited = match lazy {
                 Some(task) => {
                     let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
                     task.borrow_mut().waiters.push(self.me);
                     let func = self.funcs[&*name];
-                    self.start_fiber(task, func, None, args, false)
+                    self.start_fiber(task, func, None, args, false).map(|_| ())
                 }
                 None => self.io.sched.block(self.me, at),
             };
@@ -2888,7 +2964,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             for task in &tasks {
                 task.borrow_mut().waiters.retain(|fiber| *fiber != self.me);
             }
-            self.io.sched.lock().ready.retain(|fiber| *fiber != self.me);
+            {
+                let mut state = self.io.sched.lock();
+                state.ready.retain(|fiber| *fiber != self.me);
+                state.awaiting.remove(&self.me);
+            }
             waited?;
         }
     }
@@ -2928,9 +3008,10 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `f(x)` of an async function `f`, without `await`: the task starts now and runs until it
     /// first waits, then this fiber goes on, as in C#.
     fn start_async(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, at: Span) -> Res<Value> {
-        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new(), fiber: None }));
         self.started.push(task.clone());
-        self.start_fiber(&task, func, this, args, true)?;
+        let fiber = self.start_fiber(&task, func, this, args, true)?;
+        task.borrow_mut().fiber = Some(fiber);
         Ok(Value::Task(task))
     }
 
@@ -2942,10 +3023,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             let token = if told.is_some() { ", token" } else { "" };
             return Err(Diag::panic(at, format!("`Task.delay({ms}{token})`: a delay is not negative")).into());
         }
-        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new(), fiber: None }));
         self.started.push(task.clone());
         let source = told.clone().flatten();
-        if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+        if source.as_ref().is_some_and(|source| source.borrow().cancelled) || (told.is_some() && self.cut_now()) {
             task.borrow_mut().state = TaskState::Done(Some(failed(cancelled())));
             return Ok(Value::Task(task));
         }
@@ -2974,10 +3055,14 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(Value::Source(source))
     }
 
-    /// Whether the token given to an async method, if one was, is cancelled.
+    /// Whether the token given to an async method, if one was, is cancelled, or the task was let
+    /// go by an exit with an error (1692): the method gives `IoError.Cancelled` and does nothing.
     fn cancelled(&mut self, token: Option<&'a Expr>, frame: &mut Frame) -> Res<bool> {
-        let Some(token) = token else { return Ok(false) };
-        Ok(self.token(token, frame)?.is_some_and(|source| source.borrow().cancelled))
+        let told = match token {
+            Some(token) => self.token(token, frame)?.is_some_and(|source| source.borrow().cancelled),
+            None => false,
+        };
+        Ok(told || self.cut_now())
     }
 
     /// The source a token argument looks at; `None` for `CancellationToken.None`.
@@ -2996,8 +3081,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         let done = match call {
             ChanCall::Sender => return Ok(Value::Chan(ChanEnd::new(&end.chan, true))),
             ChanCall::Clone => return Ok(Value::Chan(ChanEnd::new(&end.chan, end.sends))),
-            ChanCall::Send => self.send(&end.chan, item.expect("computed above"), source.as_ref(), at)?,
-            ChanCall::Receive => self.receive(&end.chan, source.as_ref(), at)?,
+            ChanCall::Send => self.send(&end.chan, item.expect("computed above"), source.as_ref(), told, at)?,
+            ChanCall::Receive => self.receive(&end.chan, source.as_ref(), told, at)?,
         };
         Ok(match (done, told) {
             (Ok(value), false) => value,
@@ -3009,7 +3094,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `sender.send(item)`: `true` once the item is in the channel, waiting while it is full;
     /// `false` when no end receives any more, and the item ends here. `Err` when the token is
     /// cancelled first: a channel with room takes the item all the same.
-    fn send(&mut self, chan: &Rc<Chan>, item: Value, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Result<Value, ()>> {
+    fn send(&mut self, chan: &Rc<Chan>, item: Value, source: Option<&Rc<RefCell<Cancel>>>, told: bool, at: Span) -> Res<Result<Value, ()>> {
         // An item the channel does not take ends here, as in compiled code: its `dispose` runs
         // before the call gives its answer.
         loop {
@@ -3022,7 +3107,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 chan.items.borrow_mut().push_back(item);
                 return Ok(Ok(Value::Bool(true)));
             }
-            if self.chan_wait(chan, true, source, at)? {
+            if self.chan_wait(chan, true, source, told, at)? {
                 drop(item);
                 self.disposals()?;
                 return Ok(Err(()));
@@ -3033,7 +3118,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `channel.receive()`: the first item, waiting while there is none; `null` once no end
     /// sends any more and nothing is left. `Err` when the token is cancelled first: an item
     /// that is there is taken all the same.
-    fn receive(&mut self, chan: &Rc<Chan>, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Result<Value, ()>> {
+    fn receive(&mut self, chan: &Rc<Chan>, source: Option<&Rc<RefCell<Cancel>>>, told: bool, at: Span) -> Res<Result<Value, ()>> {
         loop {
             if let Some(item) = chan.items.borrow_mut().pop_front() {
                 return Ok(Ok(item));
@@ -3041,7 +3126,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             if chan.senders.get() == 0 {
                 return Ok(Ok(Value::Null));
             }
-            if self.chan_wait(chan, false, source, at)? {
+            if self.chan_wait(chan, false, source, told, at)? {
                 return Ok(Err(()));
             }
         }
@@ -3050,9 +3135,9 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// This fiber waits until the channel may let it go on, or the token is cancelled: gives
     /// whether the token cut the wait short. A fiber woken looks at the channel again, since
     /// another may have taken what woke it.
-    fn chan_wait(&mut self, chan: &Rc<Chan>, sends: bool, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
-        let cancelled = |source: Option<&Rc<RefCell<Cancel>>>| source.is_some_and(|source| source.borrow().cancelled);
-        if cancelled(source) {
+    fn chan_wait(&mut self, chan: &Rc<Chan>, sends: bool, source: Option<&Rc<RefCell<Cancel>>>, told: bool, at: Span) -> Res<bool> {
+        let cancelled = |this: &Self, source: Option<&Rc<RefCell<Cancel>>>| source.is_some_and(|source| source.borrow().cancelled) || (told && this.cut_now());
+        if cancelled(self, source) {
             return Ok(true);
         }
         // What a task of `Task.run` that has not started yet does may end the wait.
@@ -3060,13 +3145,13 @@ impl<'a, 'e> Interp<'a, 'e> {
         if chan.ready(sends) {
             return Ok(false);
         }
-        if cancelled(source) {
+        if cancelled(self, source) {
             return Ok(true);
         }
         if let Some(source) = source {
             source.borrow_mut().waits.push(self.me);
         }
-        self.io.sched.lock().chan_waits.push(ChanWait { fiber: self.me, chan: chan.clone(), sends });
+        self.io.sched.lock().chan_waits.push(ChanWait { fiber: self.me, chan: chan.clone(), sends, told });
         let waited = self.io.sched.block(self.me, at);
         if let Some(source) = source {
             source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
@@ -3331,17 +3416,15 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// Fiber `me` waits outside the run for `what`, until it is ready or the token, if one is
     /// given, is cancelled. Gives whether the wait was cut short by a cancel.
     fn wait_for(&mut self, what: Outside, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
-        if let Some(source) = source {
-            if source.borrow().cancelled {
-                return Ok(true);
-            }
+        if source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
+            return Ok(true);
         }
         // What the network waits for may be another task of this run.
         self.start_lazy()?;
+        if source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
+            return Ok(true);
+        }
         if let Some(source) = source {
-            if source.borrow().cancelled {
-                return Ok(true);
-            }
             source.borrow_mut().waits.push(self.me);
         }
         self.io.sched.lock().outside.insert(self.me, what);
@@ -3561,7 +3644,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// Runs `func(args)` for `task` on a fiber of its own, which gets the turn now. With
     /// `caller_ready` this fiber is next once the new one waits; otherwise this one waits for
     /// the task and goes on when it ends.
-    fn start_fiber(&mut self, task: &Rc<RefCell<Task>>, func: &'a Func, this: Option<Value>, args: Vec<Value>, caller_ready: bool) -> Res<()> {
+    fn start_fiber(&mut self, task: &Rc<RefCell<Task>>, func: &'a Func, this: Option<Value>, args: Vec<Value>, caller_ready: bool) -> Res<usize> {
         let started = task.borrow().started;
         let id = {
             let mut state = self.io.sched.lock();
@@ -3648,7 +3731,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         if caller_ready {
             state.ready.push_front(self.me);
         }
-        self.io.sched.hand(state, self.me, id)
+        self.io.sched.hand(state, self.me, id)?;
+        Ok(id)
     }
 
     /// After a stop on fiber 0: every other fiber still waiting gets the turn once, one after
@@ -3930,7 +4014,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         (_, Some(items)) => items.get(next).cloned(),
                         (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
                         (Value::Lines(lines), _) => self.next_line(lines, iter.span)?.map(cell),
-                        (Value::Chan(end), _) => match self.receive(&end.chan, None, iter.span)? {
+                        (Value::Chan(end), _) => match self.receive(&end.chan, None, false, iter.span)? {
                             Ok(Value::Null) => None,
                             Ok(item) => Some(cell(item)),
                             Err(_) => unreachable!("no token is given"),
@@ -4945,7 +5029,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::TaskRun => {
                     let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
                     let values = self.values(&args[1..], frame)?;
-                    let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new() }));
+                    let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new(), fiber: None }));
                     self.started.push(task.clone());
                     let mut state = self.io.sched.lock();
                     // Those that have run, or are gone, are let go of now and then.
@@ -5004,7 +5088,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                         },
                         false => None,
                     };
-                    let value = match source.is_some_and(|source| source.borrow().cancelled) {
+                    // So is a task let go by an exit with an error (1692).
+                    let value = match source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
                         true => failed(io_cancelled()),
                         false => self.io_values(*call, values)?,
                     };
@@ -6167,7 +6252,7 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// A task that has ended with `value`, to be awaited.
     fn ended_task(&mut self, value: Value, at: Span) -> Value {
-        let task = Rc::new(RefCell::new(Task { state: TaskState::Done(Some(value)), started: at, waiters: Vec::new() }));
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Done(Some(value)), started: at, waiters: Vec::new(), fiber: None }));
         self.started.push(task.clone());
         Value::Task(task)
     }

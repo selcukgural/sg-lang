@@ -1619,6 +1619,9 @@ typedef struct sg_task {
     /* Whether the block of the task came aligned beyond 16 bytes, by what it holds: its
        arguments may be, and they are not in the type that frees it (`sg_task_free`). */
     bool aligned;
+    /* An exit with an error let the task go (choice 1691): every wait in it that can say so
+       ends with `Cancelled`, now and from then on. Set once, never cleared. */
+    int cut;
 } sg_task;
 static _Thread_local sg_task* sg_task_now = NULL;
 static void sg_panic_start(void) {
@@ -4442,6 +4445,20 @@ static _Thread_local sg_task* sg_job_now = NULL;
 static void sg_closing_left(sg_task* job);
 #endif
 static void sg_wake(sg_task* job);
+/* Whether the async task running now was let go by an exit with an error (1691, 1692). */
+static inline bool sg_job_cut(void) { return sg_job_now && __atomic_load_n(&sg_job_now->cut, __ATOMIC_ACQUIRE); }
+/* An exit with an error lets task `t` go: it is marked, and an async one is woken, so that the
+   wait it is in looks at the mark and ends, and the tasks it waits for are let go in turn. The
+   task stays with its owner, who waits for it next; waking one that is running, queued or ended
+   does nothing more. */
+static void sg_task_cut(sg_task* t) {
+    if (!t || __atomic_exchange_n(&t->cut, 1, __ATOMIC_SEQ_CST)) return;
+    if (t->kind == SG_ASYNC) sg_wake(t);
+}
+/* The same for each task of a list (`List<Task<R>>`, whose items begin with their task). */
+static void sg_cut_tasks(void* const* tasks, int64_t n) {
+    for (int64_t i = 0; i < n; i++) sg_task_cut((sg_task*)tasks[i]);
+}
 SG_COLD static _Noreturn void sg_refused(int code, const char* what, const char* at) {
     SG_PANIC_START();
     fprintf(stderr, "panic: the system refused a thread for %s: %s (os error %d)\n", what, strerror(code), code);
@@ -4528,6 +4545,8 @@ static void sg_park(sg_task* t) {
 /* `await t`: whether the task has ended. If not, the async task running now is woken when it
    does; it is the only one that can wait for it, since a task is waited for once. */
 static bool sg_ready(sg_task* t) {
+    /* A task let go by an exit with an error lets go the task it waits for (1691). */
+    if (sg_job_cut()) sg_task_cut(t);
     void* w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
     if (!w) {
         void* none = NULL;
@@ -4558,6 +4577,7 @@ static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name
     task->at = at;
     task->run = run;
     task->kind = SG_THREAD;
+    task->cut = 0;
     task->waiter = NULL;
     int code = sg_thread_start(&task->thread, sg_task_main, task, false);
     if (code != 0) sg_refused(code, "this task", at);
@@ -5101,6 +5121,7 @@ static void sg_job_start(sg_task* job, bool (*poll)(sg_task*), const char* name,
     job->at = at;
     job->poll = poll;
     job->kind = SG_ASYNC;
+    job->cut = 0;
     job->waiter = NULL;
     job->closing = NULL;
     job->next = NULL;
@@ -5280,7 +5301,7 @@ static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token,
     d->token = NULL;
     d->at = -1;
     d->prev = d->next = NULL;
-    if (token && __atomic_load_n(&token->cancelled, __ATOMIC_ACQUIRE)) { d->state = SG_CANCELLED; return; }
+    if ((token && __atomic_load_n(&token->cancelled, __ATOMIC_ACQUIRE)) || (told && sg_job_cut())) { d->state = SG_CANCELLED; return; }
     if (ms == 0) { d->state = SG_OVER; return; }
     d->state = SG_WAITING;
     sg_mtx_lock(&sg_clock_lock);
@@ -5310,6 +5331,19 @@ static inline bool sg_delay_over(sg_delay* d) {
     sg_mtx_unlock(&sg_clock_lock);
     return true;
 }
+/* `await Task.delay(ms, read token)`, which can say it was cancelled: a task let go by an exit
+   with an error ends it as a cancel of its token would (1692). One without a token runs on. */
+static bool sg_delay_over_told(sg_delay* d) {
+    if (sg_delay_state(d) == SG_WAITING && sg_job_cut()) {
+        sg_mtx_lock(&sg_clock_lock);
+        if (d->state == SG_WAITING) {
+            if (d->at >= 0) sg_heap_remove(d);
+            sg_delay_end(d, SG_CANCELLED);
+        }
+        sg_mtx_unlock(&sg_clock_lock);
+    }
+    return sg_delay_over(d);
+}
 
 /* `Task.delay(ms)` kept as a task: it ends when the delay is over. */
 typedef struct { sg_task head; sg_delay delay; } sg_delay_task;
@@ -5319,6 +5353,7 @@ static sg_task* sg_delay_task_new(int32_t ms, const char* loc) {
     sg_delay_task* t = malloc(sizeof *t);
     if (!t) abort();
     t->head.kind = SG_DELAY;
+    t->head.cut = 0;
     t->head.aligned = false;
     t->head.name = NULL;
     t->head.at = NULL;
@@ -5445,6 +5480,9 @@ struct sg_chan_wait {
     void* dropped;
     bool sends;
     bool listed;
+    /* Given a token, so the wait can say it was cancelled: a task let go by an exit with an
+       error ends it (1692). */
+    bool told;
     /* Put on the token's list once; `d.token` is read only under the clock's lock, since a
        cancel takes it off there. */
     bool linked;
@@ -5603,6 +5641,7 @@ static void sg_chan_wait_init(sg_chan_wait* w, sg_chan* c, bool sends, void* ite
    cancelled, otherwise the wait is on the token's list (once) and in the channel's. */
 static bool sg_chan_park(sg_chan* c, sg_chan_wait* w) {
     if (__atomic_load_n(&w->cut, __ATOMIC_ACQUIRE)) return true;
+    if (w->told && !w->thread && sg_job_cut()) return true;
     if (w->token && !w->linked) {
         w->linked = true;
         sg_mtx_lock(&sg_clock_lock);
@@ -5699,8 +5738,9 @@ static bool sg_chan_ready(sg_chan_wait* w) {
     if (done) sg_chan_done(w);
     return done;
 }
-static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* item, sg_cancel* token) {
+static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* item, bool told, sg_cancel* token) {
     sg_chan_wait_init(w, c, sends, item, token, NULL);
+    w->told = told;
     (void)sg_chan_ready(w);
 }
 "#;
@@ -6591,7 +6631,7 @@ static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
     x->l = (sg_sig_listener*)(intptr_t)id;
     x->kind = -1;
     sg_wait_init(&x->w, sg_sig_cut);
-    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    if (sg_cancelled(token) || sg_job_cut()) { x->state = SG_CANCELLED; return; }
     sg_mtx_lock(&sg_sig_lock);
     if (x->l->count > 0) {
         x->kind = sg_sig_pop(x->l);
@@ -6635,7 +6675,7 @@ static void sg_udp_lookup_start(sg_io_lookup* x, sg_str host, sg_cancel* token, 
     x->list = NULL;
     x->state = SG_OVER;
     memset(&x->w, 0, sizeof x->w);
-    if (sg_cancelled(token)) {
+    if (sg_cancelled(token) || sg_job_cut()) {
         x->state = SG_CANCELLED;
         return;
     }
@@ -7093,9 +7133,12 @@ static void sg_loop_round(bool wait) {
         uint64_t tag = events[i].data.u64;
         uint32_t ev = events[i].events;
         int bits = ((ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) ? 1 : 0) | ((ev & (EPOLLOUT | EPOLLHUP | EPOLLERR)) ? 2 : 0);
+        /* The other side closed, or the socket failed: 4, which stays (see `sg_slot_dry`). */
+        if (ev & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) bits |= 4;
 #else
         uint64_t tag = (uint64_t)(uintptr_t)events[i].udata;
         int bits = events[i].filter == EVFILT_READ ? 1 : events[i].filter == EVFILT_WRITE ? 2 : 0;
+        if (events[i].filter == EVFILT_READ && (events[i].flags & (EV_EOF | EV_ERROR))) bits |= 4;
 #endif
         if (tag & 1) {
             sg_slot_event(tag, bits);
@@ -7209,7 +7252,7 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
     w->write = write;
     w->told = token != NULL;
     w->on.fd = fd;
-    if (sg_cancelled(token)) return SG_CANCELLED;
+    if (sg_cancelled(token) || sg_job_cut()) return SG_CANCELLED;
     sg_loop_open(loc);
     sg_slot* s = sg_slot_make(fd);
     if (!s) return SG_E_MFILE;
@@ -7368,14 +7411,16 @@ static bool sg_net_connect_next(sg_net_op* op) {
 /* A receive that gave fewer bytes than there was room for has emptied the connection, as Tokio
    takes it on epoll and kqueue: unless the loop has seen the socket ready since `seen`, it is
    marked not ready, and the next receive waits for the loop rather than try the socket and be
-   told so. A socket closed meanwhile has its slot cleared, so its number used again starts
+   told so. Not once the loop has seen the other side close (`ready` 4, which stays): its end may
+   still be there to read after the bytes, and no edge would tell of it again, as Tokio keeps its
+   READ_CLOSED. A socket closed meanwhile has its slot cleared, so its number used again starts
    ready. */
 static void sg_slot_dry(int fd, int bit, uint32_t seen) {
     sg_slot* s = sg_slot_at(fd);
     if (!s) return;
     sg_mtx* m = sg_slot_lock(fd);
     sg_mtx_lock(m);
-    if ((s->on & bit) && __atomic_load_n(&s->tick, __ATOMIC_RELAXED) == seen) s->ready &= (uint8_t)~bit;
+    if ((s->on & bit) && !(s->ready & 4) && __atomic_load_n(&s->tick, __ATOMIC_RELAXED) == seen) s->ready &= (uint8_t)~bit;
     sg_mtx_unlock(m);
 }
 /* Whether socket `fd` is on the loop for `bit` and has not been ready since it was found empty. */
@@ -7384,7 +7429,7 @@ static bool sg_slot_is_dry(int fd, int bit) {
     if (!s) return false;
     sg_mtx* m = sg_slot_lock(fd);
     sg_mtx_lock(m);
-    bool dry = (s->on & bit) && !(s->ready & bit);
+    bool dry = (s->on & bit) && !(s->ready & bit) && !(s->ready & 4);
     sg_mtx_unlock(m);
     return dry;
 }
@@ -7393,7 +7438,7 @@ static bool sg_slot_is_dry(int fd, int bit) {
    loop, or for the name on a thread. */
 static bool sg_net_go(sg_net_op* op) {
     if (op->phase == SG_NET_TRY) {
-        if (sg_cancelled(op->token)) return sg_net_finish(op, SG_CUT);
+        if (sg_cancelled(op->token) || sg_job_cut()) return sg_net_finish(op, SG_CUT);
         if (op->kind == SG_CONNECT) {
             if (op->code) return sg_net_finish(op, op->code);
             if (sg_net_lookup(op->name->host, op->name->port, true, &op->name->list) == 0) {
@@ -7604,7 +7649,7 @@ static void sg_proc_cut(sg_delay* d) {
 static void sg_proc_wait_start(sg_io_proc* x, int64_t child, sg_cancel* token, const char* loc) {
     (void)loc;
     sg_wait_init(&x->w, sg_proc_cut);
-    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    if (sg_cancelled(token) || sg_job_cut()) { x->state = SG_CANCELLED; return; }
     sg_proc_away* a = (calloc)(1, sizeof *a);
     if (!a) abort();
     if (!DuplicateHandle(GetCurrentProcess(), (HANDLE)(intptr_t)child, GetCurrentProcess(), &a->process, SYNCHRONIZE, FALSE, 0)) {
@@ -7688,7 +7733,7 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
     x->pidfd = -1;
     x->away = false;
     sg_wait_init(&x->w, sg_proc_cut);
-    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    if (sg_cancelled(token) || sg_job_cut()) { x->state = SG_CANCELLED; return; }
     int on = (int)pid;
 #if defined(__linux__) && defined(SYS_pidfd_open)
     x->pidfd = (int)syscall(SYS_pidfd_open, (pid_t)pid, 0);
@@ -7708,7 +7753,9 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
     sg_loop_open(loc);
     x->w.proc = true;
     x->w.write = false;
-    x->w.told = token != NULL;
+    /* Always told: a task let go by an exit with an error may end the wait without a token (1692),
+       and the loop and that end then take the clock's lock in turn. */
+    x->w.told = true;
     x->w.on.fd = on;
     __atomic_store_n(&x->w.posted, 1, __ATOMIC_RELEASE);
     int code = 0;
@@ -10374,12 +10421,29 @@ typedef struct sg_wait {
     int posted;
     struct sg_wait* cut;
 } sg_wait;
+/* The task running now was let go by an exit with an error, and its wait is not over: it ends
+   as a cancel of a token would end it, under the clock's lock (1692). Its own task does it, so the
+   wait is not touched by another thread while it may be used again. A wait the loop or a thread
+   is waking already is left to them; the next wait of the task sees the mark. */
+static void sg_wait_cut_now(sg_wait* w) {
+    sg_mtx_lock(&sg_clock_lock);
+    if (w->d.state == SG_WAITING) {
+        if (w->d.at >= 0) sg_heap_remove(&w->d);
+        sg_delay_end(&w->d, SG_CANCELLED);
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+}
 static inline bool sg_wait_settled(sg_wait* w) {
     int settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
     if (settled == 0) {
         SG_LINGER();
         settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
-        if (settled == 0) return false;
+        if (settled == 0) {
+            if (!sg_job_cut()) return false;
+            sg_wait_cut_now(w);
+            settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
+            if (settled == 0) return false;
+        }
     }
     /* Its waker is waking it: the task goes on at the 1 that is the waker's last touch. */
     while (settled == 2) {
@@ -10475,7 +10539,7 @@ static int sg_far_start(sg_far* f, sg_wait* w, sg_cancel* token, const char* loc
     sg_wait_init(w, sg_far_cut);
     w->on.away = f;
     sg_mtx_lock(&sg_clock_lock);
-    if (token && token->cancelled) {
+    if ((token && token->cancelled) || sg_job_cut()) {
         sg_mtx_unlock(&sg_clock_lock);
         free(f);
         return SG_CANCELLED;
@@ -10523,7 +10587,7 @@ static void sg_in_fill_run(sg_far* f) {
    the thread that fills it, SG_CANCELLED, SG_OVER when it can be looked at again, or -1 when the
    read is to be done on a thread (the block is full, another task waits, or an error came). */
 static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
-    if (sg_cancelled(token)) return SG_CANCELLED;
+    if (sg_cancelled(token) || sg_job_cut()) return SG_CANCELLED;
     sg_in_fill* f = sg_in_filling;
     bool start = false;
     if (!f) {
@@ -10619,7 +10683,7 @@ static void sg_lap_cut(sg_delay* d) {
    that fills it, SG_CANCELLED, SG_OVER at the end, or -1 when the block is full and the read is
    to be done on a thread. A read out before was taken in by the caller (`sg_lap_settle`). */
 static int sg_lap_wait(sg_reader* r, sg_wait* w, sg_cancel* token, const char* loc) {
-    if (sg_cancelled(token)) return SG_CANCELLED;
+    if (sg_cancelled(token) || sg_job_cut()) return SG_CANCELLED;
     if (r->ended) return SG_OVER;
     if (r->at > 0) {
         memmove(r->block, r->block + r->at, (size_t)(r->len - r->at));
@@ -12903,7 +12967,7 @@ impl<'a> Emitter<'a> {
         );
         let _ = writeln!(
             self.glue,
-            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); v->group = NULL; }}"
+            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (from < v->len) sg_cut_tasks((void* const*)v->ptr + from, v->len - from); if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); v->group = NULL; }}"
         );
         let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
         let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
@@ -13199,7 +13263,8 @@ impl<'a> Emitter<'a> {
                 let back = if take.is_empty() { "" } else { " return v;" };
                 let _ = writeln!(self.glue_protos, "static inline {task}* sg_move_{name}({task}** v);\nstatic void sg_drop_{name}({task}** v);\nstatic inline {gives} sg_wait_{name}({task}* t);");
                 let _ = writeln!(self.glue, "static inline {task}* sg_move_{name}({task}** v) {{ {task}* out = *v; *v = NULL; return out; }}");
-                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_join(&t->head); {drop_result}sg_task_free(t); }}");
+                // Dropped only on a way out with an error: the task is let go first (1691).
+                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_cut(&t->head); sg_task_join(&t->head); {drop_result}sg_task_free(t); }}");
                 let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}sg_task_free(t);{back} }}");
             }
             // A function value is the address of a function: one pointer. So is a pointer to a
@@ -15471,15 +15536,23 @@ impl<'a> Emitter<'a> {
                             closes = true;
                         }
                     }
-                    // A task is waited for on the way out; an async function awaits it.
+                    // A task is waited for on the way out, which is a way out with an error; an async
+                    // function awaits it. It is let go first, so that a wait in it that can say so
+                    // ends (1691).
                     None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
                         let task = &local.cname;
-                        lines.push(format!("SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) {{ return false; }} {}", self.drop_of(&local.ty, task)));
+                        lines.push(format!(
+                            "if ({task}) {{ sg_task_cut(&{task}->head); }} SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) {{ return false; }} {}",
+                            self.drop_of(&local.ty, task)
+                        ));
                     }
                     // So is a list of tasks, all of them.
                     None if !local.gone && is_task_list(&local.ty) && self.awaits.is_some() => {
                         let list = &local.cname;
-                        lines.push(format!("SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) {{ return false; }} {}", self.drop_of(&local.ty, list)));
+                        lines.push(format!(
+                            "sg_cut_tasks((void* const*){list}.ptr, {list}.len); SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) {{ return false; }} {}",
+                            self.drop_of(&local.ty, list)
+                        ));
                     }
                     None if !local.gone && self.droppable(&local.ty) => {
                         lines.push(self.drop_of(&local.ty, &local.cname));
@@ -18470,7 +18543,9 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(inner.span);
                 self.pre.push(format!("sg_delay {delay}; sg_delay_start(&{delay}, {ms}, {told}, {token}, {loc});"));
                 self.resume_point(expr.span);
-                self.pre.push(format!("if (!sg_delay_over(&{delay})) return false;"));
+                // A delay given a token can say it was cancelled, so a task let go ends it (1692).
+                let over = if *told { "sg_delay_over_told" } else { "sg_delay_over" };
+                self.pre.push(format!("if (!{over}(&{delay})) return false;"));
                 match told {
                     true => {
                         let ctype = self.ctype(&expr.ty, expr.span)?;
@@ -18504,9 +18579,9 @@ impl<'a> Emitter<'a> {
                 match sends {
                     true => {
                         let value = self.value_as(&args[0], &item)?;
-                        self.pre.push(format!("{held} {slot} = {value}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, true, &{slot}, {token});"));
+                        self.pre.push(format!("{held} {slot} = {value}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, true, &{slot}, {told}, {token});"));
                     }
-                    false => self.pre.push(format!("{held} {slot}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, false, &{slot}, {token});")),
+                    false => self.pre.push(format!("{held} {slot}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, false, &{slot}, {told}, {token});")),
                 }
                 self.resume_point(expr.span);
                 self.pre.push(format!("if (!sg_chan_ready(&{wait})) return false;"));
@@ -18533,6 +18608,8 @@ impl<'a> Emitter<'a> {
                 let (ctype, list) = (self.ctype(&args[0].ty, args[0].span)?, self.temp());
                 self.pre.push(format!("{ctype} {list} = {value};"));
                 self.resume_point(expr.span);
+                // A task let go lets the tasks it waits for go (1691).
+                self.pre.push(format!("if (sg_job_cut()) {{ sg_cut_tasks((void* const*){list}.ptr, {list}.len); }}"));
                 self.pre.push(format!("if (!sg_group_all({list}.group, {list}.len)) return false;"));
                 result(self, format!("sg_all_{name}(&{list})"))
             }
@@ -18544,6 +18621,7 @@ impl<'a> Emitter<'a> {
                 let (ctype, list, task, loc) = (self.ctype(&args[0].ty, args[0].span)?, self.temp(), self.temp(), self.loc(inner.span));
                 self.pre.push(format!("{ctype} {list} = {value}; if ({list}->len == 0) sg_when_any_empty({loc}); sg_task* {task} = NULL;"));
                 self.resume_point(expr.span);
+                self.pre.push(format!("if (sg_job_cut()) {{ sg_cut_tasks((void* const*){list}->ptr, {list}->len); }}"));
                 self.pre.push(format!("if (!({task} = sg_group_any({list}->group))) return false;"));
                 result(self, format!("sg_any_{name}({list}, {task})"))
             }
@@ -18668,10 +18746,11 @@ impl<'a> Emitter<'a> {
         self.made.insert("async io".to_string());
         let gives = self.ctype(&expr.ty, span)?;
         let (w, c, loc) = (self.temp(), self.temp(), self.loc(span));
+        // A task let go by an exit with an error is cancelled as a cancelled token is (1692).
         let token = |this: &mut Self, at: usize| -> Res<Option<String>> {
             match args.get(at) {
-                Some(arg) => Ok(Some(format!("sg_cancelled(*({}))", this.value(arg)?))),
-                None => Ok(None),
+                Some(arg) => Ok(Some(format!("(sg_cancelled(*({})) || sg_job_cut())", this.value(arg)?))),
+                None => Ok(Some("sg_job_cut()".to_string())),
             }
         };
         let big = match call {
@@ -18796,8 +18875,8 @@ impl<'a> Emitter<'a> {
             let _ = writeln!(
                 self.glue,
                 "static void sg_io_run_{fname}(sg_io* io) {{ sg_io_{fname}* x = (sg_io_{fname}*)io; x->r = {fname}({gets}); }}\n\
-                 static inline sg_io_{fname} sg_io_of_{fname}({}) {{ return (sg_io_{fname}){{{sets} .cancelled = false, .tk = NULL }}; }}\n\
-                 static inline sg_io_{fname} sg_io_of_{fname}_t({takes}{comma}{token} tk) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_cancelled(*tk), .tk = *tk }}; }}",
+                 static inline sg_io_{fname} sg_io_of_{fname}({}) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_job_cut(), .tk = NULL }}; }}\n\
+                 static inline sg_io_{fname} sg_io_of_{fname}_t({takes}{comma}{token} tk) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_cancelled(*tk) || sg_job_cut(), .tk = *tk }}; }}",
                 if takes.is_empty() { "void" } else { &takes }
             );
             // A read its block can answer is done in place; the input that can make the program
@@ -18849,7 +18928,7 @@ impl<'a> Emitter<'a> {
                  static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
                  if (!sg_wait_settled(&x->w)) return false; \
                  if (sg_wait_state(&x->w) == SG_CANCELLED) {{ x->mode = 0; x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return true; }} \
-                 x->cancelled = sg_cancelled(x->tk); sg_io_go_{fname}(x, loc); return x->mode == 0 && sg_io_done(&x->io); }}"
+                 x->cancelled = sg_cancelled(x->tk) || sg_job_cut(); sg_io_go_{fname}(x, loc); return x->mode == 0 && sg_io_done(&x->io); }}"
             );
         }
         let skip = usize::from(reader.is_some());

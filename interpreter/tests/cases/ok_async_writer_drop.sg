@@ -33,7 +33,9 @@ async Result<void, IoError> pass(string path, string missing) {
     return Ok()
 }
 
-// A task declared after the writer is awaited first, as names end in the reverse order.
+// A task declared after the writer is awaited first, as names end in the reverse order. It is
+// let go first (1691): its delay, without a token, runs on, and its read, a wait that can say it
+// was cancelled, ends with `Cancelled` (1692).
 async void look(string path) {
     await Task.delay(10)
     match await File.readTextAsync(read path) {

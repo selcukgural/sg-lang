@@ -347,12 +347,13 @@ full is waited for on the loop at once, as Tokio does, and each call of the netw
 takes 224 bytes of one room in its frame, where each took 600 of its own, so 1,000 connections hold what
 Tokio's hold; the program measured stopped for good once, when the ports of the machine ran out and the task
 that waited for clients was waited for, so the server closes first, a measurement stops at a run that hangs
-or fails, and an exit with an error will cancel the tasks it lets go (1678-1690).
+or fails, and an exit with an error will cancel the tasks it lets go (1678-1690); then an exit with an error
+lets its tasks go before it waits for them, as Swift's task groups and Kotlin's `coroutineScope` do: a wait in
+them that can say so ends with `Cancelled`, and a delay or a channel without a token runs on (1691-1695).
 
 ## Next
 
-Next comes a slice in which an exit with an error cancels the tasks it lets go before it waits for them
-(1686); then the work on servers: idle connections, the latency under load, a store of keys and values,
+Next comes the work on servers: idle connections, the latency under load, a store of keys and values,
 then HTTP, measured on Linux against Tokio, Zig and C; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,

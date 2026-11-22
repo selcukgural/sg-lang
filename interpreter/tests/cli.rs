@@ -52,7 +52,7 @@ fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
 
 /// `sg` with these words, in `dir`.
 fn sg(dir: &Path, words: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).stdin(Stdio::null()).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).stdin(Stdio::null()).finished()
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -62,6 +62,48 @@ fn text(bytes: &[u8]) -> String {
 /// The exit code, and what was written to the output and to standard error.
 fn ran(out: &Output) -> (i32, String, String) {
     (out.status.code().unwrap_or(-1), text(&out.stdout), text(&out.stderr))
+}
+
+/// The longest a program of these tests may take: far more than any does, so one that is still
+/// going waits for something that never comes, and the test fails saying which, rather than
+/// holding the run for ever (a compiled trial of the network once waited 46 minutes).
+const PROGRAM_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `output()` with `PROGRAM_LIMIT`: what it wrote is captured; one past the limit is killed, and
+/// the test panics with its command line.
+trait Finished {
+    fn finished(&mut self) -> Output;
+}
+
+impl Finished for Command {
+    fn finished(&mut self) -> Output {
+        use std::io::Read;
+        let mut child = self.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let take = |pipe: Option<Box<dyn Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_end(&mut bytes);
+                }
+                bytes
+            })
+        };
+        let out = take(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+        let err = take(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if start.elapsed() > PROGRAM_LIMIT {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{:?} {:?} did not end within {} s", self.get_program(), self.get_args().collect::<Vec<_>>(), PROGRAM_LIMIT.as_secs());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        Output { status, stdout: out.join().unwrap(), stderr: err.join().unwrap() }
+    }
 }
 
 /// Whether there is a C compiler: the commands that compile are tried only then.
@@ -669,7 +711,7 @@ fn emits_c() {
 
 /// `sg` with these words, in `dir`, with `tmp` as the temporary folder.
 fn sg_in(dir: &Path, tmp: &Path, words: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("TMPDIR", tmp).env("TMP", tmp).env("TEMP", tmp).stdin(Stdio::null()).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("TMPDIR", tmp).env("TMP", tmp).env("TEMP", tmp).stdin(Stdio::null()).finished()
 }
 
 /// What is in a folder, by name.
@@ -706,7 +748,7 @@ fn keeps_its_temporary_files_to_itself() {
         let precious = write(&dir, "precious.txt", "precious\n");
         let planted = |words: &str| {
             let script = format!("ln -s \"$0\" \"$TMPDIR/sg-$$.c\"; ln -s \"$0\" \"$TMPDIR/sg-test-$$\"; : > \"$TMPDIR/sg-$$\"; exec \"$1\" {words}");
-            Command::new("sh").arg("-c").arg(script).arg(&precious).arg(env!("CARGO_BIN_EXE_sg")).current_dir(&dir).env("TMPDIR", &tmp).stdin(Stdio::null()).output().unwrap()
+            Command::new("sh").arg("-c").arg(script).arg(&precious).arg(env!("CARGO_BIN_EXE_sg")).current_dir(&dir).env("TMPDIR", &tmp).stdin(Stdio::null()).finished()
         };
         for words in ["build hello.sg -o planted", "build calc.sg --library", "test tests.sg --compiled"] {
             let (code, _, err) = ran(&planted(words));
@@ -818,7 +860,7 @@ fn a_command_line_read_or_exit() {
     }
     for (command, way) in ways {
         let run = |words: &[&str]| {
-            ran(&Command::new(&command[0]).args(&command[1..]).args(words).current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+            ran(&Command::new(&command[0]).args(&command[1..]).args(words).current_dir(&dir).stdin(Stdio::null()).finished())
         };
         assert_eq!(run(&["--help"]), (0, HELP.into(), String::new()), "{way}");
         assert_eq!(run(&["in.gif", "-h"]), (0, HELP.into(), String::new()), "{way}");
@@ -846,7 +888,7 @@ fn a_json_suite() {
     if has_compiler() {
         let out = program(&dir, "check").to_string_lossy().into_owned();
         assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
-        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).finished();
         assert_eq!(ran(&run), expected, "compiled");
     }
 }
@@ -864,7 +906,7 @@ fn a_regex_suite() {
     if has_compiler() {
         let out = program(&dir, "check").to_string_lossy().into_owned();
         assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
-        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).finished();
         assert_eq!(ran(&run), expected, "compiled");
     }
 }
@@ -882,7 +924,7 @@ fn a_normalization_suite() {
     if has_compiler() {
         let out = program(&dir, "check").to_string_lossy().into_owned();
         assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
-        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        let run = Command::new(&out).arg(&cases).current_dir(&dir).stdin(Stdio::null()).finished();
         assert_eq!(ran(&run), expected, "compiled");
     }
 }
@@ -901,7 +943,7 @@ fn a_zip_suite() {
     if has_compiler() {
         let out = program(&dir, "check").to_string_lossy().into_owned();
         assert_eq!(ran(&sg(&dir, &["build", &check, "-o", &out])), (0, String::new(), String::new()));
-        let run = Command::new(&out).arg(&folder).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        let run = Command::new(&out).arg(&folder).current_dir(&dir).stdin(Stdio::null()).finished();
         assert_eq!(ran(&run), (0, expected, String::new()), "compiled");
     }
 }
@@ -1017,7 +1059,7 @@ fn a_regex_dfa_that_gives_up() {
     write(&dir, "many.sg", PROGRAM);
     let out = program(&dir, "many").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", "many.sg", "--release", "-o", &out])), (0, String::new(), String::new()));
-    let run = Command::new(&out).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    let run = Command::new(&out).current_dir(&dir).stdin(Stdio::null()).finished();
     let expected = "0..60000 true 2869\n2..60002 2..59985 59986..60002 60001..60002\nxy[aabaabaabaaaaabb]\n";
     assert_eq!(ran(&run), (0, expected.to_string(), String::new()));
 }
@@ -1037,7 +1079,7 @@ fn the_trials() {
     let text = program(&dir, "text").to_string_lossy().into_owned();
     let maker = trials.join("inputs").join("text.sg").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &maker, "--release", "-o", &text])), (0, String::new(), String::new()));
-    let made = Command::new(&text).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    let made = Command::new(&text).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).finished();
     assert!(made.status.success());
     std::fs::write(dir.join("t1.log"), &made.stdout).unwrap();
     let mut built = Vec::new();
@@ -1060,7 +1102,7 @@ fn the_trials() {
         words.extend_from_slice(args);
         let interpreted = ran(&sg(&dir, &words));
         let program = &built[if trial == "grep" { 0 } else { 1 }];
-        let compiled = ran(&Command::new(program).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        let compiled = ran(&Command::new(program).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
         assert_eq!(interpreted, compiled, "{trial} {args:?}: interpreted and compiled");
         if !expected.is_empty() {
             assert_eq!(compiled, (0, expected.to_string(), String::new()), "{trial} {args:?}");
@@ -1087,7 +1129,7 @@ fn the_trial_of_json() {
     let maker_source = trials.join("inputs").join("json.sg").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &maker_source, "--release", "-o", &maker])), (0, String::new(), String::new()));
     for kind in ["records", "lines", "numbers"] {
-        let made = Command::new(&maker).args([kind, "1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+        let made = Command::new(&maker).args([kind, "1", "7"]).current_dir(&dir).stdin(Stdio::null()).finished();
         assert!(made.status.success());
         std::fs::write(dir.join(format!("{kind}.json")), &made.stdout).unwrap();
     }
@@ -1120,7 +1162,7 @@ fn the_trial_of_json() {
     ];
     for (args, expected) in cases {
         let interpreted = ran(&sg(&dir, &[source.as_str(), args[0], args[1]]));
-        let compiled = ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        let compiled = ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
         assert_eq!(interpreted, compiled, "json {args:?}: interpreted and compiled");
         assert!(compiled == (0, expected, String::new()), "json {args:?}");
     }
@@ -1135,7 +1177,7 @@ fn trial_inputs(dir: &Path) -> (Vec<u8>, Vec<u8>) {
         let maker = program(dir, &format!("{input}-input")).to_string_lossy().into_owned();
         let source = trials.join("inputs").join(format!("{input}.sg")).to_string_lossy().into_owned();
         assert_eq!(ran(&sg(dir, &["build", &source, "--release", "-o", &maker])), (0, String::new(), String::new()));
-        let out = Command::new(&maker).args(args).current_dir(dir).stdin(Stdio::null()).output().unwrap();
+        let out = Command::new(&maker).args(args).current_dir(dir).stdin(Stdio::null()).finished();
         assert!(out.status.success());
         made.push(out.stdout);
     }
@@ -1164,7 +1206,7 @@ fn the_trial_of_compression() {
     let source = trials.join("std").join("compression").join("sg").join("compression.sg").to_string_lossy().into_owned();
     let built = program(&dir, "compression").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
-    let compiled = |args: &[&str]| Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    let compiled = |args: &[&str]| Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished();
     let said = (0, "bytes 200000\n".to_string(), String::new());
     assert_eq!(ran(&sg(&dir, &[source.as_str(), "compress", "text.log", "interpreted.gz"])), said);
     assert_eq!(ran(&compiled(&["compress", "text.log", "compiled.gz"])), said);
@@ -1199,7 +1241,7 @@ fn the_trial_of_zip() {
     let source = trials.join("std").join("zip").join("sg").join("zip.sg").to_string_lossy().into_owned();
     let built = program(&dir, "zip").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
-    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
     let said = (0, "entries 20\nbytes 200000\n".to_string(), String::new());
     assert_eq!(ran(&sg(&dir, &[source.as_str(), "write", "text.log", "interpreted.zip"])), said);
     assert_eq!(compiled(&["write", "text.log", "compiled.zip"]), said);
@@ -1239,7 +1281,7 @@ fn the_trials_of_hash_and_checksum() {
         let source = trials.join("std").join(trial).join("sg").join(format!("{trial}.sg")).to_string_lossy().into_owned();
         let built = program(&dir, trial).to_string_lossy().into_owned();
         assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
-        let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+        let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
         for (_, args, expected) in cases.iter().filter(|case| case.0 == trial) {
             let mut words = vec![source.as_str()];
             words.extend_from_slice(args);
@@ -1268,7 +1310,7 @@ fn the_trial_of_encoding() {
     let source = trials.join("std").join("encoding").join("sg").join("encoding.sg").to_string_lossy().into_owned();
     let built = program(&dir, "encoding").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
-    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
@@ -1311,7 +1353,7 @@ fn the_trial_of_unicode() {
     let maker = program(&dir, "unicode-input").to_string_lossy().into_owned();
     let input = trials.join("inputs").join("unicode.sg").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &input, "--release", "-o", &maker])), (0, String::new(), String::new()));
-    let made = Command::new(&maker).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    let made = Command::new(&maker).args(["1", "7"]).current_dir(&dir).stdin(Stdio::null()).finished();
     assert!(made.status.success());
     let mut end = 0;
     while end < 200_000 {
@@ -1322,7 +1364,7 @@ fn the_trial_of_unicode() {
     let source = trials.join("std").join("unicode").join("sg").join("unicode.sg").to_string_lossy().into_owned();
     let built = program(&dir, "unicode").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
-    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
@@ -1377,12 +1419,12 @@ fn the_trial_of_time() {
     )
     .unwrap();
     let compiled = |args: &[&str]| {
-        ran(&Command::new(&built).args(args).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        ran(&Command::new(&built).args(args).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).finished())
     };
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
-        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env("TZ", "Europe/Istanbul").current_dir(&dir).stdin(Stdio::null()).finished())
     };
     let cases: [(&[&str], &str); 3] = [
         (&["format", "1000"], "moments 1000\ncharacters 25273\nsum 53997\n"),
@@ -1417,7 +1459,7 @@ fn the_trial_of_random() {
     }
     let dir = work("the_trial_of_random");
     let (source, built) = std_trial(&dir, "random");
-    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
@@ -1450,12 +1492,12 @@ fn the_trial_of_log() {
     let dir = work("the_trial_of_log");
     let (source, built) = std_trial(&dir, "log");
     let compiled = |args: &[&str]| {
-        ran(&Command::new(&built).args(args).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        ran(&Command::new(&built).args(args).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).finished())
     };
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
-        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).env_remove("SG_LOG").current_dir(&dir).stdin(Stdio::null()).finished())
     };
     // The messages of the lines, each line held to its form, in order of their text.
     let messages = |error: &str| {
@@ -1511,11 +1553,11 @@ fn the_trial_of_net() {
          255.255.255.255:8080\nnot an address\n01.2.3.4:80\n1.2.3.4:65536\n",
     )
     .unwrap();
-    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
     let interpreted = |args: &[&str]| {
         let mut words = vec![source.as_str()];
         words.extend_from_slice(args);
-        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(&dir).stdin(Stdio::null()).finished())
     };
     let cases: [(&[&str], &str); 7] = [
         (&["echo", "MODE", "64", "8", "100"], "connections 8\nmessages 800\nbytes 51200\nsum 39600\n"),
@@ -1764,7 +1806,7 @@ fn publish_sg(mirror: &Path, address: &str, version: &str, requires: &str, name:
 
 /// `sg` in `dir`, taking packages from `mirror` into `cache`.
 fn sg_with(dir: &Path, mirror: &Path, cache: &Path, words: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("SG_MIRROR", mirror).env("SG_CACHE", cache).stdin(Stdio::null()).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("SG_MIRROR", mirror).env("SG_CACHE", cache).stdin(Stdio::null()).finished()
 }
 
 /// The folders of packages in the cache, `<address>@<version>/sha256-<hex>` (choice 1591), and

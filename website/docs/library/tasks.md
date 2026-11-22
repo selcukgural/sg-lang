@@ -89,6 +89,61 @@ It prints:
 40
 ```
 
+### An exit with an error lets the tasks go
+
+The one way out that leaves a task unawaited is an error (`try`, `return Error(...)`). There the tasks
+are let go, and then waited for: every wait in them that can say it was cancelled ends at once with
+`Cancelled` (the network, files and pipes, other programs, a name looked up, and a delay or a channel
+given a token), and so does every such wait they start afterwards; a task they await is let go in turn.
+Each goes out by its own way of an error, so nothing is cut in the middle of a line, and none holds the
+program for ever. A delay or a channel without a token cannot say it was cancelled, so it runs on and is
+waited for, as is work that never waits and a task of `Task.run` held in a call that blocks; give those a
+token where they must end.
+
+`Task.whenAll` waits for every task and gives what each gave, errors among them. To stop at the first
+error, empty the list with `Task.whenAny` and `try`: the tasks left in it are let go.
+
+```sg
+async Result<int, IoError> waits(TcpListener listener) {
+    match await listener.acceptAsync() {
+        Ok(_) => return Ok(1)
+        Error(e) => {
+            print($"waits: {e}")
+            return Error(e)
+        }
+    }
+}
+
+async Result<int, IoError> fails() {
+    _ = try await File.readTextAsync("no such file")
+    return Ok(2)
+}
+
+async Result<void, IoError> run() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var tasks = List<Task<Result<int, IoError>>>()
+    tasks.add(waits(listener))
+    tasks.add(fails())
+    while tasks.length() > 0 {
+        print(try await Task.whenAny(ref tasks))
+    }
+    return Ok()
+}
+
+void main() {
+    if run().wait() is Error(e) {
+        print($"run: {e}")
+    }
+}
+```
+
+It prints:
+
+```text
+waits: cancelled
+run: not found
+```
+
 ## `Channel<T>` and `Sender<T>`
 
 A channel carries items from its senders to its receivers, in the order they were sent. It has no `close`:

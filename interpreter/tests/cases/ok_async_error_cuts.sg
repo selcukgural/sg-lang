@@ -1,0 +1,143 @@
+// An exit with an error lets the async tasks it did not await go before it waits for them
+// (choices 1691-1693): a wait in them that can say so ends with `Cancelled`, and so does every
+// such wait they start afterwards; the tasks they wait for are let go in turn; a delay without
+// a token runs on. Before, the first of these waited for ever for a client that never came.
+
+async Result<void, IoError> serve(TcpListener listener) {
+    match await listener.acceptAsync() {
+        Ok(_) => print("serve: a client came")
+        Error(e) => print($"serve: {e}")
+    }
+    // A wait started after the task was let go ends at once too.
+    match await listener.acceptAsync() {
+        Ok(_) => print("serve: a client came")
+        Error(e) => print($"serve, again: {e}")
+    }
+    return Ok()
+}
+
+// A server waits for a client, and the function fails before any comes.
+async Result<void, IoError> night() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var server = serve(listener)
+    _ = try await File.readTextAsync("no such file")
+    try await server
+    return Ok()
+}
+
+// A task let go lets go the task it awaits.
+async Result<void, IoError> middle(TcpListener listener) {
+    var inner = serve(listener)
+    try await inner
+    print("middle: the server ended")
+    return Ok()
+}
+
+async Result<void, IoError> tree() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var outer = middle(listener)
+    _ = try await File.readTextAsync("no such file")
+    try await outer
+    return Ok()
+}
+
+// A delay given a token ends; one without a token runs on, and is waited for.
+async void sleeper(int ms) {
+    await Task.delay(ms)
+    print("sleeper: woke after its delay")
+}
+
+async void waiter(CancellationToken token) {
+    match await Task.delay(60000, read token) {
+        Ok => print("waiter: the minute went by")
+        Error(_) => print("waiter: cancelled")
+    }
+}
+
+async Result<void, IoError> delays() {
+    var source = CancellationSource()
+    var first = waiter(source.token())
+    var second = sleeper(30)
+    _ = try await File.readTextAsync("no such file")
+    await first
+    await second
+    return Ok()
+}
+
+// The first error out of `Task.whenAny` with `try` lets the other tasks go.
+async Result<int, IoError> fails() {
+    _ = try await File.readTextAsync("no such file")
+    return Ok(1)
+}
+
+async Result<int, IoError> waits(TcpListener listener) {
+    match await listener.acceptAsync() {
+        Ok(_) => return Ok(2)
+        Error(e) => {
+            print($"waits: {e}")
+            return Error(e)
+        }
+    }
+}
+
+async Result<void, IoError> firstError() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var tasks = List<Task<Result<int, IoError>>>()
+    tasks.add(waits(listener))
+    tasks.add(fails())
+    while tasks.length() > 0 {
+        var n = try await Task.whenAny(ref tasks)
+        print(n)
+    }
+    return Ok()
+}
+
+// A wait on a channel given a token ends.
+async void listens(Channel<int> channel, CancellationToken token) {
+    match await channel.receiveAsync(read token) {
+        Ok(_) => print("listens: an item came")
+        Error(_) => print("listens: cancelled")
+    }
+}
+
+async Result<void, IoError> channel() {
+    var items = Channel<int>(1)
+    // A sender is held, so the channel does not end while the task waits.
+    var sender = items.sender()
+    var source = CancellationSource()
+    var listening = listens(items, source.token())
+    _ = try await File.readTextAsync("no such file")
+    _ = await sender.sendAsync(1)
+    await listening
+    return Ok()
+}
+
+// A function that is not async lets go the async task it did not wait for.
+Result<void, IoError> blocking() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var server = serve(listener)
+    _ = try File.readText("no such file")
+    try server.wait()
+    return Ok()
+}
+
+void main() {
+    if night().wait() is Error(e) {
+        print($"night: {e}")
+    }
+    if tree().wait() is Error(e) {
+        print($"tree: {e}")
+    }
+    if delays().wait() is Error(e) {
+        print($"delays: {e}")
+    }
+    if firstError().wait() is Error(e) {
+        print($"firstError: {e}")
+    }
+    if channel().wait() is Error(e) {
+        print($"channel: {e}")
+    }
+    if blocking() is Error(e) {
+        print($"blocking: {e}")
+    }
+}

@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-fourth slice (the network against `tokio`, 1687-1690).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-fifth slice (an exit with an error lets its tasks go, 1691-1695).
 
 ## Functions and variables
 
@@ -363,7 +363,7 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-fourth slice (t
 | `Vec<JoinHandle<T>>`, `JoinSet<T>` | `List<Task<T>>` | built | Kept only where a task is kept; its methods are `add` and `length`, and its tasks are taken out only by `Task.whenAll` and `Task.whenAny` |
 | `join_all(handles).await` | `await Task.whenAll(tasks)` | built | What each gave, in the order of the list; an error is an item of the list, none is lost. `Task.whenAll(tasks).wait()` in code that is not async |
 | `set.join_next().await` | `await Task.whenAny(ref tasks)` | built | What the first task to end gave, taken out of the list; nothing is cancelled. A `while tasks.length() > 0` loop around it empties the list, as the compiler sees |
-| a `JoinSet` dropped (its tasks aborted) | none | not in SG | A list of tasks that is not emptied is a compile error; a way out with an error waits for what is left in it |
+| a `JoinSet` dropped (its tasks aborted), `try_join_all` | a way out with an error (`try await Task.whenAny(ref tasks)`) | built | A list of tasks that is not emptied is a compile error. A way out with an error lets what is left in it go, then waits for it: a wait that can say so ends with `Cancelled` and the task goes out by its own way of an error, where Tokio's abort stops a task at any `.await` without a word; a delay without a token runs on (1691-1693) |
 | `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | built | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last. Compiled, the work runs on a thread of input and output, as tokio's `spawn_blocking` does it |
 | `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | built | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; a line the block already holds is read in place, as tokio's `BufReader` does it |
 | `BufReader::new(tokio::fs::File::open(p).await?)` | `try await File.openTextAsync(read path)` | built | Also `createTextAsync` and `openAppendAsync`, which give a `StreamWriter` |
