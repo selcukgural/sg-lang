@@ -1,0 +1,5 @@
+// A limit that is not a constant is looked at when the group is made.
+void main(List<string> args) {
+    var group = TaskGroup((int)args.length() - 1)
+    group.whenAll().wait()
+}

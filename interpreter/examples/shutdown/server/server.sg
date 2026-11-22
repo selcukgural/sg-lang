@@ -10,15 +10,24 @@ public void say(string line) {
     _ = Stdout.flush()
 }
 
-// Echoes what comes until the client closes its end, or until `cut` is cancelled.
-async Result<void, IoError> echo(TcpStream conn, CancellationToken cut) {
+// Echoes what comes until the client closes its end.
+async Result<void, IoError> echo(TcpStream conn) {
     var buffer = byte[1024](0)
     while true {
-        var n = try await conn.receiveAsync(ref buffer, read cut)
+        var n = try await conn.receiveAsync(ref buffer)
         if n == 0 {
             return Ok()
         }
-        try await conn.sendAsync(buffer[0..n], read cut)
+        try await conn.sendAsync(buffer[0..n])
+    }
+}
+
+// A connection: an error ends it alone, and is told, as a cut is.
+async void connection(TcpStream conn) {
+    match await echo(conn) {
+        Ok => {}
+        Error(Cancelled(_)) => say("a connection was cut")
+        Error(cause) => say($"a connection ended: {cause}".toString())
     }
 }
 
@@ -36,7 +45,9 @@ async void watch(SignalListener signals, CancellationSource stop, CancellationSo
 }
 
 // Serves until a signal of `signals` comes, then as the top of this file says; gives how many
-// connections it served. An error of a connection ends that connection alone, and is printed.
+// connections it served. The connections are the tasks of a group, which lets go of each as it
+// ends; `whenAll` given the token of the second signal cuts those still open when it comes, and
+// still waits for them.
 public async Result<int, IoError> serve(TcpListener listener, SignalListener signals) {
     var stop = CancellationSource()
     var cut = CancellationSource()
@@ -44,13 +55,13 @@ public async Result<int, IoError> serve(TcpListener listener, SignalListener sig
     var accepting = stop.token()
     var cutting = cut.token()
     var watching = watch(signals, stop, cut, done.token())
-    var open = List<Task<Result<void, IoError>>>()
+    var open = TaskGroup()
     var served = 0
     IoError? failed = null
     while true {
         match await listener.acceptAsync(read accepting) {
             Ok(conn) => {
-                open.add(echo(conn, cutting.clone()))
+                open.add(connection(conn))
                 served += 1
             }
             Error(Cancelled(_)) => break
@@ -60,13 +71,7 @@ public async Result<int, IoError> serve(TcpListener listener, SignalListener sig
             }
         }
     }
-    while open.length() > 0 {
-        match await Task.whenAny(ref open) {
-            Ok => {}
-            Error(Cancelled(_)) => say("a connection was cut")
-            Error(cause) => say($"a connection ended: {cause}".toString())
-        }
-    }
+    _ = await open.whenAll(read cutting)
     done.cancel()
     await watching
     if failed is not null {

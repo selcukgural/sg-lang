@@ -7,27 +7,8 @@
 //
 //     http PORT
 //
-// Every connection is a task, in the same list as the task that takes the next connection, as in
+// Every connection is a task of a `TaskGroup`, which lets go of each as it ends, as in
 // `../../resp/sg/resp.sg`.
-
-// What a task of the server's list gives: a connection taken, a listener that failed to take one
-// (too many open files, say), or a connection that ended.
-enum Done {
-    Accepted(TcpStream conn)
-    AcceptFailed(IoError cause)
-    Ended
-}
-
-// Takes the next connection, after `pause` milliseconds when the last attempt failed.
-async Done acceptNext(shared TcpListener listener, int pause) {
-    if pause > 0 {
-        await Task.delay(pause)
-    }
-    match await listener.acceptAsync() {
-        Ok(conn) => return Done.Accepted(conn)
-        Error(cause) => return Done.AcceptFailed(cause)
-    }
-}
 
 // ---- reading a request
 
@@ -343,27 +324,22 @@ async Result<void, IoError> serve(TcpStream conn) {
 }
 
 // A connection that fails ends alone.
-async Done connection(TcpStream conn) {
+async void connection(TcpStream conn) {
     _ = await serve(conn)
-    return Done.Ended
 }
 
+// Takes connections for ever; one the listener fails to take (too many open files, say) is tried
+// again after 10 ms.
 async Result<void, IoError> listen(int port) {
     var address = $":{port}".toString()
-    var listener = new shared (try TcpListener.bind(read address))
-    var tasks = List<Task<Done>>()
-    tasks.add(acceptNext(share listener, 0))
-    while tasks.length() > 0 {
-        match await Task.whenAny(ref tasks) {
-            Accepted(conn) => {
-                tasks.add(connection(conn))
-                tasks.add(acceptNext(share listener, 0))
-            }
-            AcceptFailed(_) => tasks.add(acceptNext(share listener, 10))
-            Ended => {}
+    var listener = try TcpListener.bind(read address)
+    var connections = TaskGroup()
+    while true {
+        match await listener.acceptAsync() {
+            Ok(conn) => connections.add(connection(conn))
+            Error(_) => await Task.delay(10)
         }
     }
-    return Ok()
 }
 
 void main(List<string> args) {

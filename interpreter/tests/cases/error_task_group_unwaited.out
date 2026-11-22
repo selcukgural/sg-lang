@@ -1,0 +1,6 @@
+error: the tasks of `group` are not waited for before its block ends
+  every task is waited for: a group lets go of each task that ends, and `whenAll` waits for the rest
+  --> error_task_group_unwaited.sg:11:9
+ 11 |     var group = TaskGroup()
+    |         ^^^^^
+  hint: `await group.whenAll()`; to cut them after a time, `await group.whenAll(read token)`

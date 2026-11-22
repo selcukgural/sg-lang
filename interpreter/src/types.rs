@@ -353,6 +353,9 @@ pub enum Ty {
     Locked(Box<Ty>),
     /// `Task<R>`: a function started with `Task.run`, to be waited for; `R` is what it returns.
     Task(Box<Ty>),
+    /// `TaskGroup`: tasks that give nothing, each let go of as soon as it ends, with a limit
+    /// that `whenRoom` waits for; waited for as a task is, with `whenAll`.
+    Group,
     /// `Channel<T>`: the end of a channel that receives, made with room for a number of items
     /// (`Channel<int>(16)`). Several ends receive from one channel (`.clone()`), each item
     /// going to one of them. It ends, for those that receive, once every `Sender<T>` has ended
@@ -406,6 +409,7 @@ impl Ty {
             "StreamWriter" => Some(Ty::Writer),
             "CancellationSource" => Some(Ty::Source),
             "CancellationToken" => Some(Ty::Token),
+            "TaskGroup" => Some(Ty::Group),
             "TcpListener" => Some(Ty::Listener),
             "TcpStream" => Some(Ty::Socket),
             "CString" => Some(Ty::CString),
@@ -422,7 +426,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Channel(_) | Ty::Sender(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Group | Ty::Channel(_) | Ty::Sender(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
         }
     }
 
@@ -478,6 +482,7 @@ impl fmt::Display for Ty {
             Ty::Locked(inner) => write!(f, "locked {inner}"),
             Ty::Atomic(inner) => write!(f, "atomic {inner}"),
             Ty::Task(result) => write!(f, "Task<{result}>"),
+            Ty::Group => write!(f, "TaskGroup"),
             Ty::Channel(item) => write!(f, "Channel<{item}>"),
             Ty::Sender(item) => write!(f, "Sender<{item}>"),
             Ty::Source => f.write_str("CancellationSource"),

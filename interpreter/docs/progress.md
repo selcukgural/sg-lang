@@ -362,12 +362,19 @@ there, and the clock's thread looks at the loop of a thread busy with one task f
 the store answers 1,342,000 times a second on Linux where it answered 578,000, 1.49 times Zig's threads and 0.91
 times C, and the three systems work the same way; at 70% of the load the tail grew to C's, and two ends that talk inside one program
 lost to `tokio`, both kept to be mended (1708-1714).
+The hundred-and-fifty-eighth gave a server what keeps it standing: a `TaskGroup`, which holds tasks that give
+nothing, lets go of each as it ends and has `whenRoom` wait while a limit of them run, and is waited for with
+`whenAll`, which with a token cuts the tasks left and still waits for them; and `cancelAfter`, which sets the
+time a source cancels itself again with one atomic write, so a silent connection is closed. The servers keep
+their connections in a group. A token made and used in one line no longer keeps its source for ever, a task can
+no longer be put on the heap where nobody waits for it, and `CancellationSource.after(0)` is cancelled at once
+in the interpreter too (1715-1730). The group costs nothing on the servers' numbers; a limit on the time of a request costs 3 to 4% of the
+answers, and beside 10,000 slow clients answers the busy ones within 807 µs at p99 where `tokio` takes 2.47 ms.
 
 ## Next
 
-Next comes what a server needs from the library (time limits, a limit on
-connections, a graceful end, a reader that lends slices, `writev`, a group of tasks that takes its ended
-tasks out by itself), the tests of robustness, then HTTP/1.1; and a slice for the command line,
+Next comes the rest of what a server needs from the library (a reader that lends slices and `writev`, which
+need a list of borrows), the tests of robustness, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

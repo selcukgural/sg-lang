@@ -1,0 +1,5 @@
+error: a `TaskGroup` is lent with `read`: `add` works through it, and only its owner waits for it
+  --> error_task_group_ref.sg:6:12
+ 6 | void start(ref TaskGroup group) {
+   |            ^^^^^^^^^^^^^
+  hint: `read TaskGroup`

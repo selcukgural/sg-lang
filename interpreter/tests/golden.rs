@@ -288,6 +288,56 @@ fn sanitizer_flags(work: &Path) -> Vec<String> {
         .clone()
 }
 
+/// How long a compiled program may run in the tests before it is taken for hung: far more than
+/// any needs under the sanitizers.
+const PROGRAM_SECONDS: u64 = 180;
+
+/// What a started program wrote and how it ended, as `wait_with_output` gives them, but a program
+/// that runs longer than `PROGRAM_SECONDS` is killed: the test then fails, and says which, in
+/// place of waiting for ever (a lost wake-up of the pool hung `compiled_small_pools` on Linux).
+fn wait_within(mut child: std::process::Child, label: &str) -> std::process::Output {
+    use std::io::Read;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let out = drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let err = drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(PROGRAM_SECONDS);
+    let mut pause = std::time::Duration::from_millis(1);
+    let mut hung = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            hung = true;
+            break child.wait().unwrap();
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(std::time::Duration::from_millis(20));
+    };
+    let stdout = out.join().unwrap();
+    let mut stderr = err.join().unwrap();
+    if hung {
+        eprintln!("{label} has not ended after {PROGRAM_SECONDS} s, and was killed");
+        stderr.extend(format!("[{label}: killed after {PROGRAM_SECONDS} s]\n").bytes());
+    }
+    std::process::Output { status, stdout, stderr }
+}
+
+/// `command` run to its end, or killed after `PROGRAM_SECONDS` (see `wait_within`).
+fn output_within(command: &mut std::process::Command, label: &str) -> std::process::Output {
+    let child = command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    wait_within(child, label)
+}
+
 fn exit_line(code: Option<i32>) -> String {
     match code {
         Some(0 | 1) => String::new(),
@@ -785,7 +835,7 @@ fn compiled() {
                 use std::io::Write;
                 let _ = stdin.write_all(&input);
             });
-            let run = child.wait_with_output().unwrap();
+            let run = wait_within(child, &binary.display().to_string());
             feeding.join().unwrap();
             run
         };
@@ -1231,7 +1281,7 @@ fn compiled_small_pools() {
         }
         let built = cc.arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
         assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
-        let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()).stdin(std::process::Stdio::null()).output().unwrap();
+        let run = output_within(std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()), &label);
         let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
         (actual != expected).then(|| format!("--- {label}\nexpected:\n{expected}\nactual:\n{actual}"))
     })
@@ -1330,7 +1380,7 @@ fn compiled_tests() {
         }
         let expected = std::fs::read_to_string(golden_of(golden)).unwrap_or_default();
         for (binary, _) in &builds {
-            let run = std::process::Command::new(binary).output().unwrap();
+            let run = output_within(&mut std::process::Command::new(binary), &name);
             let actual = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
             let actual = with_slashes(&actual);
             let actual = if within.is_empty() { actual } else { actual.replace(within.as_str(), "").replace(&within.replace('\\', "/"), "") };
@@ -1348,7 +1398,7 @@ fn compiled_tests() {
         if sanitizers {
             for number in 0.. {
                 let only = number.to_string();
-                let run = std::process::Command::new(&plain).args(["--only", &only]).output().unwrap();
+                let run = output_within(std::process::Command::new(&plain).args(["--only", &only]), &name);
                 match run.status.code() {
                     // There is no test of this number: all of them were looked at.
                     Some(3) => break,

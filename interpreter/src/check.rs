@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -2817,13 +2817,19 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     // `Task.whenAll` and `Task.whenAny`.
     let nested = match &resolved {
         Ty::Task(result) => task_inside(result),
+        Ty::Group => false,
         Ty::List(item) => match &**item {
             Ty::Task(result) => task_inside(result),
             other => task_inside(other),
         },
         other => task_inside(other),
     };
-    if nested || (ty.mode.is_some() && keeps_tasks(&resolved)) {
+    // A group is lent to a function that adds tasks to it, with `read` (1716).
+    if resolved == Ty::Group && ty.mode == Some(Mode::Ref) {
+        return Err(Diag::error(ty.span, "a `TaskGroup` is lent with `read`: `add` works through it, and only its owner waits for it")
+            .hint("`read TaskGroup`"));
+    }
+    if nested || (ty.mode.is_some() && keeps_tasks(&resolved) && resolved != Ty::Group) {
         return Err(task_kept(ty.span));
     }
     if let Some(layouts) = &names.layouts {
@@ -3157,7 +3163,7 @@ fn not_shared(word: &str, span: Span, found: &Ty) -> Diag {
 /// carries no borrow.
 fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
     let checked = ty.checked;
-    if matches!(inner, Ty::Task(_)) {
+    if matches!(inner, Ty::Task(_) | Ty::Group) {
         return Err(task_kept(ty.span));
     }
     let word = if holder == Holder::Shared { "shared" } else { "weak" };
@@ -3226,7 +3232,7 @@ const THREAD_RULE: &str = "what goes to another task, comes back from one or is 
 /// Whether a `Task` lies inside the type, not counting the types a `Func` takes and gives.
 fn task_inside(ty: &Ty) -> bool {
     match ty {
-        Ty::Task(_) => true,
+        Ty::Task(_) | Ty::Group => true,
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Slice(inner) => task_inside(inner),
         Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Locked(inner) | Ty::Read(inner) | Ty::Ref(inner) => task_inside(inner),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => task_inside(a) || task_inside(b),
@@ -3236,7 +3242,7 @@ fn task_inside(ty: &Ty) -> bool {
 
 /// A `Task` written where the compiler could not see it waited for.
 fn task_kept(span: Span) -> Diag {
-    Diag::error(span, "a `Task` is kept only in a local variable, a parameter or a return value, as it is or in a `List<Task<R>>`")
+    Diag::error(span, "a `Task` or a `TaskGroup` is kept only in a local variable, a parameter or a return value; a task also in a `List<Task<R>>` or a `TaskGroup`")
         .note("every task is waited for, and the compiler sees that only where the task stays in one function's hands")
 }
 
@@ -3244,7 +3250,7 @@ fn task_kept(span: Span) -> Diag {
 /// `List<Task<R>>`.
 fn keeps_tasks(ty: &Ty) -> bool {
     match ty {
-        Ty::Task(_) => true,
+        Ty::Task(_) | Ty::Group => true,
         Ty::List(item) => matches!(**item, Ty::Task(_)),
         _ => false,
     }
@@ -3252,7 +3258,12 @@ fn keeps_tasks(ty: &Ty) -> bool {
 
 /// `Task.whenAll(...)` or `Task.whenAny(...)`, as written, before it is checked.
 fn is_when(expr: &Expr) -> bool {
-    matches!(&expr.kind, ExprKind::Method { recv, name, .. } if matches!(&recv.kind, ExprKind::Var(owner) if owner == "Task") && matches!(name.as_str(), "whenAll" | "whenAny"))
+    match &expr.kind {
+        ExprKind::Method { recv, name, .. } if matches!(&recv.kind, ExprKind::Var(owner) if owner == "Task") => matches!(name.as_str(), "whenAll" | "whenAny"),
+        // `group.whenRoom()`, `group.whenAll()` of a `TaskGroup`.
+        ExprKind::Method { name, .. } => matches!(name.as_str(), "whenRoom" | "whenAll"),
+        _ => false,
+    }
 }
 
 /// The list of tasks a `while` empties: `while tasks.length() > 0`, also with `!= 0`, `0 <`
@@ -3304,7 +3315,7 @@ fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String,
 fn stays_in(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>, promised: bool) -> Option<(Ty, String)> {
     let stays = |ty: &Ty, seen: &mut Vec<String>| stays_in(ty, structs, enums, names, seen, promised);
     match ty {
-        Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
+        Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) | Ty::Group => Some((ty.clone(), String::new())),
         Ty::Raw(_) if promised => None,
         Ty::Shared(_, true) | Ty::Weak(_, true) | Ty::Raw(_) => Some((ty.clone(), String::new())),
         Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) | Ty::Atomic(inner) => stays(inner, seen),
@@ -3367,6 +3378,7 @@ fn why_it_stays(part: &Ty, names: &Names) -> String {
     match part {
         Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
         Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
+        Ty::Group => "a group of tasks is waited for by the task that made it, and by no other".to_string(),
         Ty::Raw(_) => "the checker does not follow a raw pointer, and two tasks could reach what it points at at once; a struct that keeps what it reaches safe for several tasks says so with `: unsafe Sendable`".to_string(),
         Ty::Reader(true) => "this `StreamReader` reads a connection it borrows, and the task could outlive the connection".to_string(),
         Ty::Struct(name) | Ty::Enum(name) if names.carriers.contains_key(name) => format!("a `{part}` carries a borrow, and the task could outlive what it borrows from"),
@@ -4716,6 +4728,23 @@ impl<'a> Checker<'a> {
     fn unwaited(&self, var: &Var, exit: Option<(Span, &str)>) -> Diag {
         let name = &var.name;
         let ends = if var.param { "the function ends" } else { "its block ends" };
+        if var.declared == Ty::Group {
+            let diag = match (exit, var.moved.whole.is_some()) {
+                (_, true) => Diag::error(var.at, format!("the tasks of `{name}` are waited for on some paths but not on all of them"))
+                    .note("wait for them on every path, or once where the paths meet"),
+                (Some((span, word)), false) => Diag::error(span, format!("the tasks of `{name}` are not waited for at this `{word}`"))
+                    .related(var.at, "the group is made here"),
+                (None, false) => Diag::error(var.at, format!("the tasks of `{name}` are not waited for before {ends}")),
+            };
+            let diag = match exit {
+                Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the tasks off"),
+                _ => diag.note("every task is waited for: a group lets go of each task that ends, and `whenAll` waits for the rest"),
+            };
+            return diag.hint(match self.is_async {
+                true => format!("`await {name}.whenAll()`; to cut them after a time, `await {name}.whenAll(read token)`"),
+                false => format!("`{name}.whenAll().wait()`"),
+            });
+        }
         if task_list(&var.declared) {
             let diag = match (exit, var.moved.whole.is_some()) {
                 (_, true) => Diag::error(var.at, format!("the tasks in `{name}` are waited for on some paths but not on all of them"))
@@ -6178,6 +6207,14 @@ impl<'a> Checker<'a> {
                         .note("every task is waited for, and none is cancelled without being told")
                         .hint(format!("wait for them: {}", when_all(&ty, &self.src[value.span.start..value.span.end], self.is_async))));
                 }
+                Ty::Group => {
+                    return Err(Diag::error(value.span, "a group of tasks is not dropped: its tasks would go on with no one to wait for them")
+                        .note("every task is waited for, and none is cancelled without being told")
+                        .hint(match self.is_async {
+                            true => "keep it in a variable and wait for its tasks: `await group.whenAll()`",
+                            false => "keep it in a variable and wait for its tasks: `group.whenAll().wait()`",
+                        }));
+                }
                 Ty::Task(_) => {
                     return Err(Diag::error(value.span, "a task is not dropped: it would go on with no one to wait for it")
                         .note("every task is waited for, and none is cancelled without being told")
@@ -6418,6 +6455,13 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(target.span, format!("`{name}` is given another task while the one it holds is not waited for"))
                                 .related(var.at, "it is declared here")
                                 .hint(format!("wait for it first: `{name}.wait()`")));
+                        }
+                        let var = self.var(name, target.span)?;
+                        if var.declared == Ty::Group && (var.moved.whole.is_none() || var.moved.partly) {
+                            let wait = if is_async { format!("await {name}.whenAll()") } else { format!("{name}.whenAll().wait()") };
+                            return Err(Diag::error(target.span, format!("`{name}` is given another group while the tasks it holds are not waited for"))
+                                .related(var.at, "it is declared here")
+                                .hint(format!("wait for them first: `{wait}`")));
                         }
                         let var = self.var(name, target.span)?;
                         if is_process(&var.declared) && (var.moved.whole.is_none() || var.moved.partly) {
@@ -7001,6 +7045,10 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(span, "the tasks of this list are not waited for")
                         .note("every task is waited for: its error is not lost, and no work is cut off when the program ends")
                         .hint(when_all(&ty, text, self.is_async)));
+                }
+                if ty == Ty::Group {
+                    return Err(Diag::error(span, "this group of tasks is made and then not kept")
+                        .hint(format!("keep it in a variable: `var group = {}`", &self.src[span.start..span.end])));
                 }
                 if matches!(ty, Ty::Task(_)) {
                     let text = &self.src[span.start..span.end];
@@ -8884,6 +8932,10 @@ impl<'a> Checker<'a> {
                 if matches!(ty, Ty::Void | Ty::Null | Ty::Never) || ty.is_borrow() {
                     return Err(Diag::error(inner.span, format!("`new` needs a value to own, found `{ty}`")));
                 }
+                // A task on the heap would be waited for by nobody the compiler can see.
+                if task_inside(&ty) {
+                    return Err(task_kept(inner.span));
+                }
                 Ok(Ty::Ptr(Box::new(ty)))
             }
             ExprKind::NewShared { value: inner, checked, locked } => {
@@ -8911,6 +8963,9 @@ impl<'a> Checker<'a> {
                 };
                 if matches!(ty, Ty::Void | Ty::Null | Ty::Never) || ty.is_borrow() {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, found `{ty}`")));
+                }
+                if task_inside(&ty) {
+                    return Err(task_kept(inner.span));
                 }
                 if let Ty::Shared(..) | Ty::Weak(..) | Ty::Ptr(_) | Ty::Nullable(_) = ty {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, and this is a `{ty}`"))
@@ -10402,6 +10457,7 @@ impl<'a> Checker<'a> {
         match inner {
             Ty::Locked(_) => Err(self.locked_outside(span)),
             Ty::Task(_) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text")).hint("wait for it and write what it gives: `print(task.wait())`")),
+            Ty::Group => Err(Diag::error(span, "a `TaskGroup` cannot be written as text").hint("`group.count()` is how many of its tasks run")),
             Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Fmt => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) => Err(lacks(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`")), name, "Formattable")),
@@ -10529,6 +10585,32 @@ impl<'a> Checker<'a> {
                 arity(0).map_err(|diag| diag.hint("`CancellationSource.after(ms)` cancels itself after that many milliseconds"))?;
                 *callee = Callee::Cancel(CancelCall::New);
                 Ok(Ty::Source)
+            }
+            // `TaskGroup()`, `TaskGroup(limit)`: a group of tasks that lets go of each as it
+            // ends (1716); `whenRoom` waits while `limit` of them run (1719).
+            "TaskGroup" => {
+                if args.len() > 1 {
+                    return Err(Diag::error(span, format!("`TaskGroup` takes 0 or 1 argument(s), {} given", args.len()))
+                        .hint("`TaskGroup()` has no limit; `TaskGroup(1000)` has `whenRoom` wait while 1,000 of its tasks run"));
+                }
+                let limited = args.len() == 1;
+                if limited {
+                    self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("the limit of a group is an `int`: how many of its tasks may run before `whenRoom` waits"))?;
+                    let written = match &args[0].kind {
+                        ExprKind::Int(value, _) => Some(*value),
+                        ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
+                            ExprKind::Int(value, _) => Some(-*value),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(value) = written.filter(|value| *value < 1) {
+                        return Err(Diag::error(args[0].span, format!("a group lets at least one task run, and this limit is {value}"))
+                            .hint("`TaskGroup()` has no limit"));
+                    }
+                }
+                *callee = Callee::Group(GroupCall::New(limited), false);
+                Ok(Ty::Group)
             }
             "CancellationToken" => Err(Diag::error(name_span, "a token is not made by itself: it comes from its source")
                 .hint("`source.token()` gives a token of `source`; `CancellationToken.None` is never cancelled")),
@@ -11346,13 +11428,14 @@ impl<'a> Checker<'a> {
     fn cancel_method(&mut self, recv: &Expr, target: &Ty, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
         let call = match (target, name) {
             (Ty::Source, "cancel") => CancelCall::Cancel,
+            (Ty::Source, "cancelAfter") => CancelCall::CancelAfter,
             (Ty::Source, "token") => CancelCall::Token,
             (_, "isCancelled") => CancelCall::IsCancelled,
             (Ty::Token, "check") => CancelCall::Check,
             (Ty::Token, "clone") => CancelCall::Clone,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Source => &["cancel", "token", "isCancelled"],
+                    Ty::Source => &["cancel", "cancelAfter", "token", "isCancelled"],
                     _ => &["isCancelled", "check", "clone"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -11363,18 +11446,25 @@ impl<'a> Checker<'a> {
                 let text = &self.src[recv.span.start..recv.span.end];
                 return Err(match (target, name) {
                     (Ty::Token, "cancel") => diag.note("a token only looks; its source cancels it: `source.cancel()`"),
+                    (Ty::Token, "cancelAfter") => diag.note("a token only looks; its source cancels it: `source.cancelAfter(ms)`"),
                     (Ty::Source, "check") => diag.hint(format!("a token looks: `{text}.token().check()`, or `{text}.isCancelled()`")),
                     (Ty::Source, "clone") => diag.note("a source has one owner; `token()` gives as many tokens of it as are needed"),
                     _ => diag,
                 });
             }
         };
-        if !args.is_empty() {
+        if call == CancelCall::CancelAfter {
+            if args.len() != 1 {
+                return Err(Diag::error(span, format!("`cancelAfter` takes 1 argument(s), {} given", args.len()))
+                    .hint(format!("`{}.cancelAfter(30000)` cancels it 30 seconds from now", &self.src[recv.span.start..recv.span.end])));
+            }
+            self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`cancelAfter(ms)` takes the milliseconds as an `int`"))?;
+        } else if !args.is_empty() {
             return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), {} given", args.len())));
         }
         *callee = Callee::Cancel(call);
         Ok(match call {
-            CancelCall::Cancel => Ty::Void,
+            CancelCall::Cancel | CancelCall::CancelAfter => Ty::Void,
             CancelCall::Token | CancelCall::Clone => Ty::Token,
             CancelCall::IsCancelled => Ty::Bool,
             CancelCall::Check => Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))),
@@ -11457,6 +11547,99 @@ impl<'a> Checker<'a> {
                 .hint("send what is to be written, and keep the writer in the task that writes"));
         }
         Ok(built.clone())
+    }
+
+    /// The methods of a `TaskGroup` (1716 to 1719): `add(task)`, `count()` and `whenRoom()`
+    /// through a `read` borrow, since the group keeps its tasks safe itself, and `whenAll()`,
+    /// which takes the group. The last
+    /// two are awaited, or waited for, where they are written; with a token last they give a
+    /// `Result` whose error is `Cancelled`.
+    #[allow(clippy::too_many_arguments)]
+    fn group_method(&mut self, recv: &mut Expr, recv_ty: &Ty, is_place: bool, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+        let text = self.src[recv.span.start..recv.span.end].to_string();
+        let call = match name {
+            "add" => GroupCall::Add,
+            "count" => GroupCall::Count,
+            "whenRoom" => GroupCall::WhenRoom,
+            "whenAll" => GroupCall::WhenAll,
+            _ => {
+                let known = ["add", "count", "whenRoom", "whenAll"];
+                let diag = Diag::error(name_span, format!("`TaskGroup` has no method `{name}`"));
+                return Err(match name {
+                    "wait" | "await" | "join" | "close" => diag.hint(match self.is_async {
+                        true => format!("`await {text}.whenAll()` waits for its tasks"),
+                        false => format!("`{text}.whenAll().wait()` waits for its tasks"),
+                    }),
+                    "cancel" => diag.note("a group's tasks are cut where it is waited for: `whenAll(read token)` lets them go once the token is cancelled, and still waits for them"),
+                    "length" | "size" => diag.hint("`count()`"),
+                    _ => match nearest(name, known.into_iter()) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note(format!("methods: {}", known.join(", "))),
+                    },
+                });
+            }
+        };
+        match call {
+            GroupCall::Add => {
+                if args.len() != 1 {
+                    return Err(Diag::error(span, format!("`add` takes 1 argument(s), {} given", args.len())));
+                }
+                let task = Ty::Task(Box::new(Ty::Void));
+                self.args(name, args, std::slice::from_ref(&task), span).map_err(|diag| match args[0].ty.strip_borrow() {
+                    Ty::Task(result) if **result != Ty::Void => diag
+                        .note("a group lets go of each task as it ends, so what a task gives would be lost: it takes tasks that give nothing")
+                        .hint("start an `async void` function that does what is to be done with what the task gives, an error among it"),
+                    _ => diag,
+                })?;
+                self.touch(recv, Access::Read);
+                *callee = Callee::Group(GroupCall::Add, false);
+                Ok(Ty::Void)
+            }
+            GroupCall::Count => {
+                if !args.is_empty() {
+                    return Err(Diag::error(span, format!("`count` takes 0 argument(s), {} given", args.len())));
+                }
+                self.touch(recv, Access::Read);
+                *callee = Callee::Group(GroupCall::Count, false);
+                Ok(Ty::Int(IntTy::Nint))
+            }
+            GroupCall::WhenRoom | GroupCall::WhenAll => {
+                if args.len() > 1 {
+                    return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), or 1 with a token; {} given", args.len())));
+                }
+                let told = match args.first_mut() {
+                    Some(token) => {
+                        self.token_arg(token)?;
+                        true
+                    }
+                    None => false,
+                };
+                if !awaited {
+                    let diag = Diag::error(span, format!("`{name}` is awaited, or waited for, where it is written"));
+                    let written = &self.src[span.start..span.end];
+                    return Err(match self.is_async {
+                        true => diag.hint(format!("`await {written}`")),
+                        false => diag.hint(format!("`{written}.wait()`")),
+                    });
+                }
+                if call == GroupCall::WhenAll {
+                    if recv_ty.is_borrow() || !is_place {
+                        return Err(Diag::error(recv.span, "`whenAll` takes the group and waits for every task in it, and this one is only borrowed")
+                            .note("whoever made the group waits for its tasks"));
+                    }
+                    self.move_out(recv, recv_ty)?;
+                    recv.moved = true;
+                } else {
+                    self.touch(recv, Access::Read);
+                }
+                *callee = Callee::Group(call, told);
+                Ok(Ty::Task(Box::new(match told {
+                    true => Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))),
+                    false => Ty::Void,
+                })))
+            }
+            GroupCall::New(_) => unreachable!("a function of the type"),
+        }
     }
 
     /// The methods of the ends of a channel: `channel.sender()`, `.clone()`, `sender.send(x)`,
@@ -12732,6 +12915,9 @@ impl<'a> Checker<'a> {
             recv.moved = true;
             *callee = Callee::Wait;
             return Ok(result);
+        }
+        if *recv_ty.strip_borrow() == Ty::Group {
+            return self.group_method(recv, &recv_ty, is_place, name, name_span, args, callee, span, awaited || when);
         }
         // `.clone()` of a `shared` value is one more owner, as `share` is: what it points to
         // is not copied.

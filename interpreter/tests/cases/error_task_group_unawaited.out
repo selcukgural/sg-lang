@@ -1,0 +1,5 @@
+error: `whenRoom` is awaited, or waited for, where it is written
+  --> error_task_group_unawaited.sg:4:16
+ 4 |     var room = group.whenRoom()
+   |                ^^^^^^^^^^^^^^^^
+  hint: `await group.whenRoom()`

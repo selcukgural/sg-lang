@@ -1,0 +1,7 @@
+// A group is kept where a task is: not in a field.
+struct Server {
+    TaskGroup connections
+}
+
+void main() {
+}

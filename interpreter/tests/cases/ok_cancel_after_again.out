@@ -1,0 +1,7 @@
+the first wait ended on its own
+the second wait was cut by the time set last
+true
+moved sooner, it cut the wait
+moved later, the wait ended on its own
+true
+true

@@ -1,0 +1,46 @@
+// `source.cancelAfter(ms)` sets the time a source cancels itself again, from now: a later time
+// takes the place of a sooner one and the other way round, a source made with `after` is
+// moved too, and a cancelled source stays as it is. The times are far apart, so that compiled
+// code, on a real clock, prints the same lines.
+async Result<void, Cancelled> waitFor(int ms, CancellationToken token) {
+    try await Task.delay(ms, read token)
+    return Ok()
+}
+
+async void main() {
+    // Moved later twice while it waits: a wait of 600 ms is not cut by a time of 300 that became
+    // 900 and then 1500.
+    var idle = CancellationSource()
+    idle.cancelAfter(300)
+    idle.cancelAfter(900)
+    if await waitFor(600, idle.token()) is Ok {
+        print("the first wait ended on its own")
+    }
+    idle.cancelAfter(1500)
+    if await waitFor(5000, idle.token()) is Error(_) {
+        print("the second wait was cut by the time set last")
+    }
+    print(idle.isCancelled())
+
+    // Moved sooner: a time of 5000 becomes 300.
+    var soon = CancellationSource.after(5000)
+    soon.cancelAfter(300)
+    if await waitFor(3000, soon.token()) is Error(_) {
+        print("moved sooner, it cut the wait")
+    }
+
+    // A source made with `after` and moved later.
+    var later = CancellationSource.after(300)
+    later.cancelAfter(1200)
+    if await waitFor(700, later.token()) is Ok {
+        print("moved later, the wait ended on its own")
+    }
+    later.cancel()
+
+    // Once cancelled, a new time changes nothing; zero cancels at once.
+    later.cancelAfter(100000)
+    print(later.isCancelled())
+    var now = CancellationSource()
+    now.cancelAfter(0)
+    print(now.isCancelled())
+}

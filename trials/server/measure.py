@@ -58,6 +58,10 @@ HUNG_SECONDS = 120
 SERVER_CORES = "0-3"
 LOAD_CORES = "4-7"
 LANGUAGES = ["sg", "rust", "zig", "c"]
+# SG's store with a limit on how long a request may take (`--idle-limit`), measured beside the others
+# when named (`--languages sg,sg-limit`): its cost, and its gain against slow clients (1724).
+LIMIT_MS = 5000
+SERVER_ARGS = {"sg-limit": ["--idle-limit", str(LIMIT_MS)]}
 KEYS = 10000
 SOAK_SECONDS = int(os.environ.get("SOAK_SECONDS", "1800"))
 
@@ -80,6 +84,12 @@ def cases():
               "what": "10,000 connections, one request a second each"})
     c.append({"name": "resp-idle-and-load", "protocol": "resp", "conns": 100, "idle": 10000, "share": 0.7,
               "fill": 64, "what": "10,000 idle connections and 100 at 70%"})
+    # Slow clients (1724): each of 10,000 begins a SET of 1 MB once answered and sends a byte of it
+    # every second; 100 busy connections beside them at 70%. A server with a limit on how long a
+    # request may take closes them within the warm-up, one without keeps them all.
+    c.append({"name": "resp-trickle-10k", "protocol": "resp", "conns": 100, "idle": 10000, "trickle": 1000,
+              "share": 0.7, "fill": 64, "warmup": 8, "duration": 10,
+              "what": "10,000 slow clients, a byte a second each, and 100 at 70%"})
     for size, label in [(4096, "4k"), (65536, "64k")]:
         c.append({"name": f"resp-value-{label}", "protocol": "resp", "conns": 50, "value": size, "fill": size,
                   "what": f"50 connections, values of {label.upper().replace('K', ' KB')}"})
@@ -114,6 +124,8 @@ def build(languages, check_only=False):
     run(["cc", "-O2", "-Wall", "-pthread", "-o", str(BIN / "load"), str(HERE / "load" / "load.c"), "-lm"])
     for program in ["resp", "http"]:
         for lang in languages:
+            if lang == "sg-limit":
+                continue
             out = BIN / f"{program}-{lang}"
             src = HERE / program / lang
             if lang == "sg":
@@ -129,14 +141,19 @@ def build(languages, check_only=False):
                 run(["zig", "build-exe", "-OReleaseFast", str(src / f"{program}.zig"), f"-femit-bin={out}"],
                     cwd=BIN)
             bins[(program, lang)] = out
+    # the same program as `sg`, started with a limit (see SERVER_ARGS)
+    if "sg-limit" in languages:
+        if "sg" not in languages:
+            run([str(SG), "build", str(HERE / "resp" / "sg" / "resp.sg"), "-o", str(BIN / "resp-sg"), "--release"])
+        bins[("resp", "sg-limit")] = BIN / "resp-sg"
     return bins
 
 
 # ---- one server
 
 class Server:
-    def __init__(self, path, port, pin):
-        cmd = [str(path), str(port)]
+    def __init__(self, path, port, pin, extra=()):
+        cmd = [str(path), str(port), *extra]
         if pin and LINUX:
             cmd = ["taskset", "-c", SERVER_CORES] + cmd
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -242,7 +259,7 @@ def next_port():
 def one(bins, case, lang, rate):
     program = case["protocol"]
     port = next_port()
-    server = Server(bins[(program, lang)], port, pin=True)
+    server = Server(bins[(program, lang)], port, pin=True, extra=SERVER_ARGS.get(lang, ()))
     try:
         time.sleep(0.2)
         base = {**server.status(), "fds": server.fds()}
@@ -268,6 +285,8 @@ def one(bins, case, lang, rate):
         idle = case.get("idle", 0)
         if idle:
             args += ["--idle", str(idle)] + ([] if case.get("reconnect") else ["--sources", str(4 if LINUX else 1)])
+        if case.get("trickle"):
+            args += ["--trickle", str(case["trickle"])]
         before_mem = server.status()
         proc = load(bins, args, program, port)
         ready_mem = None
@@ -285,12 +304,16 @@ def one(bins, case, lang, rate):
         warm, measured = float(case.get("warmup", 2)), float(case.get("duration", 10))
         time.sleep(warm + 0.05)
         cpu_from, t0 = server.cpu_seconds(), time.time()
-        time.sleep(max(measured - 0.1, 0))
+        # the server in the middle of the measured time, while the load holds every connection (at
+        # the end the load may have closed them already)
+        time.sleep(max(measured / 2, 0))
+        during = {**server.status(), "fds": server.fds()}
+        time.sleep(max(measured / 2 - 0.1, 0))
         cpu, wall = server.cpu_seconds() - cpu_from, time.time() - t0
         r = finish(proc, server, f"{case['name']} {lang}")
         cpu *= measured / wall  # to the whole window
-        end = server.status()
-        result = {**r, "cpu_seconds": round(cpu, 3), "wall": round(wall, 3), "base": base, "end": end}
+        end = {**server.status(), "fds": server.fds()}
+        result = {**r, "cpu_seconds": round(cpu, 3), "wall": round(wall, 3), "base": base, "end": end, "during": during}
         if ready_mem:
             result["ready"] = ready_mem
             result["per_connection_kb"] = round((ready_mem["rss_kb"] - before_mem["rss_kb"]) / idle, 3)
@@ -375,6 +398,9 @@ def describe(case, r):
                 f"cpu {r['cpu_seconds']:.3f} s in 10 s, {r['ready']['threads']} threads")
     s = f"{r['per_second']:,.0f}/s p50 {fmt_us(r['p50_us'])} p99 {fmt_us(r['p99_us'])} p99.9 {fmt_us(r['p999_us'])}"
     s += f", {mem:.1f} MB"
+    if case.get("trickle"):
+        d = r.get("during", {})
+        s += f"; under the load {d.get('rss_kb', 0) / 1024:.1f} MB, {d.get('fds', '?')} fds; {r.get('cut', 0):,} cut"
     if r.get("cpu_ms_per_1k") is not None:
         s += f", cpu {r['cpu_ms_per_1k']:.1f} ms/1k"
     return s
@@ -411,16 +437,18 @@ def main():
         if "share" in case:
             calibrate = "resp-50-p1" if case["protocol"] == "resp" else "http-50"
             if calibrate not in slowest:
-                peaks = [results.get((calibrate, l), {}).get("per_second") for l in languages]
+                peaks = [results.get((calibrate, l), {}).get("per_second") for l in languages if l != "sg-limit"]
                 peaks = [p for p in peaks if p]
                 if not peaks:
                     cal = next(c for c in cases() if c["name"] == calibrate)
-                    peaks = [one(bins, cal, l, None).get("per_second") or 0 for l in languages]
+                    peaks = [one(bins, cal, l, None).get("per_second") or 0 for l in languages if l != "sg-limit"]
                 slowest[calibrate] = min(p for p in peaks if p) if any(peaks) else 10000
             rate = slowest[calibrate] * case["share"]
         else:
             rate = case.get("rate")
         for lang in languages:
+            if lang == "sg-limit" and case["protocol"] != "resp":
+                continue
             rs = [one(bins, case, lang, rate) for _ in range(args.runs)]
             r = median_of(rs)
             r["rate_asked"] = rate

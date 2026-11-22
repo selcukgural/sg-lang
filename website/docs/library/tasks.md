@@ -1,6 +1,6 @@
 ---
 title: Tasks
-description: Task, Channel and Sender, shared locked values, atomics and cancellation, with their signatures.
+description: Task, TaskGroup, Channel and Sender, shared locked values, atomics and cancellation, with their signatures.
 sidebar_position: 6
 ---
 
@@ -10,7 +10,7 @@ This page lists the types of concurrent work and their methods. Why they are sha
 rule, why a `lock` block never waits, why every task is waited for) is explained in the chapter
 [Concurrency](../learn/book/10-concurrency.md) of the book.
 
-What goes to another task owns all it holds: no borrow, no `shared checked` value, no `Task`, no raw pointer.
+What goes to another task owns all it holds: no borrow, no `shared checked` value, no `Task` or `TaskGroup`, no raw pointer.
 That is the thread rule, and it is checked when the program is compiled, also inside fields. Every type on this
 page is built into the language, but `MemoryOrder`, which `std` defines.
 
@@ -143,6 +143,155 @@ It prints:
 waits: cancelled
 run: not found
 ```
+
+## `TaskGroup`
+
+A group holds tasks that give nothing and lets go of each as soon as it ends, so a server that starts a task
+for every connection keeps only the connections that are open. It is waited for as a task is: a group whose
+tasks are not waited for on every path is a compile error, and an exit with an error lets them go and waits
+for them, as above.
+
+| Signature | What it does |
+|---|---|
+| `TaskGroup()` | A group with no limit |
+| `TaskGroup(int limit)` | A group whose `whenRoom` waits while `limit` of its tasks run (at least one) |
+| `void add(read this, Task<void> task)` | The task is the group's from now on; `add` neither waits nor refuses |
+| `nint count(read this)` | How many of its tasks have not ended |
+| `Task<void> whenRoom(read this)` | Ends once fewer than the limit run; at once without a limit |
+| `Task<Result<void, Cancelled>> whenRoom(read this, read CancellationToken token)` | Ends early, with `Cancelled`, when the token is cancelled |
+| `Task<void> whenAll(this)` | Takes the group, and ends once every task in it has ended |
+| `Task<Result<void, Cancelled>> whenAll(this, read CancellationToken token)` | When the token is cancelled, lets the tasks left go and still waits for them; `Cancelled` then says they were cut |
+
+`whenRoom` and `whenAll` are awaited, or waited for with `wait`, where they are written. A task that gives
+something cannot be added, since what it gives would be lost: an `async void` function around it does what is
+to be done with it, its error among it. A group is lent to a function with `read` (`add` works through it),
+or given to one that waits for it, but it never goes to another task.
+
+```sg
+async void work(string name, int ms) {
+    var own = CancellationSource()
+    if await Task.delay(ms, read own.token()) is Error(_) {
+        print($"{name} was cut")
+        return
+    }
+    print($"{name} done")
+}
+
+async void main() {
+    var group = TaskGroup(2)
+    for i in 0..3 {
+        await group.whenRoom()
+        group.add(work($"job {i}".toString(), 100 * (i + 1)))
+        print($"job {i} started, {group.count()} running")
+    }
+    await group.whenAll()
+
+    var open = TaskGroup()
+    open.add(work("quick", 50))
+    open.add(work("slow", 5000))
+    var grace = CancellationSource.after(500)
+    if await open.whenAll(read grace.token()) is Error(_) {
+        print("the tasks left were cut, and have ended")
+    }
+}
+```
+
+It prints:
+
+```text
+job 0 started, 1 running
+job 1 started, 2 running
+job 0 done
+job 2 started, 2 running
+job 1 done
+job 2 done
+quick done
+slow was cut
+the tasks left were cut, and have ended
+```
+
+### Writing a server
+
+A server takes a connection, starts a task for it and takes the next. Four things keep it standing when the
+clients misbehave or the machine is asked to stop, and none of them costs a server that does not use it:
+
+- **A group for the connections.** `TaskGroup` lets go of a connection's task, and of the memory of its frame,
+  when the connection ends. A `List<Task<R>>` emptied with `Task.whenAny` keeps every task until it is taken,
+  and looks at the whole list each time.
+- **A limit on connections.** `TaskGroup(10000)` and `await group.whenRoom()` before each `acceptAsync`: past
+  the limit the server takes no new connection, and those that come wait in the system's queue of the
+  listener, not in the server's memory.
+- **A limit on time.** A connection that sends nothing, or a byte now and then and never a whole request,
+  holds its buffer and a file of the system for ever. One `CancellationSource` for each connection, its token
+  given to `receiveAsync`, and `idle.cancelAfter(ms)`: set before every read it closes a client that stays
+  silent longer; set only when a request begins (nothing of one waits in the buffer) it also closes one that
+  sends a request a byte at a time. Setting a later time is one atomic write.
+- **A graceful end.** On a signal the accept loop stops (its token is cancelled), and `await
+  group.whenAll(read grace)` waits for the connections that are open; once `grace` is cancelled it cuts
+  those left, and still waits for them to end. Each connection goes out by its own error, so nothing is left
+  half written.
+
+An error of one connection stays in its task: the group takes tasks that give nothing, so the function of the
+connection decides what to do with it (log it, say), and the server goes on.
+
+```sg
+async Result<void, IoError> serve(TcpStream conn, int idleLimit) {
+    var idle = CancellationSource()
+    var token = idle.token()
+    var buffer = byte[4096](0)
+    while true {
+        idle.cancelAfter(idleLimit)
+        var n = try await conn.receiveAsync(ref buffer, read token)
+        if n == 0 {
+            return Ok()
+        }
+        try await conn.sendAsync(buffer[0..n])
+    }
+}
+
+async void connection(TcpStream conn) {
+    if await serve(conn, 30000) is Error(e) {
+        var line = $"a connection ended: {e}".toString()
+        Log.warn(read line)
+    }
+}
+
+async Result<void, IoError> listen(read string address, read CancellationToken stop) {
+    var listener = try TcpListener.bind(read address)
+    var group = TaskGroup(10000)
+    while await group.whenRoom(read stop) is Ok {
+        match await listener.acceptAsync(read stop) {
+            Ok(conn) => group.add(connection(conn))
+            Error(Cancelled(_)) => break
+            Error(_) => await Task.delay(10)
+        }
+    }
+    var grace = CancellationSource.after(10000)
+    _ = await group.whenAll(read grace.token())
+    return Ok()
+}
+
+async void main() {
+    // Told to stop after a moment, where a server is told by a signal.
+    var stop = CancellationSource.after(100)
+    if await listen("127.0.0.1:0", read stop.token()) is Ok {
+        print("stopped")
+    }
+}
+```
+
+It prints:
+
+```text
+stopped
+```
+
+Measured on Linux against the servers as they were ([Servers](../../benchmarks/server.md#a-group-of-tasks-slow-clients-and-a-limit-on-a-request)):
+the group costs nothing (1,361,000 answers a second with 50 connections, against 1,355,000 with a list), and an
+idle connection still holds 4.98 KB. A limit on the time of a request costs 3 to 4% of the answers and a tenth
+on the p99. Beside 10,000 clients that send a byte a second, it closes all of them within its 5 seconds, gives
+their 10,000 files back and answers 100 busy connections within 807 µs at p99, where the same server without a
+limit takes 2.75 ms, `tokio` 2.47 ms and C 5.36 ms.
 
 ## `Channel<T>` and `Sender<T>`
 
@@ -361,6 +510,7 @@ A source cancels; its tokens are looked at by the work, where the work chooses.
 | `CancellationSource CancellationSource.after(int ms)` | One that cancels by itself after so many milliseconds |
 | `CancellationToken token(read this)` | A token of the source |
 | `void cancel(read this)` | Cancels every token of it; again is nothing |
+| `void cancelAfter(read this, int ms)` | Cancels it `ms` from now, in place of any time set before (C#'s `CancelAfter`); 0 cancels now, and a cancelled source stays as it is |
 | `bool isCancelled(read this)` | On a source and on a token |
 | `Result<void, Cancelled> check(read this)` on a token | `Error(Cancelled { })` once it is cancelled |
 | `CancellationToken clone(read this)` | One more token |

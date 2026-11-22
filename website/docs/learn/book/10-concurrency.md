@@ -432,6 +432,9 @@ error: `File.readText` holds the thread until it is done, and an async function 
 apart with `await Task.run(work, x)`. Channels have `sendAsync` and `receiveAsync`, a locked value
 `await lock ... when`. Tasks kept in a `List<Task<R>>` are awaited together with `Task.whenAll(tasks)`, which
 gives their values in the order of the list, or one at a time as they end with `Task.whenAny(ref tasks)`.
+Tasks that give nothing, such as the connections of a server, go in a `TaskGroup`, which lets go of each as
+it ends: `group.add(task)`, `await group.whenRoom()` while a limit of them run, and `await group.whenAll()`
+at the end ([Tasks](../../library/tasks.md#taskgroup) shows a server written with it).
 
 ## Cancellation
 
@@ -485,7 +488,8 @@ the ticker stopped: Cancelled
 ```
 
 A token may also come last on a channel's `send` and `receive`, which then give a `Result` whose error is
-`Cancelled`, and on the async calls of files, the network and other programs, where a cancel ends the wait.
+`Cancelled`, and on the async calls of files, the network and other programs, where a cancel ends the wait. `source.cancelAfter(ms)` sets the time a source cancels itself again, from now: set before each read of a
+connection, it closes one that stays silent too long.
 
 ## Atomic values
 

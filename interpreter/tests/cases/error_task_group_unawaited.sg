@@ -1,0 +1,7 @@
+// `whenRoom` is awaited where it is written.
+async void main() {
+    var group = TaskGroup(4)
+    var room = group.whenRoom()
+    await room
+    await group.whenAll()
+}

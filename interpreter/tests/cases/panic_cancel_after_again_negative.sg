@@ -1,0 +1,6 @@
+// A time set again is not negative either.
+void main() {
+    var source = CancellationSource()
+    source.cancelAfter(-1)
+    print(source.isCancelled())
+}

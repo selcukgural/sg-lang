@@ -1,0 +1,10 @@
+// A token that a call has just made, used once where it is made, is let go of after its line:
+// compiled code kept the source's block for ever before.
+void main() {
+    var source = CancellationSource()
+    print(source.token().check() is Ok)
+    print(source.token().isCancelled())
+    source.cancel()
+    print(source.token().check() is Ok)
+    print(source.token().clone().isCancelled())
+}

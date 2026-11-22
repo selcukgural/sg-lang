@@ -1,0 +1,5 @@
+error: `finish` takes a `TaskGroup` here, and a call without `await` starts it as a task of its own, which this cannot go to: a group of tasks is waited for by the task that made it, and by no other
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_group_to_async.sg:9:24
+ 9 |     var other = finish(group)
+   |                        ^^^^^

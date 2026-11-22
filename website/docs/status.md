@@ -16,8 +16,9 @@ are built and tested on Linux, macOS and Windows; what is written here can still
 - **Memory safety without a collector**: one owner for each value, `read` and `ref` borrows checked when the
   program compiles, `shared` values with several owners, and `shared checked` values changed through any of them
   with a check when the program runs. `unsafe` marks raw memory and C.
-- **Tasks**: tasks that are always waited for, `async` and `await`, locks with a condition, channels, and
-  atomic values with the orders of C11.
+- **Tasks**: tasks that are always waited for, groups of tasks with a limit and a graceful end, `async` and
+  `await`, cancellation with a time that can be set again, locks with a condition, channels, and atomic
+  values with the orders of C11.
 - **C**: calling C and being called by it, C's types laid out as C lays them out, and libraries of SG that C
   links. SQLite, libcurl and zlib are wrapped in modules whose users write no `unsafe`.
 - **A library**: files, folders and paths, other programs, the network (TCP and UDP), signals, time and time

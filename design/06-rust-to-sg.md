@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-seventh slice (a loop of the network on each thread of the pool, unlike tokio's one driver, 1708-1714).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-eighth slice (`TaskGroup` for `JoinSet` and a `Semaphore` of connections, `cancelAfter` for a timeout set again, 1715-1730).
 
 ## Functions and variables
 
@@ -357,6 +357,7 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-seventh slice (
 | `CancellationToken::new()` (tokio-util) | `CancellationSource()` | built | The source cancels, its tokens look; `CancellationSource.after(ms)` cancels itself |
 | `token.child_token()`, `token.clone()` | `source.token()`, `token.clone()` | built | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
 | `token.cancel()` | `source.cancel()` | built | Through a `read` borrow, as `cancel(&self)` |
+| `tokio::time::timeout(d, read)` around each read, `sleep.as_mut().reset(deadline)` | `source.cancelAfter(ms)` before the read, `receiveAsync(ref buffer, read token)` | built | One source for a connection, its time set again before each read; a later time is one atomic write. The read gives `IoError.Cancelled` when it runs out |
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
 | `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | built | Gives `Error(Cancelled { })` when the token is cancelled first |
 | dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token; a cancel ends a wait for the network or for a line of the input at once |
@@ -364,6 +365,9 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-seventh slice (
 | `join_all(handles).await` | `await Task.whenAll(tasks)` | built | What each gave, in the order of the list; an error is an item of the list, none is lost. `Task.whenAll(tasks).wait()` in code that is not async |
 | `set.join_next().await` | `await Task.whenAny(ref tasks)` | built | What the first task to end gave, taken out of the list; nothing is cancelled. A `while tasks.length() > 0` loop around it empties the list, as the compiler sees |
 | a `JoinSet` dropped (its tasks aborted), `try_join_all` | a way out with an error (`try await Task.whenAny(ref tasks)`) | built | A list of tasks that is not emptied is a compile error. A way out with an error lets what is left in it go, then waits for it: a wait that can say so ends with `Cancelled` and the task goes out by its own way of an error, where Tokio's abort stops a task at any `.await` without a word; a delay without a token runs on (1691-1693) |
+| `JoinSet<()>` (or `TaskTracker`) for the connections of a server, `set.spawn(handle(conn))` | `var group = TaskGroup()`, `group.add(handle(conn))` | built | A task that ends is let go of at once, with its memory; a group takes tasks that give nothing, so the error of a connection is dealt with in its function. Waited for as a task is: `await group.whenAll()` |
+| `Arc<Semaphore>` with `acquire_owned()` before `accept`, the permit moved into the task | `TaskGroup(limit)`, `await group.whenRoom()` before `acceptAsync` | built | The group counts its tasks itself: no permit to carry. `whenRoom(read token)` gives `Cancelled` when the server is told to stop |
+| `tracker.close(); timeout(grace, tracker.wait()).await`, then `abort_all()` | `await group.whenAll(read grace)` | built | When `grace` is cancelled the tasks left are let go and still waited for: each goes out by its own error at a wait, not cut at any `.await` |
 | `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | built | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last. Compiled, the work runs on a thread of input and output, as tokio's `spawn_blocking` does it |
 | `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | built | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; a line the block already holds is read in place, as tokio's `BufReader` does it |
 | `BufReader::new(tokio::fs::File::open(p).await?)` | `try await File.openTextAsync(read path)` | built | Also `createTextAsync` and `openAppendAsync`, which give a `StreamWriter` |

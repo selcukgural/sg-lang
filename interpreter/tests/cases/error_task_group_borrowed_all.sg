@@ -1,0 +1,10 @@
+// `whenAll` takes the group: one lent to a function is waited for by its owner.
+async void wait(read TaskGroup group) {
+    await group.whenAll()
+}
+
+async void main() {
+    var group = TaskGroup()
+    await wait(read group)
+    await group.whenAll()
+}

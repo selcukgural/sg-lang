@@ -1,0 +1,11 @@
+// An async function that takes a group is awaited where it is called: started as a task, it
+// would wait for the group in another task.
+async void finish(TaskGroup group) {
+    await group.whenAll()
+}
+
+async void main() {
+    var group = TaskGroup()
+    var other = finish(group)
+    await other
+}

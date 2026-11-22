@@ -1,0 +1,4 @@
+panic: `TaskGroup(-1)`: a group lets at least one task run
+  --> panic_task_group_limit.sg:3:17
+ 3 |     var group = TaskGroup((int)args.length() - 1)
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

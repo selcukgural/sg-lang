@@ -1,0 +1,10 @@
+// A group lets go of each task as it ends, so it takes tasks that give nothing.
+async int count() {
+    return 1
+}
+
+async void main() {
+    var group = TaskGroup()
+    group.add(count())
+    await group.whenAll()
+}

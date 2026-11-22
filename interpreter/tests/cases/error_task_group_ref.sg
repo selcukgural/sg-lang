@@ -1,0 +1,14 @@
+// A group is lent with `read`: `add` works through it, and only its owner waits for it.
+async void work() {
+    print("working")
+}
+
+void start(ref TaskGroup group) {
+    group.add(work())
+}
+
+async void main() {
+    var group = TaskGroup()
+    start(ref group)
+    await group.whenAll()
+}

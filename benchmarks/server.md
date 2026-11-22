@@ -79,6 +79,44 @@ further.
 from C; and with 1,000 connections and 16 in flight each, SG's p99 is 15.8 ms against 10.5 for C. Each is in
 [Slower than C](slower-than-c.md).
 
+## A group of tasks, slow clients and a limit on a request
+
+Since the 158th slice the SG servers keep their connections in a `TaskGroup`, which lets go of each as it
+ends, where they kept them in a list emptied with `Task.whenAny`; the store also takes `--idle-limit MS`, the
+time a request may take from when its first byte is awaited (choices 1715-1724). Two builds by the same
+compiler, the servers as they were and as they are, run in turn four times, give the medians below; single runs
+on this virtual machine move by up to 10% from one to the next, so they are not compared.
+
+| Case | A list and `whenAny` | `TaskGroup` | `TaskGroup` and `--idle-limit 5000` |
+|---|---|---|---|
+| Store, 50 connections | 1,354,979/s, p99 72 µs | 1,361,154/s, 72 µs | 1,318,064/s, 76 µs |
+| Store, 1,000 connections | 1,252,276/s, 1.08 ms | 1,265,059/s, 1.08 ms | 1,215,866/s, 1.18 ms |
+| HTTP, 50 connections | 1,360,500/s, 73 µs | 1,350,800/s, 74 µs | - |
+| 100,000 idle connections | 4.96 KB each | 4.98 KB each | closed after 5 s, as meant |
+
+The group costs nothing. The limit costs 3.2% of the answers with 50 connections and 3.9% with 1,000, and a
+tenth on the p99: setting the time again is one atomic write, but every read given a token goes on the token's
+list and off it under the one lock of the clock, which four threads share ([Slower than
+C](slower-than-c.md)).
+
+What the limit gains: 10,000 slow clients, each of which begins a SET of 1 MB once answered and then sends a
+byte of it every second (slowloris), beside 100 connections at 70% of the slowest's answers a second; the
+memory and the files the server holds are read halfway through the measured time (medians of three runs).
+
+| Server | p99 of the 100 | p99.9 | Memory | Files open | Slow clients closed |
+|---|---|---|---|---|---|
+| SG | 2.75 ms | 8.62 ms | 52.7 MB | 10,112 | 0 |
+| SG, `--idle-limit 5000` | 807 µs | 1.28 ms | 54.0 MB | 112 | 10,000 |
+| Rust (`tokio`) | 2.47 ms | 7.49 ms | 53.5 MB | 10,107 | 0 |
+| Zig | 11.37 ms | 15.34 ms | 2,689 MB | 10,104 | 0 |
+| C | 5.36 ms | 11.57 ms | 44.3 MB | 10,111 | 0 |
+
+With the limit the busy connections are answered within a third of the time at p99, and the 10,000 files of
+the slow ones are given back. The memory the server holds does not fall: the buffers are freed inside the
+program, and glibc does not give the pages in the middle of its heap back to the system; new connections take
+them again. The other servers have no such limit, as most servers of their kind do not; `tokio` and hyper
+would bound a request with `tokio::time::timeout`, Zig and C with a timer of their own.
+
 ## The long run
 
 Thirty minutes of the store at half the slowest server's answers a second, 1,000 connections, each opened again

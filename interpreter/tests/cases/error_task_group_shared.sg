@@ -1,0 +1,5 @@
+// A group of tasks is not put on the heap: only the one that made it waits for it.
+async void main() {
+    var group = new shared TaskGroup()
+    print(same(group, group))
+}

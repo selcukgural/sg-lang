@@ -1,0 +1,5 @@
+// A group lets at least one task run.
+async void main() {
+    var group = TaskGroup(0)
+    await group.whenAll()
+}

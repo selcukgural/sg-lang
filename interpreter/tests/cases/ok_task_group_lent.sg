@@ -1,0 +1,28 @@
+// A group lent to a function that adds tasks to it, and one given to a function that waits for
+// it: the tasks are the group's, whoever started them.
+async void work(int n) {
+    await Task.delay(100 * n)
+    print($"work {n} done")
+}
+
+void start(read TaskGroup group, int count) {
+    for n in 1..count + 1 {
+        group.add(work(n))
+    }
+    print($"{group.count()} started")
+}
+
+async void finish(TaskGroup group) {
+    await group.whenAll()
+    print("finished")
+}
+
+TaskGroup made(int limit) {
+    return TaskGroup(limit)
+}
+
+async void main() {
+    var group = made(10)
+    start(read group, 3)
+    await finish(group)
+}

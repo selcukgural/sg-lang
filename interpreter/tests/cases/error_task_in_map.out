@@ -1,4 +1,4 @@
-error: a `Task` is kept only in a local variable, a parameter or a return value, as it is or in a `List<Task<R>>`
+error: a `Task` or a `TaskGroup` is kept only in a local variable, a parameter or a return value; a task also in a `List<Task<R>>` or a `TaskGroup`
   every task is waited for, and the compiler sees that only where the task stays in one function's hands
   --> error_task_in_map.sg:2:17
  2 |     var tasks = HashMap<string, Task<int>>()

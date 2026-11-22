@@ -167,6 +167,13 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## Tasks, async and signals
 
+- **A read given a token** (`trials/server`, `--idle-limit`, the 158th slice, choices 1720 and 1724): every wait
+  of the network given a token goes on the token's list and off it under the clock's one lock, which every
+  thread shares, so the store with a limit on each request gets 3.2% fewer answers with 50 connections and 3.9%
+  fewer with 1,000, and a p99 a tenth higher (76 against 72 µs, 1.18 against 1.08 ms). `cancelAfter` itself is
+  one atomic write. A list of waits for each thread, or a token that takes its waits only when it is
+  cancelled, would take the lock away.
+
 - **The network the async way, against Tokio and Zig** (`net`, choices 1689 and 1708-1714): since each thread
   has a loop of the network of its own (the 157th slice), a stream of 1 GB in pieces of 64 KB takes 0.140 s
   against 0.153 s for `tokio`, and 50,000 connections one after another 4.000 s against 3.972 s for Zig (1.01

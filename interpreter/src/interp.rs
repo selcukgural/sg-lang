@@ -91,6 +91,8 @@ pub enum Value {
     /// `Task<R>`: a task started with `Task.run`, by the call of an async function, or by
     /// `Task.delay`.
     Task(Rc<RefCell<Task>>),
+    /// `TaskGroup`: the tasks given to it that have not been let go of yet.
+    Group(Rc<RefCell<Group>>),
     /// An end of a channel: a `Channel<T>`, which receives, or a `Sender<T>`. A copy is the
     /// same end; `.clone()` makes another.
     Chan(Rc<ChanEnd>),
@@ -115,6 +117,17 @@ pub struct Cancel {
     delays: Vec<(u64, u64)>,
     /// The fibers that wait for the network or for a thread, given a token of it.
     waits: Vec<usize>,
+    /// The key of its own timer in `State::timers`, from `CancellationSource.after(ms)` or
+    /// `source.cancelAfter(ms)`: a new time takes the place of the one before.
+    clock: Option<(u64, u64)>,
+}
+
+/// A `TaskGroup` (1716 to 1719): its tasks, of which those that have ended are let go of the next
+/// time the group is looked at, and the limit `whenRoom` waits for.
+#[derive(Debug)]
+pub struct Group {
+    tasks: Vec<Rc<RefCell<Task>>>,
+    limit: Option<usize>,
 }
 
 /// A channel: the items sent and not received yet, in the order they were sent, and how many
@@ -281,6 +294,9 @@ struct State {
     lock_waits: Vec<LockWait>,
     /// The fibers that wait on a channel, in the order they began.
     chan_waits: Vec<ChanWait>,
+    /// The fibers that wait in `group.whenRoom(read token)` or `group.whenAll(read token)`:
+    /// a cancel, or the task being let go, makes them look again.
+    group_waits: BTreeSet<usize>,
     /// The fibers of the async tasks an exit with an error let go (1691): every wait in them
     /// that can say so ends with `Cancelled`, now and from then on.
     cut_fibers: BTreeSet<usize>,
@@ -337,6 +353,7 @@ impl Sched {
             lazy: Vec::new(),
             lock_waits: Vec::new(),
             chan_waits: Vec::new(),
+            group_waits: BTreeSet::new(),
             cut_fibers: BTreeSet::new(),
             awaiting: HashMap::new(),
         };
@@ -468,6 +485,7 @@ impl Sched {
                 }
                 Timer::Cancel(source) => {
                     if let Some(source) = source.upgrade() {
+                        source.borrow_mut().clock = None;
                         Self::cancel(state, &source);
                     }
                 }
@@ -546,6 +564,8 @@ impl Sched {
                 state.chan_waits.remove(at);
                 state.cut.insert(fiber);
                 state.ready.push_back(fiber);
+            } else if state.group_waits.remove(&fiber) {
+                state.ready.push_back(fiber);
             }
         }
         for key in keys {
@@ -588,6 +608,8 @@ impl Sched {
         } else if let Some(at) = state.chan_waits.iter().position(|wait| wait.fiber == fiber && wait.told) {
             state.chan_waits.remove(at);
             state.cut.insert(fiber);
+            state.ready.push_back(fiber);
+        } else if state.group_waits.remove(&fiber) {
             state.ready.push_back(fiber);
         }
         let awaited = state.awaiting.get(&fiber).cloned().unwrap_or_default();
@@ -2973,6 +2995,119 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// The methods of a `TaskGroup`. `add` takes the task; `count`, `whenRoom` and `whenAll`
+    /// first let go of the tasks that have ended.
+    fn group(&mut self, call: GroupCall, told: bool, recv: &'a Expr, args: &'a [Expr], at: Span, frame: &mut Frame) -> Res<Value> {
+        let Value::Group(group) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls these on a group") };
+        match call {
+            GroupCall::Add => {
+                let Value::Task(task) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `add` a task") };
+                group.borrow_mut().tasks.push(task);
+                Ok(Value::Void)
+            }
+            GroupCall::Count => {
+                self.group_ended(&group);
+                Ok(Value::Int(IntTy::Nint, group.borrow().tasks.len() as i128))
+            }
+            GroupCall::WhenRoom | GroupCall::WhenAll => {
+                let source = match told {
+                    true => Some(self.token(&args[0], frame)?),
+                    false => None,
+                };
+                self.group_wait(&group, call == GroupCall::WhenAll, source, at)
+            }
+            GroupCall::New(_) => unreachable!("a function of the type"),
+        }
+    }
+
+    /// The tasks of the group that have ended are let go of, and what they gave is dropped.
+    fn group_ended(&mut self, group: &Rc<RefCell<Group>>) {
+        let ended: Vec<Rc<RefCell<Task>>> = group.borrow().tasks.iter().filter(|task| matches!(task.borrow().state, TaskState::Done(_))).cloned().collect();
+        if ended.is_empty() {
+            return;
+        }
+        group.borrow_mut().tasks.retain(|task| !matches!(task.borrow().state, TaskState::Done(_)));
+        for task in ended {
+            self.started.retain(|other| !Rc::ptr_eq(other, &task));
+            task.borrow_mut().state = TaskState::Done(None);
+        }
+    }
+
+    /// `group.whenRoom()` (fewer tasks than the limit run) and `group.whenAll()` (none runs), as
+    /// a task that has ended. With a token (`told`): `whenRoom` gives `Error(Cancelled)` once it
+    /// is cancelled, or once this task is let go (1691); `whenAll` then lets the group's tasks go
+    /// and still waits for them (1718), and gives `Error(Cancelled)` after.
+    fn group_wait(&mut self, group: &Rc<RefCell<Group>>, all: bool, told: Option<Option<Rc<RefCell<Cancel>>>>, at: Span) -> Res<Value> {
+        let source = told.clone().flatten();
+        let mut let_go = false;
+        loop {
+            self.group_ended(group);
+            let (running, limit) = (group.borrow().tasks.len(), group.borrow().limit);
+            let stop = told.is_some() && (source.as_ref().is_some_and(|source| source.borrow().cancelled) || self.cut_now());
+            let done = match all {
+                true => running == 0,
+                false => limit.is_none_or(|limit| running < limit),
+            };
+            if done || (stop && !all) {
+                let value = match told {
+                    Some(_) if (all && let_go) || (!all && !done) => failed(cancelled()),
+                    Some(_) => ok(Value::Void),
+                    None => Value::Void,
+                };
+                return Ok(self.ended_task(value, at));
+            }
+            let tasks = group.borrow().tasks.clone();
+            if stop && !let_go {
+                let_go = true;
+                let mut state = self.io.sched.lock();
+                for task in &tasks {
+                    Sched::cut(&mut state, task);
+                }
+                continue;
+            }
+            for task in &tasks {
+                let mut task = task.borrow_mut();
+                if matches!(task.state, TaskState::Running) {
+                    task.waiters.push(self.me);
+                }
+            }
+            self.awaits(&tasks);
+            let lazy = tasks.iter().find(|task| matches!(task.borrow().state, TaskState::Lazy(..)));
+            let waited = match lazy {
+                Some(task) => {
+                    let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
+                    task.borrow_mut().waiters.push(self.me);
+                    let func = self.funcs[&*name];
+                    self.start_fiber(task, func, None, args, false).map(|_| ())
+                }
+                None => {
+                    // A cancel wakes this fiber to look again, once (the group lets go of its
+                    // tasks then, and waits for them as it would without a token).
+                    if told.is_some() && !let_go {
+                        self.io.sched.lock().group_waits.insert(self.me);
+                        if let Some(source) = &source {
+                            source.borrow_mut().waits.push(self.me);
+                        }
+                    }
+                    self.io.sched.block(self.me, at)
+                }
+            };
+            for task in &tasks {
+                task.borrow_mut().waiters.retain(|fiber| *fiber != self.me);
+            }
+            if let Some(source) = &source {
+                source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
+            }
+            {
+                let mut state = self.io.sched.lock();
+                state.ready.retain(|fiber| *fiber != self.me);
+                state.awaiting.remove(&self.me);
+                state.group_waits.remove(&self.me);
+            }
+            waited?;
+        }
+    }
+
     /// `x.m(args)` of a method of the program. An async method called without `await` (`here`
     /// false) starts as a task, as an async function does.
     #[allow(clippy::too_many_arguments)]
@@ -3048,11 +3183,29 @@ impl<'a, 'e> Interp<'a, 'e> {
             return Err(Diag::panic(at, format!("`CancellationSource.after({ms})`: a time is not negative")).into());
         }
         let source = Rc::new(RefCell::new(Cancel::default()));
+        self.cancel_after(&source, ms);
+        Ok(Value::Source(source))
+    }
+
+    /// The source is cancelled `ms` milliseconds from now, on the clock of the run, in place of
+    /// the time it was given before; a cancelled source stays as it is.
+    fn cancel_after(&mut self, source: &Rc<RefCell<Cancel>>, ms: i128) {
+        if source.borrow().cancelled {
+            return;
+        }
         let mut state = self.io.sched.lock();
+        if let Some(before) = source.borrow_mut().clock.take() {
+            state.timers.remove(&before);
+        }
+        // No time at all cancels it now, as compiled code does.
+        if ms == 0 {
+            Sched::cancel(&mut state, source);
+            return;
+        }
         let key = (state.now + ms as u64, state.made);
         state.made += 1;
-        state.timers.insert(key, (Instant::now() + Duration::from_millis(ms as u64), Timer::Cancel(Rc::downgrade(&source))));
-        Ok(Value::Source(source))
+        state.timers.insert(key, (Instant::now() + Duration::from_millis(ms as u64), Timer::Cancel(Rc::downgrade(source))));
+        source.borrow_mut().clock = Some(key);
     }
 
     /// Whether the token given to an async method, if one was, is cancelled, or the task was let
@@ -4760,6 +4913,19 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
                 Callee::Cancel(CancelCall::New) => Ok(Value::Source(Rc::new(RefCell::new(Cancel::default())))),
+                Callee::Group(GroupCall::New(limited), _) => {
+                    let limit = match limited {
+                        true => {
+                            let Value::Int(_, limit) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the limit an `int`") };
+                            if limit < 1 {
+                                return Err(Diag::panic(expr.span, format!("`TaskGroup({limit})`: a group lets at least one task run")).into());
+                            }
+                            Some(limit as usize)
+                        }
+                        false => None,
+                    };
+                    Ok(Value::Group(Rc::new(RefCell::new(Group { tasks: Vec::new(), limit }))))
+                }
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
                     let values = self.values(args, frame)?;
@@ -5009,6 +5175,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
                 Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
+                Callee::Group(call, told) => self.group(*call, *told, recv, args, expr.span, frame),
                 // Awaited where it is written: in the interpreter a fiber waits the same way
                 // whether its task is async or not.
                 Callee::ChanAsync(call, told) => {
@@ -5052,6 +5219,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
                     self.source_after(ms, expr.span)
                 }
+                Callee::Cancel(CancelCall::CancelAfter) => {
+                    let Value::Source(source) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls it on a source") };
+                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
+                    if ms < 0 {
+                        return Err(Diag::panic(expr.span, format!("`cancelAfter({ms})`: a time is not negative")).into());
+                    }
+                    self.cancel_after(&source, ms);
+                    Ok(Value::Void)
+                }
                 Callee::Cancel(call) => {
                     let source = match owned(self.expr(recv, frame)?) {
                         Value::Source(source) => Some(source),
@@ -5070,7 +5246,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         CancelCall::IsCancelled => Value::Bool(is_cancelled),
                         CancelCall::Check if is_cancelled => failed(cancelled()),
                         CancelCall::Check => ok(Value::Void),
-                        CancelCall::New | CancelCall::After => unreachable!("handled above"),
+                        CancelCall::New | CancelCall::After | CancelCall::CancelAfter => unreachable!("handled above"),
                     })
                 }
                 // Input and output in the interpreter is done when it is called, so the task

@@ -1,0 +1,10 @@
+// A task, a list of tasks or a group of tasks put on the heap with `new` or `new shared` would be
+// waited for by nobody the compiler can see.
+async void work() {
+    print("working")
+}
+
+async void main() {
+    var task = new shared work()
+    await task
+}

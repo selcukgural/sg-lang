@@ -1,0 +1,5 @@
+error: a group lets at least one task run, and this limit is 0
+  --> error_task_group_limit.sg:3:27
+ 3 |     var group = TaskGroup(0)
+   |                           ^
+  hint: `TaskGroup()` has no limit

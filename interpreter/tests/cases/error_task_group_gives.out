@@ -1,0 +1,6 @@
+error: expected `Task<void>`, found `Task<int>`
+  a group lets go of each task as it ends, so what a task gives would be lost: it takes tasks that give nothing
+  --> error_task_group_gives.sg:8:15
+ 8 |     group.add(count())
+   |               ^^^^^^^
+  hint: start an `async void` function that does what is to be done with what the task gives, an error among it

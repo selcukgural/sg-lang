@@ -1,5 +1,5 @@
 error: `CancellationSource` has no method `check`
-  methods: cancel, token, isCancelled
+  methods: cancel, cancelAfter, token, isCancelled
   --> error_cancel_source_check.sg:3:16
  3 |     try source.check()
    |                ^^^^^

@@ -1,0 +1,6 @@
+// A group's tasks are cut where it is waited for, not by a method of their own.
+async void main() {
+    var group = TaskGroup()
+    group.cancel()
+    await group.whenAll()
+}

@@ -27,6 +27,9 @@
      --check          every answer held to what it must be, byte for byte
      --report S       also a line of JSON for each S seconds of the measured time, after the end
      --reconnect N    each connection closed and opened again after N answers (one at a time)
+     --trickle MS     RESP: once answered, each idle connection begins a SET of a value of 1 MB and sends
+                      one byte of it every MS milliseconds, as a slow client does (slowloris); one the
+                      server closes is counted as cut, not as failed (choice 1724)
 
    It writes one line of JSON on the standard output when it ends, and `ready` on its own line once
    every idle connection is open and has been answered (for whoever measures the server meanwhile).
@@ -70,6 +73,7 @@ static int conns = 50, threads = 4, pipeline = 1, value_size = 64, keys = 10000,
 static double rate = 0, duration = 10, warmup = 2;
 static bool close_each, fill, check;
 static int idle = 0, sources = 1, reconnect = 0;
+static double trickle = 0;
 static double report = 0;
 
 /* ---- time */
@@ -140,6 +144,7 @@ typedef struct conn {
     int fd;
     int index;
     bool is_idle, open, dead, connecting, counted_ready;
+    bool trickling; /* --trickle: the head of its SET is sent */
     /* what waits to be sent, when the socket took only part */
     char* out;
     size_t out_len, out_cap, out_at;
@@ -174,7 +179,8 @@ typedef struct {
     histogram* h;
     histogram** intervals; /* --report: one for each interval, made when first used */
     int interval_n;
-    uint64_t answers, errors, wrong, late;
+    uint64_t answers, errors, wrong, late, cut;
+    int64_t trickle_next;
     int64_t start, measure_from, measure_to;
     int idle_ready;
     char* scratch;
@@ -197,7 +203,7 @@ static void die(const char* what) {
 static void usage(const char* why) {
     fprintf(stderr, "load: %s\nusage: load resp|http HOST:PORT [--conns N] [--threads T] [--pipeline P] [--rate R]\n"
                     "  [--duration S] [--warmup S] [--value BYTES] [--keys K] [--sets PERCENT] [--close]\n"
-                    "  [--idle N] [--sources K] [--fill] [--check]\n", why);
+                    "  [--idle N] [--trickle MS] [--sources K] [--fill] [--check]\n", why);
     exit(2);
 }
 
@@ -324,6 +330,13 @@ static void close_conn(worker* w, conn* c) {
 }
 
 static void fail_conn(worker* w, conn* c, const char* why) {
+    /* a slow client the server closed: what --trickle is there to see */
+    if (trickle > 0 && c->is_idle && c->counted_ready && !c->dead) {
+        w->cut++;
+        c->dead = true;
+        if (c->open) close_conn(w, c);
+        return;
+    }
     if (!c->dead) {
         static atomic_int told;
         if (atomic_fetch_add(&told, 1) < 5) fprintf(stderr, "load: connection %d: %s\n", c->index, why);
@@ -751,6 +764,20 @@ static void* drive(void* arg) {
             if (c->dead) continue;
             if (c->next_due < w->measure_to) next_request(w, c, c->next_due);
         }
+        /* --trickle: the next byte of every slow client */
+        if (trickle > 0 && now >= w->trickle_next) {
+            static const char head[] = "*3\r\n$3\r\nSET\r\n$7\r\ntrickle\r\n$1048576\r\n";
+            for (int i = 0; i < w->n; i++) {
+                conn* c = w->all[i];
+                if (!c->is_idle || c->dead || !c->open || !c->counted_ready) continue;
+                const char* bytes = c->trickling ? "x" : head;
+                size_t len = c->trickling ? 1 : sizeof head - 1;
+                ssize_t n = send(c->fd, bytes, len, 0);
+                if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) fail_conn(w, c, strerror(errno));
+                else if (n == (ssize_t)len) c->trickling = true;
+            }
+            w->trickle_next = now + (int64_t)(trickle * 1e6);
+        }
         int wait_ms = 50;
         if (w->heap_n > 0) {
             int64_t d = w->heap[0]->next_due - now;
@@ -820,6 +847,7 @@ int main(int argc, char** argv) {
         else if (TAKES("--sources")) sources = (int)number(v, a);
         else if (TAKES("--report")) report = number(v, a);
         else if (TAKES("--reconnect")) reconnect = (int)number(v, a);
+        else if (TAKES("--trickle")) trickle = number(v, a);
         else if (strcmp(a, "--close") == 0) close_each = true;
         else if (strcmp(a, "--fill") == 0) fill = true;
         else if (strcmp(a, "--check") == 0) check = true;
@@ -833,6 +861,7 @@ int main(int argc, char** argv) {
     if (close_each && (protocol != HTTP || pipeline != 1 || rate > 0)) usage("--close is for HTTP, one request at a time, closed loop");
     if (rate > 0 && pipeline != 1) usage("--rate sends one request at a time on each connection");
     if (fill && protocol != RESP) usage("--fill is for RESP");
+    if (trickle > 0 && (protocol != RESP || idle == 0)) usage("--trickle is for RESP, with --idle");
     if (reconnect && (pipeline != 1 || close_each)) usage("--reconnect is for one request at a time on kept connections");
     if (fill) { warmup = 0; duration = 1e6; idle = 0; }
     signal(SIGPIPE, SIG_IGN);
@@ -892,7 +921,7 @@ int main(int argc, char** argv) {
     int64_t ended = now_ns();
 
     histogram* all = calloc(1, sizeof(histogram));
-    uint64_t answers = 0, errors = 0, wrong = 0, late = 0;
+    uint64_t answers = 0, errors = 0, wrong = 0, late = 0, cut = 0;
     for (int t = 0; t < threads; t++) {
         for (int i = 0; i < BUCKETS; i++) all->counts[i] += ws[t].h->counts[i];
         all->total += ws[t].h->total;
@@ -902,6 +931,7 @@ int main(int argc, char** argv) {
         errors += ws[t].errors;
         wrong += ws[t].wrong;
         late += ws[t].late;
+        cut += ws[t].cut;
     }
     if (report > 0) {
         for (int i = 0; i < ws[0].interval_n; i++) {
@@ -922,9 +952,9 @@ int main(int argc, char** argv) {
     double seconds = fill ? (double)(ended - began) / 1e9 : duration;
     printf("{\"protocol\":\"%s\",\"conns\":%d,\"idle\":%d,\"pipeline\":%d,\"rate\":%.0f,\"answers\":%" PRIu64
            ",\"seconds\":%.3f,\"per_second\":%.0f,\"p50_us\":%.1f,\"p90_us\":%.1f,\"p99_us\":%.1f,\"p999_us\":%.1f"
-           ",\"max_us\":%.1f,\"mean_us\":%.1f,\"late\":%" PRIu64 ",\"errors\":%" PRIu64 ",\"wrong\":%" PRIu64 "}\n",
+           ",\"max_us\":%.1f,\"mean_us\":%.1f,\"late\":%" PRIu64 ",\"errors\":%" PRIu64 ",\"wrong\":%" PRIu64 ",\"cut\":%" PRIu64 "}\n",
            protocol == RESP ? "resp" : "http", conns, idle, pipeline, rate, answers, seconds, (double)answers / seconds,
            percentile(all, 50), percentile(all, 90), percentile(all, 99), percentile(all, 99.9),
-           (double)all->max / 1000.0, all->total ? all->sum / (double)all->total / 1000.0 : 0, late, errors, wrong);
+           (double)all->max / 1000.0, all->total ? all->sum / (double)all->total / 1000.0 : 0, late, errors, wrong, cut);
     return errors || wrong ? 1 : 0;
 }

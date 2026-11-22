@@ -1,0 +1,4 @@
+panic: `cancelAfter(-1)`: a time is not negative
+  --> panic_cancel_after_again_negative.sg:4:5
+ 4 |     source.cancelAfter(-1)
+   |     ^^^^^^^^^^^^^^^^^^^^^^

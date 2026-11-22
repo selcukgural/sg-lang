@@ -1,0 +1,38 @@
+// A `TaskGroup` in code that is not async: tasks of `Task.run` and async ones, `whenRoom` and
+// `whenAll` waited for with `wait`, and a token that stops `whenRoom` and cuts the tasks
+// `whenAll` waits for.
+async void sleepy(string name, int ms) {
+    var own = CancellationSource()
+    if await Task.delay(ms, read own.token()) is Error(_) {
+        print($"{name} was cut")
+        return
+    }
+    print($"{name} done")
+}
+
+void counted(int n) {
+    print($"counted {n * n}")
+}
+
+void main() {
+    var group = TaskGroup(1)
+    group.add(Task.run(counted, 3))
+    group.whenRoom().wait()
+    print($"room after the first: {group.count()} running")
+    group.add(sleepy("a", 200))
+    var stopped = CancellationSource()
+    stopped.cancel()
+    if group.whenRoom(read stopped.token()).wait() is Error(_) {
+        print("told to stop while the limit runs")
+    }
+    group.whenAll().wait()
+    print("all ended")
+
+    var cut = TaskGroup()
+    cut.add(sleepy("long", 5000))
+    var grace = CancellationSource.after(300)
+    match cut.whenAll(read grace.token()).wait() {
+        Ok => print("in time")
+        Error(_) => print("cut after the grace")
+    }
+}

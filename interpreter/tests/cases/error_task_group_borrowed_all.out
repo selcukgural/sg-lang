@@ -1,0 +1,5 @@
+error: `whenAll` takes the group and waits for every task in it, and this one is only borrowed
+  whoever made the group waits for its tasks
+  --> error_task_group_borrowed_all.sg:3:11
+ 3 |     await group.whenAll()
+   |           ^^^^^

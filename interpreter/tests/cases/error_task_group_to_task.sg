@@ -1,0 +1,11 @@
+// A group stays with the task that made it: started as a task of its own, a function that takes
+// one would wait for it in another task.
+void keep(TaskGroup group) {
+    group.whenAll().wait()
+}
+
+void main() {
+    var group = TaskGroup()
+    var other = Task.run(keep, group)
+    other.wait()
+}

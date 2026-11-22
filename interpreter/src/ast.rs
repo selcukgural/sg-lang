@@ -517,6 +517,9 @@ pub enum Callee {
     /// `sender.sendAsync(x)` and `channel.receiveAsync()`, awaited where they are written. With
     /// `true`, a token was given last.
     ChanAsync(ChanCall, bool),
+    /// `TaskGroup()`, `TaskGroup(limit)` and the methods of a group of tasks. With `true`, a
+    /// token was given last (`whenRoom`, `whenAll`).
+    Group(GroupCall, bool),
     /// `Memory.free(p)`, `Memory.copy(source, target, count)`.
     Memory(MemoryCall),
     /// `TcpListener.bind(address)`, `listener.accept()`, `TcpStream.connect(address)`,
@@ -738,6 +741,10 @@ pub enum CancelCall {
     After,
     /// `source.cancel()`
     Cancel,
+    /// `source.cancelAfter(ms)`: the source cancels itself when that many milliseconds have
+    /// gone by from now, in place of any time set before (C#'s `CancelAfter`); nothing once it
+    /// is cancelled.
+    CancelAfter,
     /// `source.token()`: one more token of the source.
     Token,
     /// `source.isCancelled()`, `token.isCancelled()`
@@ -746,6 +753,23 @@ pub enum CancelCall {
     Check,
     /// `token.clone()`: one more token of the same source.
     Clone,
+}
+
+/// What is done with a `TaskGroup`: tasks that give nothing, each let go of as soon as it ends,
+/// and waited for together (choices 1716 to 1719).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum GroupCall {
+    /// `TaskGroup()`, `TaskGroup(limit)` (the `bool`: whether a limit is given).
+    New(bool),
+    /// `group.add(task)`: the task is the group's from now on; it neither waits nor refuses.
+    Add,
+    /// `group.count()`: how many of its tasks have not ended.
+    Count,
+    /// `group.whenRoom()`: a task that ends once fewer tasks than the limit run.
+    WhenRoom,
+    /// `group.whenAll()`: takes the group, and ends once every task in it has ended. With a
+    /// token, a cancel lets the tasks go (choice 1691's mark) and still waits for them.
+    WhenAll,
 }
 
 /// What is done with the ends of a channel.

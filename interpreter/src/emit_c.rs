@@ -1523,6 +1523,8 @@ static inline void sg_thread_join(sg_thread thread) {
     if (WaitForSingleObject(thread, INFINITE) != WAIT_OBJECT_0) abort();
     CloseHandle(thread);
 }
+/* A thread nobody will join: its handle is let go, and the thread goes on. */
+static inline void sg_thread_detach(sg_thread thread) { CloseHandle(thread); }
 #else
 #include <pthread.h>
 #include <sched.h>
@@ -1617,6 +1619,10 @@ static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bo
 static inline void sg_thread_join(sg_thread thread) {
     if (pthread_join(thread, NULL) != 0) abort();
 }
+/* A thread nobody will join: the system frees it when it ends. */
+static inline void sg_thread_detach(sg_thread thread) {
+    if (pthread_detach(thread) != 0) abort();
+}
 #endif
 #endif
 
@@ -1629,7 +1635,7 @@ static inline void sg_thread_join(sg_thread thread) {
    A task is a thread of its own (`Task.run`), the machine of an async function that the pool
    runs, or a delay. `waiter` is who waits for it: nobody yet, the async task that awaits it, a
    thread asleep in `wait` (its lowest bit set), the group of the list of tasks it is in (its
-   second bit set), or `SG_ENDED`. `later` is the task that ended after it in its group. */
+   second bit set), the `TaskGroup` it was given to (both bits set), or `SG_ENDED`. */
 #if SG_THREADS
 typedef struct sg_task {
     sg_thread thread;
@@ -1638,7 +1644,10 @@ typedef struct sg_task {
     void (*run)(struct sg_task*);
     bool (*poll)(struct sg_task*);
     struct sg_task* next;
+    /* The task that ended after it in the group of its list; in a `TaskGroup`, the task after it
+       among those that run, and `before` the one before. */
     struct sg_task* later;
+    struct sg_task* before;
     void* waiter;
     void* closing;
     int kind;
@@ -4508,6 +4517,7 @@ typedef struct sg_group {
     sg_task* job;
 } sg_group;
 #define SG_GROUP 2
+#define SG_TGROUP 3
 static void sg_group_told(sg_group* g, sg_task* t) {
     sg_mtx_lock(&g->m);
     t->later = NULL;
@@ -4523,13 +4533,18 @@ static void sg_group_told(sg_group* g, sg_task* t) {
    in it, so nothing of it is touched after that (a group takes it out only once it is told). An
    async task that awaits it is woken while `SG_ENDING` holds it back: until then it may not go
    on, end and be freed under this thread. */
+struct sg_tgroup;
+static void sg_tgroup_told(struct sg_tgroup* g, sg_task* t);
 static void sg_task_ended(sg_task* t) {
     void* w = __atomic_exchange_n(&t->waiter, SG_ENDING, __ATOMIC_ACQ_REL);
     if (!w || ((uintptr_t)w & 3) == SG_GROUP || ((uintptr_t)w & 1)) {
         __atomic_store_n(&t->waiter, SG_ENDED, __ATOMIC_RELEASE);
     }
     if (!w) return;
-    if (((uintptr_t)w & 3) == SG_GROUP) {
+    if (((uintptr_t)w & 3) == SG_TGROUP) {
+        /* The group lets go of it: nothing of it is touched after this. */
+        sg_tgroup_told((struct sg_tgroup*)((uintptr_t)w - SG_TGROUP), t);
+    } else if (((uintptr_t)w & 3) == SG_GROUP) {
         sg_group_told((sg_group*)((uintptr_t)w - SG_GROUP), t);
     } else if ((uintptr_t)w & 1) {
         sg_parked* p = (sg_parked*)((uintptr_t)w - 1);
@@ -4696,6 +4711,7 @@ SG_COLD static _Noreturn void sg_when_any_empty(const char* loc) {
     fprintf(stderr, "panic: `Task.whenAny` is given an empty list, so no task could end\n");
     sg_die(loc);
 }
+
 
 /* The pool: the threads that run async tasks, as many as there are cores, started as they are
    needed. As in Tokio, each thread has a queue of its own, a ring of 256 tasks that it takes from
@@ -5255,11 +5271,17 @@ typedef struct sg_delay {
     struct sg_delay* next;
 } sg_delay;
 enum { SG_WAITING, SG_OVER, SG_CANCELLED };
+/* `armed`: when the source's own delay (`clock`) is due on the clock, 0 while it is not there;
+   `want`: when it is to cancel itself, as `after` or the last `cancelAfter` said. A `want` later
+   than `armed` is only written down, and the clock puts the delay back for it when `armed`
+   comes (1720). */
 typedef struct sg_cancel {
     int64_t refs;
     int cancelled;
     sg_delay* first;
     sg_delay clock;
+    int64_t armed;
+    int64_t want;
 } sg_cancel;
 
 static sg_mtx sg_clock_lock = SG_MTX_INIT;
@@ -5458,9 +5480,10 @@ static void sg_watch_start(const char* loc) {
     sg_clock_poke();
     sg_mtx_unlock(&sg_clock_lock);
 }
-static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
+/* Puts a delay on the clock for the moment `due` of `sg_now`; the clock's lock is held. */
+static void sg_clock_put_at(sg_delay* d, int64_t due, const char* loc) {
     sg_clock_start(loc);
-    d->due = sg_now() + ms * 1000000;
+    d->due = due;
     d->order = sg_clock_order++;
     if (!sg_heap) SG_KEPT(1);
     if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap, _Alignof(__typeof__(*sg_heap)));
@@ -5468,6 +5491,9 @@ static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
     sg_heap_len++;
     sg_heap_up(sg_heap_len - 1);
     if (d->at == 0) sg_clock_poke();
+}
+static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
+    sg_clock_put_at(d, sg_now() + ms * 1000000, loc);
 }
 /* `await Task.delay(ms)` and `await Task.delay(ms, read token)`, in the frame of the async
    function. A delay of 0, and one whose token is cancelled, is over at once and does not wait. */
@@ -5586,8 +5612,27 @@ static void sg_cancel_now(sg_cancel* c) {
     sg_cancel_held(c);
     sg_mtx_unlock(&sg_clock_lock);
 }
+/* The clock's lock is held, and the source's own delay is not on the clock: it goes there for
+   the moment `want` says, and stays there until that moment holds still (see `sg_cancel`). */
+static void sg_cancel_arm(sg_cancel* c, const char* loc) {
+    for (;;) {
+        int64_t want = __atomic_load_n(&c->want, __ATOMIC_SEQ_CST);
+        c->clock.state = SG_WAITING;
+        sg_clock_put_at(&c->clock, want, loc);
+        __atomic_store_n(&c->armed, want, __ATOMIC_SEQ_CST);
+        /* A `cancelAfter` that wrote a sooner time while `armed` was being changed saw the old
+           `armed` and went on; it is seen here. */
+        if (__atomic_load_n(&c->want, __ATOMIC_SEQ_CST) >= want) return;
+        sg_heap_remove(&c->clock);
+    }
+}
 static void sg_cancel_clock_over(sg_delay* d) {
     sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, clock));
+    if (!c->cancelled && __atomic_load_n(&c->want, __ATOMIC_SEQ_CST) > d->due) {
+        sg_cancel_arm(c, NULL);
+        return;
+    }
+    __atomic_store_n(&c->armed, 0, __ATOMIC_SEQ_CST);
     sg_cancel_held(c);
     SG_KEPT(-1);
     sg_cancel_less(c);
@@ -5603,11 +5648,301 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
     c->refs = 2;
     SG_KEPT(1);
     c->clock.over = sg_cancel_clock_over;
-    c->clock.state = SG_WAITING;
+    c->want = sg_now() + (int64_t)ms * 1000000;
     sg_mtx_lock(&sg_clock_lock);
-    sg_clock_put(&c->clock, ms, loc);
+    sg_cancel_arm(c, loc);
     sg_mtx_unlock(&sg_clock_lock);
     return c;
+}
+/* `source.cancelAfter(ms)` (1720): the source cancels itself `ms` from now, in place of the time
+   it had, as C#'s `CancelAfter`; a cancelled source stays as it is. A time no sooner than the one
+   on the clock is one atomic store, which a server can make before each request: the clock puts
+   the source back for it when the earlier time comes. A sooner time, or a source not on the
+   clock yet, takes the clock's lock. */
+static void sg_cancel_after_again(sg_cancel* c, int32_t ms, const char* loc) {
+    if (ms < 0) sg_panicf(loc, "`cancelAfter(%d)`: a time is not negative", (int)ms);
+    if (sg_cancelled(c)) return;
+    int64_t due = sg_now() + (int64_t)ms * 1000000;
+    __atomic_store_n(&c->want, due, __ATOMIC_SEQ_CST);
+    int64_t armed = __atomic_load_n(&c->armed, __ATOMIC_SEQ_CST);
+    if (ms > 0 && armed != 0 && armed <= due) return;
+    sg_mtx_lock(&sg_clock_lock);
+    if (ms == 0) {
+        sg_cancel_held(c);
+    } else if (!c->cancelled) {
+        if (c->clock.at >= 0) {
+            if (c->clock.due > __atomic_load_n(&c->want, __ATOMIC_SEQ_CST)) {
+                sg_heap_remove(&c->clock);
+                sg_cancel_arm(c, loc);
+            }
+        } else if (__atomic_load_n(&c->armed, __ATOMIC_SEQ_CST) == 0) {
+            (void)sg_cancel_more(c);
+            SG_KEPT(1);
+            c->clock.over = sg_cancel_clock_over;
+            sg_cancel_arm(c, loc);
+        }
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+}
+
+/* A `TaskGroup` (1716 to 1719): the tasks given to it that run, linked through `later` and
+   `before`. A task that ends tells the group last thing, under its lock, and the group frees it
+   there; so the group is freed only after every task in it has told it, and a task is touched
+   only under the lock. Whoever waits in `whenRoom` or `whenAll` goes on once no more than
+   `until` run: an async task (`job`), or threads asleep on `c`. */
+typedef struct sg_tgroup {
+    sg_mtx m;
+    sg_cnd c;
+    sg_task* first;
+    int64_t count;
+    int64_t limit;
+    int64_t until;
+    sg_task* job;
+    int sleepers;
+} sg_tgroup;
+SG_COLD static _Noreturn void sg_tgroup_limit_wrong(int32_t limit, const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: `TaskGroup(%d)`: a group lets at least one task run\n", (int)limit);
+    sg_die(loc);
+}
+/* `TaskGroup()`, `TaskGroup(limit)`. */
+static sg_tgroup* sg_tgroup_new(bool limited, int32_t limit, const char* loc) {
+    if (limited && limit < 1) sg_tgroup_limit_wrong(limit, loc);
+    sg_tgroup* g = calloc(1, sizeof *g);
+    if (!g) abort();
+    sg_mtx_init(&g->m);
+    sg_cnd_init(&g->c);
+    g->limit = limited ? limit : 0;
+    return g;
+}
+static void sg_tgroup_told(sg_tgroup* g, sg_task* t) {
+    sg_mtx_lock(&g->m);
+    if (t->before) t->before->later = t->later;
+    else g->first = t->later;
+    if (t->later) t->later->before = t->before;
+    g->count--;
+    if (g->job && g->count <= g->until) {
+        sg_task* job = g->job;
+        g->job = NULL;
+        sg_wake(job);
+    }
+    if (g->sleepers) sg_cnd_broadcast(&g->c);
+    sg_mtx_unlock(&g->m);
+    sg_task_free(t);
+}
+/* `group.add(task)`: the group holds the task from now on, and frees it when it ends; one that
+   has ended already is freed now. A thread of `Task.run` is not joined: it goes on by itself. */
+static void sg_tgroup_add(sg_tgroup* g, sg_task* t) {
+    sg_mtx_lock(&g->m);
+    void* none = NULL;
+    if (__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)g + SG_TGROUP), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (t->kind == SG_THREAD) sg_thread_detach(t->thread);
+        t->before = NULL;
+        t->later = g->first;
+        if (g->first) g->first->before = t;
+        g->first = t;
+        g->count++;
+        sg_mtx_unlock(&g->m);
+        return;
+    }
+    sg_mtx_unlock(&g->m);
+    (void)sg_ended_settle(t, none);
+    if (t->kind == SG_THREAD) sg_thread_join(t->thread);
+    sg_task_free(t);
+}
+/* `group.count()`. */
+static int64_t sg_tgroup_count(sg_tgroup* g) {
+    sg_mtx_lock(&g->m);
+    int64_t n = g->count;
+    sg_mtx_unlock(&g->m);
+    return n;
+}
+/* Every task of the group is let go (1691): a wait in it that can say so ends. The lock is held. */
+static void sg_tgroup_cut_held(sg_tgroup* g) {
+    for (sg_task* t = g->first; t; t = t->later) sg_task_cut(t);
+}
+/* A wait in `whenRoom` or `whenAll`, in the frame of the async function or on the stack of a
+   thread: on its token's list while `d.token` is set; `cut` once the token is cancelled. */
+typedef struct sg_tgroup_wait {
+    sg_delay d;
+    sg_tgroup* g;
+    sg_cancel* token;
+    int64_t until;
+    bool all;
+    bool told;
+    bool thread;
+    bool linked;
+    bool let_go;
+    bool stopped;
+    int cut;
+    int state;
+} sg_tgroup_wait;
+/* A cancel, under the clock's lock: the token has taken the wait off its list already. */
+static void sg_tgroup_cancel(sg_delay* d) {
+    sg_tgroup_wait* w = (sg_tgroup_wait*)d;
+    d->token = NULL;
+    __atomic_store_n(&w->cut, 1, __ATOMIC_RELEASE);
+    if (w->thread) {
+        sg_mtx_lock(&w->g->m);
+        sg_cnd_broadcast(&w->g->c);
+        sg_mtx_unlock(&w->g->m);
+    } else {
+        SG_WAKE_PAUSE();
+        sg_wake(d->job);
+    }
+}
+static void sg_tgroup_wait_init(sg_tgroup_wait* w, sg_tgroup* g, bool all, bool told, sg_cancel* token, bool thread) {
+    memset(w, 0, sizeof *w);
+    w->d.job = thread ? NULL : sg_job_now;
+    w->d.over = sg_tgroup_cancel;
+    w->d.at = -1;
+    w->g = g;
+    w->token = told ? token : NULL;
+    w->all = all;
+    w->told = told;
+    w->thread = thread;
+    w->until = all ? 0 : (g->limit > 0 ? g->limit - 1 : INT64_MAX);
+    w->state = SG_WAITING;
+}
+/* The wait goes on the token's list, once; true when the token is cancelled already. */
+static bool sg_tgroup_link(sg_tgroup_wait* w) {
+    if (!w->token || w->linked) return false;
+    w->linked = true;
+    sg_mtx_lock(&sg_clock_lock);
+    bool cancelled = w->token->cancelled;
+    if (!cancelled) {
+        w->d.token = w->token;
+        w->d.prev = NULL;
+        w->d.next = w->token->first;
+        if (w->token->first) w->token->first->prev = &w->d;
+        w->token->first = &w->d;
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    return cancelled;
+}
+/* The wait is over: it leaves its token's list. A cancel that is waking it is done before. */
+static void sg_tgroup_unlink(sg_tgroup_wait* w) {
+    if (!w->linked) return;
+    sg_mtx_lock(&sg_clock_lock);
+    sg_delay* d = &w->d;
+    if (d->token) {
+        if (d->prev) d->prev->next = d->next;
+        else d->token->first = d->next;
+        if (d->next) d->next->prev = d->prev;
+        d->token = NULL;
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+}
+/* Whether the wait is to stop: its token is cancelled, or the task waiting was let go. */
+static inline bool sg_tgroup_stop(sg_tgroup_wait* w) {
+    return w->told && (__atomic_load_n(&w->cut, __ATOMIC_ACQUIRE) || sg_cancelled(w->token) || sg_job_cut());
+}
+/* `await group.whenRoom()`, `await group.whenAll()`, looked at where the wait starts and each time
+   the task is woken: SG_OVER once no more than `until` tasks run, SG_CANCELLED when `whenRoom`
+   is told to stop first, or when `whenAll` was told to stop and has let its tasks go and seen
+   them end (1718). A task let go lets the group's tasks go (1691). */
+static bool sg_tgroup_ready(sg_tgroup_wait* w) {
+    if (w->state != SG_WAITING) return true;
+    sg_tgroup* g = w->g;
+    for (;;) {
+        bool stop = sg_tgroup_stop(w);
+        sg_mtx_lock(&g->m);
+        bool done = g->count <= w->until;
+        if (!w->all && (done || stop)) {
+            if (g->job == sg_job_now) g->job = NULL;
+            sg_mtx_unlock(&g->m);
+            sg_tgroup_unlink(w);
+            w->state = done ? SG_OVER : SG_CANCELLED;
+            return true;
+        }
+        if (!w->let_go && (stop || sg_job_cut())) {
+            w->let_go = true;
+            sg_tgroup_cut_held(g);
+        }
+        w->stopped |= stop;
+        if (done) {
+            if (g->job == sg_job_now) g->job = NULL;
+            sg_mtx_unlock(&g->m);
+            sg_tgroup_unlink(w);
+            w->state = w->stopped ? SG_CANCELLED : SG_OVER;
+            return true;
+        }
+        g->job = sg_job_now;
+        g->until = w->until;
+        sg_mtx_unlock(&g->m);
+        if (!w->told || !sg_tgroup_link(w)) return false;
+        __atomic_store_n(&w->cut, 1, __ATOMIC_RELEASE);
+    }
+}
+static inline void sg_tgroup_start(sg_tgroup_wait* w, sg_tgroup* g, bool all, bool told, sg_cancel* token) {
+    sg_tgroup_wait_init(w, g, all, told, token, false);
+    (void)sg_tgroup_ready(w);
+}
+/* The same for code that is not async (`group.whenAll().wait()`): the thread sleeps. Gives
+   SG_OVER or SG_CANCELLED. */
+static int sg_tgroup_block(sg_tgroup* g, bool all, bool told, sg_cancel* token) {
+    sg_tgroup_wait w;
+    sg_tgroup_wait_init(&w, g, all, told, token, true);
+    if (told && sg_tgroup_link(&w)) w.cut = 1;
+    sg_mtx_lock(&g->m);
+    for (;;) {
+        bool stop = told && __atomic_load_n(&w.cut, __ATOMIC_ACQUIRE);
+        if (all && stop && !w.let_go) {
+            w.let_go = true;
+            sg_tgroup_cut_held(g);
+        }
+        if (g->count <= w.until) {
+            w.state = all && stop ? SG_CANCELLED : SG_OVER;
+            break;
+        }
+        if (stop && !all) {
+            w.state = SG_CANCELLED;
+            break;
+        }
+        g->sleepers++;
+        sg_cnd_wait(&g->c, &g->m);
+        g->sleepers--;
+    }
+    sg_mtx_unlock(&g->m);
+    sg_tgroup_unlink(&w);
+    return w.state;
+}
+/* The group is let go of: an exit with an error lets its tasks go and waits for them (an async
+   function has awaited them before, see `drops`), then it is freed. */
+static void sg_tgroup_free(sg_tgroup* g) {
+    sg_mtx_destroy(&g->m);
+    sg_cnd_destroy(&g->c);
+    free(g);
+}
+static void sg_drop_tgroup(sg_tgroup** p) {
+    sg_tgroup* g = *p;
+    if (!g) return;
+    *p = NULL;
+    sg_mtx_lock(&g->m);
+    sg_tgroup_cut_held(g);
+    while (g->count > 0) {
+        g->sleepers++;
+        sg_cnd_wait(&g->c, &g->m);
+        g->sleepers--;
+    }
+    sg_mtx_unlock(&g->m);
+    sg_tgroup_free(g);
+}
+static inline sg_tgroup* sg_move_tgroup(sg_tgroup** p) { sg_tgroup* g = *p; *p = NULL; return g; }
+/* An async function's way out with an error: the group's tasks are let go, and the task waits
+   until they have ended (see `drops`). */
+static bool sg_tgroup_settled(sg_tgroup* g) {
+    sg_mtx_lock(&g->m);
+    bool done = g->count == 0;
+    g->job = done ? NULL : sg_job_now;
+    g->until = 0;
+    sg_mtx_unlock(&g->m);
+    return done;
+}
+static void sg_tgroup_cut(sg_tgroup* g) {
+    sg_mtx_lock(&g->m);
+    sg_tgroup_cut_held(g);
+    sg_mtx_unlock(&g->m);
 }
 "#;
 
@@ -12293,6 +12628,7 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Writer => "writer".to_string(),
         Ty::Source => "source".to_string(),
         Ty::Token => "token".to_string(),
+        Ty::Group => "tgroup".to_string(),
         Ty::Listener => "listener".to_string(),
         Ty::Socket => "socket".to_string(),
         Ty::CString => "cstring".to_string(),
@@ -13130,6 +13466,11 @@ impl<'a> Emitter<'a> {
                 self.made.insert("tasks".to_string());
                 "sg_cancel*".to_string()
             }
+            // A group of tasks is one block (see `TASK_RUNTIME`).
+            Ty::Group => {
+                self.made.insert("tasks".to_string());
+                "sg_tgroup*".to_string()
+            }
             // The ends of a channel point at one block (see `CHAN_RUNTIME`).
             Ty::Channel(_) | Ty::Sender(_) => {
                 self.chan_names(ty);
@@ -13860,7 +14201,7 @@ impl<'a> Emitter<'a> {
                     _ => Ty::CFunc(params, Box::new(self.written(ret)?)),
                 }
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Group | Ty::Listener | Ty::Socket | Ty::CString)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 // An alias is the type it names; the checker has seen that it ends.
                 Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
@@ -13930,7 +14271,7 @@ impl<'a> Emitter<'a> {
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => true,
-            Ty::Channel(_) | Ty::Sender(_) => true,
+            Ty::Channel(_) | Ty::Sender(_) | Ty::Group => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -14022,6 +14363,16 @@ impl<'a> Emitter<'a> {
     }
 
     /// The C statement that drops what is at `place`.
+    /// The group a method of a `TaskGroup` is called on: lent, or taken (`whenAll`), through as
+    /// many borrows as it is reached by.
+    fn group_of(&mut self, recv: &'a Expr, takes: bool) -> Res<String> {
+        let place = format!("(*{})", self.list_address(recv)?);
+        Ok(match takes {
+            true => self.move_of(&Ty::Group, &place),
+            false => place,
+        })
+    }
+
     fn drop_of(&self, ty: &Ty, place: &str) -> String {
         format!("sg_drop_{}(&{place});", mangle(ty).expect("what is dropped has a C type"))
     }
@@ -15782,6 +16133,14 @@ impl<'a> Emitter<'a> {
                         lines.push(format!(
                             "if ({task}) {{ sg_task_cut(&{task}->head); }} SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) {{ return false; }} {}",
                             self.drop_of(&local.ty, task)
+                        ));
+                    }
+                    // So is a group of tasks, all of them.
+                    None if !local.gone && local.ty == Ty::Group && self.awaits.is_some() => {
+                        let group = &local.cname;
+                        lines.push(format!(
+                            "if ({group}) {{ sg_tgroup_cut({group}); }} SG_RESUME(0); if ({group} && !sg_tgroup_settled({group})) {{ return false; }} {}",
+                            self.drop_of(&local.ty, group)
                         ));
                     }
                     // So is a list of tasks, all of them.
@@ -18838,6 +19197,29 @@ impl<'a> Emitter<'a> {
                 let value = self.await_io(fname, &params, Some(receiver), args, head, expr)?;
                 result(self, value)
             }
+            // `await group.whenRoom()`, `await group.whenAll()`: the wait lies in the frame, and is
+            // looked at each time the task is woken; `whenAll` takes the group, and frees it after.
+            ExprKind::Method { recv, args, callee: Callee::Group(call, told), .. } => {
+                let all = *call == GroupCall::WhenAll;
+                let (value, wait) = (self.group_of(recv, all)?, self.temp());
+                let token = match told {
+                    true => format!("(*{})", self.value(&args[0])?),
+                    false => "NULL".to_string(),
+                };
+                self.pre.push(format!("sg_tgroup* {wait}g = {value}; sg_tgroup_wait {wait}; sg_tgroup_start(&{wait}, {wait}g, {all}, {told}, {token});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_tgroup_ready(&{wait})) return false;"));
+                if all {
+                    self.pre.push(format!("sg_tgroup_free({wait}g);"));
+                }
+                match told {
+                    true => {
+                        let ctype = self.ctype(&expr.ty, expr.span)?;
+                        result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})"))
+                    }
+                    false => result(self, String::new()),
+                }
+            }
             // `await Task.whenAll(tasks)`: the list is taken, and what its tasks gave is taken
             // once the group says all have ended.
             ExprKind::Method { args, callee: Callee::WhenAll, .. } => {
@@ -20735,6 +21117,14 @@ impl<'a> Emitter<'a> {
                     self.made.insert("tasks".to_string());
                     Ok("sg_cancel_new()".to_string())
                 }
+                Callee::Group(GroupCall::New(limited), _) => {
+                    self.made.insert("tasks".to_string());
+                    let limit = match limited {
+                        true => self.value_as(&args[0], &Ty::Int(IntTy::Int))?,
+                        false => "0".to_string(),
+                    };
+                    Ok(format!("sg_tgroup_new({limited}, {limit}, {})", self.loc(expr.span)))
+                }
                 Callee::Plain => self.call_at(expr.span, format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 // A function of C, through the adapter `foreign_func` wrote.
                 Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
@@ -20782,7 +21172,12 @@ impl<'a> Emitter<'a> {
                 }
                 // A source and its tokens are one block; each method looks at it through a borrow.
                 Callee::Cancel(call) => {
-                    let mut source = self.value(recv)?;
+                    // A token that a call has just made (`source.token().check()`) is dropped
+                    // after the statement, as any value with no name is.
+                    let mut source = match recv.is_place() || recv.ty.is_borrow() {
+                        true => self.value(recv)?,
+                        false => self.look(recv)?,
+                    };
                     let mut ty = &recv.ty;
                     while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Shared(inner, _) = ty {
                         source = format!("(*{source})");
@@ -20790,6 +21185,10 @@ impl<'a> Emitter<'a> {
                     }
                     Ok(match call {
                         CancelCall::Cancel => format!("sg_cancel_now({source})"),
+                        CancelCall::CancelAfter => {
+                            let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
+                            format!("sg_cancel_after_again({source}, {ms}, {})", self.loc(expr.span))
+                        }
                         CancelCall::Token | CancelCall::Clone => format!("sg_cancel_more({source})"),
                         CancelCall::IsCancelled => format!("sg_cancelled({source})"),
                         CancelCall::Check => {
@@ -20800,6 +21199,33 @@ impl<'a> Emitter<'a> {
                     })
                 }
                 Callee::Chan(call, told) => self.chan_call(*call, *told, recv, args, expr),
+                Callee::Group(GroupCall::Add, _) => {
+                    let group = format!("(*{})", self.list_address(recv)?);
+                    let task = self.value(&args[0])?;
+                    Ok(format!("sg_tgroup_add({group}, &({task})->head)"))
+                }
+                Callee::Group(GroupCall::Count, _) => Ok(format!("sg_tgroup_count((*{}))", self.list_address(recv)?)),
+                Callee::Group(..) => unreachable!("the checker has `whenRoom` and `whenAll` awaited or waited for where they are written"),
+                // `group.whenRoom().wait()`, `group.whenAll().wait()`: the thread sleeps until the
+                // group lets it go on; `whenAll` takes the group, and frees it after.
+                Callee::Wait if matches!(&recv.kind, ExprKind::Method { callee: Callee::Group(..), .. }) => {
+                    let ExprKind::Method { recv: group, args: given, callee: Callee::Group(call, told), .. } = &recv.kind else { unreachable!("just seen") };
+                    let all = *call == GroupCall::WhenAll;
+                    let (value, temp) = (self.group_of(group, all)?, self.temp());
+                    let token = match told {
+                        true => format!("(*{})", self.value(&given[0])?),
+                        false => "NULL".to_string(),
+                    };
+                    let free = if all { format!(" sg_tgroup_free({temp});") } else { String::new() };
+                    self.pre.push(format!("sg_tgroup* {temp} = {value}; int {temp}s = sg_tgroup_block({temp}, {all}, {told}, {token});{free}"));
+                    match told {
+                        true => {
+                            let ctype = self.ctype(&expr.ty, expr.span)?;
+                            Ok(format!("({temp}s == SG_CANCELLED ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})"))
+                        }
+                        false => Ok(format!("(void){temp}s")),
+                    }
+                }
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
                 // `Task.whenAll(tasks).wait()`, `Task.whenAny(ref tasks).wait()`: the thread
                 // sleeps until the group says the tasks have ended.

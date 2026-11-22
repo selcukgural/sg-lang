@@ -1,0 +1,13 @@
+// The tasks of a group are waited for before it ends.
+async int count() {
+    return 1
+}
+
+async void work() {
+    print("working")
+}
+
+async void main() {
+    var group = TaskGroup()
+    group.add(work())
+}

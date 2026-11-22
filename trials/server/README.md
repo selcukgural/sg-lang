@@ -21,7 +21,14 @@ podman build -t sg-server -f trials/server/Containerfile trials/server   # once
 python3 trials/server/measure.py              # every case, on Linux in the image
 python3 trials/server/measure.py --soak       # and the long runs, 30 minutes each
 python3 trials/server/measure.py --check      # each server held to what it must answer, natively
+python3 trials/server/measure.py --languages sg,sg-limit,rust,zig,c --only resp-trickle-10k --runs 3
+                                              # slow clients, and SG's store with --idle-limit 5000 beside the others
 ```
+
+`sg-limit` is SG's store started with `--idle-limit 5000`, the time a request may take; it is measured only
+when named, since the other servers have no such limit (choice 1724). The load's `--trickle MS` makes its idle
+connections slow clients, each sending a byte of an unending SET every MS milliseconds; one the server closes is
+counted as cut.
 
 `interpreter/tests/cli.rs` (`the_servers_of_the_server_lane`) builds the SG servers and the load and
 runs the check on every test run, on Linux and macOS.

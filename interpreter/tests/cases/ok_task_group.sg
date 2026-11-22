@@ -1,0 +1,71 @@
+// A `TaskGroup` lets go of each task as it ends, `whenRoom` waits while the limit of them run,
+// and `whenAll` waits for the rest; with a token, `whenRoom` gives up and `whenAll` cuts the
+// tasks that are left and still waits for them. The times are far apart, so that compiled code,
+// on a real clock, prints the same lines.
+
+// A piece of work that takes `ms`; its wait ends early when the task is let go, since it is
+// given a token (of a source nobody cancels).
+async void work(string name, int ms) {
+    var own = CancellationSource()
+    if await Task.delay(ms, read own.token()) is Error(_) {
+        print($"{name} was cut")
+        return
+    }
+    print($"{name} done")
+}
+
+// Takes `count` pieces of work, never more than two at a time, until `stop` is cancelled.
+async void limited(int count, read CancellationToken stop) {
+    var group = TaskGroup(2)
+    for i in 0..count {
+        if await group.whenRoom(read stop) is Error(_) {
+            print("told to stop: no more work is taken")
+            break
+        }
+        group.add(work($"job {i}".toString(), 300 * (i + 1)))
+        print($"job {i} started, {group.count()} running")
+    }
+    await group.whenAll()
+    print("all ended")
+}
+
+async void stopAfter(int ms, shared CancellationSource source) {
+    await Task.delay(ms)
+    source.cancel()
+}
+
+// A graceful end: the tasks get `grace` milliseconds, then they are cut and waited for.
+async void graceful(int grace) {
+    var group = TaskGroup()
+    group.add(work("quick", 200))
+    group.add(work("slow", 3000))
+    var limit = CancellationSource.after(grace)
+    match await group.whenAll(read limit.token()) {
+        Ok => print("every task ended in time")
+        Error(_) => print("the tasks left were cut, and have ended")
+    }
+}
+
+async Result<void, Cancelled> failing() {
+    var group = TaskGroup()
+    group.add(work("left behind", 5000))
+    var never = CancellationSource()
+    never.cancel()
+    // An exit with an error lets the group's tasks go, then waits for them.
+    try never.token().check()
+    await group.whenAll()
+    return Ok()
+}
+
+async void main() {
+    await limited(5, read CancellationToken.None)
+    var stop = new shared CancellationSource()
+    var stopping = stopAfter(900, share stop)
+    await limited(5, read stop.token())
+    await stopping
+    await graceful(1500)
+    await graceful(5000)
+    if await failing() is Error(_) {
+        print("failing ended with its error")
+    }
+}

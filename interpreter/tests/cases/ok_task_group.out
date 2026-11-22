@@ -1,0 +1,29 @@
+job 0 started, 1 running
+job 1 started, 2 running
+job 0 done
+job 2 started, 2 running
+job 1 done
+job 3 started, 2 running
+job 2 done
+job 4 started, 2 running
+job 3 done
+job 4 done
+all ended
+job 0 started, 1 running
+job 1 started, 2 running
+job 0 done
+job 2 started, 2 running
+job 1 done
+job 3 started, 2 running
+told to stop: no more work is taken
+job 2 done
+job 3 done
+all ended
+quick done
+slow was cut
+the tasks left were cut, and have ended
+quick done
+slow done
+every task ended in time
+left behind was cut
+failing ended with its error

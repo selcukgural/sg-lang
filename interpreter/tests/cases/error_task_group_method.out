@@ -1,0 +1,5 @@
+error: `TaskGroup` has no method `cancel`
+  a group's tasks are cut where it is waited for: `whenAll(read token)` lets them go once the token is cancelled, and still waits for them
+  --> error_task_group_method.sg:4:11
+ 4 |     group.cancel()
+   |           ^^^^^^

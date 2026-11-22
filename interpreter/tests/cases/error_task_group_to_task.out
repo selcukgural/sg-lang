@@ -1,0 +1,5 @@
+error: `keep` takes a `TaskGroup` here, which cannot go to another task: a group of tasks is waited for by the task that made it, and by no other
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_group_to_task.sg:9:32
+ 9 |     var other = Task.run(keep, group)
+   |                                ^^^^^

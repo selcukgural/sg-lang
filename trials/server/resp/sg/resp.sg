@@ -4,12 +4,15 @@
 // the buffer holds and sends the answers together; a command of more than 1,024 parts or a part
 // of more than 1 MB closes the connection.
 //
-//     resp PORT
+//     resp PORT [--idle-limit MS]
 //
-// Every connection is a task. The task that takes the next connection is in the same list as the
-// connections, so that one which ends is taken out of the list while the server goes on taking
-// new ones. A key is text: a key that is not UTF-8 is answered with an error, where the C, Rust
-// and Zig versions take any bytes (a map of SG is keyed by text, a number or a type of its own).
+// Every connection is a task of a `TaskGroup`, which lets go of each as it ends. With
+// `--idle-limit`, a connection that takes longer than that many milliseconds to send a whole request,
+// from when its first byte is awaited, is closed: the C,
+// Rust and Zig versions have no such limit, so the tables measure SG without it, and the cost and
+// the gain of it on their own (choice 1724). A key is text: a key that is not UTF-8 is answered
+// with an error, where the C, Rust and Zig versions take any bytes (a map of SG is keyed by text,
+// a number or a type of its own).
 
 struct Shard {
     HashMap<string, List<byte>> map
@@ -17,25 +20,6 @@ struct Shard {
 
 struct Store {
     List<shared locked Shard> shards
-}
-
-// What a task of the server's list gives: a connection taken, a listener that failed to take one
-// (too many open files, say), or a connection that ended.
-enum Done {
-    Accepted(TcpStream conn)
-    AcceptFailed(IoError cause)
-    Ended
-}
-
-// Takes the next connection, after `pause` milliseconds when the last attempt failed.
-async Done acceptNext(shared TcpListener listener, int pause) {
-    if pause > 0 {
-        await Task.delay(pause)
-    }
-    match await listener.acceptAsync() {
-        Ok(conn) => return Done.Accepted(conn)
-        Error(cause) => return Done.AcceptFailed(cause)
-    }
 }
 
 // ---- writing the answers
@@ -238,19 +222,33 @@ nint serveAll(read Store store, read byte[] bytes, ref List<nint> starts, ref Li
 
 // ---- a connection
 
-async Result<void, IoError> serve(TcpStream conn, shared Store store) {
+async Result<void, IoError> serve(TcpStream conn, shared Store store, int idleLimit) {
     var buffer = List<byte>.repeat(0, 4096)
     nint length = 0
     var out = List<byte>()
     var starts = List<nint>()
     var ends = List<nint>()
+    // The time a request may take, from when its first byte is awaited: set again only while no
+    // part of a request waits in the buffer, so it closes a client that stays silent and one that
+    // sends a byte now and then and never a whole request. Without a limit there is no source and
+    // no token, and a connection costs nothing more.
+    CancellationSource? idle = null
+    var token = CancellationToken.None
+    if idleLimit > 0 {
+        var made = CancellationSource()
+        token = made.token()
+        idle = made
+    }
     while true {
         if length == buffer.length() {
             var bigger = List<byte>.repeat(0, buffer.length() * 2)
             bigger[0..length].copyFrom(buffer[0..length])
             buffer = bigger
         }
-        var n = try await conn.receiveAsync(ref buffer[length..buffer.length()])
+        if idle is not null && length == 0 {
+            idle.cancelAfter(idleLimit)
+        }
+        var n = try await conn.receiveAsync(ref buffer[length..buffer.length()], read token)
         if n == 0 {
             return Ok()
         }
@@ -270,41 +268,43 @@ async Result<void, IoError> serve(TcpStream conn, shared Store store) {
     }
 }
 
-// A connection that fails ends alone.
-async Done connection(TcpStream conn, shared Store store) {
-    _ = await serve(conn, store)
-    return Done.Ended
+// A connection that fails, or is too slow, ends alone.
+async void connection(TcpStream conn, shared Store store, int idleLimit) {
+    _ = await serve(conn, store, idleLimit)
 }
 
-async Result<void, IoError> listen(int port) {
+// Takes connections for ever; one the listener fails to take (too many open files, say) is tried
+// again after 10 ms.
+async Result<void, IoError> listen(int port, int idleLimit) {
     var shards = List<shared locked Shard>()
     for _ in 0..64 {
         shards.add(new shared locked Shard { map = HashMap<string, List<byte>>() })
     }
     var store = new shared Store { shards = shards }
     var address = $":{port}".toString()
-    var listener = new shared (try TcpListener.bind(read address))
-    var tasks = List<Task<Done>>()
-    tasks.add(acceptNext(share listener, 0))
-    while tasks.length() > 0 {
-        match await Task.whenAny(ref tasks) {
-            Accepted(conn) => {
-                tasks.add(connection(conn, share store))
-                tasks.add(acceptNext(share listener, 0))
-            }
-            AcceptFailed(_) => tasks.add(acceptNext(share listener, 10))
-            Ended => {}
+    var listener = try TcpListener.bind(read address)
+    var connections = TaskGroup()
+    while true {
+        match await listener.acceptAsync() {
+            Ok(conn) => connections.add(connection(conn, share store, idleLimit))
+            Error(_) => await Task.delay(10)
         }
     }
-    return Ok()
 }
 
 void main(List<string> args) {
-    if args.length() != 1 || int.parse(args[0]) is not Ok(port) {
-        printError("usage: resp PORT")
+    int idleLimit = 0
+    if args.length() == 3 && args[1] == "--idle-limit" && int.parse(args[2]) is Ok(ms) && ms > 0 {
+        idleLimit = ms
+    } else if args.length() != 1 {
+        printError("usage: resp PORT [--idle-limit MS]")
         exit(2)
     }
-    if listen(port).wait() is Error(e) {
+    if int.parse(args[0]) is not Ok(port) {
+        printError("usage: resp PORT [--idle-limit MS]")
+        exit(2)
+    }
+    if listen(port, idleLimit).wait() is Error(e) {
         printError($"resp: {e}".toString())
         exit(1)
     }
