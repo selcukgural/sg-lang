@@ -5708,7 +5708,7 @@ static void sg_cancel_after_again(sg_cancel* c, int32_t ms, const char* loc) {
 
 /* A `TaskGroup` (1716 to 1719): the tasks given to it that run, linked through `later` and
    `before`. A task that ends tells the group last thing, under its lock, and the group frees it
-   there; so the group is freed only after every task in it has told it, and a task is touched
+   there, before the lock is let go; so the group is freed only after every task in it has told it, and a task is touched
    only under the lock. Whoever waits in `whenRoom` or `whenAll` goes on once no more than
    `until` run: an async task (`job`), or threads asleep on `c`. */
 typedef struct sg_tgroup {
@@ -5748,8 +5748,10 @@ static void sg_tgroup_told(sg_tgroup* g, sg_task* t) {
         sg_wake(job);
     }
     if (g->sleepers) sg_cnd_broadcast(&g->c);
-    sg_mtx_unlock(&g->m);
+    /* Freed under the lock: once the count is down, a `whenAll` may go on and the program end,
+       and a task freed after the lock would still be taken when its blocks are counted. */
     sg_task_free(t);
+    sg_mtx_unlock(&g->m);
 }
 /* `group.add(task)`: the group holds the task from now on, and frees it when it ends; one that
    has ended already is freed now. A thread of `Task.run` is not joined: it goes on by itself. */
@@ -6314,6 +6316,7 @@ static void sg_wsa_start(void) {
     __atomic_store_n(&sg_wsa_started, 1, __ATOMIC_RELEASE);
 }
 #else
+#include <stddef.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
@@ -6585,6 +6588,91 @@ static int sg_net_send(sg_socket* s, const uint8_t* from, int64_t len) {
     }
     return 0;
 }
+/* A window of bytes, as an item of a `List<read byte[]>` lies in memory. */
+typedef struct sg_piece { const uint8_t* ptr; int64_t len; } sg_piece;
+/* The most pieces one call of the system is given: `IOV_MAX` is 1,024 on Linux and macOS. */
+#define SG_PIECES_AT_ONCE 1024
+/* One call of the system for `sendPieces`, from piece `*at`, of which `*off` bytes went out
+   before: what it sent moves them on. A piece sent in part sends its rest alone, so that the
+   list is never written to. On Linux and macOS the items of the list are given to the system as
+   they are, as an array of `iovec`, which a window is laid out as; on Windows they are copied into
+   an array of `WSABUF`, whose fields lie the other way round. `*short_put`: the system took fewer
+   bytes than it was given, so the connection is full. */
+static int sg_net_sendv_now(int fd, const sg_piece* pieces, int64_t count, int64_t* at, int64_t* off, bool* short_put) {
+    *short_put = false;
+    while (*at < count && pieces[*at].len == *off) { (*at)++; *off = 0; }
+    if (*at == count) return 0;
+    int64_t sent = 0, given = 0;
+    int code = 0;
+    if (*off > 0) {
+        given = pieces[*at].len - *off;
+        code = sg_net_send_now(fd, pieces[*at].ptr + *off, given, &sent);
+    } else {
+        int64_t n = count - *at < SG_PIECES_AT_ONCE ? count - *at : SG_PIECES_AT_ONCE;
+#if defined(_WIN32)
+        WSABUF bufs[64];
+        DWORD k = 0;
+        while (k < 64 && k < n && pieces[*at + k].len <= 0x40000000) {
+            bufs[k].buf = (CHAR*)pieces[*at + k].ptr;
+            bufs[k].len = (ULONG)pieces[*at + k].len;
+            k++;
+        }
+        for (DWORD i = 0; i < k; i++) given += bufs[i].len;
+        if (k == 0) {
+            given = pieces[*at].len;
+            code = sg_net_send_now(fd, pieces[*at].ptr, given, &sent);
+        } else {
+            DWORD put = 0;
+            if (WSASend(SG_SOCK(fd), bufs, k, &put, 0, NULL, NULL) != 0) code = sg_net_error();
+            else sent = (int64_t)put;
+        }
+#else
+        struct msghdr m;
+        memset(&m, 0, sizeof m);
+        struct iovec copied[64];
+        if (sizeof(struct iovec) == sizeof(sg_piece) && offsetof(struct iovec, iov_base) == offsetof(sg_piece, ptr) && offsetof(struct iovec, iov_len) == offsetof(sg_piece, len)) {
+            m.msg_iov = (struct iovec*)(uintptr_t)(pieces + *at);
+            m.msg_iovlen = (size_t)n;
+        } else {
+            int64_t k = n < 64 ? n : 64;
+            for (int64_t i = 0; i < k; i++) copied[i] = (struct iovec){ (void*)(uintptr_t)pieces[*at + i].ptr, (size_t)pieces[*at + i].len };
+            m.msg_iov = copied;
+            m.msg_iovlen = (size_t)k;
+        }
+        for (size_t i = 0; i < (size_t)m.msg_iovlen; i++) given += pieces[*at + (int64_t)i].len;
+#ifdef MSG_NOSIGNAL
+        ssize_t put = sendmsg(fd, &m, MSG_NOSIGNAL);
+#else
+        ssize_t put = sendmsg(fd, &m, 0);
+#endif
+        if (put < 0) code = errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
+        else sent = put;
+#endif
+    }
+    if (code) return code;
+    *short_put = sent < given;
+    while (*at < count && sent >= pieces[*at].len - *off) {
+        sent -= pieces[*at].len - *off;
+        (*at)++;
+        *off = 0;
+    }
+    *off += sent;
+    return 0;
+}
+/* `sendPieces`: every piece goes out, in order, waiting with `poll` while the connection is full. */
+static int sg_net_sendv(sg_socket* s, const sg_piece* pieces, int64_t count) {
+    int64_t at = 0, off = 0;
+    for (;;) {
+        while (at < count && pieces[at].len == off) { at++; off = 0; }
+        if (at == count) return 0;
+        bool short_put = false;
+        int code = sg_net_sendv_now(s->fd, pieces, count, &at, &off, &short_put);
+        if (!code) continue;
+        if (sg_net_again(code, false)) continue;
+        if (code != SG_E_AGAIN) return code;
+        if ((code = sg_net_poll(s->fd, true))) return code;
+    }
+}
 /* The addresses of `host:port`, looked up by name (`numeric`: only if the host is a number,
    which never waits). */
 static int sg_net_lookup(const char* host, const char* port, bool numeric, sg_addrinfo** list) {
@@ -6725,16 +6813,17 @@ static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, sg_sockaddr*
     return 0;
 }
 #endif
-/* `conn.reader(limit)`: a reader of the connection, which it borrows (see `sg_reader`). */
+/* `conn.reader(limit)`: a reader of the connection, which it borrows (see `sg_reader`). Its block
+   starts at 4 KB and doubles as it fills (1736). */
 static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     if (limit < 1) {
         SG_PANIC_START();
         fprintf(stderr, "panic: the longest line of a reader is at least 1 byte, and this is %lld\n", (long long)limit);
         sg_die(loc);
     }
-    uint8_t* block = malloc(65536);
+    uint8_t* block = malloc(4096);
     if (!block) abort();
-    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0, false SG_READER_REST };
+    return (sg_reader){ .block = block, .sock = s, .cap = 4096, .limit = limit, .fd = s->fd };
 }
 "#;
 
@@ -7892,7 +7981,7 @@ static void sg_lookup_lost(sg_far* f) {
 /* An async call of the network, in the frame of the task: what it is, where it is, and what it
    gives (`code`: 0, the code of the system, SG_HOST_NOT_FOUND, or SG_CUT for a cancel; `out`:
    the socket that `acceptAsync` and `connectAsync` give, `done`: the bytes of `receiveAsync`). */
-enum { SG_ACCEPT, SG_RECEIVE, SG_SEND, SG_CONNECT, SG_UDP_SEND, SG_UDP_RECEIVE };
+enum { SG_ACCEPT, SG_RECEIVE, SG_SEND, SG_CONNECT, SG_UDP_SEND, SG_UDP_RECEIVE, SG_SENDV, SG_FILL };
 enum { SG_NET_TRY, SG_NET_WAIT, SG_NET_LOOKUP, SG_NET_CONNECT, SG_NET_DONE };
 #define SG_CUT (-6)
 typedef struct {
@@ -7916,6 +8005,12 @@ typedef struct {
         struct sg_net_name* name;
         /* A datagram: where it goes (`at_len` 0 for the address of `connect`), or where it came from. */
         sg_sockaddr at;
+        /* `sendPiecesAsync`: the pieces (`len` of them, `done` sent whole), and the bytes of the
+           next that went out. */
+        struct { const struct sg_piece* pieces; int64_t off; } v;
+        /* `fillAsync` of the reader of a connection: the reader, and where the bytes its block
+           held ended when the call began, counted as `done` counts; `done` gives whether more came. */
+        struct { sg_reader* r; int64_t base; } f;
     };
     socklen_t at_len;
 } sg_net_op;
@@ -7946,6 +8041,16 @@ static inline sg_net_op sg_net_receive_op(sg_socket* s, uint8_t* to, int64_t len
 static inline sg_net_op sg_net_send_op(sg_socket* s, const uint8_t* from, int64_t len, sg_cancel* token, const char* loc) {
     sg_socket_nonblock(s);
     return (sg_net_op){ .kind = SG_SEND, .fd = s->fd, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+}
+/* `fillAsync` of the reader of a connection waits in the frame as `receiveAsync` does, with no
+   room of its own beside the one every call of the network shares. */
+static inline sg_net_op sg_net_fill_op(sg_reader* r, sg_cancel* token, const char* loc) {
+    sg_socket_nonblock(r->sock);
+    return (sg_net_op){ .kind = SG_FILL, .fd = r->fd, .token = token, .loc = loc, .out = -1, .f = { r, r->done + (r->len - r->at) } };
+}
+static inline sg_net_op sg_net_sendv_op(sg_socket* s, const sg_piece* pieces, int64_t count, sg_cancel* token, const char* loc) {
+    sg_socket_nonblock(s);
+    return (sg_net_op){ .kind = SG_SENDV, .fd = s->fd, .token = token, .loc = loc, .len = count, .out = -1, .v = { pieces, 0 } };
 }
 /* A datagram socket may be waited for by several tasks at once (a `shared` `UdpSocket`), as a
    listener may. */
@@ -8075,6 +8180,49 @@ static bool sg_net_go(sg_net_op* op) {
             code = sg_udp_send_now(op->fd, op->from, op->len, op->at_len ? &op->at : NULL, op->at_len, 0);
         } else if (op->kind == SG_UDP_RECEIVE) {
             code = sg_udp_recv_now(op->fd, op->to, op->len, &op->at, &op->done, 0);
+        } else if (op->kind == SG_FILL) {
+            /* More since the call began, or the end: done. A full block is `TooLong`. A receive
+               that took less than the room emptied the connection, as for `SG_RECEIVE`. */
+            sg_reader* r = op->f.r;
+            if (r->done + (r->len - r->at) > op->f.base || r->ended) {
+                op->done = r->done + (r->len - r->at) > op->f.base;
+            } else if (!(code = sg_reader_full(r))) {
+#if !defined(_WIN32)
+                if (sg_slot_is_dry(op->fd, 1)) {
+                    code = SG_E_AGAIN;
+                } else
+#endif
+                {
+                    sg_sock_room(r);
+                    int64_t got = 0, room = r->cap - r->len;
+                    code = sg_net_recv_now(op->fd, r->block + r->len, room, &got);
+                    if (!code) {
+                        if (got == 0) r->ended = true;
+                        r->len += got;
+                        op->done = got > 0;
+#if !defined(_WIN32)
+                        if (got > 0 && got < room) sg_slot_dry(op->fd, 1, op->seen);
+#endif
+                    }
+                }
+            }
+            (void)first;
+        } else if (op->kind == SG_SENDV) {
+            for (;;) {
+                while (op->done < op->len && op->v.pieces[op->done].len == op->v.off) { op->done++; op->v.off = 0; }
+                if (op->done == op->len) break;
+                bool short_put = false;
+                if ((code = sg_net_sendv_now(op->fd, op->v.pieces, op->len, &op->done, &op->v.off, &short_put))) break;
+#if !defined(_WIN32)
+                /* Fewer bytes taken than given: the connection is full, as for `send`. */
+                if (short_put) {
+                    code = SG_E_AGAIN;
+                    break;
+                }
+#else
+                (void)short_put;
+#endif
+            }
         } else {
             while (op->done < op->len) {
                 int64_t sent = 0;
@@ -8093,7 +8241,7 @@ static bool sg_net_go(sg_net_op* op) {
         if (!code) return sg_net_finish(op, 0);
         if (sg_net_again(code, op->kind == SG_ACCEPT)) continue;
         if (code != SG_E_AGAIN) return sg_net_finish(op, code);
-        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_UDP_SEND, op->seen, op->token, op->loc);
+        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_SENDV || op->kind == SG_UDP_SEND, op->seen, op->token, op->loc);
         if (st == SG_WAITING) return false;
         if (st == SG_AGAIN) continue;
         return sg_net_finish(op, st == SG_CANCELLED ? SG_CUT : st);
@@ -8144,7 +8292,17 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
         sg_sock_room(r);
         int64_t got = 0;
         uint32_t seen = sg_slot_tick(s->fd);
+#if !defined(_WIN32)
+        /* A receive that took less than the room emptied the connection: the next waits for the
+           loop at once, as `receiveAsync` does, without a call of the system told there is nothing. */
+        int c = SG_E_AGAIN;
+        if (!sg_slot_is_dry(s->fd, 1)) {
+            c = sg_net_recv_now(s->fd, r->block + r->len, r->cap - r->len, &got);
+            if (!c && got > 0 && got < r->cap - r->len) sg_slot_dry(s->fd, 1, seen);
+        }
+#else
         int c = sg_net_recv_now(s->fd, r->block + r->len, r->cap - r->len, &got);
+#endif
         if (!c) {
             if (got == 0) r->ended = true;
             r->len += got;
@@ -8176,7 +8334,7 @@ const PROCESS_PIPES_RUNTIME: &str = r#"
 static sg_reader sg_proc_reader(int64_t fd) {
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    return (sg_reader){ (int)fd, block, 0, 0, 0, false, NULL, 65536, INT64_MAX, false, 0, false SG_READER_REST };
+    return (sg_reader){ .block = block, .cap = 65536, .limit = INT64_MAX, .fd = (int)fd };
 }
 #else
 static sg_reader sg_proc_reader(int64_t fd) {
@@ -8184,7 +8342,7 @@ static sg_reader sg_proc_reader(int64_t fd) {
     uint8_t* block = malloc(65536);
     if (!s || !block) abort();
     *s = (sg_socket){ (int)fd, false };
-    return (sg_reader){ (int)fd, block, 0, 0, 0, false, s, 65536, INT64_MAX, false, 0, true SG_READER_REST };
+    return (sg_reader){ .block = block, .sock = s, .cap = 65536, .limit = INT64_MAX, .fd = (int)fd, .own = true };
 }
 #endif
 "#;
@@ -9820,12 +9978,14 @@ const IO_RUNTIME: &str = r#"
    of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty; 15 InvalidInput, which only
    the language's own module gives; 16 MessageTooLong, a datagram too long to send whole or for the
    buffer it was received into; 17 NotSeekable, `seek` on a stream that is not a file opened to
-   seek. The runtime gives these two itself as codes of its own, as it gives a place before the
-   start of a file to `seek` as `InvalidInput`. */
+   seek; 18 TooLong, `fill` on a reader whose block holds its limit already. The runtime gives
+   these itself as codes of its own, as it gives a place before the start of a file to `seek` as
+   `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
 #define SG_INVALID_INPUT (-15)
 #define SG_NOT_SEEKABLE (-17)
+#define SG_TOO_LONG (-18)
 #if defined(_WIN32)
 /* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
    too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
@@ -9840,6 +10000,7 @@ static int sg_io_kind(int code) {
     case SG_LINE_TOO_LONG: return 11;
     case SG_INVALID_INPUT: return 15;
     case SG_NOT_SEEKABLE: return 17;
+    case SG_TOO_LONG: return 18;
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
     case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
@@ -10102,6 +10263,7 @@ static int sg_io_kind(int code) {
     case SG_LINE_TOO_LONG: return 11;
     case SG_INVALID_INPUT: return 15;
     case SG_NOT_SEEKABLE: return 17;
+    case SG_TOO_LONG: return 18;
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
     case EMSGSIZE: return 16;
@@ -10247,17 +10409,13 @@ struct sg_socket_s;
    again (`sg_lap_settle`). */
 typedef struct sg_lap_got { int code; int64_t got; int over; int stop; } sg_lap_got;
 #endif
-typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; bool own;
+/* The fields lie so that none leaves room after it: a reader of a connection is in the frame of
+   every task that serves one. */
+typedef struct { uint8_t* block; struct sg_socket_s* sock; int64_t at, len, done, cap, limit, checked; int fd; bool ended, too_long, own;
 #if defined(_WIN32)
     sg_lap_got* fill;
 #endif
 } sg_reader;
-/* What comes after the fields every system has, in a reader written out field by field. */
-#if defined(_WIN32)
-#define SG_READER_REST , NULL
-#else
-#define SG_READER_REST
-#endif
 #if defined(_WIN32)
 #define SG_FILL_OUT(r) ((r)->fill != NULL)
 /* What the read out on a thread gave goes into the reader: the bytes, the end, or the error. One
@@ -10287,7 +10445,7 @@ static void sg_lap_end(sg_reader* r) {
 #define SG_FILL_OUT(r) false
 #endif
 static uint8_t sg_in_block[65536];
-static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
+static sg_reader sg_stdin = { .block = sg_in_block, .cap = 65536 };
 /* Where the first byte that is not UTF-8 lies in the bytes `from` to `to` of the block, from
    `from`, or -1. A line is checked with the rest of the block, at once, from where the check
    stands: the lines after it inside the part known to be text cost nothing, where a check of
@@ -10328,8 +10486,10 @@ static inline bool sg_in_after_fill(sg_reader* r) {
 #endif
 #if SG_NET
 static int sg_net_recv(struct sg_socket_s* s, uint8_t* to, int64_t len, int64_t* got);
-/* What a read of the reader of a connection needs before it can be done. */
-enum { SG_NEED_LINE, SG_NEED_TEXT, SG_NEED_BYTES, SG_NEED_SOME };
+/* What a read of the reader of a connection needs before it can be done. SG_NEED_MORE: more than
+   the block held when `fillAsync` began, where the bytes it held ended at `want`, counted as
+   `done` counts. */
+enum { SG_NEED_LINE, SG_NEED_TEXT, SG_NEED_BYTES, SG_NEED_SOME, SG_NEED_MORE };
 /* What the read can do with what the block holds: -1 when it needs more to come, -2 when the line
    or the text is longer than the limit, or how many bytes it takes. `want`: the size of the buffer
    of `readBytes` and `readSome`. */
@@ -10355,6 +10515,8 @@ static int64_t sg_sock_ready(const sg_reader* r, int need, int64_t want) {
         return r->ended ? held : -1;
     case SG_NEED_BYTES:
         return held >= want || r->ended ? (held < want ? held : want) : -1;
+    case SG_NEED_MORE:
+        return r->done + held > want || r->ended ? 0 : -1;
     default:
         return held > 0 || r->ended || want == 0 ? (held < want ? held : want) : -1;
     }
@@ -10584,6 +10746,66 @@ static int sg_read_some(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
     *got = n;
     return 0;
 }
+/* The most `fill` lets the block hold: the longest line of the reader of a connection, 64 KB for
+   a file, the input and the pipe of another program (1736). */
+#define SG_FILL_LIMIT(r) ((r)->sock && !(r)->own ? (r)->limit : 65536)
+/* Why `fill` cannot read more: after a line too long, every read fails; a block that holds its
+   limit is `TooLong`, until `consume` gives out of it. */
+static inline int sg_reader_full(const sg_reader* r) {
+    if (r->too_long) return SG_LINE_TOO_LONG;
+    return r->len - r->at >= SG_FILL_LIMIT(r) ? SG_TOO_LONG : 0;
+}
+/* `fill`: one more read of the system, behind what the block holds, which keeps its place for
+   `buffered`; `*more` is false at the end. What a thread of input and output read into the block
+   meanwhile counts as the read. What was given out leaves the block first. */
+static int sg_reader_more(sg_reader* r, bool* more) {
+    *more = false;
+    int64_t end = r->done + (r->len - r->at);
+#if defined(_WIN32)
+    if (r->fill) {
+        int code = sg_lap_settle(r);
+        if (code) return code;
+    }
+#endif
+    (void)sg_in_after_fill(r);
+    if (r->done + (r->len - r->at) > end) { *more = true; return 0; }
+    if (r->ended) return 0;
+    int code = sg_reader_full(r);
+    if (code) return code;
+#if SG_NET
+    if (r->sock) {
+        if ((code = sg_sock_fill(r))) return code;
+        *more = !r->ended;
+        return 0;
+    }
+#endif
+    if (r->at > 0) {
+        memmove(r->block, r->block + r->at, (size_t)(r->len - r->at));
+        r->len -= r->at;
+        r->at = 0;
+    }
+    if (r == &sg_stdin) {
+        if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
+        if (sg_in_terminal) sg_out_flush();
+    }
+    int64_t got = 0;
+    if ((code = sg_sys_read(r->fd, r->block + r->len, r->cap - r->len, &got))) return code;
+    if (got == 0) r->ended = true;
+    r->len += got;
+    *more = got > 0;
+    return 0;
+}
+/* `consume(n)`: the first `n` bytes of the block are given out. A read that takes bytes lets go
+   of what is known to be UTF-8, as `readBytes` does. */
+static void sg_reader_consume(sg_reader* r, int64_t n, const char* loc) {
+    int64_t held = r->len - r->at;
+    if (n < 0 || n > held) {
+        sg_panicf(loc, "`consume(%lld)` gives out more than the reader holds: it holds %lld byte(s)\n  `buffered().length()` is what it holds", (long long)n, (long long)held);
+    }
+    r->at += n;
+    r->done += n;
+    r->checked = r->done;
+}
 /* A folder opens, but cannot be read: it is told at once. */
 #if defined(_WIN32)
 static int sg_open_reader(sg_str path, sg_reader* out) {
@@ -10593,7 +10815,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (sg_sys_is_folder(fd)) { sg_sys_close(fd); return ERROR_DIRECTORY_NOT_SUPPORTED; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
     return 0;
 }
 #else
@@ -10608,7 +10830,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
     return 0;
 }
 #endif
@@ -18866,6 +19088,25 @@ impl<'a> Emitter<'a> {
             }
             StreamCall::Lines => Ok(format!("((sg_read_lines){{ {}, false }})", self.list_address(recv)?)),
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
+            // The bytes the block holds, looked at where they are.
+            StreamCall::Buffered => {
+                let (window, temp) = (self.ctype(&expr.ty, span)?, self.temp());
+                let reader = self.list_address(recv)?;
+                Ok(format!("({{ sg_reader* {temp} = {reader}; ({window}){{ {temp}->block + {temp}->at, {temp}->len - {temp}->at }}; }})"))
+            }
+            StreamCall::Consume => {
+                let temp = self.temp();
+                let reader = self.list_address(recv)?;
+                let count = self.value(&args[0])?;
+                let loc = self.loc(span);
+                Ok(format!("({{ sg_reader* {temp} = {reader}; int64_t {temp}n = {count}; SG_IN_TAKE({temp}); sg_reader_consume({temp}, {temp}n, {loc}); SG_IN_GIVE({temp}); }})"))
+            }
+            // The glue of `fill` takes where the block ended for `fillAsync`, which the call
+            // without `Async` does not look at.
+            StreamCall::Fill => {
+                let (fname, _) = self.stream_glue(call, &expr.ty, false, span)?;
+                Ok(format!("{fname}({}, 0)", self.list_address(recv)?))
+            }
             // `SeekFrom` holds a `long` in each of its variants (0 `Start`, 1 `End`, 2 `Current`).
             StreamCall::Seek => {
                 let temp = self.temp();
@@ -18941,6 +19182,18 @@ impl<'a> Emitter<'a> {
                     failed("sg_io_error(code)"),
                     give(format!("({gives}){{ .tag = 0 }}"))
                 ),
+                // In place, the block answers when more came since the call began, at the end, or
+                // when it is full; `a1`: where the bytes it held ended.
+                StreamCall::Fill if now => format!(
+                    "if (a0->done + (a0->len - a0->at) > a1 || a0->ended) {} int code = sg_reader_full(a0); if (code) {} return false;",
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ a0->done + (a0->len - a0->at) > a1 }} }}")),
+                    failed("sg_io_error(code)"),
+                ),
+                StreamCall::Fill => format!(
+                    "(void)a1; bool more = false; SG_IN_TAKE(a0); int code = sg_reader_more(a0, &more); SG_IN_GIVE(a0); if (code) {} {}",
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ more }} }}"))
+                ),
                 StreamCall::ReadLine => format!(
                     "bool more = false; int64_t bad = 0; {take}int code = sg_read_line_at(a0, a1, &more, &bad, {now}); {put}{}if (code == -1) {} if (code) {} {}",
                     if now { "if (code == -2) return false; " } else { "" },
@@ -18963,6 +19216,7 @@ impl<'a> Emitter<'a> {
             StreamCall::ReadSome => ("sg_reader_some_r", vec![reader, bytes(Ty::Ref)]),
             StreamCall::WriteBytes => ("sg_writer_bytes_r", vec![reader, bytes(Ty::Read)]),
             StreamCall::ReadLine => ("sg_reader_line_r", vec![reader, Ty::Ref(Box::new(Ty::Str))]),
+            StreamCall::Fill => ("sg_reader_fill_r", vec![reader, Ty::Int(IntTy::Long)]),
             _ => ("sg_reader_text_r", vec![reader]),
         };
         self.io_glue(fname, &params, &body(false), &gives, span)?;
@@ -19237,8 +19491,13 @@ impl<'a> Emitter<'a> {
                 let gives = self.chan_gives(*call, *told, &item, &format!("({wait}.state == SG_CANCELLED ? -1 : {wait}.gave)"), &slot, inner.span)?;
                 result(self, gives)
             }
-            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome) => {
+            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) => {
                 let value = self.await_writer(*call, recv, args, expr)?;
+                result(self, value)
+            }
+            // The reader of a connection fills its block as `receiveAsync` receives (`SG_FILL`).
+            ExprKind::Method { recv, args, callee: Callee::StreamAsync(StreamCall::Fill), .. } if *recv.ty.strip_borrow() == Ty::Reader(true) => {
+                let value = self.await_fill(recv, args, expr)?;
                 result(self, value)
             }
             ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } => {
@@ -19344,6 +19603,11 @@ impl<'a> Emitter<'a> {
                 vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Read)],
                 format!("int code = sg_net_send(a0, a1.ptr, a1.len); {failed} return ({gives}){{ .tag = 0 }};"),
             ),
+            NetCall::SendPieces => (
+                "sg_net_sendv_r",
+                vec![Ty::Ref(Box::new(Ty::Socket)), Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))],
+                format!("int code = sg_net_sendv(a0, (const sg_piece*)a1->ptr, a1->len); {failed} return ({gives}){{ .tag = 0 }};"),
+            ),
             NetCall::Port | NetCall::Reader => unreachable!("given above"),
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
@@ -19362,6 +19626,30 @@ impl<'a> Emitter<'a> {
     /// async calls of the network: a call in the frame (`sg_net_op`) that goes on while the
     /// socket is ready, and otherwise waits for it on the loop of the network, until it is done
     /// (see `NET_ASYNC_RUNTIME`). A token is looked at before the work, and a cancel ends a wait.
+    /// `await reader.fillAsync(token)` on the reader of a connection: a call of the network in
+    /// the frame's one room (`NET_OP`), so that a connection that is served holds nothing more
+    /// for it than for `receiveAsync`.
+    fn await_fill(&mut self, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.io_error(span)?;
+        for part in ["net", "net async", "async io", "tasks"] {
+            self.made.insert(part.to_string());
+        }
+        let gives = self.ctype(&expr.ty, span)?;
+        let loc = self.loc(span);
+        let op = NET_OP;
+        let token = match args.first() {
+            Some(arg) => format!("(*{})", self.value(arg)?),
+            None => "NULL".to_string(),
+        };
+        let reader = self.list_address(recv)?;
+        self.pre.push(format!("sg_net_op {op} = sg_net_fill_op({reader}, {token}, {loc}); sg_net_go(&{op});"));
+        self.resume_point(span);
+        self.pre.push(format!("if (!sg_net_more(&{op})) return false;"));
+        let failed = format!("({gives}){{ .tag = 1, .u.v1 = {{ {op}.code == SG_CUT ? sg_io_cancelled() : sg_io_error({op}.code) }} }}");
+        Ok(format!("({op}.code ? {failed} : ({gives}){{ .tag = 0, .u.v0 = {{ {op}.done != 0 }} }})"))
+    }
+
     fn await_net(&mut self, call: NetCall, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
         let span = expr.span;
         self.io_error(span)?;
@@ -19369,7 +19657,7 @@ impl<'a> Emitter<'a> {
             self.made.insert(part.to_string());
         }
         let gives = self.ctype(&expr.ty, span)?;
-        let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::Connect));
+        let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::SendPieces | NetCall::Connect));
         let (tmp, loc) = (self.temp(), self.loc(span));
         // Every call of the network in a frame is in one room, `NET_OP`: one waits at a time, and
         // what it gives is taken out at once (`result`), before the next can start.
@@ -19391,6 +19679,12 @@ impl<'a> Emitter<'a> {
                 }
             }
             NetCall::Connect => format!("sg_net_connect_op({}, {token}, {loc})", self.value(&args[0])?),
+            // The list stays where it is while the task waits: the call borrows it.
+            NetCall::SendPieces => {
+                let stream = self.list_address(recv)?;
+                let list = self.value(&args[0])?;
+                format!("sg_net_sendv_op({stream}, (const sg_piece*)({list})->ptr, ({list})->len, {token}, {loc})")
+            }
             NetCall::Bind | NetCall::Port | NetCall::Reader => unreachable!("not async"),
         };
         self.pre.push(format!("sg_net_op {op} = {made}; sg_net_go(&{op});"));
@@ -19478,7 +19772,8 @@ impl<'a> Emitter<'a> {
                 }
                 "NULL, 0".to_string()
             }
-            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines => unreachable!("a reader is read by `await_io`"),
+            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
+            StreamCall::Buffered | StreamCall::Consume => unreachable!("the checker gives these no async form"),
             // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
             StreamCall::Seek => {
                 let out = self.list_address(recv)?;
@@ -19527,7 +19822,10 @@ impl<'a> Emitter<'a> {
     fn await_io(&mut self, fname: &str, params: &[Ty], reader: Option<Part>, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
         self.made.insert("async io".to_string());
         let span = expr.span;
-        let told = args.len() + usize::from(reader.is_some()) > params.len();
+        // `fillAsync` keeps where the bytes of the block ended when it began (`a1`), which
+        // the program does not give.
+        let hidden = usize::from(fname == "sg_reader_fill_r");
+        let told = args.len() + usize::from(reader.is_some()) + hidden > params.len();
         let setter = format!("sg_io_of_{fname}{}", if told { "_t" } else { "" });
         if self.made.insert(format!("sg_io_{fname}")) {
             let gives = self.ctype(&expr.ty, span)?;
@@ -19535,9 +19833,13 @@ impl<'a> Emitter<'a> {
             for (index, param) in params.iter().enumerate() {
                 let ctype = self.ctype(param, span)?;
                 let _ = write!(fields, " {ctype} a{index};");
+                gets.push(format!("x->a{index}"));
+                if hidden == 1 && index == 1 {
+                    let _ = write!(sets, " .a1 = a0->done + (a0->len - a0->at),");
+                    continue;
+                }
                 takes.push(format!("{ctype} a{index}"));
                 let _ = write!(sets, " .a{index} = a{index},");
-                gets.push(format!("x->a{index}"));
             }
             let _ = writeln!(self.late_types, "typedef struct {{ sg_io io;{fields} bool cancelled; sg_cancel* tk; int mode; sg_wait w; {gives} r; }} sg_io_{fname};");
             let gets = gets.join(", ");
@@ -19561,6 +19863,7 @@ impl<'a> Emitter<'a> {
                 "sg_reader_line_r" => "SG_NEED_LINE, 0",
                 "sg_reader_text_r" => "SG_NEED_TEXT, 0",
                 "sg_reader_bytes_r" => "SG_NEED_BYTES, x->a1.len",
+                "sg_reader_fill_r" => "SG_NEED_MORE, x->a1",
                 _ => "SG_NEED_SOME, x->a1.len",
             };
             let net = match &reader {
@@ -19604,7 +19907,7 @@ impl<'a> Emitter<'a> {
             );
         }
         let skip = usize::from(reader.is_some());
-        let mut takes = params[skip..].to_vec();
+        let mut takes = params[skip..params.len() - hidden].to_vec();
         if told {
             takes.push(Ty::Read(Box::new(Ty::Token)));
         }

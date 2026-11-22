@@ -1,0 +1,9 @@
+// In an async function the reader of a connection is filled the async way.
+async Result<void, IoError> first(TcpStream conn) {
+    var reader = conn.reader()
+    _ = try reader.fill()
+    return Ok()
+}
+
+void main() {
+}

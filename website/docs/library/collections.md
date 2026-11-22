@@ -141,9 +141,10 @@ It prints:
 ### A list of borrows
 
 A `List<read T>` holds borrows and copies nothing. Each value it borrowed from is followed on its own: changing
-one, or letting it end, while the list is used later is a compile error. `clear()` lets go of every borrow, so a
-list made outside a loop is filled again in each round, with no memory taken for it, when it is cleared before
-the round changes what it borrowed from. `get` and `removeLast` give a `read T?`, and what `removeLast` takes out
+one, or letting it end, while the list is used later is a compile error. The borrows count until the list is
+cleared, and `clear()` reads none of them: a list made outside a loop is filled again in each round, with no
+memory taken for it, when it is cleared before it is used again, also after what it borrowed from has changed or
+ended. A list made inside the loop needs no `clear` at all. `get` and `removeLast` give a `read T?`, and what `removeLast` takes out
 borrows what the list borrowed, not the list. The searches take a borrow too: `numbers.indexOf(read 9)`.
 
 ```sg
@@ -189,7 +190,8 @@ It prints:
 ```
 
 In C the items are pointers, and a `read string` or a window is a start and a length, so a `List<read byte[]>`
-is laid out as the array of pieces the system's `writev` takes. There is no `List<ref T>`, and a list of windows
+is laid out as the array of pieces the system's `writev` takes, and `conn.sendPieces(read pieces)` gives it to
+the system as it is. There is no `List<ref T>`, and a list of windows
 has no `get` or `removeLast`, which would give a slice that may be missing.
 
 ## `T[N]`

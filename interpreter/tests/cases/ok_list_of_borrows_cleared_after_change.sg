@@ -1,0 +1,14 @@
+// The borrows of a list count until it is cleared, and a `clear` reads none of them (1748): `out`
+// changes while the list still holds a borrow of the round before, and the list is cleared before
+// it is used again, so nothing looks at what changed.
+void main() {
+    var out = List<byte>()
+    var pieces = List<read byte[]>()
+    for i in 0..3 {
+        out.clear()
+        pieces.clear()
+        out.add((byte)i)
+        pieces.add(out[0..1])
+        print(pieces[0][0])
+    }
+}

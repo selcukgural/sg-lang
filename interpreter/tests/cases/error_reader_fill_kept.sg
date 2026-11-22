@@ -1,0 +1,10 @@
+// `fill` may move the block of the reader to make room, so what `buffered` lent before it cannot be
+// looked at after it.
+Result<void, IoError> main() {
+    var reader = try File.openText("data.txt")
+    var view = reader.buffered()
+    while try reader.fill() {
+        print(view.length())
+    }
+    return Ok()
+}

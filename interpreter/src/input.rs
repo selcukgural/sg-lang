@@ -37,6 +37,8 @@ pub enum Need {
     End,
     /// Anything: `readSome`.
     Some,
+    /// More than the block holds now, which held this many: `fill`.
+    More(usize),
 }
 
 pub struct Input {
@@ -80,6 +82,7 @@ impl Input {
             Need::Bytes(count) => held.len() >= count,
             Need::End => false,
             Need::Some => !held.is_empty(),
+            Need::More(base) => held.len() > base,
         }
     }
 
@@ -113,6 +116,51 @@ impl Input {
             ahead.filling = None;
         };
         Some((id, Some(work)))
+    }
+}
+
+impl Input {
+    /// What the block holds and has not been given out.
+    pub fn buffer(&self) -> &[u8] {
+        &self.block[self.at..]
+    }
+
+    /// `fill`: one more read behind what the block holds, which held `base` bytes when the
+    /// call began; what a thread read since then counts as that read. How many bytes came, `0`
+    /// at the end, or `None` when the block holds `limit` bytes already.
+    pub fn more(&mut self, base: usize, limit: usize) -> io::Result<Option<usize>> {
+        self.take_ahead();
+        let grown = |input: &Input| input.block.len() - input.at > base;
+        if grown(self) {
+            return Ok(Some(self.block.len() - self.at - base));
+        }
+        let shared = self.shared.clone();
+        let mut source = locked(&shared.source);
+        if self.take_ahead() && grown(self) {
+            return Ok(Some(self.block.len() - self.at - base));
+        }
+        let mut ahead = locked(&self.shared.ahead);
+        let end = std::mem::take(&mut ahead.end);
+        ahead.failed = false;
+        drop(ahead);
+        if end {
+            return Ok(Some(0));
+        }
+        self.block.drain(..self.at);
+        self.at = 0;
+        let held = self.block.len();
+        if held >= limit {
+            return Ok(None);
+        }
+        self.block.resize(limit, 0);
+        let read = loop {
+            match source.read(&mut self.block[held..]) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                other => break other,
+            }
+        };
+        self.block.truncate(held + *read.as_ref().unwrap_or(&0));
+        read.map(Some)
     }
 }
 

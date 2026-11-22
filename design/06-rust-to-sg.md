@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`List<read T>` for `Vec<&T>`, 1732-1733).
+Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`List<read T>` for `Vec<&T>`, 1732-1733; `buffered`, `consume` and `fill` for `fill_buf`, `sendPieces` for `write_vectored`, 1734-1738).
 
 ## Functions and variables
 
@@ -476,7 +476,8 @@ Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`L
 | `stream.read(&mut buf)?` | `try stream.receive(ref buffer)` | built | What has come, how many, 0 at the end; `read` is a word of SG, and `receive` is C#'s name |
 | `stream.write_all(&bytes)?` | `try stream.send(bytes)` | built | All of them; writing after the other side has gone is `ConnectionReset`, never `SIGPIPE`. Through a `read` borrow, as `Write for &TcpStream`, so it sends while a reader borrows the stream; not through a `shared` stream |
 | `BufReader::new(&stream)`, `.read_line(&mut line)?`, `.lines()` | `var reader = stream.reader()`, `try reader.readLine(ref line)`, `reader.lines()` | built | A `StreamReader` that borrows the stream; `receive` while it is used again is a compile error, since it would take bytes from under its block. A line, or a text, longer than 64 KB is `IoError.LineTooLong` (`stream.reader(limit)` for another limit), as Go's `bufio.Scanner`; every read after it gives it too |
-| `reader.fill_buf()?` / `BufRead` then `consume` | `try reader.readSome(ref buffer)` | built | On every `StreamReader`: what the block holds, or one read of the system when it is empty |
+| `reader.fill_buf()?` / `BufRead` then `consume` | `reader.buffered()`, `reader.consume(n)`, `try reader.fill()` | built | On every `StreamReader`, and `await reader.fillAsync(read token)`: three calls, since an async function cannot give a borrow; `fill` always reads more, where `fill_buf` gives the block at once when it holds bytes, and a block full at its limit is `IoError.TooLong`; `consume` past what it holds is a panic, where Rust cuts it short. `readSome(ref buffer)` copies what the block holds |
+| `stream.write_vectored(&[IoSlice::new(head), IoSlice::new(body)])` | `try conn.sendPieces(read pieces)` | built | `pieces` a `List<read byte[]>`; sends all of them, as `write_all` would, and `sendPiecesAsync` in an async function |
 | `tokio::io::BufReader::new(stream).lines()` | `await reader.readLineAsync(ref line)` | built | A line the block holds is read in place; a cancel ends a wait, and what came stays in the block |
 | `drop(stream)`, `stream.shutdown(Both)` | the stream ends | built | Closed where it ends; no `close` |
 | `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket. A socket found empty or full waits for the loop at once, as Tokio's does; each call of an async function waits in one room of its frame, 224 bytes ([measured](../benchmarks/library.md#net)) |

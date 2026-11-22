@@ -1,0 +1,5 @@
+error: expected `read List<read byte[]>`, found `read List<byte>`
+  --> error_net_send_pieces_bytes.sg:4:25
+ 4 |     try conn.sendPieces(read bytes)
+   |                         ^^^^^^^^^^
+  hint: one run of bytes goes out with `send`: `conn.send(...)`

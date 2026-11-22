@@ -71,10 +71,11 @@ async Result<void, IoError> main() {
         Ok(_) => print("found")
         Error(cause) => print($"lookup: {cause}")
     }
-    // A port nobody listens on: the system says so to the connected socket.
+    // A port nobody listens on: the system says so to the connected socket. The socket that is
+    // connected is made before the port is let go, so the system cannot give that port to it.
+    var lone = try UdpSocket.bind("127.0.0.1:0")
     var gap = other.localAddress()
     other = try UdpSocket.bind("127.0.0.1:0")
-    var lone = try UdpSocket.bind("127.0.0.1:0")
     try lone.connect(gap)
     try await lone.sendAsync("anyone?".asBytes())
     var later = CancellationSource.after(2000)

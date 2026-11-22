@@ -1,8 +1,9 @@
 // The store of the server lane in SG (choices 1701, 1702), as `../c/resp.c` describes it: a part of
 // RESP2 (PING, GET, SET, DEL) over 64 maps, each behind a lock of its own; each connection reads
-// into a buffer of 4 KB, which grows when one command does not fit, answers every whole command
-// the buffer holds and sends the answers together; a command of more than 1,024 parts or a part
-// of more than 1 MB closes the connection.
+// through a `StreamReader`, whose block starts at 4 KB and grows when one command does not fit,
+// answers every whole command the block holds, where it lies, and sends the answers together; a
+// command of more than 1,024 parts, a part of more than 1 MB, or a command that does not fit in
+// 4 MB closes the connection.
 //
 //     resp PORT [--idle-limit MS]
 //
@@ -223,13 +224,12 @@ nint serveAll(read Store store, read byte[] bytes, ref List<nint> starts, ref Li
 // ---- a connection
 
 async Result<void, IoError> serve(TcpStream conn, shared Store store, int idleLimit) {
-    var buffer = List<byte>.repeat(0, 4096)
-    nint length = 0
+    var reader = conn.reader(4194304)
     var out = List<byte>()
     var starts = List<nint>()
     var ends = List<nint>()
     // The time a request may take, from when its first byte is awaited: set again only while no
-    // part of a request waits in the buffer, so it closes a client that stays silent and one that
+    // part of a request waits in the block, so it closes a client that stays silent and one that
     // sends a byte now and then and never a whole request. Without a limit there is no source and
     // no token, and a connection costs nothing more.
     CancellationSource? idle = null
@@ -240,31 +240,23 @@ async Result<void, IoError> serve(TcpStream conn, shared Store store, int idleLi
         idle = made
     }
     while true {
-        if length == buffer.length() {
-            var bigger = List<byte>.repeat(0, buffer.length() * 2)
-            bigger[0..length].copyFrom(buffer[0..length])
-            buffer = bigger
-        }
-        if idle is not null && length == 0 {
+        if idle is not null && reader.buffered().length() == 0 {
             idle.cancelAfter(idleLimit)
         }
-        var n = try await conn.receiveAsync(ref buffer[length..buffer.length()], read token)
-        if n == 0 {
+        if !try await reader.fillAsync(read token) {
             return Ok()
         }
-        length += n
         out.clear()
-        var used = serveAll(read store, buffer[0..length], ref starts, ref ends, ref out)
+        var used = serveAll(read store, reader.buffered(), ref starts, ref ends, ref out)
         if used < 0 {
             putText(ref out, "-ERR Protocol error\r\n")
             try await conn.sendAsync(read out)
             return Ok()
         }
+        reader.consume(used)
         if out.length() > 0 {
             try await conn.sendAsync(read out)
         }
-        buffer[0..length - used].copyFrom(buffer[used..length])
-        length -= used
     }
 }
 

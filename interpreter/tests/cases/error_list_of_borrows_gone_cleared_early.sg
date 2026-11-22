@@ -1,0 +1,12 @@
+// A `clear` before the borrow is taken does not let go of it: the list still borrows the text
+// when the text is gone at the end of the round, and the list is used after the loop.
+void main() {
+    var pieces = List<read byte[]>()
+    for round in 0..3 {
+        pieces.clear()
+        var head = $"round {round}: ".toString()
+        pieces.add(head.asBytes())
+        print(pieces.length())
+    }
+    print(pieces.length())
+}

@@ -1,0 +1,20 @@
+// A text made in a round is gone at the end of it; a list that borrowed it and is cleared before
+// it is used again, in the next round and after the loop, borrows nothing by then (1733).
+void main() {
+    var pieces = List<read byte[]>()
+    var body = "body".asBytes()
+    for round in 0..3 {
+        pieces.clear()
+        var head = $"round {round}: ".toString()
+        pieces.add(head.asBytes())
+        pieces.add(body)
+        long n = 0
+        for piece in read pieces {
+            n += piece.length()
+        }
+        print($"{round}: {pieces.length()} pieces, {n} bytes")
+    }
+    pieces.clear()
+    pieces.add(body)
+    print(pieces.length())
+}

@@ -1,0 +1,7 @@
+// `consume(n)` gives out at most what the block of the reader holds.
+Result<void, IoError> main() {
+    var view = Stdin.buffered()
+    print($"holds: {view.length()}")
+    Stdin.consume(5)
+    return Ok()
+}

@@ -242,4 +242,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [156](2026-11-22.md#slice-156) | The server lane: servers measured against Rust, Zig and C | 1698–1707 |
 | [157](2026-11-22.md#slice-157) | The scheduler of the server lane: a loop of the network on each thread | 1708–1714 |
 | [158](2026-11-22.md#slice-158) | What a server needs of the library, first: a group of tasks, limits and a graceful end | 1715–1730 |
-| [159](2026-11-23.md#slice-159) | What a server needs of the library, second: a list of borrows, a reader that lends slices, `writev` | 1731–1745 |
+| [159](2026-11-23.md#slice-159) | What a server needs of the library, second: a list of borrows, a reader that lends slices, `writev` | 1731–1749 |

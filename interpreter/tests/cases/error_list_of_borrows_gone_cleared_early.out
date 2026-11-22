@@ -1,0 +1,5 @@
+error: `pieces` borrows from `head` here, but `head` is gone at the end of its block and `pieces` is used after that
+  --> error_list_of_borrows_gone_cleared_early.sg:8:20
+ 8 |         pieces.add(head.asBytes())
+   |                    ^^^^
+  hint: `pieces.clear()` before `pieces` is used again, on every way to it: a list with no items borrows nothing; or declare `head` where `pieces` is declared

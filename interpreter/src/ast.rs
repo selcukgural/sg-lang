@@ -804,6 +804,9 @@ pub enum NetCall {
     Receive,
     /// `stream.send(bytes)`: all the bytes go out.
     Send,
+    /// `stream.sendPieces(read pieces)`: the bytes of every window of a `List<read byte[]>`
+    /// go out, in order, with as few calls of the system as it takes (`writev`).
+    SendPieces,
     /// `stream.reader()`, `stream.reader(limit)`: a `StreamReader` that reads the connection
     /// through a block of its own and borrows it; a line or a text longer than the limit
     /// (64 KB unless given) is an error.
@@ -820,6 +823,7 @@ impl NetCall {
             NetCall::Connect => "connect",
             NetCall::Receive => "read",
             NetCall::Send => "write",
+            NetCall::SendPieces => "writev",
             NetCall::Reader => "reader",
         }
     }
@@ -1017,6 +1021,14 @@ pub enum StreamCall {
     /// `reader.readSome(ref buffer)`: what the block holds, or what one read of the system
     /// gives when it is empty, at most what the buffer holds; gives how many, `0` at the end.
     ReadSome,
+    /// `reader.fill()`: one more read of the system behind what the block holds; `false` at
+    /// the end, `TooLong` when the block holds its limit already.
+    Fill,
+    /// `reader.buffered()`: what the block holds and has not been given out, lent as a
+    /// `read byte[]`.
+    Buffered,
+    /// `reader.consume(n)`: the first `n` bytes the block holds are given out.
+    Consume,
     /// `writer.write(x)`: what `print` takes, without a line end.
     Write,
     /// `writer.writeLine(x)`: as `write`, and a `\n`.

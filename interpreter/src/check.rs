@@ -577,7 +577,8 @@ const IO_ERROR: &str = "IoError";
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
-/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable,
+/// TooLong }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -591,12 +592,13 @@ const IO_ERROR: &str = "IoError";
 /// argument of a program with a zero byte in it. `MessageTooLong`: a datagram the system cannot
 /// send as one message, or one longer than the buffer it was received into. `NotSeekable`: `seek`
 /// on a stream that is not a file opened by `File` (a pipe, the input of the program), or on a
-/// writer that writes at the end (`File.openAppend`).
+/// writer that writes at the end (`File.openAppend`). `TooLong`: `fill` on a reader whose block
+/// holds its limit already, which `consume` makes room in (1736).
 /// What an `IoError` is written as (1537), by variant: a short sentence in lower case, as Go's
 /// errors are, followed by the number a variant carries (`invalid text at byte 812`,
 /// `system error 5`); `Cancelled` writes no field. The interpreter and compiled code write it
 /// from this table.
-pub const IO_ERROR_TEXTS: [&str; 18] = [
+pub const IO_ERROR_TEXTS: [&str; 19] = [
     "not found",
     "permission denied",
     "is a folder",
@@ -615,6 +617,7 @@ pub const IO_ERROR_TEXTS: [&str; 18] = [
     "invalid input",
     "message too long",
     "cannot seek",
+    "too long",
 ];
 
 fn io_error() -> EnumDecl {
@@ -644,6 +647,7 @@ fn io_error() -> EnumDecl {
         variant("InvalidInput", Vec::new()),
         variant("MessageTooLong", Vec::new()),
         variant("NotSeekable", Vec::new()),
+        variant("TooLong", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
@@ -5432,6 +5436,11 @@ impl<'a> Checker<'a> {
                 if matches!(callee, Callee::Stream(StreamCall::Lines)) {
                     return self.lent_by(recv, false, true);
                 }
+                // `reader.buffered()` looks at the block of the reader: nothing reads it, or
+                // gives out of it, while the bytes are used (1734).
+                if matches!(callee, Callee::Stream(StreamCall::Buffered)) {
+                    return self.lent_by(recv, false, false);
+                }
                 // `conn.reader()` reads the connection as long as it is used, and lets it send.
                 if matches!(callee, Callee::Net(NetCall::Reader)) {
                     return self.lent_by(recv, false, false);
@@ -5646,17 +5655,31 @@ impl<'a> Checker<'a> {
     /// borrow is an error if the variable that held the borrow is used afterwards.
     fn borrow_conflicts(&self) -> Res<()> {
         for clash in &self.borrows.clashes {
-            let used_later = self.borrows.uses.iter().find(|(var, at)| {
-                if *var != clash.holder {
-                    return false;
-                }
-                // Not reached from here: the other branch of an `if` or a `match` around both.
-                let other_branch = at.branches.iter().any(|(node, branch)| clash.at.branches.iter().any(|(n, b)| n == node && b != branch));
-                let after = (at.pos, at.seq) > (clash.at.pos, clash.at.seq) && !other_branch;
-                // A loop comes round again, unless the variable is new in every round.
-                let next_round = clash.at.loops.iter().any(|l| !clash.holder_loops.contains(l) && at.loops.contains(l));
-                after || next_round
-            });
+            let key = |at: &Point| (at.pos, at.seq);
+            // Not reached from here: the other branch of an `if` or a `match` around both.
+            let other_branch = |at: &Point| at.branches.iter().any(|(node, branch)| clash.at.branches.iter().any(|(n, b)| n == node && b != branch));
+            let after = |at: &Point| key(at) > key(&clash.at) && !other_branch(at);
+            // A loop comes round again, unless the variable is new in every round.
+            let next_round = |at: &Point| clash.at.loops.iter().any(|l| !clash.holder_loops.contains(l) && at.loops.contains(l));
+            // The borrows of a list count until it is cleared, and a `clear` reads none of them
+            // (1748): a use is no clash when a `clear` of the holder lies on every way to it from
+            // here. In the same round between the two, or in the round the use is in, before it
+            // (the `clear` itself is a use at the same place); not in a branch or a loop the use is
+            // outside of.
+            let cleared_before = |at: &Point| {
+                self.borrows.released.iter().any(|(holder, _, cleared)| {
+                    let on_the_way = match (after(at), next_round(at)) {
+                        (true, _) => after(cleared) && cleared.pos <= at.pos,
+                        (false, true) => (after(cleared) && next_round(cleared)) || (next_round(cleared) && cleared.pos <= at.pos),
+                        _ => false,
+                    };
+                    *holder == clash.holder
+                        && on_the_way
+                        && cleared.branches.iter().all(|branch| at.branches.contains(branch))
+                        && cleared.loops.iter().all(|inner| at.loops.contains(inner))
+                })
+            };
+            let used_later = self.borrows.uses.iter().find(|(var, at)| *var == clash.holder && (after(at) || next_round(at)) && !cleared_before(at));
             let Some((_, later)) = used_later else { continue };
             let text = &self.src[clash.span.start..clash.span.end];
             let holder = &clash.holder_name;
@@ -5668,8 +5691,11 @@ impl<'a> Checker<'a> {
             }
             if clash.access == Access::Gone {
                 let owner = &clash.owner_name;
-                return Err(Diag::error(clash.span, format!("`{holder}` borrows from `{owner}` here, but `{owner}` is gone at the end of its block and `{holder}` is used after that"))
-                    .hint(format!("declare `{owner}` where `{holder}` is declared, so that it lives as long")));
+                let diag = Diag::error(clash.span, format!("`{holder}` borrows from `{owner}` here, but `{owner}` is gone at the end of its block and `{holder}` is used after that"));
+                return Err(match clash.clears {
+                    true => diag.hint(format!("`{holder}.clear()` before `{holder}` is used again, on every way to it: a list with no items borrows nothing; or declare `{owner}` where `{holder}` is declared")),
+                    false => diag.hint(format!("declare `{owner}` where `{holder}` is declared, so that it lives as long")),
+                });
             }
             let diag = match (clash.access, clash.loan.mutable) {
                 (Access::Read, _) => Diag::error(clash.span, format!("`{text}` cannot be used here: `{holder}` holds a `ref` borrow of it and is used again later")),
@@ -5687,9 +5713,9 @@ impl<'a> Checker<'a> {
             // before (choice 1381).
             if clash.loan.span.start >= clash.span.start && !clash.at.loops.is_empty() {
                 diag = diag.note(format!("the loop comes round again, and `{holder}` still holds the borrow of the round before"));
-                if clash.clears {
-                    return Err(diag.hint(format!("`{holder}.clear()` in every round before this line: a list with no items borrows nothing")));
-                }
+            }
+            if clash.clears && !clash.at.loops.is_empty() {
+                return Err(diag.hint(format!("`{holder}.clear()` before `{holder}` is used again, on every way to it: a list with no items borrows nothing")));
             }
             // Used by the place of the assignment whose right side touched it.
             if later.placed.is_some_and(|from| clash.at.placed.is_none() && (from..=later.pos).contains(&clash.at.pos)) {
@@ -5986,7 +6012,7 @@ impl<'a> Checker<'a> {
                         closed: owner.opened,
                         copy_as: None,
                         holder_loops: holder.decl_loops.clone(),
-                        clears: false,
+                        clears: clears(holder),
                         loan: loan.clone(),
                         access: Access::Gone,
                         span: loan.span,
@@ -7365,8 +7391,9 @@ impl<'a> Checker<'a> {
 
     /// `xs.clear()` on a local collection that holds borrows: with no items left it borrows
     /// nothing, so its source is free again (1733), and a loop that clears it before it
-    /// touches the source does not clash with the borrows of the round before. Not through a
-    /// parameter, whose items are the caller's.
+    /// touches the source does not clash with the borrows of the round before; one that clears
+    /// it after, before the list is used again, does not either (1748, in `borrow_conflicts`).
+    /// Not through a parameter, whose items are the caller's.
     fn release(&mut self, recv: &Expr) {
         let ExprKind::Var(name) = &recv.kind else { return };
         let at = self.point(recv.span.start);
@@ -11801,8 +11828,13 @@ impl<'a> Checker<'a> {
         awaited: bool,
     ) -> Res<Ty> {
         let count = match (target, base) {
-            (Ty::Reader(_), "readText") => 0,
+            (Ty::Reader(_), "readText" | "fill") => 0,
             (Ty::Reader(_), "readLine" | "readBytes" | "readSome") => 1,
+            (Ty::Reader(_), "buffered" | "consume") => {
+                let reader = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, format!("a `StreamReader` has no `{name}`: `{base}` does not wait"))
+                    .hint(format!("`{reader}.{base}({})`, in an async function too; `fillAsync` is what waits", if base == "consume" { "n" } else { "" })));
+            }
             (Ty::Reader(_), "lines") => {
                 let reader = &self.src[recv.span.start..recv.span.end];
                 return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
@@ -11841,7 +11873,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLineAsync", "readTextAsync", "readBytesAsync", "readSomeAsync"],
+                    Ty::Reader(_) => &["readLineAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
                     _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -12473,15 +12505,17 @@ impl<'a> Checker<'a> {
             (Ty::Listener, "port") if !is_async => (NetCall::Port, Vec::new(), Ty::Int(IntTy::Int)),
             (Ty::Socket, "receive") => (NetCall::Receive, vec![bytes(Ty::Ref)], io(Ty::Int(IntTy::Nint))),
             (Ty::Socket, "send") => (NetCall::Send, vec![bytes(Ty::Read)], io(Ty::Void)),
+            (Ty::Socket, "sendPieces") => (NetCall::SendPieces, vec![Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))], io(Ty::Void)),
             _ => {
                 let known: &[&str] = match target {
                     Ty::Listener => &["accept", "acceptAsync", "port"],
-                    _ => &["receive", "receiveAsync", "send", "sendAsync", "reader"],
+                    _ => &["receive", "receiveAsync", "send", "sendAsync", "sendPieces", "sendPiecesAsync", "reader"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let other = match (target, base) {
                     (Ty::Socket, "recv" | "readBytes" | "readSome") => Some(if is_async { "receiveAsync" } else { "receive" }),
                     (Ty::Socket, "write" | "writeBytes" | "writeAll" | "sendAll") => Some(if is_async { "sendAsync" } else { "send" }),
+                    (Ty::Socket, "writev" | "sendVectored" | "writeVectored" | "sendAllPieces") => Some(if is_async { "sendPiecesAsync" } else { "sendPieces" }),
                     _ => None,
                 };
                 return Err(match (target, base) {
@@ -12517,6 +12551,14 @@ impl<'a> Checker<'a> {
                 true => diag.hint(format!("`{name}` writes into the buffer, so it is lent with `ref`")),
                 false => diag,
             })?;
+        } else if call == NetCall::SendPieces {
+            let conn = &self.src[recv.span.start..recv.span.end];
+            let send = if is_async { "await " } else { "" };
+            let hint = format!("one run of bytes goes out with `send`: `{send}{conn}.send{}(...)`", if is_async { "Async" } else { "" });
+            self.args(name, given, &params, span).map_err(|diag| match given.first().map(|arg| arg.ty.strip_borrow()) {
+                Some(Ty::List(item) | Ty::Slice(item)) if **item == Ty::Int(IntTy::Byte) => diag.hint(hint),
+                _ => diag,
+            })?;
         } else {
             self.args(name, given, &params, span)?;
         }
@@ -12525,7 +12567,7 @@ impl<'a> Checker<'a> {
         }
         // `send` goes through a `read` borrow, so that a reader may borrow the stream while
         // it sends; not through a `shared` one, which tasks on other threads may own.
-        if call == NetCall::Send {
+        if matches!(call, NetCall::Send | NetCall::SendPieces) {
             if shared {
                 return Err(Diag::error(recv.span, format!("`{name}` cannot go through a `shared` connection: several tasks could send on it at once"))
                     .note("a connection is sent on by one task at a time; a connection read by one task and sent on by another is not here yet"));
@@ -14097,6 +14139,9 @@ impl<'a> Checker<'a> {
             (Ty::Reader(_), "lines") => StreamCall::Lines,
             (Ty::Reader(_), "readBytes") => StreamCall::ReadBytes,
             (Ty::Reader(_), "readSome") => StreamCall::ReadSome,
+            (Ty::Reader(_), "fill") => StreamCall::Fill,
+            (Ty::Reader(_), "buffered") => StreamCall::Buffered,
+            (Ty::Reader(_), "consume") => StreamCall::Consume,
             (Ty::Writer, "write") => StreamCall::Write,
             (Ty::Writer, "writeLine") => StreamCall::WriteLine,
             (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
@@ -14105,7 +14150,7 @@ impl<'a> Checker<'a> {
             (_, "seek") => StreamCall::Seek,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome", "seek"],
+                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek"],
                     _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -14116,7 +14161,7 @@ impl<'a> Checker<'a> {
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
                     (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
-                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes" | "readSome") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
+                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
             }
@@ -14152,9 +14197,15 @@ impl<'a> Checker<'a> {
                     .note("a file opened with `File.openText(path)` can seek"));
             }
         }
+        if call == StreamCall::Buffered {
+            arity(0)?;
+            self.not_locked(recv, Access::Read)?;
+            return Ok(Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte))))));
+        }
         if !writable {
             let what = match call {
                 StreamCall::Seek => "moves the stream",
+                StreamCall::Consume => "gives out what the block holds",
                 _ => "goes on from where the stream is",
             };
             if let Some(diag) = self.readonly(recv) {
@@ -14176,6 +14227,15 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ty::TextIter(TextIter::ReadLines)
             }
+            StreamCall::Fill => {
+                arity(0)?;
+                result(Ty::Bool)
+            }
+            StreamCall::Consume => {
+                self.args(shown, args, &[Ty::Int(IntTy::Nint)], span)?;
+                Ty::Void
+            }
+            StreamCall::Buffered => unreachable!("answered above"),
             StreamCall::ReadBytes | StreamCall::ReadSome => {
                 let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
                 self.args(shown, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {

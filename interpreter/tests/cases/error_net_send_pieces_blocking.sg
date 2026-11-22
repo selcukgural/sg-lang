@@ -1,0 +1,10 @@
+// In an async function the pieces go out the async way.
+async Result<void, IoError> answer(TcpStream conn) {
+    var pieces = List<read byte[]>()
+    pieces.add("ok\n".asBytes())
+    try conn.sendPieces(read pieces)
+    return Ok()
+}
+
+void main() {
+}

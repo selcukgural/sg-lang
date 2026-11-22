@@ -1,0 +1,10 @@
+message of 3: abc
+message of 5000: yyy
+message of 4: def
+left at the end: 0
+3 messages
+fill: too long
+after consume: true 4
+fill: cancelled
+then: late
+drained: 10000

@@ -1,0 +1,77 @@
+// `fill`, `buffered` and `consume`: a reader lends its block, and the program gives out what it
+// has taken from it. The folder is the first word of the command line; the input is
+// `ok_reader_fill.in`.
+
+// The lines of a reader, found in its block: a `\n` that `buffered` shows ends one, and `fill`
+// reads more when the block holds no whole line. One function for a file and for the input.
+Result<int, IoError> countLines(ref StreamReader reader) {
+    int count = 0
+    while true {
+        var view = reader.buffered()
+        var end = view.indexOf(10)
+        if end is not null {
+            print($"line: {string.fromUtf8(view[0..end]) ?? "not text"}")
+            count += 1
+            reader.consume(end + 1)
+            continue
+        }
+        if !try reader.fill() {
+            var rest = reader.buffered()
+            var left = rest.length()
+            if left > 0 {
+                print($"last: {string.fromUtf8(rest) ?? "not text"}")
+            }
+            reader.consume(left)
+            return Ok(count)
+        }
+    }
+}
+
+void show(read string what, Result<bool, IoError> filled) {
+    match filled {
+        Ok(more) => print($"{what}: {more}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "lines.txt")
+    try File.writeText(read path, "alpha\nbeta\ngamma")
+    var reader = try File.openText(read path)
+    var lines = try countLines(ref reader)
+    print($"lines of the file: {lines}")
+
+    // Nothing is in the block before the first `fill`; at the end `fill` gives `false`, and the
+    // block keeps what it holds.
+    var again = try File.openText(read path)
+    print($"before: {again.buffered().length()}")
+    show("first fill", again.fill())
+    show("at the end", again.fill())
+    print($"after: {again.buffered().length()}")
+
+    // `readLine` goes on from the same block.
+    try File.writeText(read path, "head\nbody line\n")
+    var mixed = try File.openText(read path)
+    _ = try mixed.fill()
+    mixed.consume(5)
+    string line = ""
+    _ = try mixed.readLine(ref line)
+    print($"read on: {line}")
+
+    // A block that holds its limit, 64 KB for a file, is `TooLong` until `consume` gives out
+    // of it.
+    var big = Path.join(read args[0], "big.txt")
+    var text = "x".repeat(70000)
+    try File.writeText(read big, read text)
+    var whole = try File.openText(read big)
+    show("first", whole.fill())
+    print($"holds: {whole.buffered().length()}")
+    show("full", whole.fill())
+    whole.consume(60000)
+    show("after consume", whole.fill())
+    print($"holds: {whole.buffered().length()}")
+
+    var typed = try countLines(ref Stdin)
+    print($"lines of the input: {typed}")
+    return Ok()
+}

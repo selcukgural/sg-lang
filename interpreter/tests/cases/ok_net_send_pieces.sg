@@ -1,0 +1,152 @@
+// `sendPieces` sends the windows of a `List<read byte[]>` in order, as one run of bytes, with as
+// few calls of the system as it takes (`writev`): a head and a body go out without being copied
+// into one buffer first.
+
+// What came: how many bytes, a sum of the first 40,000 that sees their order, and where the
+// mark `X` between the two large pieces lies.
+struct Seen {
+    long bytes
+    long sum
+    long mark
+}
+
+void look(ref Seen seen, read byte[] got) {
+    for i in 0..got.length() {
+        if seen.bytes + i >= 40000 {
+            break
+        }
+        long value = got[i]
+        seen.sum = (seen.sum * 31 + value) % 1000000007
+    }
+    var at = got.indexOf(88)
+    if at is not null && seen.mark < 0 {
+        seen.mark = seen.bytes + at
+    }
+    seen.bytes += got.length()
+}
+
+string said(read Seen seen) {
+    return $"{seen.bytes} bytes, sum {seen.sum}, mark at {seen.mark}".toString()
+}
+
+Result<string, IoError> count(TcpListener listener) {
+    var conn = try listener.accept()
+    var buffer = List<byte>.repeat(0, 65536)
+    var seen = Seen { bytes = 0, sum = 0, mark = -1 }
+    while true {
+        var n = try conn.receive(ref buffer[..])
+        if n == 0 {
+            break
+        }
+        look(ref seen, buffer[0..n])
+    }
+    return Ok(said(read seen))
+}
+
+Result<void, IoError> sendAll(read string address) {
+    var conn = try TcpStream.connect(address)
+    var body = "a body of text".asBytes()
+    // A list made once is filled again in every round: `clear` lets go of what it borrowed.
+    var pieces = List<read byte[]>()
+    for round in 0..3 {
+        pieces.clear()
+        var head = $"round {round}: ".toString()
+        pieces.add(head.asBytes())
+        pieces.add(body)
+        pieces.add("\n".asBytes())
+        try conn.sendPieces(read pieces)
+    }
+    // Pieces that are empty, and a list with none.
+    pieces.clear()
+    pieces.add("".asBytes())
+    pieces.add("x".asBytes())
+    pieces.add("".asBytes())
+    try conn.sendPieces(read pieces)
+    pieces.clear()
+    try conn.sendPieces(read pieces)
+    // More pieces than one call of the system takes.
+    var digits = "0123456789".asBytes()
+    pieces.clear()
+    for i in 0..3000 {
+        pieces.add(digits[i % 10..i % 10 + 1])
+    }
+    try conn.sendPieces(read pieces)
+    // Pieces larger than the connection holds at once: the rest of a piece sent in part goes out
+    // after it.
+    var big = List<byte>.repeat(7, 3000000)
+    pieces.clear()
+    pieces.add(big[0..1000001])
+    pieces.add("X".asBytes())
+    pieces.add(big[1000001..])
+    try conn.sendPieces(read pieces)
+    return Ok()
+}
+
+async Result<void, IoError> sendAllAsync(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var body = "a body of text".asBytes()
+    var pieces = List<read byte[]>()
+    for round in 0..3 {
+        pieces.clear()
+        var head = $"round {round}: ".toString()
+        pieces.add(head.asBytes())
+        pieces.add(body)
+        pieces.add("\n".asBytes())
+        try await conn.sendPiecesAsync(read pieces)
+    }
+    var digits = "0123456789".asBytes()
+    pieces.clear()
+    for i in 0..3000 {
+        pieces.add(digits[i % 10..i % 10 + 1])
+    }
+    try await conn.sendPiecesAsync(read pieces)
+    var big = List<byte>.repeat(7, 3000000)
+    pieces.clear()
+    pieces.add(big[0..1000001])
+    pieces.add("X".asBytes())
+    pieces.add(big[1000001..])
+    try await conn.sendPiecesAsync(read pieces)
+    // A cancelled token sends nothing.
+    var source = CancellationSource()
+    source.cancel()
+    match await conn.sendPiecesAsync(read pieces, read source.token()) {
+        Ok => print("sent")
+        Error(cause) => print($"not sent: {cause}")
+    }
+    return Ok()
+}
+
+async Result<string, IoError> countAsync(read TcpListener listener) {
+    var conn = try await listener.acceptAsync()
+    var buffer = List<byte>.repeat(0, 65536)
+    var seen = Seen { bytes = 0, sum = 0, mark = -1 }
+    while true {
+        var n = try await conn.receiveAsync(ref buffer[..])
+        if n == 0 {
+            break
+        }
+        look(ref seen, buffer[0..n])
+    }
+    return Ok(said(read seen))
+}
+
+async Result<void, IoError> asyncRound() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = sendAllAsync(address.clone())
+    var said = try await countAsync(read listener)
+    try await client
+    print($"async: {said}")
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(count, listener)
+    try sendAll(read address)
+    var said = try server.wait()
+    print($"sync: {said}")
+    try asyncRound().wait()
+    return Ok()
+}

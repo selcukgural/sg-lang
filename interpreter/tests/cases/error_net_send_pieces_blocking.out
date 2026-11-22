@@ -1,0 +1,6 @@
+error: `sendPieces` on a connection holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_net_send_pieces_blocking.sg:5:14
+ 5 |     try conn.sendPieces(read pieces)
+   |              ^^^^^^^^^^
+  hint: `await conn.sendPiecesAsync(read pieces)` does the same work without holding the thread

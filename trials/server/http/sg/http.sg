@@ -2,7 +2,8 @@
 // answered with "pong" over HTTP/1.1 with connections kept open; the request line and every header
 // read and checked (`Host` in HTTP/1.1, `Connection`, a body of `Content-Length` bytes let go,
 // `Transfer-Encoding` answered 501); a head of more than 8 KB answered 431, anything else wrong 400;
-// each connection reads into a buffer of 4 KB, answers every whole request it holds and sends the
+// each connection reads through a `StreamReader`, whose block starts at 4 KB and grows to hold a
+// body of up to 1 MB, answers every whole request the block holds, where it lies, and sends the
 // answers together.
 //
 //     http PORT
@@ -296,30 +297,21 @@ nint serveAll(read byte[] bytes, ref List<byte> out) {
 // ---- a connection
 
 async Result<void, IoError> serve(TcpStream conn) {
-    var buffer = List<byte>.repeat(0, 4096)
-    nint length = 0
+    var reader = conn.reader(2097152)
     var out = List<byte>()
     while true {
-        if length == buffer.length() {
-            var bigger = List<byte>.repeat(0, buffer.length() * 2)
-            bigger[0..length].copyFrom(buffer[0..length])
-            buffer = bigger
-        }
-        var n = try await conn.receiveAsync(ref buffer[length..buffer.length()])
-        if n == 0 {
+        if !try await reader.fillAsync() {
             return Ok()
         }
-        length += n
         out.clear()
-        var used = serveAll(buffer[0..length], ref out)
+        var used = serveAll(reader.buffered(), ref out)
         if out.length() > 0 {
             try await conn.sendAsync(read out)
         }
         if used < 0 {
             return Ok()
         }
-        buffer[0..length - used].copyFrom(buffer[used..length])
-        length -= used
+        reader.consume(used)
     }
 }
 

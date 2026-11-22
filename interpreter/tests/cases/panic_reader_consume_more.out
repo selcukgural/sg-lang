@@ -1,0 +1,6 @@
+holds: 0
+panic: `consume(5)` gives out more than the reader holds: it holds 0 byte(s)
+  `buffered().length()` is what it holds
+  --> panic_reader_consume_more.sg:5:5
+ 5 |     Stdin.consume(5)
+   |     ^^^^^^^^^^^^^^^^

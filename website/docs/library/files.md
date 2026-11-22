@@ -119,11 +119,62 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | `lines(ref this)` | Each line as a `Result<string, IoError>`, for a `for` |
 | `Result<nint, IoError> readBytes(ref this, ref byte[] buffer)` | Fills the buffer unless the end comes first; how many bytes |
 | `Result<nint, IoError> readSome(ref this, ref byte[] buffer)` | What the block holds, or what one read of the system gives; 0 at the end |
+| `Result<bool, IoError> fill(ref this)` | One more read of the system behind what the block holds; `false` at the end |
+| `read byte[] buffered(read this)` | What the block holds and has not been given out, lent where it lies |
+| `consume(ref this, nint n)` | Gives out the first `n` bytes of the block; more than it holds is a panic |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Moves, inside its block when it can; gives the new place |
 
 Text that is not UTF-8 is `IoError.InvalidText(position)`, counted from the start of the file. `SeekFrom` is
 `Start(long offset)`, `End(long offset)` or `Current(long offset)`; a place before the start is
 `InvalidInput`.
+
+### Reading from the block
+
+A parser that finds its own ends (a length in front, a `\r\n\r\n`, a byte that closes a record) reads
+the block of the reader where it lies, with nothing copied out of it: `buffered()` lends what the block
+holds, the parser takes what is whole, `consume(n)` gives that out, and `fill()` reads more when what is
+left is only part of one. `fill` always reads more, also when the block holds bytes, so a parser that
+found half a record does not go round for nothing. The borrow `buffered` gives keeps the reader from
+being read, filled or consumed while it is used.
+
+The block of a file, of `Stdin` and of the pipe of another program holds 64 KB; that of a connection
+starts at 4 KB and doubles up to its limit (`conn.reader(limit)`, 64 KB unless given). `fill` on a block
+that holds its limit already is `IoError.TooLong`, until `consume` makes room. `readLine` and the other
+reads go on from the same block.
+
+```sg
+// Records of a length byte and that many bytes.
+Result<void, IoError> main() {
+    var path = "records.bin"
+    var out = try File.createText(read path)
+    try out.writeBytes("\u{3}one\u{5}three\u{2}up".asBytes())
+    try out.close()
+
+    var reader = try File.openText(read path)
+    while true {
+        var view = reader.buffered()
+        if view.length() > 0 && view.length() > view[0] {
+            nint size = view[0]
+            print(string.fromUtf8(view[1..size + 1]) ?? "not text")
+            reader.consume(size + 1)
+            continue
+        }
+        if !try reader.fill() {
+            break
+        }
+    }
+    try File.delete(read path)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+one
+three
+up
+```
 
 ```sg
 struct Point : Formattable {
@@ -172,10 +223,10 @@ end
 
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`;
-on a reader `readLineAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`; on a writer `writeAsync`,
+on a reader `readLineAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`, `fillAsync`; on a writer `writeAsync`,
 `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`, and `seekAsync` on both. Each may take a
 `read CancellationToken` last (not `closeAsync`). In an async function the calls without `Async` are an error,
-since they would hold the thread.
+since they would hold the thread. `buffered` and `consume` do not wait, and are called as they are.
 
 ## `Stdin`, `Stdout` and `Stderr`
 
@@ -332,6 +383,7 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `NoSpace` | The disk is full |
 | `InvalidInput` | What was given cannot go to the system, or a seek before the start |
 | `NotSeekable` | `seek` on a pipe, on `Stdin` or on a writer of `openAppend` |
+| `TooLong` | `fill` on a reader whose block holds its limit already |
 | `InvalidText(long position)` | A byte that is not UTF-8, at that place |
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |

@@ -7,4 +7,4 @@ error: `out` cannot be changed here: `pieces` borrows from it and is used again 
   --> error_list_of_borrows_cleared_in_branch.sg:11:20
  11 |         pieces.add(out[0..1])
     |                    ^^^^^^^^^
-  hint: `pieces.clear()` in every round before this line: a list with no items borrows nothing
+  hint: `pieces.clear()` before `pieces` is used again, on every way to it: a list with no items borrows nothing

@@ -1,0 +1,126 @@
+// `fillAsync`, `buffered` and `consume` on the reader of a connection: messages framed by their
+// length are found in the block of the reader, where they lie, and nothing is copied out of it.
+
+// A message is its length in two bytes, high first, then its bytes. A message that is not whole
+// yet waits for `fillAsync`, which always reads more, also when the block holds half of one.
+async Result<int, IoError> serve(TcpStream conn) {
+    var reader = conn.reader()
+    int count = 0
+    while true {
+        var view = reader.buffered()
+        if view.length() >= 2 {
+            nint high = view[0]
+            nint low = view[1]
+            var size = high * 256 + low
+            if view.length() >= size + 2 {
+                var body = view[2..size + 2]
+                print($"message of {size}: {string.fromUtf8(body[0..3]) ?? "not text"}")
+                count += 1
+                reader.consume(size + 2)
+                continue
+            }
+        }
+        if !try await reader.fillAsync() {
+            print($"left at the end: {reader.buffered().length()}")
+            return Ok(count)
+        }
+    }
+}
+
+async Result<void, IoError> ask(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var first = List<byte> { 0, 3, 97, 98, 99 }
+    try await conn.sendAsync(first[..])
+    // A message of 5,000 bytes, longer than the first block of the reader, in three pieces.
+    var long = List<byte>.repeat(121, 5002)
+    long[0] = 19
+    long[1] = 136
+    try await conn.sendAsync(long[0..1000])
+    try await conn.sendAsync(long[1000..4000])
+    try await conn.sendAsync(long[4000..])
+    // Cut inside the length.
+    var cut = List<byte> { 0, 4, 100, 101, 102, 103 }
+    try await conn.sendAsync(cut[0..1])
+    try await conn.sendAsync(cut[1..])
+    return Ok()
+}
+
+// A block that holds the limit of the reader is `TooLong` until `consume` gives out of it.
+async Result<void, IoError> limited(read TcpListener listener, read string address) {
+    var client = try await TcpStream.connectAsync(address)
+    var conn = try await listener.acceptAsync()
+    try await client.sendAsync("forty bytes of text, more than sixteen..".asBytes())
+    var reader = conn.reader(16)
+    while reader.buffered().length() < 16 {
+        _ = try await reader.fillAsync()
+    }
+    match await reader.fillAsync() {
+        Ok(more) => print($"fill: {more}")
+        Error(cause) => print($"fill: {cause}")
+    }
+    var held = reader.buffered().length()
+    reader.consume(held)
+    try await client.sendAsync("next".asBytes())
+    var more = try await reader.fillAsync()
+    print($"after consume: {more} {reader.buffered().length()}")
+    return Ok()
+}
+
+// A cancel ends a wait of `fillAsync`; what comes after it is read by the next.
+async Result<void, IoError> cancelled(read TcpListener listener, read string address) {
+    var client = try await TcpStream.connectAsync(address)
+    var conn = try await listener.acceptAsync()
+    var reader = conn.reader()
+    var soon = CancellationSource.after(30)
+    match await reader.fillAsync(read soon.token()) {
+        Ok(more) => print($"fill: {more}")
+        Error(cause) => print($"fill: {cause}")
+    }
+    try await client.sendAsync("late".asBytes())
+    _ = try await reader.fillAsync()
+    print($"then: {string.fromUtf8(reader.buffered()) ?? "not text"}")
+    return Ok()
+}
+
+// Through a `ref StreamReader`, which a file's reader could be too: the bytes until the end.
+async Result<nint, IoError> drain(ref StreamReader reader) {
+    nint total = 0
+    while try await reader.fillAsync() {
+        var held = reader.buffered().length()
+        total += held
+        reader.consume(held)
+    }
+    return Ok(total)
+}
+
+async Result<void, IoError> lent(read TcpListener listener, read string address) {
+    var conn = try await listener.acceptAsync()
+    var reader = conn.reader()
+    var total = try await drain(ref reader)
+    print($"drained: {total}")
+    return Ok()
+}
+
+async Result<void, IoError> sendSome(string address) {
+    var client = try await TcpStream.connectAsync(read address)
+    var bytes = List<byte>.repeat(1, 10000)
+    try await client.sendAsync(bytes[0..3000])
+    try await client.sendAsync(bytes[3000..])
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = ask(address.clone())
+    var conn = try await listener.acceptAsync()
+    var count = try await serve(conn)
+    try await client
+    print($"{count} messages")
+    try await limited(read listener, read address)
+    try await cancelled(read listener, read address)
+    var sender = sendSome(address.clone())
+    try await lent(read listener, read address)
+    try await sender
+    return Ok()
+}

@@ -1,0 +1,8 @@
+// `buffered` looks through a `read` borrow; `consume` gives out of the block, so it needs `ref`.
+void skip(read StreamReader reader) {
+    var held = reader.buffered().length()
+    reader.consume(held)
+}
+
+void main() {
+}

@@ -1,0 +1,48 @@
+// A head of 100 bytes and a body of SIZE bytes sent COUNT times over the loopback, to a sink that
+// reads and lets go of them: `copy` puts the two into one buffer and sends it, `pieces` sends the
+// two windows with `sendPieces`. Prints the nanoseconds of one message.
+//
+//     pieces copy|pieces SIZE COUNT
+Result<void, IoError> sink(TcpListener listener) {
+    var conn = try listener.accept()
+    var buffer = List<byte>.repeat(0, 262144)
+    while try conn.receive(ref buffer[..]) > 0 {
+    }
+    return Ok()
+}
+
+Result<long, IoError> sendAll(read string address, bool copy, nint size, long count) {
+    var conn = try TcpStream.connect(address)
+    var head = List<byte>.repeat(72, 100)
+    var body = List<byte>.repeat(66, size)
+    var out = List<byte>.withCapacity(100 + size)
+    var pieces = List<read byte[]>()
+    var start = Instant.now()
+    for _ in 0..count {
+        if copy {
+            out.clear()
+            out.addAll(head[..])
+            out.addAll(body[..])
+            try conn.send(read out)
+        } else {
+            pieces.clear()
+            pieces.add(head[..])
+            pieces.add(body[..])
+            try conn.sendPieces(read pieces)
+        }
+    }
+    return Ok(start.elapsed().nanoseconds())
+}
+
+Result<void, IoError> main(List<string> args) {
+    var copy = args[0] == "copy"
+    var size = nint.parse(args[1]) ?? 4096
+    var count = long.parse(args[2]) ?? 100000
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(sink, listener)
+    var ns = try sendAll(read address, copy, size, count)
+    try server.wait()
+    print(ns / count)
+    return Ok()
+}

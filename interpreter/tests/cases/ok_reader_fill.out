@@ -1,0 +1,18 @@
+line: alpha
+line: beta
+last: gamma
+lines of the file: 2
+before: 0
+first fill: true
+at the end: false
+after: 16
+read on: body line
+first: true
+holds: 65536
+full: too long
+after consume: true
+holds: 10000
+line: one
+line: two
+last: three
+lines of the input: 2

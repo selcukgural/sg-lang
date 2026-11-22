@@ -312,3 +312,20 @@ threads and each message wakes another core: the echo of 64 bytes takes 1.30 tim
 ends on one thread; [Slower than C](slower-than-c.md) keeps the case. Before choices 1687 to 1690 the addresses
 took 2.262 s, a text made for every host, and 1,000 connections at once held 6.6 MB, each task carrying 600 bytes
 for each call of the network it waits in.
+
+### Several pieces at once
+
+`trials/server/pieces/pieces.sg` and `pieces.c` send a head of 100 bytes and a body of 4 KB 200,000 times, or of
+64 KB 30,000 times, over the loopback to a thread that reads and lets them go: after copying the two into one
+buffer, and with `sendPieces` in SG and `writev` in C (1740). Linux in the virtual machine of the servers, the
+nanoseconds of one message, medians of four runs, the sender and the reader on cores 0-3:
+
+| Body | SG, copy and `send` | SG, `sendPieces` | C, copy and `send` | C, `writev` |
+|---|---|---|---|---|
+| 4 KB | 877 | 852 | 873 | 849 |
+| 64 KB | 8,922 | 5,382 | 8,888 | 5,558 |
+
+With a body of 64 KB the copy is two fifths of the time, and `sendPieces` takes it away, as `writev` does in C;
+with 4 KB the call of the system is most of it, and the four are within 3%. Neither server of the server lane
+sends this way: the store reads a value under the lock of its map, and the body of the HTTP server is 4 bytes.
+

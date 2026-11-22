@@ -1,0 +1,5 @@
+error: `consume` gives out what the block holds, but it is reached through a `read` borrow
+  --> error_reader_consume_read.sg:4:5
+ 4 |     reader.consume(held)
+   |     ^^^^^^
+  hint: take it as `ref StreamReader` instead of `read StreamReader`

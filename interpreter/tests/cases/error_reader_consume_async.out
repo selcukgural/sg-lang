@@ -1,0 +1,5 @@
+error: a `StreamReader` has no `consumeAsync`: `consume` does not wait
+  --> error_reader_consume_async.sg:5:18
+ 5 |     await reader.consumeAsync(1)
+   |                  ^^^^^^^^^^^^
+  hint: `reader.consume(n)`, in an async function too; `fillAsync` is what waits

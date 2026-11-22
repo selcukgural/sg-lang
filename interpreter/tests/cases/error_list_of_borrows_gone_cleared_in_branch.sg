@@ -1,0 +1,12 @@
+// A `clear` in one branch only does not let go of the borrow on the other way: the text made in
+// the round before is gone when the next round adds to the list.
+void main() {
+    var pieces = List<read byte[]>()
+    for round in 0..3 {
+        if round % 2 == 0 {
+            pieces.clear()
+        }
+        var head = $"round {round}: ".toString()
+        pieces.add(head.asBytes())
+    }
+}

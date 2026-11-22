@@ -231,6 +231,13 @@ clients misbehave or the machine is asked to stop, and none of them costs a serv
   those left, and still waits for them to end. Each connection goes out by its own error, so nothing is left
   half written.
 
+A request is read where it lies: `conn.reader()` gives a block that starts at 4 KB and grows only as far as a
+request needs, `buffered()` lends it, the parser takes what is whole, `consume(n)` gives that out, and
+`fillAsync` reads more ([Reading from the block](files.md#reading-from-the-block)). An answer made of a head and a
+body built apart goes out with `sendPiecesAsync(read pieces)`, a `List<read byte[]>` cleared and filled again in
+every round, with no copy into one buffer. The store and the HTTP server of the measurements read this way, in
+the time and memory of a buffer of their own.
+
 An error of one connection stays in its task: the group takes tasks that give nothing, so the function of the
 connection decides what to do with it (log it, say), and the server goes on.
 

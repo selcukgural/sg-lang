@@ -1396,6 +1396,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     HostNotFound                                 // the host could not be found, or it is not `host:port`
     LineTooLong                                  // the reader of a connection met a line longer than its limit
     NotSeekable                                  // seek on a pipe, the program's input, a writer at the end
+    TooLong                                      // fill on a reader whose block holds its limit already
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name
@@ -1416,6 +1417,9 @@ Result<void, IoError> main(List<string> args) {  // the words after the program'
     for item in reader.lines() {                 // item: Result<string, IoError>, a text of its own
         var next = try item
     }
+    var view = reader.buffered()                 // read byte[]: what the block holds, where it lies
+    reader.consume(view.length())                // given out; more than it holds is a panic
+    var more = try reader.fill()                 // one more read behind what it holds; false at the end
     var writer = try File.createText("out.txt")  // StreamWriter, made or emptied
     try writer.write(42)                         // what print takes
     try writer.writeLine($" lines")
@@ -2426,6 +2430,12 @@ try client.send(question)
 var n = try client.receive(ref buffer)         // ConnectionRefused when nobody listens there
 
 var peer = try conn.remoteAddress()            // the other end of a TcpStream
+
+var pieces = List<read byte[]>()               // made once, cleared in every round
+pieces.clear()
+pieces.add(head.asBytes())
+pieces.add(body)
+try conn.sendPieces(read pieces)               // writev: all of them, in order, with no copy
 ```
 
 A datagram longer than the buffer, or one too long to send as one message, is `IoError.MessageTooLong`, where

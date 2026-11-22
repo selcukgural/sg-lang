@@ -188,7 +188,9 @@
   kept in a field or given back (it carries a borrow; `StreamReader<from conn>`), a writer of a connection,
   closing one direction (`shutdown`), the
   options of a socket (`TCP_NODELAY`), a
-  listener on every v6 address. `checked` on its own, in a value with one
+  listener on every v6 address, several pieces written at once to a file (`writev` on a writer) and
+  `sendfile`, and the block of a reader let go while its connection is idle, as Go's pool does (1741).
+  `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.

@@ -117,6 +117,26 @@ program, and glibc does not give the pages in the middle of its heap back to the
 them again. The other servers have no such limit, as most servers of their kind do not; `tokio` and hyper
 would bound a request with `tokio::time::timeout`, Zig and C with a timer of their own.
 
+## A reader that lends its block
+
+Since the 159th slice the SG servers read through `conn.reader()` (`fillAsync`, `buffered`, `consume`), where
+they kept a buffer of 4 KB of their own and moved what was left of a request to its start after each read
+(choices 1734-1740). The block of the reader of a connection starts at 4 KB, as their buffer did, where it took
+64 KB before. The same compiler built both, run in turn four times; medians:
+
+| Case | A buffer of their own | The reader |
+|---|---|---|
+| Store, 50 connections | 1,366,245/s, p99 73 µs | 1,358,553/s, 72 µs |
+| Store, 1,000 connections | 1,262,463/s, 1.08 ms | 1,262,719/s, 1.09 ms |
+| HTTP, 50 connections | 1,216,697/s, 75 µs | 1,232,847/s, 75 µs |
+| 100,000 idle connections | 4.98 KB each | 4.95 KB each |
+
+The reader costs nothing. A first build lost 7 to 10% of the answers and 0.2 KB for each idle connection:
+`fillAsync` tried a receive each time before it waited, where `receiveAsync` waits for the loop at once when the
+last receive emptied the connection, and it kept a room of its own in the frame for its wait. Now the reader of
+a connection fills its block as `receiveAsync` receives, in the one room every call of the network shares, and
+the fields of a reader lie with no room between them (96 bytes before, 72 now).
+
 ## The long run
 
 Thirty minutes of the store at half the slowest server's answers a second, 1,000 connections, each opened again

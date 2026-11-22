@@ -1,0 +1,9 @@
+// `sendPieces` takes a list of windows; one window of bytes goes out with `send`.
+Result<void, IoError> answer(TcpStream conn) {
+    var bytes = List<byte> { 1, 2, 3 }
+    try conn.sendPieces(read bytes)
+    return Ok()
+}
+
+void main() {
+}

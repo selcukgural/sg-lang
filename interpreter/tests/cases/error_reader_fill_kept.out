@@ -1,0 +1,9 @@
+error: `reader` cannot be changed here: `view` borrows from it and is used again later
+  --> error_reader_fill_kept.sg:6:15
+ 6 |     while try reader.fill() {
+   |               ^^^^^^
+  `view` borrowed it here:
+  --> error_reader_fill_kept.sg:5:16
+ 5 |     var view = reader.buffered()
+   |                ^^^^^^
+  hint: finish with `view` before this line: a borrow ends at its last use

@@ -987,7 +987,7 @@ fn behind(value: &Value) -> Option<Cell> {
 /// the input of the program.
 #[derive(Debug)]
 pub struct Reader {
-    file: Option<std::io::BufReader<std::fs::File>>,
+    file: Option<FileBlock>,
     net: Option<NetReader>,
     /// The bytes given out so far: where an `InvalidText` lies. For a file it is where the
     /// reader stands, also after a `seek`.
@@ -999,6 +999,99 @@ pub struct Reader {
 impl Reader {
     fn is_stdin(&self) -> bool {
         self.file.is_none() && self.net.is_none()
+    }
+}
+
+/// The file of a reader, read through a block of `STREAM_BUFFER` bytes, as `BufReader` reads
+/// it, which `fill` adds one more read to (1735).
+#[derive(Debug)]
+pub struct FileBlock {
+    file: std::fs::File,
+    block: Vec<u8>,
+    /// Where what has not been given out starts in `block`.
+    at: usize,
+}
+
+impl FileBlock {
+    fn new(file: std::fs::File) -> FileBlock {
+        FileBlock { file, block: Vec::new(), at: 0 }
+    }
+
+    fn get_ref(&self) -> &std::fs::File {
+        &self.file
+    }
+
+    /// What the block holds and has not been given out.
+    fn buffer(&self) -> &[u8] {
+        &self.block[self.at..]
+    }
+
+    /// One more read behind what the block holds: how many bytes came, `0` at the end, or
+    /// `None` when the block is full.
+    fn more(&mut self) -> std::io::Result<Option<usize>> {
+        self.block.drain(..self.at);
+        self.at = 0;
+        let held = self.block.len();
+        if held >= STREAM_BUFFER {
+            return Ok(None);
+        }
+        self.block.resize(STREAM_BUFFER, 0);
+        let read = loop {
+            match self.file.read(&mut self.block[held..]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                other => break other,
+            }
+        };
+        self.block.truncate(held + *read.as_ref().unwrap_or(&0));
+        read.map(Some)
+    }
+}
+
+impl Read for FileBlock {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        // A read as large as the block, with the block empty, goes straight into `out`.
+        if self.at == self.block.len() && out.len() >= STREAM_BUFFER {
+            return self.file.read(out);
+        }
+        let held = self.fill_buf()?;
+        let count = held.len().min(out.len());
+        out[..count].copy_from_slice(&held[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for FileBlock {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.at == self.block.len() {
+            self.block.resize(STREAM_BUFFER, 0);
+            self.at = 0;
+            let count = loop {
+                match self.file.read(&mut self.block) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        self.block.clear();
+                        return Err(error);
+                    }
+                    Ok(count) => break count,
+                }
+            };
+            self.block.truncate(count);
+        }
+        Ok(&self.block[self.at..])
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.at = (self.at + count).min(self.block.len());
+    }
+}
+
+/// Only `SeekFrom::Start` is asked for: what the block holds is let go.
+impl std::io::Seek for FileBlock {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.block.clear();
+        self.at = 0;
+        self.file.seek(to)
     }
 }
 
@@ -1375,6 +1468,11 @@ fn io_host_not_found() -> Value {
 /// limit.
 fn io_line_too_long() -> Value {
     Value::Enum("IoError".into(), 11, Rc::new(Vec::new()))
+}
+
+/// `IoError.TooLong`: `fill` on a reader whose block holds its limit already.
+fn io_too_long() -> Value {
+    Value::Enum("IoError".into(), 18, Rc::new(Vec::new()))
 }
 
 fn io_cancelled() -> Value {
@@ -3600,6 +3698,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             StreamCall::ReadText => crate::input::Need::End,
             StreamCall::ReadBytes => crate::input::Need::Bytes(cells_of(&owned(self.expr(&args[0], frame)?)).len()),
             StreamCall::ReadSome => crate::input::Need::Some,
+            StreamCall::Fill => crate::input::Need::More(self.io.input.borrow().buffer().len()),
             _ => unreachable!("only reads wait for the input"),
         };
         let source = match token {
@@ -3764,9 +3863,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                 }
             }
-            NetCall::Send => {
+            NetCall::Send | NetCall::SendPieces => {
                 let Value::Socket(stream) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `send` on a stream") };
-                let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
+                // The pieces go out as one run of bytes, as `writev` sends them.
+                let bytes = match call {
+                    NetCall::Send => byte_values(&owned(self.expr(&args[0], frame)?)),
+                    _ => cells_of(&owned(self.expr(&args[0], frame)?)).iter().flat_map(|piece| byte_values(&owned(piece.borrow().clone()))).collect(),
+                };
                 let source = match token {
                     Some(token) => self.token(token, frame)?,
                     None => None,
@@ -5172,6 +5275,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(Value::Void)
                 }
                 Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
+                Callee::Stream(StreamCall::Consume) => self.reader_consume(recv, &args[0], expr.span, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
                 Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
@@ -5186,7 +5290,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // ended.
                 Callee::NetAsync(call) => {
                     let given = match call {
-                        NetCall::Connect | NetCall::Receive | NetCall::Send => 1,
+                        NetCall::Connect | NetCall::Receive | NetCall::Send | NetCall::SendPieces => 1,
                         NetCall::Accept | NetCall::Bind | NetCall::Port | NetCall::Reader => 0,
                     };
                     let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
@@ -5274,14 +5378,22 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // A writer's async methods do the work of the methods without `Async`; the
                 // block that the compiled code writes on a thread of its own is written here.
                 Callee::StreamAsync(call) => {
-                    let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close) { 0 } else { 1 };
+                    let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill) { 0 } else { 1 };
                     let token = args.get(given);
                     // The input that can make the program wait is waited for outside the run.
-                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome) && self.io.input.borrow().waits {
-                        let stdin = matches!(owned(self.expr(recv, frame)?), Value::Reader(reader) if reader.borrow().is_stdin());
-                        if stdin {
+                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
+                        let reader = match owned(self.expr(recv, frame)?) {
+                            Value::Reader(reader) if reader.borrow().is_stdin() => Some(reader),
+                            _ => None,
+                        };
+                        if let Some(reader) = reader {
+                            let base = self.io.input.borrow().buffer().len();
                             if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
                                 return Ok(self.ended_task(cancelled, expr.span));
+                            }
+                            if *call == StreamCall::Fill {
+                                let value = self.reader_fill(&reader, base, None, expr.span)?;
+                                return Ok(self.ended_task(value, expr.span));
                             }
                         }
                     }
@@ -6468,7 +6580,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
             IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
                 true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
-                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0, seekable: true })))),
+                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
             })),
             IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let opened = match call {
@@ -6593,7 +6705,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0, seekable: false }))));
+                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: false }))));
             }
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
@@ -7169,6 +7281,27 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// looked at after the arguments, before the work.
     fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
+        if let (StreamCall::Fill | StreamCall::Buffered, Value::Reader(reader)) = (call, &stream) {
+            return match call {
+                StreamCall::Fill => {
+                    let source = match token {
+                        Some(token) => self.token(token, frame)?,
+                        None => None,
+                    };
+                    let base = self.io.input.borrow().buffer().len();
+                    self.reader_fill(reader, base, source.as_ref(), recv.span)
+                }
+                _ => {
+                    let held = reader.borrow();
+                    let bytes = match (&held.file, &held.net) {
+                        (Some(file), _) => file.buffer().to_vec(),
+                        (_, Some(net)) => net.block[net.at..].to_vec(),
+                        _ => self.io.input.borrow().buffer().to_vec(),
+                    };
+                    Ok(Value::Slice(Rc::new(bytes.into_iter().map(byte_cell).collect())))
+                }
+            };
+        }
         if let Value::Reader(reader) = &stream {
             if reader.borrow().net.is_some() && call != StreamCall::Lines {
                 let (slot, cells) = match call {
@@ -7480,6 +7613,76 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 ok(Value::Int(IntTy::Nint, count as i128))
             }
+        })
+    }
+
+    /// `reader.consume(n)`: the first `n` bytes of the block are given out; more than it holds
+    /// is a panic (1737).
+    fn reader_consume(&mut self, recv: &'a Expr, count: &'a Expr, at: Span, frame: &mut Frame) -> Res<Value> {
+        let Value::Reader(reader) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `consume` on a reader") };
+        let Value::Int(_, count) = strip(self.expr(count, frame)?) else { unreachable!("the checker makes the count a number") };
+        let mut held = reader.borrow_mut();
+        let holds = match (&held.file, &held.net) {
+            (Some(file), _) => file.buffer().len(),
+            (_, Some(net)) => net.block.len() - net.at,
+            _ => self.io.input.borrow().buffer().len(),
+        };
+        if count < 0 || count > holds as i128 {
+            return Err(Diag::panic(at, format!("`consume({count})` gives out more than the reader holds: it holds {holds} byte(s)"))
+                .note("`buffered().length()` is what it holds")
+                .into());
+        }
+        let count = count as usize;
+        let held = &mut *held;
+        match (&mut held.file, &mut held.net) {
+            (Some(file), _) => file.consume(count),
+            (_, Some(net)) => net.at += count,
+            _ => self.io.input.borrow_mut().consume(count),
+        }
+        held.done += count as u64;
+        Ok(Value::Void)
+    }
+
+    /// `reader.fill()`: one more read behind what the block holds, `Ok(false)` at the end.
+    /// `base`: what the block of the input held when the call began, so that what a thread
+    /// read into it for the async call counts as the read.
+    fn reader_fill(&mut self, reader: &Rc<RefCell<Reader>>, base: usize, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Value> {
+        if source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
+            return Ok(failed(io_cancelled()));
+        }
+        if reader.borrow().net.is_some() {
+            {
+                let held = reader.borrow();
+                let net = held.net.as_ref().expect("a reader of a connection");
+                if net.too_long {
+                    return Ok(failed(io_line_too_long()));
+                }
+                if net.ended {
+                    return Ok(ok(Value::Bool(false)));
+                }
+                if net.block.len() - net.at >= net.limit {
+                    return Ok(failed(io_too_long()));
+                }
+            }
+            return Ok(match self.net_fill(reader, source, at)? {
+                Ok(true) => failed(io_cancelled()),
+                Ok(false) => ok(Value::Bool(!reader.borrow().net.as_ref().expect("a reader of a connection").ended)),
+                Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+            });
+        }
+        let read = match reader.borrow_mut().file.as_mut() {
+            Some(file) => file.more(),
+            None => {
+                if self.io.world.borrow().input_is_terminal {
+                    self.flush_out()?;
+                }
+                self.io.input.borrow_mut().more(base, STREAM_BUFFER)
+            }
+        };
+        Ok(match read {
+            Ok(Some(got)) => ok(Value::Bool(got > 0)),
+            Ok(None) => failed(io_too_long()),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
         })
     }
 

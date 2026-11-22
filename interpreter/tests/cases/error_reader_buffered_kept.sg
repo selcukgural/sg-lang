@@ -1,0 +1,10 @@
+// What `buffered` lends is the block of the reader: `consume` changes it, so the bytes cannot be
+// looked at after it.
+Result<void, IoError> main() {
+    var reader = try File.openText("data.txt")
+    _ = try reader.fill()
+    var view = reader.buffered()
+    reader.consume(1)
+    print(view.length())
+    return Ok()
+}

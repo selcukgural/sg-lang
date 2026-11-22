@@ -1,0 +1,10 @@
+// `consume` does not wait, so it has no async form; it is called as it is in an async function.
+async Result<void, IoError> take(TcpStream conn) {
+    var reader = conn.reader()
+    _ = try await reader.fillAsync()
+    await reader.consumeAsync(1)
+    return Ok()
+}
+
+void main() {
+}

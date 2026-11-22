@@ -9,6 +9,7 @@ Two servers, each written in SG, Rust, Zig and C, and one load that drives them 
 | [load](load) | The load, in C: closed loop (answers a second) or open loop (`--rate`, the time of each answer counted from when it was due, so a server that stalls is charged for what waited behind it), idle connections from several source addresses, a check of every answer byte for byte, a line for each interval of a long run (`--report`), connections opened again (`--reconnect`) |
 | [resp](resp) | A store that speaks a part of RESP2, Redis's protocol: PING, GET, SET, DEL, over 64 maps each behind a lock |
 | [http](http) | An HTTP/1.1 server that answers GET /ping with `pong`, connections kept open |
+| [pieces](pieces) | A head of 100 bytes and a body of 4 KB or 64 KB sent over the loopback, copied into one buffer, with SG's `sendPieces` and with C's `writev` (choice 1740): `pieces copy\|pieces SIZE COUNT` prints the nanoseconds of one message |
 | [measure.py](measure.py) | Builds everything and runs every case on Linux in the image of [Containerfile](Containerfile) |
 
 What every version does the same way is written at the top of `resp/c/resp.c` and `http/c/http.c`.

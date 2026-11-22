@@ -1,0 +1,40 @@
+// `fillAsync` on a file and on the input: an async read of the system behind what the block holds,
+// on a thread of input and output for a file, the input read by a thread the task waits for. The
+// folder is the first word of the command line; the input is `ok_reader_fill_async.in`.
+async Result<int, IoError> words(ref StreamReader reader) {
+    int count = 0
+    while true {
+        var view = reader.buffered()
+        var end = view.indexOf(32)
+        if end is not null {
+            count += 1
+            reader.consume(end + 1)
+            continue
+        }
+        if !try await reader.fillAsync() {
+            if reader.buffered().length() > 0 {
+                count += 1
+            }
+            return Ok(count)
+        }
+    }
+}
+
+async Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "words.txt")
+    try await File.writeTextAsync(read path, "one two three four")
+    var reader = try await File.openTextAsync(read path)
+    var inFile = try await words(ref reader)
+    print($"words in the file: {inFile}")
+    var typed = try await words(ref Stdin)
+    print($"words in the input: {typed}")
+    // A cancelled token reads nothing.
+    var source = CancellationSource()
+    source.cancel()
+    var again = try await File.openTextAsync(read path)
+    match await again.fillAsync(read source.token()) {
+        Ok(more) => print($"filled: {more}")
+        Error(cause) => print($"not filled: {cause}")
+    }
+    return Ok()
+}
