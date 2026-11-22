@@ -4460,7 +4460,20 @@ enum { SG_IDLE, SG_QUEUED, SG_RUNNING, SG_WOKEN, SG_FINISHED };
 #ifdef SG_PAUSE_WAKES
 static void sg_wake_pause(void) {
 #if defined(_WIN32)
-    Sleep(2);
+    /* `Sleep(2)` waits for the next tick of the system's timer, 15.6 ms, which made the tests of
+       small pools take four minutes there: a timer of high resolution for each thread, as the
+       clock's, waits 2 ms as Linux and macOS do. */
+    static _Thread_local HANDLE timer = NULL;
+    if (timer == NULL) {
+        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    }
+    LARGE_INTEGER due;
+    due.QuadPart = -20000;
+    if (timer != NULL && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+        WaitForSingleObject(timer, INFINITE);
+    } else {
+        Sleep(2);
+    }
 #else
     struct timespec t = { 0, 2000000 };
     nanosleep(&t, NULL);
