@@ -29,7 +29,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [19 November 2026](2026-11-19.md) | 118–129 | Fuzzing and mutants, editors, the web site, and the library: hex, Base64, CRC-32, SHA-256, the command line, JSON, a log. |
 | [20 November 2026](2026-11-20.md) | 130–144 | Regular expressions, compression, zip, real programs, packages, and the fixes of the second review of safety. |
 | [21 November 2026](2026-11-21.md) | 145–152 | A const without calls, `copyFrom`, the normal forms of Unicode, default values of parameters, and `std` measured against Rust and Zig. |
-| [22 November 2026](2026-11-22.md) | 153 | Time, random numbers and the log measured against Rust and Zig. |
+| [22 November 2026](2026-11-22.md) | 153–154 | Time, random numbers and the log measured against Rust and Zig; the network. |
 
 ## Every slice
 
@@ -235,3 +235,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [151](2026-11-21.md#slice-151) | SHA-256, HMAC, CRC-32 and Adler-32 measured against Rust and Zig | 1653–1658 |
 | [152](2026-11-21.md#slice-152) | Hex, Base64 and Unicode measured against Rust and Zig | 1659–1666 |
 | [153](2026-11-22.md#slice-153) | Time, random numbers and the log measured against Rust and Zig | 1667–1677 |
+| [154](2026-11-22.md#slice-154) | The network measured against Rust and Zig | 1678–1690 |

@@ -1,0 +1,10 @@
+[package]
+name = "net"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The standard library's `std::net` for the blocking way, with a thread for each task, and `tokio`
+# for the async way, with its runtime of several threads, as `#[tokio::main]` makes it (choice 1678).
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }

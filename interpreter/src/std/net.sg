@@ -79,16 +79,35 @@ public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
 
     // The host alone, without the port and without brackets: `1.2.3.4`, `::1`.
     public string host(read this) {
+        var host = Host { address = this }
         var text = ""
+        text.write($"{host}")
+        return text
+    }
+
+    // `1.2.3.4:53`, `[::1]:53`.
+    public void format(read this, ref Formatter f) {
+        if this.v6 {
+            f.write('[')
+            this.writeHost(ref f)
+            f.write($"]:{this.number}")
+        } else {
+            this.writeHost(ref f)
+            f.write($":{this.number}")
+        }
+    }
+
+    // The host, written where the address is written, so that nothing is made for it.
+    void writeHost(read this, ref Formatter f) {
         if !this.v6 {
-            text.write(dotted(this.low))
-            return text
+            writeDotted(this.low, ref f)
+            return
         }
         // `::ffff:1.2.3.4`: a v4 address in a v6 one is written with its v4 part, as RFC 5952 asks.
         if this.high == 0 && this.low >> 32 == 0xffff {
-            text.write("::ffff:")
-            text.write(dotted(this.low))
-            return text
+            f.write("::ffff:")
+            writeDotted(this.low, ref f)
+            return
         }
         var groups = int[8]
         for at in 0..8 {
@@ -116,27 +135,16 @@ public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
         var at = 0
         while at < 8 {
             if at == best {
-                text.write("::")
+                f.write("::")
                 at += bestLength
                 continue
             }
             if at > 0 && at != best + bestLength {
-                text.write(":")
+                f.write(':')
             }
             var group = groups[at]
-            text.write($"{group:x}")
+            f.write($"{group:x}")
             at += 1
-        }
-        return text
-    }
-
-    // `1.2.3.4:53`, `[::1]:53`.
-    public void format(read this, ref Formatter f) {
-        var host = this.host()
-        if this.v6 {
-            f.write($"[{host}]:{this.number}")
-        } else {
-            f.write($"{host}:{this.number}")
         }
     }
 
@@ -502,10 +510,19 @@ bool v6Of(read string host, ref int[] groups) {
 }
 
 // `1.2.3.4`, from the last 32 bits.
-string dotted(ulong bits) {
+void writeDotted(ulong bits, ref Formatter f) {
     var a = (bits >> 24) & 0xff
     var b = (bits >> 16) & 0xff
     var c = (bits >> 8) & 0xff
     var d = bits & 0xff
-    return $"{a}.{b}.{c}.{d}".toString()
+    f.write($"{a}.{b}.{c}.{d}")
+}
+
+// The host of an address alone, as `SocketAddress.host` gives it.
+struct Host : Copyable, Formattable {
+    SocketAddress address
+
+    void format(read this, ref Formatter f) {
+        this.address.writeHost(ref f)
+    }
 }

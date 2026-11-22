@@ -31,6 +31,7 @@ and their tables are in [The library against Rust and Zig](../benchmarks/library
 | [std/time](std/time) | Ten million moments written in ISO 8601, 100 MB of RFC 3339 read, a million moments in a time zone, the clock read ten million times | 153 |
 | [std/random](std/random) | A hundred million numbers, a hundred million in a range, 100 MB of bytes, a million tokens of the system's bytes | 153 |
 | [std/log](std/log) | A million lines, a hundred million that are off, a million from four tasks | 153 |
+| [std/net](std/net) | Echoes of 64 bytes to 64 KB, 1,000 connections at once, 50,000 one after another, 1 GB one way, 100 MB in lines, datagrams, ten million addresses read and written; async and blocking | 154 |
 
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
@@ -38,7 +39,8 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 ## How they are written (1525-1532)
 
 - Each trial has a folder with `sg/`, `rust/` and `zig/`. Rust uses its standard library and the crates
-  people use for the job (`regex`), pinned in `Cargo.lock`, and threads rather than an async runtime. Zig
+  people use for the job (`regex`), pinned in `Cargo.lock`, and threads rather than an async runtime,
+  except where SG's async functions are measured: `std/net` uses `tokio` for its async cases (1678). Zig
   uses its standard library, and a library of C where Zig has none, as Zig programs do: `grep` links
   PCRE2 (with its JIT) through `build.zig` (1541), `std/unicode` ICU4C, Zig having no categories or
   normal forms (1659), and `std/time` the C library's `localtime_r`, Zig having no time zones; its
@@ -50,7 +52,8 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   same bytes on every machine, [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`, and
   [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression` and
   `std/encoding`, [`inputs/unicode.sg`](inputs/unicode.sg) the text in many writings of `std/unicode`,
-  and [`inputs/time.sg`](inputs/time.sg) the moments in RFC 3339 of `std/time`.
+  [`inputs/time.sg`](inputs/time.sg) the moments in RFC 3339 of `std/time`, and
+  [`inputs/address.sg`](inputs/address.sg) the v4 and v6 addresses with their ports of `std/net`.
   The gzip, the archives, the Base64 and the NFD that the programs read are made by Python's `gzip`,
   `zipfile`, `base64` and `unicodedata`, which none of the programs measured is.
 - Where each language may lawfully write other bytes (compressed data, an archive), the program writes
@@ -61,6 +64,12 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   messages, in the order of their text, must be the same everywhere. Where the numbers drawn differ
   (Zig's generator is another), the programs print only whether they look random (1669, 1670). Every
   program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or `RUST_LOG`.
+- The network runs over the loopback, the server and its clients tasks of one program, each on a port the
+  system chooses. The side that closes a connection first waits a while before its port is free again, and
+  macOS has 16,384 ports for connections, so the server closes first (1684). A run that has not ended
+  after five minutes stops the measuring, and what its threads were doing is written into
+  `trials/target/hung-PID.txt` (1683); a run that exits with a code other than 0 stops it too, so that no
+  program that gave up early is counted fast (1685).
 
 ## Fairness (1554)
 

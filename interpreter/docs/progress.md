@@ -340,12 +340,20 @@ of Unicode were ahead of ICU4X and ICU4C as they stood (1659-1666), then time, r
 where a number written with a least count of digits no longer goes through `snprintf`, which wrote dates in
 2.4 times the time of `chrono` and now in its time, the lines of tasks on macOS wait on a lock of the
 program's own, the monotonic clock of macOS is the one Rust reads, and a moment in a time zone and a token
-of the system's bytes are left slower on purpose or for later (1667-1677).
+of the system's bytes are left slower on purpose or for later (1667-1677), then the network, where an
+address is written into the text where it goes and reads ten million in the time of Zig and three quarters of
+Rust's, a hex number in `$"..."` no longer goes through a format read at run time, a socket found empty or
+full is waited for on the loop at once, as Tokio does, and each call of the network in an async function
+takes 224 bytes of one room in its frame, where each took 600 of its own, so 1,000 connections hold what
+Tokio's hold; the program measured stopped for good once, when the ports of the machine ran out and the task
+that waited for clients was waited for, so the server closes first, a measurement stops at a run that hangs
+or fails, and an exit with an error will cancel the tasks it lets go (1678-1690).
 
 ## Next
 
-Next comes a slice
-for each of the network; and the command line,
+Next comes a slice in which an exit with an error cancels the tasks it lets go before it waits for them
+(1686); then the work on servers: idle connections, the latency under load, a store of keys and values,
+then HTTP, measured on Linux against Tokio, Zig and C; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

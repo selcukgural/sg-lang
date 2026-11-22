@@ -54,7 +54,11 @@ nine. Then hex and Base64, made five to seven times faster, to between 1.25 and 
 and Zig and three times as fast as Rust's `hex`; and the categories and normal forms of Unicode, as fast as
 ICU4X or faster. Then time, random numbers and the log: dates are written in the time of `chrono`, where they
 took 2.4 times as long, and numbers and lines of a log in the time of Rust and Zig; a moment in a time zone,
-which SG asks of the C library each time, takes four times `chrono`'s.
+which SG asks of the C library each time, takes four times `chrono`'s. Then the network, against `std::net`,
+`tokio` and Zig: in their time where the functions block, 1.01 to 1.12 times the best of them the async way,
+1,000 connections at once in the memory of `tokio`'s, and addresses read and written in the time of Zig and
+faster than Rust. On the network SG is never to be worse than the best rival, under load or not: what is
+still slower is listed and is the work of the slices on servers.
 
 ## Not yet
 

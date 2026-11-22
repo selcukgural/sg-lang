@@ -7,7 +7,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in [How it is measured](method.md), and so are the rules of fairness (1554). `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `command_line`, `environment`, `files`, `net`, `path`, `process`, `regex`, `signals`.
+Not measured yet: `atomic`, `command_line`, `environment`, `files`, `path`, `process`, `regex`, `signals`.
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
@@ -257,3 +257,54 @@ calendar by hand. Each line is one write of the system in all three, which is mo
 is fixed when the program is compiled, so its lines that are off are not in the program; SG reads its level,
 which `SG_LOG` may set, as the program runs. Before choice 1673 four tasks took 4.209 s on macOS, waiting in
 the kernel on the lock of C's stream.
+
+## net
+
+`trials/std/net`: each program is the server and its clients at once, tasks of one process over the loopback,
+each case once with async functions and once with functions that block, one task on a thread of its own
+(1678-1682). `echo` has 8 clients send messages of 64 bytes, 4 KB or 64 KB and wait for each to come back,
+20,000 times each, and 1,000 clients do it at once 100 times; the server closes each connection once it has sent
+back all of it, so that the wait of TCP after a close lies on its side and the ports of the clients are free again
+(1684). `connect` makes 50,000 connections one after another, a byte there and back on each. `stream` sends 1 GB
+one way, 4 KB or 64 KB at a time. `lines` sends 100 MB of a log, which the other side reads line by line.
+`udp` has 8 sockets send 25,000 datagrams of 64 bytes, 1 KB or 8 KB each to one that sends each back. `address`
+reads ten million addresses with their ports, half of them v6 in four ways of writing, from a new maker,
+`trials/inputs/address.sg`, and writes each back into a text kept from one to the next; `measure.py` holds what
+each program writes of 1,000 of them to what Python's `ipaddress` writes. Apple M3 Max, 22 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig safe |
+|---|---|---|---|---|---|
+| echo, 64 bytes, async | 1.208 s, 2.2 MB | 1.214 s, 2.2 MB | 1.196 s, 2.9 MB | 1.480 s, 2.9 MB | 1.470 s, 3.2 MB |
+| echo, 64 bytes, blocking | 1.475 s, 2.2 MB | 1.477 s, 2.2 MB | 1.496 s, 2.5 MB | 1.488 s, 2.8 MB | 1.483 s, 3.0 MB |
+| echo, 4 KB, async | 1.245 s, 2.3 MB | 1.247 s, 2.3 MB | 1.215 s, 3.0 MB | 1.512 s, 2.9 MB | 1.497 s, 3.2 MB |
+| echo, 4 KB, blocking | 1.482 s, 2.3 MB | 1.485 s, 2.3 MB | 1.483 s, 2.6 MB | 1.479 s, 2.9 MB | 1.524 s, 3.2 MB |
+| echo, 64 KB, async | 3.573 s, 3.7 MB | 3.570 s, 3.7 MB | 3.454 s, 4.4 MB | 3.589 s, 4.3 MB | 3.580 s, 4.8 MB |
+| echo, 64 KB, blocking | 3.608 s, 3.7 MB | 3.614 s, 3.7 MB | 3.611 s, 4.0 MB | 3.597 s, 4.2 MB | 3.630 s, 4.8 MB |
+| 1,000 connections at once, async | 0.788 s, 3.8 MB | 0.788 s, 3.8 MB | 0.772 s, 3.8 MB | 0.945 s, 9.5 MB | 0.940 s, 12.3 MB |
+| 50,000 connections one after another, async | 4.460 s, 2.2 MB | 4.713 s, 2.2 MB | 4.838 s, 2.9 MB | 4.061 s, 2.1 MB | 4.044 s, 2.2 MB |
+| 50,000 connections one after another, blocking | 4.214 s, 2.1 MB | 4.150 s, 2.1 MB | 4.203 s, 2.1 MB | 4.169 s, 2.1 MB | 4.188 s, 2.2 MB |
+| 1 GB in pieces of 4 KB, async | 0.448 s, 2.1 MB | 0.447 s, 2.1 MB | 0.452 s, 2.9 MB | 0.416 s, 2.1 MB | 0.432 s, 2.2 MB |
+| 1 GB in pieces of 4 KB, blocking | 0.414 s, 2.0 MB | 0.417 s, 2.0 MB | 0.411 s, 2.1 MB | 0.429 s, 2.1 MB | 0.436 s, 2.2 MB |
+| 1 GB in pieces of 64 KB, async | 0.172 s, 2.2 MB | 0.174 s, 2.2 MB | 0.153 s, 3.0 MB | 0.172 s, 2.2 MB | 0.169 s, 2.3 MB |
+| 1 GB in pieces of 64 KB, blocking | 0.168 s, 2.1 MB | 0.170 s, 2.1 MB | 0.166 s, 2.3 MB | 0.172 s, 2.2 MB | 0.167 s, 2.3 MB |
+| 100 MB in lines, async | 0.050 s, 97.6 MB | 0.050 s, 97.6 MB | 0.067 s, 98.3 MB | 0.036 s, 97.6 MB | 0.037 s, 97.7 MB |
+| 100 MB in lines, blocking | 0.047 s, 97.4 MB | 0.047 s, 97.4 MB | 0.070 s, 97.6 MB | 0.035 s, 97.6 MB | 0.036 s, 97.7 MB |
+| datagrams of 64 bytes, async | 1.687 s, 2.2 MB | 1.739 s, 2.2 MB | 1.674 s, 2.9 MB | 1.610 s, 2.5 MB | 1.627 s, 2.7 MB |
+| datagrams of 64 bytes, blocking | 1.600 s, 2.0 MB | 1.574 s, 2.1 MB | 1.578 s, 2.3 MB | 1.598 s, 2.5 MB | 1.598 s, 2.7 MB |
+| datagrams of 1 KB, async | 1.725 s, 2.2 MB | 1.753 s, 2.2 MB | 1.707 s, 2.9 MB | 1.641 s, 2.5 MB | 1.636 s, 2.7 MB |
+| datagrams of 1 KB, blocking | 1.617 s, 2.1 MB | 1.616 s, 2.1 MB | 1.608 s, 2.3 MB | 1.631 s, 2.5 MB | 1.630 s, 2.7 MB |
+| datagrams of 8 KB, async | 1.838 s, 2.3 MB | 1.830 s, 2.3 MB | 1.788 s, 3.0 MB | 1.714 s, 2.6 MB | 1.725 s, 2.8 MB |
+| datagrams of 8 KB, blocking | 1.702 s, 2.2 MB | 1.702 s, 2.2 MB | 1.701 s, 2.5 MB | 1.724 s, 2.6 MB | 1.714 s, 2.8 MB |
+| 10,000,000 addresses, read and written | 1.487 s, 2.0 MB | 1.625 s, 2.0 MB | 2.006 s, 2.2 MB | 1.535 s, 2.1 MB | 2.107 s, 2.2 MB |
+| Size, stripped | 150 KB | 166 KB | 938 KB | 377 KB | 474 KB |
+| Lines | 559 | 559 | 529 | 331 | 331 |
+
+Rust is `std::net` where the functions block, a thread for each task, and `tokio` 1.54.1 with the runtime of
+several threads `#[tokio::main]` makes where they are async; Zig is `std.Io.net` on `Io.Threaded`, its default,
+whose async functions are threads too (its loop on kqueue was not done on macOS). SG's lines are text, each
+checked to be UTF-8, as Rust's `read_line` checks it; Zig's `takeDelimiter` gives bytes, and without the check
+SG reads them in Zig's time. The async stream of 64 KB pieces takes 1.12 times `tokio`'s time, and 50,000
+connections one after another, async, 1.10 times Zig's: the time is in the calls of the system, and the
+difference lies most likely in where the tasks run, which [Slower than C](slower-than-c.md) keeps for the work on
+servers. Before choices 1687 to 1690 the addresses took 2.262 s, a text made for every host, and 1,000
+connections at once held 6.6 MB, each task carrying 600 bytes for each call of the network it waits in.

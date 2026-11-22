@@ -1,0 +1,133 @@
+// Addresses with their ports for the trial `std/net`: `address COUNT SEED` writes COUNT of them, one
+// a line, made by SplitMix64 from SEED (choice 1681). Half are v4 (`192.0.2.7:8080`), half v6 in
+// brackets (`[2001:db8::1]:443`), the port from 0 to 65535. A group of a v6 address is 0 three times
+// in eight, so that there are runs of 0 to write as `::`, and below 256 half the other times. A v6
+// address is written in one of four ways, each as likely: as RFC 5952 writes it (lower case, no 0
+// in front of a group, the longest run of two groups or more that are 0 as `::`), each group with
+// four digits, the same in upper case, and with no 0 in front of a group and the first run of 0, of
+// one group or more, as `::`. No address is one of a v4 address in a v6 one (`::ffff:0:0/96`,
+// `64:ff9b::/96`), which languages write in other ways.
+
+struct SplitMix {
+    ulong state
+
+    ulong next(ref this) {
+        this.state = this.state.wrappingAdd(0x9E3779B97F4A7C15)
+        ulong z = this.state
+        z = (z ^ (z >> 30)).wrappingMultiply(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> 27)).wrappingMultiply(0x94D049BB133111EB)
+        return z ^ (z >> 31)
+    }
+}
+
+const string Digits = "0123456789abcdef"
+const string Upper = "0123456789ABCDEF"
+
+// A group in hex: `width` digits at least, in upper case when asked.
+void writeGroup(ref string line, int group, int width, bool upper) {
+    var shift = 12
+    var started = false
+    while shift >= 0 {
+        var digit = (group >> shift) & 15
+        if digit != 0 || started || shift / 4 < width || shift == 0 {
+            if upper {
+                line.write((char)Upper[(nint)digit])
+            } else {
+                line.write((char)Digits[(nint)digit])
+            }
+            started = true
+        }
+        shift -= 4
+    }
+}
+
+void main(List<string> args) {
+    if args.length() != 2 {
+        printError("usage: address COUNT SEED")
+        exit(2)
+    }
+    long count = long.parse(read args[0]) ?? -1
+    long seed = long.parse(read args[1]) ?? -1
+    if count < 0 || seed < 0 {
+        printError("usage: address COUNT SEED")
+        exit(2)
+    }
+    var random = SplitMix { state = seed.wrappingToUlong() }
+    var line = string.withCapacity(64)
+    var groups = int[8]
+    for _ in 0..count {
+        line.clear()
+        int port = (int)(random.next() % 65536)
+        if random.next() % 2 == 0 {
+            for part in 0..4 {
+                if part > 0 {
+                    line.write('.')
+                }
+                line.write($"{random.next() % 256}")
+            }
+            line.write($":{port}")
+            print(line)
+            continue
+        }
+        for at in 0..8 {
+            var kind = random.next() % 8
+            if kind < 3 {
+                groups[at] = 0
+            } else if kind < 5 {
+                groups[at] = (int)(random.next() % 256)
+            } else {
+                groups[at] = (int)(random.next() % 65536)
+            }
+        }
+        bool mapped = groups[0] == 0 && groups[1] == 0 && groups[2] == 0 && groups[3] == 0 && groups[4] == 0 && groups[5] == 0xffff
+        bool nat = groups[0] == 0x64 && groups[1] == 0xff9b && groups[2] == 0 && groups[3] == 0 && groups[4] == 0 && groups[5] == 0
+        if mapped || nat {
+            groups[5] = 1
+        }
+        var style = random.next() % 4
+        // The run written as `::`: where it starts and how long it is, 0 for none.
+        var start = 0
+        var length = 0
+        if style == 0 || style == 3 {
+            var least = 2
+            if style == 3 {
+                least = 1
+            }
+            var run = 0
+            for at in 0..8 {
+                if groups[at] == 0 {
+                    run += 1
+                    if run >= least && run > length && (style == 0 || length == 0) {
+                        length = run
+                        start = at - run + 1
+                    }
+                    if style == 3 && length > 0 && start == at - run + 1 {
+                        length = run
+                    }
+                } else {
+                    run = 0
+                }
+            }
+        }
+        var width = 1
+        if style == 1 || style == 2 {
+            width = 4
+        }
+        line.write('[')
+        var at = 0
+        while at < 8 {
+            if length > 0 && at == start {
+                line.write("::")
+                at += length
+                continue
+            }
+            if at > 0 && !(length > 0 && at == start + length) {
+                line.write(':')
+            }
+            writeGroup(ref line, groups[at], width, style == 2)
+            at += 1
+        }
+        line.write($"]:{port}")
+        print(line)
+    }
+}

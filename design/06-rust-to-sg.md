@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-third slice (`Instant` on macOS reads the clock Rust's does, 1674).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-fourth slice (the network against `tokio`, 1687-1690).
 
 ## Functions and variables
 
@@ -474,7 +474,7 @@ Last brought up to date: 22 November 2026, the hundred-and-fifty-third slice (`I
 | `reader.fill_buf()?` / `BufRead` then `consume` | `try reader.readSome(ref buffer)` | built | On every `StreamReader`: what the block holds, or one read of the system when it is empty |
 | `tokio::io::BufReader::new(stream).lines()` | `await reader.readLineAsync(ref line)` | built | A line the block holds is read in place; a cancel ends a wait, and what came stays in the block |
 | `drop(stream)`, `stream.shutdown(Both)` | the stream ends | built | Closed where it ends; no `close` |
-| `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
+| `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket. A socket found empty or full waits for the loop at once, as Tokio's does; each call of an async function waits in one room of its frame, 224 bytes ([measured](../benchmarks/library.md#net)) |
 | `stream.peer_addr()?`, `stream.local_addr()?` | `try stream.remoteAddress()`, `stream.localAddress()` | built | A `SocketAddress`; the other side is `ConnectionReset` once it has broken the connection off |
 | `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `set_nodelay` | none yet | designed | Later slices of the network |
 | `UdpSocket::bind("127.0.0.1:0")?` | `try UdpSocket.bind("127.0.0.1:0")` | built | What `TcpListener.bind` takes; no name is looked up. On Windows it holds the port alone, and a datagram that came back is told only to a connected socket, as on Linux and macOS; Rust's socket there fails its next receive with a reset, whoever the datagram was for |

@@ -1,0 +1,642 @@
+// `net`: the network measured (choices 1553, 1629-1637, 1678-1682). Everything runs in one program,
+// over the loopback: the server and its clients are tasks of it. MODE is `async` (async functions,
+// awaited, the sockets waited for on the loop of the network) or `blocking` (functions that hold
+// their thread while they wait, each task on a thread of `Task.run`):
+//
+//     net echo MODE SIZE CLIENTS ROUNDS   CLIENTS connections, each sending SIZE bytes and waiting
+//                                          for them to come back, ROUNDS times
+//     net connect MODE COUNT               COUNT connections one after another, each sending a byte,
+//                                          taking it back and seeing the server close
+//     net stream MODE MEGABYTES BUFFER     MEGABYTES megabytes sent one way, BUFFER bytes at a time,
+//                                          and received BUFFER bytes at a time
+//     net lines MODE FILE                  FILE sent over a connection in pieces of 64 KB and read
+//                                          on the other side line by line
+//     net udp MODE SIZE CLIENTS ROUNDS     CLIENTS sockets, each sending datagrams of SIZE bytes to
+//                                          one that sends each back, ROUNDS times
+//     net address FILE                     each line of FILE read as an address with its port and
+//                                          written back into a text kept from one to the next
+//     net print FILE OUT                   the same, each address written into OUT on a line
+//
+// The clients of `echo` connect one after another and then all talk at once. The server closes each
+// connection once it has sent back all that a client sends, and the client sees it close, so the
+// wait of TCP after a close (TIME_WAIT) is on the server's side and the ports of the clients are
+// free again (choice 1684). What is printed is counted from what came back: the last byte of each
+// message is the number of its round, so the sums say that every message came back whole and in
+// order. A wrong use is told on the standard
+// error, with exit code 2; a failure of the network, with exit code 1.
+
+// The bytes of `stream`: byte `i` of the buffer, sent again and again.
+byte pattern(nint i) {
+    return (byte)((i * 31 + 7) & 255)
+}
+
+// ---- echo, async
+
+// What a client sends, `total` bytes, sent back; then the connection is let go.
+async Result<void, IoError> echoBack(TcpStream conn, nint size, long total) {
+    var buffer = List<byte>.repeat(0, size)
+    long left = total
+    while left > 0 {
+        var n = try await conn.receiveAsync(ref buffer[0..size])
+        if n == 0 {
+            return Error(IoError.ConnectionReset)
+        }
+        try await conn.sendAsync(buffer[0..n])
+        left -= n
+    }
+    return Ok()
+}
+
+async Result<void, IoError> serveEcho(TcpListener listener, int clients, nint size, int rounds) {
+    var tasks = List<Task<Result<void, IoError>>>()
+    for _ in 0..clients {
+        var conn = try await listener.acceptAsync()
+        tasks.add(echoBack(conn, size, size * rounds))
+    }
+    while tasks.length() > 0 {
+        try await Task.whenAny(ref tasks)
+    }
+    return Ok()
+}
+
+async Result<long, IoError> ask(TcpStream conn, nint size, int rounds) {
+    var message = List<byte>.repeat(7, size)
+    var back = List<byte>.repeat(0, size)
+    long sum = 0
+    for round in 0..rounds {
+        message[size - 1] = (byte)(round & 255)
+        try await conn.sendAsync(message[0..size])
+        nint got = 0
+        while got < size {
+            var n = try await conn.receiveAsync(ref back[got..size])
+            if n == 0 {
+                return Error(IoError.ConnectionReset)
+            }
+            got += n
+        }
+        sum += back[size - 1]
+    }
+    // The end: the server has let the connection go.
+    if try await conn.receiveAsync(ref back[0..size]) != 0 {
+        return Error(IoError.ConnectionReset)
+    }
+    return Ok(sum)
+}
+
+async Result<long, IoError> echoAsync(nint size, int clients, int rounds) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serveEcho(listener, clients, size, rounds)
+    var asking = List<Task<Result<long, IoError>>>()
+    for _ in 0..clients {
+        var conn = try await TcpStream.connectAsync(read address)
+        asking.add(ask(conn, size, rounds))
+    }
+    long sum = 0
+    while asking.length() > 0 {
+        sum += try await Task.whenAny(ref asking)
+    }
+    try await server
+    return Ok(sum)
+}
+
+// ---- echo, blocking
+
+Result<void, IoError> echoBackBlocking(TcpStream conn, nint size, long total) {
+    var buffer = List<byte>.repeat(0, size)
+    long left = total
+    while left > 0 {
+        var n = try conn.receive(ref buffer[0..size])
+        if n == 0 {
+            return Error(IoError.ConnectionReset)
+        }
+        try conn.send(buffer[0..n])
+        left -= n
+    }
+    return Ok()
+}
+
+Result<void, IoError> serveEchoBlocking(TcpListener listener, int clients, nint size, int rounds) {
+    var tasks = List<Task<Result<void, IoError>>>()
+    for _ in 0..clients {
+        var conn = try listener.accept()
+        tasks.add(Task.run(echoBackBlocking, conn, size, size * rounds))
+    }
+    while tasks.length() > 0 {
+        try Task.whenAny(ref tasks).wait()
+    }
+    return Ok()
+}
+
+Result<long, IoError> askBlocking(TcpStream conn, nint size, int rounds) {
+    var message = List<byte>.repeat(7, size)
+    var back = List<byte>.repeat(0, size)
+    long sum = 0
+    for round in 0..rounds {
+        message[size - 1] = (byte)(round & 255)
+        try conn.send(message[0..size])
+        nint got = 0
+        while got < size {
+            var n = try conn.receive(ref back[got..size])
+            if n == 0 {
+                return Error(IoError.ConnectionReset)
+            }
+            got += n
+        }
+        sum += back[size - 1]
+    }
+    if try conn.receive(ref back[0..size]) != 0 {
+        return Error(IoError.ConnectionReset)
+    }
+    return Ok(sum)
+}
+
+Result<long, IoError> echoBlocking(nint size, int clients, int rounds) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serveEchoBlocking, listener, clients, size, rounds)
+    var asking = List<Task<Result<long, IoError>>>()
+    for _ in 0..clients {
+        var conn = try TcpStream.connect(read address)
+        asking.add(Task.run(askBlocking, conn, size, rounds))
+    }
+    long sum = 0
+    while asking.length() > 0 {
+        sum += try Task.whenAny(ref asking).wait()
+    }
+    try server.wait()
+    return Ok(sum)
+}
+
+// ---- connect: the server takes a connection, sends its byte back and lets it go, so the wait of
+// TCP after a close (TIME_WAIT) is on its side and the ports of the clients are free again.
+
+async Result<void, IoError> serveConnect(TcpListener listener, long count) {
+    var buffer = byte[1](0)
+    for _ in 0..count {
+        var conn = try await listener.acceptAsync()
+        var n = try await conn.receiveAsync(ref buffer)
+        try await conn.sendAsync(buffer[0..n])
+    }
+    return Ok()
+}
+
+async Result<long, IoError> connectAsync(long count) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serveConnect(listener, count)
+    var message = byte[1](42)
+    var buffer = byte[1](0)
+    long bytes = 0
+    for _ in 0..count {
+        var conn = try await TcpStream.connectAsync(read address)
+        try await conn.sendAsync(message[0..1])
+        bytes += try await conn.receiveAsync(ref buffer)
+        // The end: the server has let the connection go.
+        bytes += try await conn.receiveAsync(ref buffer)
+    }
+    try await server
+    return Ok(bytes)
+}
+
+Result<void, IoError> serveConnectBlocking(TcpListener listener, long count) {
+    var buffer = byte[1](0)
+    for _ in 0..count {
+        var conn = try listener.accept()
+        var n = try conn.receive(ref buffer)
+        try conn.send(buffer[0..n])
+    }
+    return Ok()
+}
+
+Result<long, IoError> connectBlocking(long count) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serveConnectBlocking, listener, count)
+    var message = byte[1](42)
+    var buffer = byte[1](0)
+    long bytes = 0
+    for _ in 0..count {
+        var conn = try TcpStream.connect(read address)
+        try conn.send(message[0..1])
+        bytes += try conn.receive(ref buffer)
+        bytes += try conn.receive(ref buffer)
+    }
+    try server.wait()
+    return Ok(bytes)
+}
+
+// ---- stream: what was received, and the sum of every 64th byte of it.
+
+struct Streamed : Copyable {
+    long bytes
+    long sum
+}
+
+async Result<void, IoError> sendStream(string address, long total, nint size) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var buffer = List<byte>.repeat(0, size)
+    for i in 0..size {
+        buffer[i] = pattern(i)
+    }
+    long sent = 0
+    while sent < total {
+        try await conn.sendAsync(buffer[0..size])
+        sent += size
+    }
+    return Ok()
+}
+
+async Result<Streamed, IoError> streamAsync(long megabytes, nint size) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = sendStream(address, megabytes * 1048576, size)
+    var conn = try await listener.acceptAsync()
+    var buffer = List<byte>.repeat(0, size)
+    long bytes = 0
+    long sum = 0
+    while true {
+        var n = try await conn.receiveAsync(ref buffer[0..size])
+        if n == 0 {
+            break
+        }
+        var at = (nint)((64 - bytes % 64) % 64)
+        while at < n {
+            sum += buffer[at]
+            at += 64
+        }
+        bytes += n
+    }
+    try await sender
+    return Ok(Streamed { bytes = bytes, sum = sum })
+}
+
+Result<void, IoError> sendStreamBlocking(string address, long total, nint size) {
+    var conn = try TcpStream.connect(read address)
+    var buffer = List<byte>.repeat(0, size)
+    for i in 0..size {
+        buffer[i] = pattern(i)
+    }
+    long sent = 0
+    while sent < total {
+        try conn.send(buffer[0..size])
+        sent += size
+    }
+    return Ok()
+}
+
+Result<Streamed, IoError> streamBlocking(long megabytes, nint size) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = Task.run(sendStreamBlocking, address, megabytes * 1048576, size)
+    var conn = try listener.accept()
+    var buffer = List<byte>.repeat(0, size)
+    long bytes = 0
+    long sum = 0
+    while true {
+        var n = try conn.receive(ref buffer[0..size])
+        if n == 0 {
+            break
+        }
+        var at = (nint)((64 - bytes % 64) % 64)
+        while at < n {
+            sum += buffer[at]
+            at += 64
+        }
+        bytes += n
+    }
+    try sender.wait()
+    return Ok(Streamed { bytes = bytes, sum = sum })
+}
+
+// ---- lines: the file is read whole first, then sent in pieces of 64 KB.
+
+struct Lines : Copyable {
+    long lines
+    long bytes
+    long longest
+}
+
+async Result<void, IoError> sendLines(string address, List<byte> text) {
+    var conn = try await TcpStream.connectAsync(read address)
+    nint at = 0
+    while at < text.length() {
+        var end = at + 65536
+        if end > text.length() {
+            end = text.length()
+        }
+        try await conn.sendAsync(text[at..end])
+        at = end
+    }
+    return Ok()
+}
+
+async Result<Lines, IoError> linesAsync(List<byte> text) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = sendLines(address, text)
+    var conn = try await listener.acceptAsync()
+    var reader = conn.reader()
+    var line = ""
+    var counts = Lines { lines = 0, bytes = 0, longest = 0 }
+    while try await reader.readLineAsync(ref line) {
+        counts.lines += 1
+        long length = line.length()
+        counts.bytes += length
+        if length > counts.longest {
+            counts.longest = length
+        }
+    }
+    try await sender
+    return Ok(counts)
+}
+
+Result<void, IoError> sendLinesBlocking(string address, List<byte> text) {
+    var conn = try TcpStream.connect(read address)
+    nint at = 0
+    while at < text.length() {
+        var end = at + 65536
+        if end > text.length() {
+            end = text.length()
+        }
+        try conn.send(text[at..end])
+        at = end
+    }
+    return Ok()
+}
+
+Result<Lines, IoError> linesBlocking(List<byte> text) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = Task.run(sendLinesBlocking, address, text)
+    var conn = try listener.accept()
+    var reader = conn.reader()
+    var line = ""
+    var counts = Lines { lines = 0, bytes = 0, longest = 0 }
+    while try reader.readLine(ref line) {
+        counts.lines += 1
+        long length = line.length()
+        counts.bytes += length
+        if length > counts.longest {
+            counts.longest = length
+        }
+    }
+    try sender.wait()
+    return Ok(counts)
+}
+
+// ---- udp: one socket sends each datagram back where it came from.
+
+async Result<void, IoError> serveUdp(UdpSocket socket, long count, nint size) {
+    var buffer = List<byte>.repeat(0, size)
+    for _ in 0..count {
+        var got = try await socket.receiveFromAsync(ref buffer[0..size])
+        try await socket.sendToAsync(buffer[0..got.count], got.from)
+    }
+    return Ok()
+}
+
+async Result<long, IoError> askUdp(SocketAddress to, nint size, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var message = List<byte>.repeat(7, size)
+    var back = List<byte>.repeat(0, size)
+    long sum = 0
+    for round in 0..rounds {
+        message[size - 1] = (byte)(round & 255)
+        try await socket.sendToAsync(message[0..size], to)
+        var got = try await socket.receiveFromAsync(ref back[0..size])
+        sum += back[got.count - 1]
+    }
+    return Ok(sum)
+}
+
+async Result<long, IoError> udpAsync(nint size, int clients, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var to = socket.localAddress()
+    var server = serveUdp(socket, (long)clients * rounds, size)
+    var asking = List<Task<Result<long, IoError>>>()
+    for _ in 0..clients {
+        asking.add(askUdp(to, size, rounds))
+    }
+    long sum = 0
+    while asking.length() > 0 {
+        sum += try await Task.whenAny(ref asking)
+    }
+    try await server
+    return Ok(sum)
+}
+
+Result<void, IoError> serveUdpBlocking(UdpSocket socket, long count, nint size) {
+    var buffer = List<byte>.repeat(0, size)
+    for _ in 0..count {
+        var got = try socket.receiveFrom(ref buffer[0..size])
+        try socket.sendTo(buffer[0..got.count], got.from)
+    }
+    return Ok()
+}
+
+Result<long, IoError> askUdpBlocking(SocketAddress to, nint size, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var message = List<byte>.repeat(7, size)
+    var back = List<byte>.repeat(0, size)
+    long sum = 0
+    for round in 0..rounds {
+        message[size - 1] = (byte)(round & 255)
+        try socket.sendTo(message[0..size], to)
+        var got = try socket.receiveFrom(ref back[0..size])
+        sum += back[got.count - 1]
+    }
+    return Ok(sum)
+}
+
+Result<long, IoError> udpBlocking(nint size, int clients, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var to = socket.localAddress()
+    var server = Task.run(serveUdpBlocking, socket, (long)clients * rounds, size)
+    var asking = List<Task<Result<long, IoError>>>()
+    for _ in 0..clients {
+        asking.add(Task.run(askUdpBlocking, to, size, rounds))
+    }
+    long sum = 0
+    while asking.length() > 0 {
+        sum += try Task.whenAny(ref asking).wait()
+    }
+    try server.wait()
+    return Ok(sum)
+}
+
+// ---- addresses
+
+Result<void, IoError> addresses(read string path) {
+    var reader = try File.openText(path)
+    var line = ""
+    var text = string.withCapacity(64)
+    long count = 0
+    long v6 = 0
+    long ports = 0
+    long characters = 0
+    ulong sum = 0
+    long invalid = 0
+    while try reader.readLine(ref line) {
+        match SocketAddress.parse(read line) {
+            Ok(address) => {
+                text.clear()
+                text.write($"{address}")
+                if text.startsWith('[') {
+                    v6 += 1
+                }
+                ports += address.port()
+                characters += text.length()
+                sum += text.asBytes()[(nint)(count % text.length())]
+                count += 1
+            }
+            Error(_) => invalid += 1
+        }
+    }
+    print($"addresses {count}\nv6 {v6}\nports {ports}\ncharacters {characters}\nsum {sum}\ninvalid {invalid}")
+    return Ok()
+}
+
+Result<void, IoError> printAddresses(read string path, read string out) {
+    var reader = try File.openText(path)
+    var writer = try File.createText(out)
+    var line = ""
+    while try reader.readLine(ref line) {
+        match SocketAddress.parse(read line) {
+            Ok(address) => try writer.writeLine($"{address}")
+            Error(_) => try writer.writeLine("invalid")
+        }
+    }
+    try writer.close()
+    return Ok()
+}
+
+// ---- the command line
+
+void usage() {
+    printError("usage: net echo MODE SIZE CLIENTS ROUNDS | connect MODE COUNT | stream MODE MEGABYTES BUFFER | lines MODE FILE | udp MODE SIZE CLIENTS ROUNDS | address FILE | print FILE OUT")
+    printError("       MODE is async or blocking")
+    exit(2)
+}
+
+// The number at `args[at]`, from 1 up to `most`; a wrong use when it is not one.
+long number(read List<string> args, nint at, long most) {
+    long value = long.parse(read args[at]) ?? -1
+    if value < 1 || value > most {
+        usage()
+    }
+    return value
+}
+
+void fail(IoError cause) {
+    printError($"net: {cause}")
+    exit(1)
+}
+
+void main(List<string> args) {
+    if args.length() < 2 {
+        usage()
+    }
+    var command = args[0].clone()
+    if command == "address" && args.length() == 2 {
+        if addresses(read args[1]) is Error(cause) {
+            fail(cause)
+        }
+        return
+    }
+    if command == "print" && args.length() == 3 {
+        if printAddresses(read args[1], read args[2]) is Error(cause) {
+            fail(cause)
+        }
+        return
+    }
+    var mode = args[1].clone()
+    if mode != "async" && mode != "blocking" {
+        usage()
+    }
+    bool awaited = mode == "async"
+    if (command == "echo" || command == "udp") && args.length() == 5 {
+        var size = (nint)number(read args, 2, 65536)
+        var clients = (int)number(read args, 3, 100000)
+        var rounds = (int)number(read args, 4, 1000000000)
+        if command == "udp" && size > 8192 {
+            usage()
+        }
+        Result<long, IoError> sum = Ok(0)
+        if command == "echo" && awaited {
+            sum = echoAsync(size, clients, rounds).wait()
+        } else if command == "echo" {
+            sum = echoBlocking(size, clients, rounds)
+        } else if awaited {
+            sum = udpAsync(size, clients, rounds).wait()
+        } else {
+            sum = udpBlocking(size, clients, rounds)
+        }
+        match sum {
+            Ok(s) => {
+                long messages = (long)clients * rounds
+                var name = "sockets"
+                if command == "echo" {
+                    name = "connections"
+                }
+                print($"{name} {clients}\nmessages {messages}\nbytes {messages * size}\nsum {s}")
+            }
+            Error(cause) => fail(cause)
+        }
+        return
+    }
+    if command == "connect" && args.length() == 3 {
+        var count = number(read args, 2, 1000000000)
+        Result<long, IoError> bytes = Ok(0)
+        if awaited {
+            bytes = connectAsync(count).wait()
+        } else {
+            bytes = connectBlocking(count)
+        }
+        match bytes {
+            Ok(b) => print($"connections {count}\nbytes {b}")
+            Error(cause) => fail(cause)
+        }
+        return
+    }
+    if command == "stream" && args.length() == 4 {
+        var megabytes = number(read args, 2, 1000000)
+        var size = (nint)number(read args, 3, 16777216)
+        if 1048576 % size != 0 {
+            usage()
+        }
+        Result<Streamed, IoError> streamed = Ok(Streamed { bytes = 0, sum = 0 })
+        if awaited {
+            streamed = streamAsync(megabytes, size).wait()
+        } else {
+            streamed = streamBlocking(megabytes, size)
+        }
+        match streamed {
+            Ok(s) => print($"bytes {s.bytes}\nsum {s.sum}")
+            Error(cause) => fail(cause)
+        }
+        return
+    }
+    if command == "lines" && args.length() == 3 {
+        var text = List<byte>()
+        match File.readBytes(read args[2]) {
+            Ok(bytes) => text = bytes
+            Error(cause) => {
+                printError($"net: {args[2]}: {cause}")
+                exit(1)
+            }
+        }
+        Result<Lines, IoError> counted = Ok(Lines { lines = 0, bytes = 0, longest = 0 })
+        if awaited {
+            counted = linesAsync(text).wait()
+        } else {
+            counted = linesBlocking(text)
+        }
+        match counted {
+            Ok(c) => print($"lines {c.lines}\nbytes {c.bytes}\nlongest {c.longest}")
+            Error(cause) => fail(cause)
+        }
+        return
+    }
+    usage()
+}

@@ -1494,6 +1494,58 @@ fn the_trial_of_log() {
     assert_eq!(compiled(&["lines", "many"]).0, 2, "a wrong use");
 }
 
+/// The trial of the network (choices 1678-1682), run small, interpreted and compiled, async and
+/// blocking: what came back over the loopback is what `std::net`, `tokio` and Zig's `std.Io.net`
+/// count, and the addresses are written as they and Python's `ipaddress` write them.
+#[test]
+fn the_trial_of_net() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trial_of_net");
+    let (source, built) = std_trial(&dir, "net");
+    std::fs::write(dir.join("lines.txt"), "one\r\ntwo two\n\nlast").unwrap();
+    std::fs::write(
+        dir.join("addresses.txt"),
+        "1.2.3.4:80\n[2001:0DB8:0000:0000:0000:0000:0000:0001]:443\n[fe80::1:0:0:0]:0\n[0:0:0:0:0:0:0:1]:65535\n\
+         255.255.255.255:8080\nnot an address\n01.2.3.4:80\n1.2.3.4:65536\n",
+    )
+    .unwrap();
+    let compiled = |args: &[&str]| ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).output().unwrap());
+    let interpreted = |args: &[&str]| {
+        let mut words = vec![source.as_str()];
+        words.extend_from_slice(args);
+        ran(&Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+    };
+    let cases: [(&[&str], &str); 7] = [
+        (&["echo", "MODE", "64", "8", "100"], "connections 8\nmessages 800\nbytes 51200\nsum 39600\n"),
+        (&["echo", "MODE", "4096", "2", "300"], "connections 2\nmessages 600\nbytes 2457600\nsum 67172\n"),
+        (&["connect", "MODE", "100"], "connections 100\nbytes 100\n"),
+        (&["stream", "MODE", "2", "4096"], "bytes 2097152\nsum 3375104\n"),
+        (&["lines", "MODE", "lines.txt"], "lines 4\nbytes 14\nlongest 7\n"),
+        (&["udp", "MODE", "1024", "4", "50"], "sockets 4\nmessages 200\nbytes 204800\nsum 4900\n"),
+        (&["address", "addresses.txt"], ADDRESSES),
+    ];
+    for (args, expected) in cases {
+        for mode in ["async", "blocking"] {
+            let args: Vec<&str> = args.iter().map(|&a| if a == "MODE" { mode } else { a }).collect();
+            assert_eq!(interpreted(&args), (0, expected.to_string(), String::new()), "{args:?}, interpreted");
+            assert_eq!(compiled(&args), (0, expected.to_string(), String::new()), "{args:?}, compiled");
+        }
+    }
+    let written = "1.2.3.4:80\n[2001:db8::1]:443\n[fe80::1:0:0:0]:0\n[::1]:65535\n255.255.255.255:8080\ninvalid\ninvalid\ninvalid\n";
+    assert_eq!(interpreted(&["print", "addresses.txt", "interpreted.txt"]), (0, String::new(), String::new()));
+    assert_eq!(compiled(&["print", "addresses.txt", "compiled.txt"]), (0, String::new(), String::new()));
+    assert_eq!(std::fs::read_to_string(dir.join("interpreted.txt")).unwrap(), written, "interpreted");
+    assert_eq!(std::fs::read_to_string(dir.join("compiled.txt")).unwrap(), written, "compiled");
+    assert_eq!(compiled(&["address", "missing.txt"]).0, 1, "a missing file");
+    assert_eq!(compiled(&["echo", "now", "64", "8", "100"]).0, 2, "a wrong use");
+    assert_eq!(compiled(&["udp", "async", "65536", "1", "1"]).0, 2, "a datagram too large");
+}
+
+/// What `net address` prints of the addresses of `the_trial_of_net`, as Rust and Zig print it.
+const ADDRESSES: &str = "addresses 5\nv6 3\nports 74138\ncharacters 75\nsum 299\ninvalid 3\n";
+
 /// Every module of `std` is measured against Rust and Zig before it is done (1553, 1636): it has a
 /// part of its own (`## json`) in `benchmarks/library.md`, which holds the measurements, or is named
 /// in its list of those not measured yet, which the slices empty.

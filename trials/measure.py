@@ -10,6 +10,7 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py std/hash std/checksum
     python3 trials/measure.py std/encoding std/unicode
     python3 trials/measure.py std/time std/random std/log
+    python3 trials/measure.py std/net
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -23,7 +24,8 @@ of Unicode) is written into `{out}` too and held to what Python's `base64` and `
 of the input (1660, 1662). What a log writes on the standard error is held to its form, each line a
 time to the millisecond, the level and the message, and the messages, in order of their text, must
 be the same everywhere (1670). Every program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or
-`RUST_LOG` (1668, 1670).
+`RUST_LOG` (1668, 1670). The addresses `std/net` writes into `{out}` are held to what Python's
+`ipaddress` writes of each line of the input (1681).
 Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
@@ -34,7 +36,10 @@ the C of `sg emit-c` compiled with `-O2` as `--release` compiles it (`sg build` 
 library of C to link) and `zig build-exe` where it has not. A trial may build Rust once more with a
 feature people turn on (`flate2` with `zlib-rs`, 1632). Everything built and every input goes to
 `trials/target`. The measurements follow the rules of fairness in `benchmarks/method.md` (1554): every case
-is reported, also those SG loses.
+is reported, also those SG loses. A run that has not ended after `HUNG_SECONDS` stops the measuring:
+what its threads were doing (`sample` on macOS) and the files it held open (`lsof`) are written to
+`trials/target/hung-PID.txt` before it is killed (1683). A measured run that exits with a code other
+than 0 stops it too, so that a program that gave up early is never counted fast (1685).
 """
 
 import argparse
@@ -44,6 +49,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +58,8 @@ TRIALS = ROOT / "trials"
 OUT = TRIALS / "target"
 SG = ROOT / "interpreter" / "target" / "release" / "sg"
 MACOS = sys.platform == "darwin"
+# Far longer than any case takes; a run still going then waits for something that never comes.
+HUNG_SECONDS = 300
 
 # The text of `inputs/text.sg`: megabytes and seed.
 TEXT_MB = 100
@@ -100,9 +108,12 @@ OTHER_INPUTS = {
     "small-unicode-nfd": "unicode-2-nfd.txt",
     "time": "time-100.txt",
     "small-time": "time-2.txt",
+    "addresses": "addresses-10000000.txt",
+    "small-addresses": "addresses-1000.txt",
 }
 UNICODE_SEED = 1
 TIME_SEED = 1
+ADDRESS_SEED = 1
 DOS_TIME = (2026, 11, 20, 13, 45, 30)
 
 
@@ -149,6 +160,13 @@ def other_input(placeholder):
         with open(path, "wb") as f:
             megabytes = "100" if placeholder == "time" else "2"
             subprocess.run([maker, megabytes, str(TIME_SEED)], stdout=f, check=True)
+    elif placeholder in ("addresses", "small-addresses"):
+        maker = OUT / "address-input"
+        if not maker.exists():
+            run([SG, "build", TRIALS / "inputs" / "address.sg", "--release", "-o", maker])
+        with open(path, "wb") as f:
+            count = "10000000" if placeholder == "addresses" else "1000"
+            subprocess.run([maker, count, str(ADDRESS_SEED)], stdout=f, check=True)
     elif placeholder in ("unicode-nfd", "small-unicode-nfd"):
         import unicodedata
         source = other_input(placeholder.removesuffix("-nfd"))
@@ -377,6 +395,52 @@ TRIALS_CASES = {
             ("1,000,000 lines from four tasks", ["tasks", "1000000"], None, "log"),
         ],
     },
+    "std/net": {
+        "check": [
+            ("echo, 64 bytes, async", ["echo", "async", "64", "8", "100"], None),
+            ("echo, 64 bytes, blocking", ["echo", "blocking", "64", "8", "100"], None),
+            ("echo, 64 KB, async", ["echo", "async", "65536", "2", "20"], None),
+            ("echo, 64 KB, blocking", ["echo", "blocking", "65536", "2", "20"], None),
+            ("100 connections at once", ["echo", "async", "64", "100", "10"], None),
+            ("100 connections one after another, async", ["connect", "async", "100"], None),
+            ("100 connections one after another, blocking", ["connect", "blocking", "100"], None),
+            ("1 MB in pieces of 4 KB, async", ["stream", "async", "1", "4096"], None),
+            ("1 MB in pieces of 64 KB, blocking", ["stream", "blocking", "1", "65536"], None),
+            ("a small file in lines, async", ["lines", "async", "{small}"], None),
+            ("a small file in lines, blocking", ["lines", "blocking", "{small}"], None),
+            ("datagrams of 8 KB, async", ["udp", "async", "8192", "8", "100"], None),
+            ("datagrams of 64 bytes, blocking", ["udp", "blocking", "64", "8", "100"], None),
+            ("1,000 addresses", ["address", "{small-addresses}"], None),
+            ("1,000 addresses, written", ["print", "{small-addresses}", "{out}"], None, "address"),
+            ("lines that are not addresses", ["address", "{readme}"], None),
+            ("a missing file", ["address", "missing.txt"], None),
+            ("a wrong use", ["echo", "now", "64", "8", "100"], None),
+        ],
+        "measure": [
+            ("echo, 64 bytes, async", ["echo", "async", "64", "8", "20000"], None),
+            ("echo, 64 bytes, blocking", ["echo", "blocking", "64", "8", "20000"], None),
+            ("echo, 4 KB, async", ["echo", "async", "4096", "8", "20000"], None),
+            ("echo, 4 KB, blocking", ["echo", "blocking", "4096", "8", "20000"], None),
+            ("echo, 64 KB, async", ["echo", "async", "65536", "8", "20000"], None),
+            ("echo, 64 KB, blocking", ["echo", "blocking", "65536", "8", "20000"], None),
+            ("1,000 connections at once, async", ["echo", "async", "64", "1000", "100"], None),
+            ("50,000 connections one after another, async", ["connect", "async", "50000"], None),
+            ("50,000 connections one after another, blocking", ["connect", "blocking", "50000"], None),
+            ("1 GB in pieces of 4 KB, async", ["stream", "async", "1024", "4096"], None),
+            ("1 GB in pieces of 4 KB, blocking", ["stream", "blocking", "1024", "4096"], None),
+            ("1 GB in pieces of 64 KB, async", ["stream", "async", "1024", "65536"], None),
+            ("1 GB in pieces of 64 KB, blocking", ["stream", "blocking", "1024", "65536"], None),
+            ("100 MB in lines, async", ["lines", "async", "{text}"], None),
+            ("100 MB in lines, blocking", ["lines", "blocking", "{text}"], None),
+            ("datagrams of 64 bytes, async", ["udp", "async", "64", "8", "25000"], None),
+            ("datagrams of 64 bytes, blocking", ["udp", "blocking", "64", "8", "25000"], None),
+            ("datagrams of 1 KB, async", ["udp", "async", "1024", "8", "25000"], None),
+            ("datagrams of 1 KB, blocking", ["udp", "blocking", "1024", "8", "25000"], None),
+            ("datagrams of 8 KB, async", ["udp", "async", "8192", "8", "25000"], None),
+            ("datagrams of 8 KB, blocking", ["udp", "blocking", "8192", "8", "25000"], None),
+            ("10,000,000 addresses, read and written", ["address", "{addresses}"], None),
+        ],
+    },
 }
 
 # Rust built once more with a feature: trial -> (name of the build, arguments of `cargo build`).
@@ -481,9 +545,16 @@ def run_once(program, args, stdin_path, capture, errors=None):
     stderr = tempfile.TemporaryFile() if errors is not None else subprocess.DEVNULL
     start = time.perf_counter()
     process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr)
+    hung = []
+    watch = threading.Timer(HUNG_SECONDS, report_hung, (process, [program, *args], hung))
+    watch.start()
     output = process.stdout.read() if capture else None
     _, status, usage = os.wait4(process.pid, 0)
     seconds = time.perf_counter() - start
+    watch.cancel()
+    if hung:
+        sys.exit(f"  HUNG after {HUNG_SECONDS} s: {' '.join(map(str, [program, *args]))}; "
+                 f"what it was doing is in {hung[0]}")
     process.returncode = os.waitstatus_to_exitcode(status)
     if stdin_path:
         stdin.close()
@@ -496,13 +567,41 @@ def run_once(program, args, stdin_path, capture, errors=None):
     return process.returncode, output, seconds, peak
 
 
+def report_hung(process, command, hung):
+    """Writes what a run that has not ended was doing into `trials/target/hung-PID.txt`, then
+    kills it."""
+    path = OUT / f"hung-{process.pid}.txt"
+    with open(path, "w") as f:
+        f.write(" ".join(map(str, command)) + "\n\n")
+        f.flush()
+        looks = [["sample", str(process.pid), "1"]] if MACOS else []
+        looks.append(["lsof", "-p", str(process.pid)])
+        for look in looks:
+            try:
+                subprocess.run(look, stdout=f, stderr=subprocess.STDOUT, timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                f.write(f"{look[0]}: {error}\n")
+            f.flush()
+    hung.append(path)
+    process.kill()
+
+
 @functools.cache
 def expected(kind, path):
     """What Python makes of the input of a case whose `{out}` must be exactly that: its Base64
-    (`base64`), the bytes of its Base64 (`unbase64`), its NFC or NFD (`nfc`, `nfd`)."""
+    (`base64`), the bytes of its Base64 (`unbase64`), its NFC or NFD (`nfc`, `nfd`), each of its
+    addresses as `ipaddress` writes it (`address`)."""
     import base64
+    import ipaddress
     import unicodedata
     source = Path(path).read_bytes()
+    if kind == "address":
+        def written(line):
+            host, port = line.rsplit(":", 1)
+            if host.startswith("["):
+                return f"[{ipaddress.IPv6Address(host[1:-1]).compressed}]:{port}\n"
+            return f"{ipaddress.IPv4Address(host)}:{port}\n"
+        return "".join(written(line) for line in source.decode().splitlines()).encode()
     if kind == "base64":
         return base64.b64encode(source)
     if kind == "unbase64":
@@ -534,7 +633,7 @@ def verify(kind, args, error):
     note shown under the table, or None). `gzip`: `{out}` opens to the file compressed; `zip`:
     `{out}` is an archive whose every entry is the part of the file it should be, its CRC-32 right;
     `stderr`: the last word of the standard error, the bytes the program counted compressed;
-    `base64`, `unbase64`, `nfc`, `nfd`: `{out}` is what Python makes of the input."""
+    `base64`, `unbase64`, `nfc`, `nfd`, `address`: `{out}` is what Python makes of the input."""
     import gzip
     import zipfile
     if kind == "log":
@@ -546,7 +645,7 @@ def verify(kind, args, error):
     if not out.exists():
         return b"nothing written", "-"
     size = out.stat().st_size
-    if kind in ("base64", "unbase64", "nfc", "nfd"):
+    if kind in ("base64", "unbase64", "nfc", "nfd", "address"):
         same = out.read_bytes() == expected(kind, args[1])
         out.unlink()
         return f"what it wrote opens to its input: {same}".encode(), None
@@ -607,12 +706,17 @@ def measure(trial, built, cases, runs):
         errors = [] if kind == ["log"] else None
         row = {}
         for build, path in built.items():
-            run_once(path, args, stdin_path, False, errors)
             best_time, best_peak = None, None
-            for _ in range(runs):
-                _, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
+            # One run to warm up, then `runs`; a run that fails stops the measuring, so that a
+            # program that gave up early is never counted fast (1685).
+            for run in range(runs + 1):
+                code, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
+                if code != 0:
+                    sys.exit(f"  FAILED {trial} / {name}: {build} gave exit {code}")
                 if errors:
                     errors.clear()
+                if run == 0:
+                    continue
                 best_time = seconds if best_time is None else min(best_time, seconds)
                 best_peak = peak if best_peak is None else min(best_peak, peak)
             row[build] = (best_time, best_peak)

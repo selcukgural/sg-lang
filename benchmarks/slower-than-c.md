@@ -167,6 +167,26 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## Tasks, async and signals
 
+- **The network the async way, against Tokio and Zig** (`net`, choice 1689): a stream of 1 GB in pieces of
+  64 KB takes 0.172 s against 0.153 s for `tokio` (1.12 times), 50,000 connections one after another 4.460 s
+  against 4.061 s for Zig (1.10), datagrams 1.05 to 1.07 times Zig's threads, and echoes 1.01 to 1.03 times
+  `tokio`; the same programs with functions that block take the time of the best of the two. The time is in
+  the calls of the system: `tokio` spends a third of SG's time in `recvfrom` for the stream, most likely
+  because the task that sends and the one that receives run on one thread there, while the bytes are still in
+  its cache. A send the socket takes only part of and a receive that gives fewer bytes than there was room
+  for already mark the socket not ready, as `tokio` does (1687). Candidates: keep a task woken by the loop on
+  the thread that woke it, as `tokio`'s slot does for the driver, and measure on Linux, where the servers run
+  and epoll may place them otherwise. A red line since 22 November 2026: on the network SG is never to be
+  worse than the best rival, under load or not.
+
+- **Each connection of async code holds 1.4 KB** (`net`, choice 1690): 1,000 connections at once, a task
+  on each side, hold 3.8 MB as `tokio`'s, but each further connection costs 1.39 KB against 0.80 KB for
+  `tokio` and 0.51 KB for Zig. Most of it is the frames of the two tasks, 672 and 560 bytes, which keep
+  every temporary of the function in a field of its own and, in the room of the call of the network, a
+  wait whose delay (72 bytes) only a wait for the clock uses. Candidates: temporaries that are never alive at
+  once share a field, as the calls of the network now share one, and the wait for a socket carries only what
+  it uses.
+
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
   producer is the same instructions as C's (one more for the bound of the list), and neither taking that

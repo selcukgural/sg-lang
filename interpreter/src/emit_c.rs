@@ -2842,6 +2842,20 @@ static void sg_put_int_least(sg_string* out, long long value, int least) {
 static void sg_put_uint_least(sg_string* out, unsigned long long value, int least) {
     sg_put_digits(out, value, false, least);
 }
+/* `{n:x}`, `{n:X4}`: the hex digits of `value` at the start of `at`, which has room for 20, with
+   `least` of them at least (1 to 20); how many. */
+static int sg_hex_digits(char* at, unsigned long long value, int least, bool upper) {
+    const char* figures = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    int count = 1;
+    for (unsigned long long rest = value; rest >= 16; rest >>= 4) count++;
+    if (count < least) count = least;
+    for (int i = count - 1; i >= 0; i--) { at[i] = figures[value & 15]; value >>= 4; }
+    return count;
+}
+static void sg_put_hex(sg_string* out, unsigned long long value, int least, bool upper) {
+    char digits[20];
+    sg_put(out, digits, sg_hex_digits(digits, value, least, upper));
+}
 static void sg_put_double(sg_string* out, double value) {
     char text[40];
     sg_put(out, text, sg_shortest(text, value, false));
@@ -5745,6 +5759,9 @@ typedef struct addrinfo sg_addrinfo;
 #define SG_E_MSGSIZE EMSGSIZE
 static inline int sg_net_error(void) { return sg_os_error(); }
 #endif
+/* The address of a socket: v4 or v6, the only kinds SG opens, in 28 bytes where the system's
+   `sockaddr_storage` takes 128, since the room of each call of the network in a frame keeps one. */
+typedef union { struct sockaddr sa; struct sockaddr_in v4; struct sockaddr_in6 v6; } sg_sockaddr;
 /* A listener and a connection are a socket of the system, -1 once moved or closed. A socket
    blocks until an async call first uses it (`nb`), so a call of code that is not async is one
    call of the system; every call still waits with `poll` when the socket is not ready, so the
@@ -5845,7 +5862,7 @@ static bool sg_net_split(sg_str a, char host[256], char port[6]) {
 static int sg_net_bind(sg_str address, sg_listener* out) {
     char host[256], port[6];
     if (!sg_net_split(address, host, port)) return SG_HOST_NOT_FOUND;
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     memset(&at, 0, sizeof at);
     struct sockaddr_in* v4 = (struct sockaddr_in*)&at;
     struct sockaddr_in6* v6 = (struct sockaddr_in6*)&at;
@@ -5865,7 +5882,7 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
     } else {
         return SG_HOST_NOT_FOUND;
     }
-    int fd = sg_net_socket(at.ss_family, false);
+    int fd = sg_net_socket(at.sa.sa_family, false);
     if (fd < 0) return sg_net_error();
     int one = 1;
 #if defined(_WIN32)
@@ -5884,10 +5901,10 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
     return 0;
 }
 static int32_t sg_net_port(const sg_listener* l) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t len = sizeof at;
     if (getsockname(SG_SOCK(l->fd), (struct sockaddr*)&at, &len) != 0) return 0;
-    if (at.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6*)&at)->sin6_port);
+    if (at.sa.sa_family == AF_INET6) return ntohs(((struct sockaddr_in6*)&at)->sin6_port);
     return ntohs(((struct sockaddr_in*)&at)->sin_port);
 }
 /* Waits until the socket is ready, for code that is not async. */
@@ -6071,7 +6088,7 @@ static int sg_net_connect(sg_str address, sg_socket* out) {
    async is one call of the system; every call still waits with `poll` when the socket is not
    ready, so the two kinds of call share a socket. An address comes as the module gives it: whether it is v6, the high and the low 64 bits
    of the host (a v4 host is the last 32 of `low`), and the port. */
-static inline socklen_t sg_udp_at(bool v6, uint64_t high, uint64_t low, int32_t port, struct sockaddr_storage* at) {
+static inline socklen_t sg_udp_at(bool v6, uint64_t high, uint64_t low, int32_t port, sg_sockaddr* at) {
     memset(at, 0, sizeof *at);
     if (v6) {
         struct sockaddr_in6* a = (struct sockaddr_in6*)at;
@@ -6100,12 +6117,12 @@ static inline int sg_udp_error(void) {
     int code = sg_net_error();
     return code == WSAECONNRESET ? WSAECONNREFUSED : code;
 }
-static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const struct sockaddr_storage* to, socklen_t to_len, int flags) {
+static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const sg_sockaddr* to, socklen_t to_len, int flags) {
     int n = to ? sendto(SG_SOCK(fd), (const char*)from, sg_net_most(len), flags, (const struct sockaddr*)to, to_len) : send(SG_SOCK(fd), (const char*)from, sg_net_most(len), flags);
     if (n < 0) return sg_udp_error();
     return 0;
 }
-static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct sockaddr_storage* from, int64_t* got, int flags) {
+static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, sg_sockaddr* from, int64_t* got, int flags) {
     memset(from, 0, sizeof *from);
     int from_len = sizeof *from;
     int n = recvfrom(SG_SOCK(fd), (char*)to, sg_net_most(len), flags, (struct sockaddr*)from, &from_len);
@@ -6114,12 +6131,12 @@ static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct socka
     return 0;
 }
 #else
-static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const struct sockaddr_storage* to, socklen_t to_len, int flags) {
+static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const sg_sockaddr* to, socklen_t to_len, int flags) {
     ssize_t n = to ? sendto(fd, from, (size_t)len, flags, (const struct sockaddr*)to, to_len) : send(fd, from, (size_t)len, flags);
     if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     return 0;
 }
-static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct sockaddr_storage* from, int64_t* got, int flags) {
+static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, sg_sockaddr* from, int64_t* got, int flags) {
     struct iovec part = { to, (size_t)len };
     struct msghdr m;
     memset(&m, 0, sizeof m);
@@ -6153,9 +6170,9 @@ static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
 /// name. After `NET_RUNTIME`.
 const UDP_RUNTIME: &str = r#"
 /* The four values of an address the system gave, into `out`: v6 (1 or 0), high, low, port. */
-static inline void sg_udp_bits(const struct sockaddr_storage* at, uint64_t* out, int64_t n) {
+static inline void sg_udp_bits(const sg_sockaddr* at, uint64_t* out, int64_t n) {
     uint64_t v[4] = { 0, 0, 0, 0 };
-    if (at->ss_family == AF_INET6) {
+    if (at->sa.sa_family == AF_INET6) {
         const struct sockaddr_in6* a = (const struct sockaddr_in6*)at;
         v[0] = 1;
         for (int i = 0; i < 8; i++) {
@@ -6163,7 +6180,7 @@ static inline void sg_udp_bits(const struct sockaddr_storage* at, uint64_t* out,
             v[2] = v[2] << 8 | a->sin6_addr.s6_addr[8 + i];
         }
         v[3] = ntohs(a->sin6_port);
-    } else if (at->ss_family == AF_INET) {
+    } else if (at->sa.sa_family == AF_INET) {
         const struct sockaddr_in* a = (const struct sockaddr_in*)at;
         v[2] = ntohl(a->sin_addr.s_addr);
         v[3] = ntohs(a->sin_port);
@@ -6171,7 +6188,7 @@ static inline void sg_udp_bits(const struct sockaddr_storage* at, uint64_t* out,
     for (int64_t i = 0; i < 4 && i < n; i++) out[i] = v[i];
 }
 /* A received datagram: how many bytes, then the address it came from. */
-static inline void sg_udp_got(int64_t got, const struct sockaddr_storage* from, uint64_t* out, int64_t n) {
+static inline void sg_udp_got(int64_t got, const sg_sockaddr* from, uint64_t* out, int64_t n) {
     if (n > 0) out[0] = (uint64_t)got;
     if (n > 1) sg_udp_bits(from, out + 1, n - 1);
 }
@@ -6193,10 +6210,10 @@ static inline void sg_udp_tell(SOCKET s, DWORD code, BOOL on) {
    Linux and macOS, a datagram that came back undelivered is not told to an unconnected socket,
    which would otherwise see the next receive fail for a send to anyone. */
 static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port, int64_t* fd) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t len = sg_udp_at(v6, high, low, port, &at);
     sg_wsa_start();
-    SOCKET s = WSASocketW(at.ss_family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    SOCKET s = WSASocketW(at.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
     if (s == INVALID_SOCKET) return sg_net_error();
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&one, sizeof one);
@@ -6213,7 +6230,7 @@ static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port
 /* A connected socket is told of a datagram that came back as "port unreachable", as on Linux
    and macOS (a refused connection, see `sg_udp_error`). */
 static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t low, int32_t port) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t len = sg_udp_at(v6, high, low, port, &at);
     if (connect(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0) return sg_net_error();
     sg_udp_tell(SG_SOCK(fd), SIO_UDP_CONNRESET, TRUE);
@@ -6221,12 +6238,12 @@ static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t lo
 }
 #else
 static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port, int64_t* fd) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t len = sg_udp_at(v6, high, low, port, &at);
 #if defined(__linux__)
-    int s = socket(at.ss_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    int s = socket(at.sa.sa_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 #else
-    int s = socket(at.ss_family, SOCK_DGRAM, 0);
+    int s = socket(at.sa.sa_family, SOCK_DGRAM, 0);
     if (s >= 0) fcntl(s, F_SETFD, FD_CLOEXEC);
 #endif
     if (s < 0) return sg_os_error();
@@ -6239,7 +6256,7 @@ static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port
     return 0;
 }
 static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t low, int32_t port) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t len = sg_udp_at(v6, high, low, port, &at);
     while (connect((int)fd, (struct sockaddr*)&at, len) != 0) {
         if (errno != EINTR) return sg_os_error();
@@ -6248,7 +6265,7 @@ static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t lo
 }
 #endif
 static inline int sg_udp_send(int64_t fd, const uint8_t* from, int64_t len, bool to, bool v6, uint64_t high, uint64_t low, int32_t port) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     socklen_t at_len = to ? sg_udp_at(v6, high, low, port, &at) : 0;
     for (;;) {
         int code = sg_udp_send_now((int)fd, from, len, to ? &at : NULL, at_len, 0);
@@ -6258,7 +6275,7 @@ static inline int sg_udp_send(int64_t fd, const uint8_t* from, int64_t len, bool
     }
 }
 static inline int sg_udp_recv(int64_t fd, uint8_t* to, int64_t len, uint64_t* out, int64_t n) {
-    struct sockaddr_storage from;
+    sg_sockaddr from;
     for (;;) {
         int64_t got = 0;
         int code = sg_udp_recv_now((int)fd, to, len, &from, &got, 0);
@@ -6273,7 +6290,7 @@ static inline int sg_udp_recv(int64_t fd, uint8_t* to, int64_t len, uint64_t* ou
 }
 /* `System.socketAddress` and `System.streamAddress`: false when the socket has no such address. */
 static inline bool sg_udp_name(int fd, bool remote, uint64_t* out, int64_t n) {
-    struct sockaddr_storage at;
+    sg_sockaddr at;
     memset(&at, 0, sizeof at);
     socklen_t len = sizeof at;
     int r = remote ? getpeername(SG_SOCK(fd), (struct sockaddr*)&at, &len) : getsockname(SG_SOCK(fd), (struct sockaddr*)&at, &len);
@@ -6294,7 +6311,7 @@ static inline int64_t sg_udp_found(const sg_addrinfo* list, uint64_t* out) {
     int64_t n = 0;
     for (const sg_addrinfo* a = list; a; a = a->ai_next) {
         if (a->ai_family != AF_INET && a->ai_family != AF_INET6) continue;
-        struct sockaddr_storage at;
+        sg_sockaddr at;
         memset(&at, 0, sizeof at);
         memcpy(&at, a->ai_addr, a->ai_addrlen <= sizeof at ? a->ai_addrlen : sizeof at);
         uint64_t bits[4];
@@ -7256,14 +7273,21 @@ typedef struct {
     int64_t done;
     int code;
     int out;
+    union {
+        /* `connect`: its host, its port and their addresses, made for the call alone, so that the
+           frame of every task that receives or sends does not carry 270 bytes it never uses. */
+        struct sg_net_name* name;
+        /* A datagram: where it goes (`at_len` 0 for the address of `connect`), or where it came from. */
+        sg_sockaddr at;
+    };
+    socklen_t at_len;
+} sg_net_op;
+typedef struct sg_net_name {
     sg_addrinfo* list;
     sg_addrinfo* next;
     char host[256];
     char port[6];
-    /* A datagram: where it goes (`at_len` 0 for the address of `connect`), or where it came from. */
-    struct sockaddr_storage at;
-    socklen_t at_len;
-} sg_net_op;
+} sg_net_name;
 /* An async call makes the socket stop blocking, once. */
 static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const char* loc) {
     if (!__atomic_load_n(&l->nb, __ATOMIC_ACQUIRE)) {
@@ -7300,21 +7324,26 @@ static inline sg_net_op sg_net_udp_receive_op(int64_t fd, uint8_t* to, int64_t l
 }
 static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char* loc) {
     sg_net_op op = { .kind = SG_CONNECT, .fd = -1, .token = token, .loc = loc, .out = -1 };
-    if (!sg_net_split(address, op.host, op.port) || op.host[0] == 0) op.code = SG_HOST_NOT_FOUND;
+    op.name = calloc(1, sizeof *op.name);
+    if (!op.name) abort();
+    if (!sg_net_split(address, op.name->host, op.name->port) || op.name->host[0] == 0) op.code = SG_HOST_NOT_FOUND;
     return op;
 }
 static bool sg_net_finish(sg_net_op* op, int code) {
-    if (op->list) sg_freeaddrinfo(op->list);
-    op->list = NULL;
+    if (op->kind == SG_CONNECT && op->name) {
+        if (op->name->list) sg_freeaddrinfo(op->name->list);
+        free(op->name);
+        op->name = NULL;
+    }
     op->code = code;
     op->phase = SG_NET_DONE;
     return true;
 }
 /* The next address of the host is tried, until one takes the connection. */
 static bool sg_net_connect_next(sg_net_op* op) {
-    while (op->next) {
-        const sg_addrinfo* a = op->next;
-        op->next = a->ai_next;
+    while (op->name->next) {
+        const sg_addrinfo* a = op->name->next;
+        op->name->next = a->ai_next;
         int code = sg_net_try(a, &op->fd, true);
         if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
         if (code == SG_E_PROGRESS) {
@@ -7335,6 +7364,31 @@ static bool sg_net_connect_next(sg_net_op* op) {
     }
     return sg_net_finish(op, op->code ? op->code : SG_E_REFUSED);
 }
+#if !defined(_WIN32)
+/* A receive that gave fewer bytes than there was room for has emptied the connection, as Tokio
+   takes it on epoll and kqueue: unless the loop has seen the socket ready since `seen`, it is
+   marked not ready, and the next receive waits for the loop rather than try the socket and be
+   told so. A socket closed meanwhile has its slot cleared, so its number used again starts
+   ready. */
+static void sg_slot_dry(int fd, int bit, uint32_t seen) {
+    sg_slot* s = sg_slot_at(fd);
+    if (!s) return;
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
+    if ((s->on & bit) && __atomic_load_n(&s->tick, __ATOMIC_RELAXED) == seen) s->ready &= (uint8_t)~bit;
+    sg_mtx_unlock(m);
+}
+/* Whether socket `fd` is on the loop for `bit` and has not been ready since it was found empty. */
+static bool sg_slot_is_dry(int fd, int bit) {
+    sg_slot* s = sg_slot_at(fd);
+    if (!s) return false;
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
+    bool dry = (s->on & bit) && !(s->ready & bit);
+    sg_mtx_unlock(m);
+    return dry;
+}
+#endif
 /* Goes on with the call until it is done (true) or waits (false): it waits for the socket on the
    loop, or for the name on a thread. */
 static bool sg_net_go(sg_net_op* op) {
@@ -7342,31 +7396,42 @@ static bool sg_net_go(sg_net_op* op) {
         if (sg_cancelled(op->token)) return sg_net_finish(op, SG_CUT);
         if (op->kind == SG_CONNECT) {
             if (op->code) return sg_net_finish(op, op->code);
-            if (sg_net_lookup(op->host, op->port, true, &op->list) == 0) {
-                op->next = op->list;
+            if (sg_net_lookup(op->name->host, op->name->port, true, &op->name->list) == 0) {
+                op->name->next = op->name->list;
                 return sg_net_connect_next(op);
             }
-            op->list = NULL;
+            op->name->list = NULL;
             sg_lookup* f = calloc(1, sizeof *f);
             if (!f) abort();
             f->away.run = sg_lookup_run;
             f->away.lost = sg_lookup_lost;
             f->away.keep = true;
-            memcpy(f->host, op->host, sizeof f->host);
-            memcpy(f->port, op->port, sizeof f->port);
+            memcpy(f->host, op->name->host, sizeof f->host);
+            memcpy(f->port, op->name->port, sizeof f->port);
             if (sg_far_start(&f->away, &op->w, op->token, op->loc) == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
             op->phase = SG_NET_LOOKUP;
             return false;
         }
         op->phase = SG_NET_WAIT;
     }
-    for (;;) {
+    for (bool first = true;; first = false) {
         int code = 0;
         op->seen = sg_slot_tick(op->fd);
         if (op->kind == SG_ACCEPT) {
             code = sg_net_accept_now(op->fd, &op->out, true);
         } else if (op->kind == SG_RECEIVE) {
+#if !defined(_WIN32)
+            /* The last receive emptied the connection: the task waits for the loop at once. */
+            if (first && sg_slot_is_dry(op->fd, 1)) {
+                code = SG_E_AGAIN;
+            } else {
+                code = sg_net_recv_now(op->fd, op->to, op->len, &op->done);
+                if (!code && op->done > 0 && op->done < op->len) sg_slot_dry(op->fd, 1, op->seen);
+            }
+#else
+            (void)first;
             code = sg_net_recv_now(op->fd, op->to, op->len, &op->done);
+#endif
         } else if (op->kind == SG_UDP_SEND) {
             code = sg_udp_send_now(op->fd, op->from, op->len, op->at_len ? &op->at : NULL, op->at_len, 0);
         } else if (op->kind == SG_UDP_RECEIVE) {
@@ -7376,6 +7441,14 @@ static bool sg_net_go(sg_net_op* op) {
                 int64_t sent = 0;
                 if ((code = sg_net_send_now(op->fd, op->from + op->done, op->len - op->done, &sent))) break;
                 op->done += sent;
+#if !defined(_WIN32)
+                /* Fewer bytes taken than given: the connection is full, as Tokio takes it on epoll
+                   and kqueue, and the task waits for the loop rather than try again and be told so. */
+                if (op->done < op->len) {
+                    code = SG_E_AGAIN;
+                    break;
+                }
+#endif
             }
         }
         if (!code) return sg_net_finish(op, 0);
@@ -7396,10 +7469,10 @@ static bool sg_net_more(sg_net_op* op) {
         if (state == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
         sg_lookup* f = (sg_lookup*)op->w.on.away;
         int code = f->code;
-        op->list = code ? NULL : f->list;
+        op->name->list = code ? NULL : f->list;
         free(f);
         if (code) return sg_net_finish(op, code);
-        op->next = op->list;
+        op->name->next = op->name->list;
         return sg_net_connect_next(op);
     }
     if (op->phase == SG_NET_CONNECT) {
@@ -11765,11 +11838,13 @@ enum Step {
     Word(String),
     Int(String, usize),
     Uint(String, usize),
+    /// The value, the least count of digits, and whether the letters are upper case.
+    Hex(String, usize, bool),
 }
 
 /// The pieces of a format of `sg_vlines` and its values, when each is written as it is: then
 /// the line is written where it is made, and nothing reads its format while it runs. `None`
-/// where something has a width, more than 20 digits or a letter of hex, which `sg_vlines` writes.
+/// where something has a width or more than 20 digits, which `sg_vlines` writes.
 fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
     let mut steps = Vec::new();
     let mut bytes = String::new();
@@ -11789,11 +11864,20 @@ fn steps(format: &str, values: &[String]) -> Option<Vec<Step>> {
             (Step::Int(values.next()?.clone(), 1), after)
         } else if let Some(after) = rest.strip_prefix("llu") {
             (Step::Uint(values.next()?.clone(), 1), after)
+        } else if let Some(after) = rest.strip_prefix("llx") {
+            (Step::Hex(values.next()?.clone(), 1, false), after)
+        } else if let Some(after) = rest.strip_prefix("llX") {
+            (Step::Hex(values.next()?.clone(), 1, true), after)
         } else if let Some((least, after)) = least_digits(rest) {
-            // `%.4lld`, `{n:D4}`: the zeros written before the digits here too.
-            match after.strip_prefix("lld") {
-                Some(after) => (Step::Int(values.next()?.clone(), least), after),
-                None => (Step::Uint(values.next()?.clone(), least), after.strip_prefix("llu")?),
+            // `%.4lld`, `{n:D4}`, `{n:x4}`: the zeros written before the digits here too.
+            if let Some(after) = after.strip_prefix("lld") {
+                (Step::Int(values.next()?.clone(), least), after)
+            } else if let Some(after) = after.strip_prefix("llu") {
+                (Step::Uint(values.next()?.clone(), least), after)
+            } else if let Some(after) = after.strip_prefix("llx") {
+                (Step::Hex(values.next()?.clone(), least, false), after)
+            } else {
+                (Step::Hex(values.next()?.clone(), least, true), after.strip_prefix("llX")?)
             }
         } else {
             (Step::Word(values.next()?.clone()), rest.strip_prefix('s')?)
@@ -11821,7 +11905,7 @@ fn least_digits(rest: &str) -> Option<(usize, &str)> {
     let end = digits.find(|c: char| !c.is_ascii_digit())?;
     let least: usize = digits[..end].parse().ok()?;
     let after = &digits[end..];
-    ((1..=20).contains(&least) && (after.starts_with("lld") || after.starts_with("llu"))).then_some((least, after))
+    ((1..=20).contains(&least) && ["lld", "llu", "llx", "llX"].iter().any(|kind| after.starts_with(kind))).then_some((least, after))
 }
 
 /// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a format of
@@ -18305,11 +18389,13 @@ impl<'a> Emitter<'a> {
                 self.made.extend(["net", "udp", "net async", "async io", "tasks"].map(str::to_string));
                 self.io_error(inner.span)?;
                 let gives = self.ctype(&expr.ty, expr.span)?;
-                let (op, loc) = (self.temp(), self.loc(inner.span));
+                let (tmp, loc) = (self.temp(), self.loc(inner.span));
+                // Every call of the network in a frame is in one room: one waits at a time.
+                let op = NET_OP;
                 let fd = self.value_as(&args[0], &Ty::Int(IntTy::Long))?;
                 let buffer = self.value(&args[1])?;
                 let slice = self.ctype(&args[1].ty, args[1].span)?;
-                self.pre.push(format!("{slice} {op}b = {buffer};"));
+                self.pre.push(format!("{slice} {tmp}b = {buffer};"));
                 let (made, bits) = match call {
                     SystemCall::UdpSendAsync => {
                         let to = self.value(&args[2])?;
@@ -18318,14 +18404,14 @@ impl<'a> Emitter<'a> {
                         let low = self.value_as(&args[5], &Ty::Int(IntTy::Ulong))?;
                         let port = self.value_as(&args[6], &Ty::Int(IntTy::Int))?;
                         let token = format!("(*{})", self.value(&args[7])?);
-                        (format!("sg_net_udp_send_op({fd}, {op}b.ptr, {op}b.len, {to}, {v6}, {high}, {low}, {port}, {token}, {loc})"), None)
+                        (format!("sg_net_udp_send_op({fd}, {tmp}b.ptr, {tmp}b.len, {to}, {v6}, {high}, {low}, {port}, {token}, {loc})"), None)
                     }
                     _ => {
                         let bits = self.value(&args[2])?;
                         let bits_c = self.ctype(&args[2].ty, args[2].span)?;
-                        self.pre.push(format!("{bits_c} {op}o = {bits};"));
+                        self.pre.push(format!("{bits_c} {tmp}o = {bits};"));
                         let token = format!("(*{})", self.value(&args[3])?);
-                        (format!("sg_net_udp_receive_op({fd}, {op}b.ptr, {op}b.len, {token}, {loc})"), Some(format!("{op}o")))
+                        (format!("sg_net_udp_receive_op({fd}, {tmp}b.ptr, {tmp}b.len, {token}, {loc})"), Some(format!("{tmp}o")))
                     }
                 };
                 self.pre.push(format!("sg_net_op {op} = {made}; sg_net_go(&{op});"));
@@ -18534,7 +18620,10 @@ impl<'a> Emitter<'a> {
         }
         let gives = self.ctype(&expr.ty, span)?;
         let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::Connect));
-        let (op, loc) = (self.temp(), self.loc(span));
+        let (tmp, loc) = (self.temp(), self.loc(span));
+        // Every call of the network in a frame is in one room, `NET_OP`: one waits at a time, and
+        // what it gives is taken out at once (`result`), before the next can start.
+        let op = NET_OP;
         let token = match args.get(given) {
             Some(arg) => format!("(*{})", self.value(arg)?),
             None => "NULL".to_string(),
@@ -18545,10 +18634,10 @@ impl<'a> Emitter<'a> {
                 let stream = self.list_address(recv)?;
                 let buffer = self.value(&args[0])?;
                 let slice = self.ctype(&args[0].ty, args[0].span)?;
-                self.pre.push(format!("{slice} {op}b = {buffer};"));
+                self.pre.push(format!("{slice} {tmp}b = {buffer};"));
                 match call {
-                    NetCall::Receive => format!("sg_net_receive_op({stream}, {op}b.ptr, {op}b.len, {token}, {loc})"),
-                    _ => format!("sg_net_send_op({stream}, {op}b.ptr, {op}b.len, {token}, {loc})"),
+                    NetCall::Receive => format!("sg_net_receive_op({stream}, {tmp}b.ptr, {tmp}b.len, {token}, {loc})"),
+                    _ => format!("sg_net_send_op({stream}, {tmp}b.ptr, {tmp}b.len, {token}, {loc})"),
                 }
             }
             NetCall::Connect => format!("sg_net_connect_op({}, {token}, {loc})", self.value(&args[0])?),
@@ -18876,6 +18965,11 @@ impl<'a> Emitter<'a> {
                             let temp = self.temp();
                             let _ = write!(line, " unsigned long long {temp} = {value};");
                             let _ = write!(calls, " sg_out_uint({temp}, {least});");
+                        }
+                        Step::Hex(value, least, upper) => {
+                            let temp = self.temp();
+                            let _ = write!(line, " unsigned long long {temp} = {value}; char {temp}d[20];");
+                            let _ = write!(calls, " sg_out_put({temp}d, sg_hex_digits({temp}d, {temp}, {least}, {upper}));");
                         }
                     }
                 }
@@ -19210,6 +19304,11 @@ impl<'a> Emitter<'a> {
                                     let temp = self.temp();
                                     let _ = write!(line, "unsigned long long {temp} = {value}; ");
                                     format!("sg_put_uint_least({out}, {temp}, {least})")
+                                }
+                                Step::Hex(value, least, upper) => {
+                                    let temp = self.temp();
+                                    let _ = write!(line, "unsigned long long {temp} = {value}; ");
+                                    format!("sg_put_hex({out}, {temp}, {least}, {upper})")
                                 }
                             });
                         }
@@ -21700,6 +21799,11 @@ fn c_tokens(text: &str) -> Vec<(CTok, usize, usize)> {
     }
     out
 }
+
+/// The room of the frame of an async function where its calls of the network wait (`sg_net_op`,
+/// 330 bytes): one for all of them, since one waits at a time, as the frame's fields of the same
+/// name and type are one field (`hoisted`).
+const NET_OP: &str = "sg_netop";
 
 /// Words that start a statement that declares nothing.
 const NOT_TYPES: &[&str] = &["return", "if", "else", "while", "for", "do", "switch", "case", "default", "goto", "break", "continue", "sizeof"];
