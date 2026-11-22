@@ -5012,6 +5012,11 @@ static sg_task* sg_pool_steal(sg_worker* w, bool* searching) {
 static bool sg_pool_round(sg_worker* l, bool wait) {
     int none = 0;
     if (!__atomic_compare_exchange_n(&l->polling, &none, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return false;
+    /* A thread that waits on its own loop looks, once it holds the loop, whether it was woken:
+       the clock's short round, which held the loop a moment ago, may have taken the wake that
+       `sg_pool_notify` sent after it set the flag, and nothing else would come. Once the loop is
+       held, no other round can take a wake. */
+    if (wait && __atomic_load_n(&l->notified, __ATOMIC_ACQUIRE)) wait = false;
     bool was = sg_driving_now;
     sg_driving_now = true;
     sg_pool_poll((int)(l - sg_workers), wait);
@@ -5042,6 +5047,9 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
         if (__atomic_load_n(&sg_pool_poll, __ATOMIC_ACQUIRE)) {
             w->driving = true;
             sg_mtx_unlock(&sg_pool_lock);
+            /* In the tests a pause here gives the clock's watch time to be in a round of this
+               loop when the thread is woken (see `sg_pool_round`). */
+            SG_LINGER();
             /* The clock's thread may be in a short round of this loop (it read the thread awake
                before it slept): it is soon done. */
             while (!sg_pool_round(w, true)) sg_pool_pause();
