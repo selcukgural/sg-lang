@@ -1571,9 +1571,36 @@ static inline bool sg_cnd_wait_ns(sg_cnd* c, sg_mtx* m, int64_t ns) {
 static inline void sg_cnd_signal(sg_cnd* c) { pthread_cond_signal(c); }
 static inline void sg_cnd_broadcast(sg_cnd* c) { pthread_cond_broadcast(c); }
 static inline void sg_yield(void) { sched_yield(); }
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+/* glibc and musl have it whether or not the header shows it. */
+extern int sched_getaffinity(pid_t pid, size_t size, void* mask);
+#endif
+/* The cores the program may use: on Linux the ones it may run on (`taskset`, the cpuset of a
+   container) and no more than its share of time (the quota of a container, cgroup v2), as
+   Rust's `available_parallelism` counts them, so that a pool never has more threads than that. */
 static inline int sg_cores(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 1;
+    int cores = n > 0 ? (int)n : 1;
+#ifdef __linux__
+    unsigned long mask[16];
+    memset(mask, 0, sizeof mask);
+    if (sched_getaffinity(0, sizeof mask, (void*)mask) == 0) {
+        int allowed = 0;
+        for (size_t i = 0; i < sizeof mask / sizeof mask[0]; i++) allowed += __builtin_popcountl(mask[i]);
+        if (allowed > 0 && allowed < cores) cores = allowed;
+    }
+    FILE* f = fopen("/sys/fs/cgroup/cpu.max", "r");
+    if (f) {
+        char quota[32];
+        long period = 0;
+        if (fscanf(f, "%31s %ld", quota, &period) == 2 && strcmp(quota, "max") != 0 && period > 0) {
+            long share = (atol(quota) + period - 1) / period;
+            if (share >= 1 && share < cores) cores = (int)share;
+        }
+        fclose(f);
+    }
+#endif
+    return cores;
 }
 /* 0, or the error the system gave. */
 static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bool detached) {

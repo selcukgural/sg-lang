@@ -31,8 +31,9 @@ const pages = [
   benchmark('against-c-windows.md', 'against-c-windows.md', 'SG against C on Windows', 'The same programs on Windows 11 on Arm.', 2),
   benchmark('programs.md', 'programs.md', 'Programs against Rust and Zig', 'wc and grep written in SG, Rust and Zig.', 3),
   benchmark('library.md', 'library.md', 'The library against Rust and Zig', 'The modules of std against Rust crates and the Zig library.', 4),
-  benchmark('slower-than-c.md', 'slower-than-c.md', 'Slower than C', 'Every place where SG was found slower, and what would fix it.', 5),
-  benchmark('method.md', 'method.md', 'How it is measured', 'The rules of fairness, the machines, and how to run it all again.', 6),
+  benchmark('server.md', 'server.md', 'Servers against Rust, Zig and C', 'A store that speaks Redis\'s protocol and an HTTP server, on Linux, under load and idle.', 5),
+  benchmark('slower-than-c.md', 'slower-than-c.md', 'Slower than C', 'Every place where SG was found slower, and what would fix it.', 6),
+  benchmark('method.md', 'method.md', 'How it is measured', 'The rules of fairness, the machines, and how to run it all again.', 7),
 ];
 
 // The page of the site each copied document becomes, by its path in the repository.

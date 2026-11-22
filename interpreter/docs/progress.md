@@ -350,11 +350,19 @@ that waited for clients was waited for, so the server closes first, a measuremen
 or fails, and an exit with an error will cancel the tasks it lets go (1678-1690); then an exit with an error
 lets its tasks go before it waits for them, as Swift's task groups and Kotlin's `coroutineScope` do: a wait in
 them that can say so ends with `Cancelled`, and a delay or a channel without a token runs on (1691-1695).
+The hundred-and-fifty-sixth slice measured servers on Linux: a store that speaks a part of Redis's protocol and
+an HTTP server, each in SG, Rust, Zig and C under one load written in C, idle, under load, at fixed rates and for
+30 minutes. SG holds the least memory of the three languages in all cases but two and the best tail where many connections wait,
+and on one core answers more than C, but on four it gets 0.64 times the answers of Zig's threads with few
+connections, because a request is read on one core and served on another; the pool now counts the cores the
+program may run on, and `is Ok(text)` on a borrowed text names a `read string` (1698-1707).
 
 ## Next
 
-Next comes the work on servers: idle connections, the latency under load, a store of keys and values,
-then HTTP, measured on Linux against Tokio, Zig and C; and a slice for the command line,
+Next comes the scheduler of the server lane: a loop of the network on each thread of the pool, so a
+connection stays on its core, then what a server needs from the library (time limits, a limit on
+connections, a graceful end, a reader that lends slices, `writev`, a group of tasks that takes its ended
+tasks out by itself), the tests of robustness, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

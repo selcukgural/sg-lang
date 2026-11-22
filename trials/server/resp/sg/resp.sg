@@ -1,0 +1,311 @@
+// The store of the server lane in SG (choices 1701, 1702), as `../c/resp.c` describes it: a part of
+// RESP2 (PING, GET, SET, DEL) over 64 maps, each behind a lock of its own; each connection reads
+// into a buffer of 4 KB, which grows when one command does not fit, answers every whole command
+// the buffer holds and sends the answers together; a command of more than 1,024 parts or a part
+// of more than 1 MB closes the connection.
+//
+//     resp PORT
+//
+// Every connection is a task. The task that takes the next connection is in the same list as the
+// connections, so that one which ends is taken out of the list while the server goes on taking
+// new ones. A key is text: a key that is not UTF-8 is answered with an error, where the C, Rust
+// and Zig versions take any bytes (a map of SG is keyed by text, a number or a type of its own).
+
+struct Shard {
+    HashMap<string, List<byte>> map
+}
+
+struct Store {
+    List<shared locked Shard> shards
+}
+
+// What a task of the server's list gives: a connection taken, a listener that failed to take one
+// (too many open files, say), or a connection that ended.
+enum Done {
+    Accepted(TcpStream conn)
+    AcceptFailed(IoError cause)
+    Ended
+}
+
+// Takes the next connection, after `pause` milliseconds when the last attempt failed.
+async Done acceptNext(shared TcpListener listener, int pause) {
+    if pause > 0 {
+        await Task.delay(pause)
+    }
+    match await listener.acceptAsync() {
+        Ok(conn) => return Done.Accepted(conn)
+        Error(cause) => return Done.AcceptFailed(cause)
+    }
+}
+
+// ---- writing the answers
+
+void putNumber(ref List<byte> out, byte kind, long n) {
+    out.add(kind)
+    if n < 0 {
+        out.add('-')
+        n = -n
+    }
+    var digits = byte[20](0)
+    var i = 20
+    while true {
+        i -= 1
+        digits[i] = (byte)('0' + n % 10)
+        n /= 10
+        if n == 0 {
+            break
+        }
+    }
+    out.addAll(digits[i..20])
+    out.add('\r')
+    out.add('\n')
+}
+
+void putText(ref List<byte> out, read string text) {
+    out.addAll(text.asBytes())
+}
+
+// ---- reading a command
+
+// A number written in decimal and ended by CRLF at `at`: the number and where the line ends, or
+// `Incomplete` when the line is not whole yet, or `Wrong`.
+enum Line {
+    Whole(long value, nint next)
+    Incomplete
+    Wrong
+}
+
+Line readNumber(read byte[] bytes, nint at) {
+    var i = at
+    var minus = false
+    if i < bytes.length() && bytes[i] == '-' {
+        minus = true
+        i += 1
+    }
+    var digits = i
+    long value = 0
+    while i < bytes.length() && bytes[i] >= '0' && bytes[i] <= '9' {
+        if value > 1000000000 {
+            return Line.Wrong
+        }
+        value = value * 10 + (bytes[i] - '0')
+        i += 1
+    }
+    if i + 1 >= bytes.length() {
+        if bytes.length() - at > 24 {
+            return Line.Wrong
+        }
+        return Line.Incomplete
+    }
+    if i == digits || bytes[i] != '\r' || bytes[i + 1] != '\n' {
+        return Line.Wrong
+    }
+    if minus {
+        value = -value
+    }
+    return Line.Whole(value, i + 2)
+}
+
+bool isWord(read byte[] part, read string word) {
+    var w = word.asBytes()
+    if part.length() != w.length() {
+        return false
+    }
+    for i in 0..part.length() {
+        if (part[i] | 0x20) != w[i] {
+            return false
+        }
+    }
+    return true
+}
+
+// The map of a key: the low bits of its FNV-1a, in every version of the store (the map hashes the
+// key again with its own SipHash).
+nint shardOf(read string key) {
+    ulong h = 14695981039346656037
+    for b in key.asBytes() {
+        h = (h ^ b) * 1099511628211
+    }
+    return (nint)(h & 63)
+}
+
+// Runs one command, its parts the ranges `starts[i]..ends[i]` of `bytes`.
+void run(read Store store, read byte[] bytes, read List<nint> starts, read List<nint> ends, ref List<byte> out) {
+    var parts = starts.length()
+    var name = bytes[starts[0]..ends[0]]
+    if isWord(name, "ping") && parts == 1 {
+        putText(ref out, "+PONG\r\n")
+    } else if isWord(name, "get") && parts == 2 {
+        match string.fromUtf8(bytes[starts[1]..ends[1]]) {
+            Ok(key) => {
+                lock store.shards[shardOf(key)] as shard {
+                    var value = shard.map.get(key)
+                    if value is not null {
+                        putNumber(ref out, '$', value.length())
+                        out.addAll(value)
+                        putText(ref out, "\r\n")
+                    } else {
+                        putText(ref out, "$-1\r\n")
+                    }
+                }
+            }
+            Error(_) => putText(ref out, "-ERR the key is not UTF-8\r\n")
+        }
+    } else if isWord(name, "set") && parts == 3 {
+        match string.fromUtf8(bytes[starts[1]..ends[1]]) {
+            Ok(key) => {
+                lock store.shards[shardOf(key)] as shard {
+                    var value = shard.map.getOrAdd(key, List<byte>())
+                    value.clear()
+                    value.addAll(bytes[starts[2]..ends[2]])
+                }
+                putText(ref out, "+OK\r\n")
+            }
+            Error(_) => putText(ref out, "-ERR the key is not UTF-8\r\n")
+        }
+    } else if isWord(name, "del") && parts >= 2 {
+        long gone = 0
+        for i in 1..parts {
+            if string.fromUtf8(bytes[starts[i]..ends[i]]) is Ok(key) {
+                lock store.shards[shardOf(key)] as shard {
+                    if shard.map.remove(key) is not null {
+                        gone += 1
+                    }
+                }
+            }
+        }
+        putNumber(ref out, ':', gone)
+    } else {
+        putText(ref out, "-ERR unknown command or wrong number of arguments\r\n")
+    }
+}
+
+// Answers every whole command in `bytes`; how many bytes it used, or -1 when the client broke the
+// protocol.
+nint serveAll(read Store store, read byte[] bytes, ref List<nint> starts, ref List<nint> ends, ref List<byte> out) {
+    nint used = 0
+    while used < bytes.length() {
+        if bytes[used] != '*' {
+            return -1
+        }
+        long parts = 0
+        nint at = 0
+        match readNumber(bytes, used + 1) {
+            Whole(value, next) => {
+                if value < 1 || value > 1024 {
+                    return -1
+                }
+                parts = value
+                at = next
+            }
+            Incomplete => return used
+            Wrong => return -1
+        }
+        starts.clear()
+        ends.clear()
+        for _ in 0..parts {
+            if at >= bytes.length() {
+                return used
+            }
+            if bytes[at] != '$' {
+                return -1
+            }
+            match readNumber(bytes, at + 1) {
+                Whole(n, next) => {
+                    if n < 0 || n > 1048576 {
+                        return -1
+                    }
+                    if bytes.length() - next < n + 2 {
+                        return used
+                    }
+                    var end = next + (nint)n
+                    if bytes[end] != '\r' || bytes[end + 1] != '\n' {
+                        return -1
+                    }
+                    starts.add(next)
+                    ends.add(end)
+                    at = end + 2
+                }
+                Incomplete => return used
+                Wrong => return -1
+            }
+        }
+        run(store, bytes, starts, ends, ref out)
+        used = at
+    }
+    return used
+}
+
+// ---- a connection
+
+async Result<void, IoError> serve(TcpStream conn, shared Store store) {
+    var buffer = List<byte>.repeat(0, 4096)
+    nint length = 0
+    var out = List<byte>()
+    var starts = List<nint>()
+    var ends = List<nint>()
+    while true {
+        if length == buffer.length() {
+            var bigger = List<byte>.repeat(0, buffer.length() * 2)
+            bigger[0..length].copyFrom(buffer[0..length])
+            buffer = bigger
+        }
+        var n = try await conn.receiveAsync(ref buffer[length..buffer.length()])
+        if n == 0 {
+            return Ok()
+        }
+        length += n
+        out.clear()
+        var used = serveAll(read store, buffer[0..length], ref starts, ref ends, ref out)
+        if used < 0 {
+            putText(ref out, "-ERR Protocol error\r\n")
+            try await conn.sendAsync(read out)
+            return Ok()
+        }
+        if out.length() > 0 {
+            try await conn.sendAsync(read out)
+        }
+        buffer[0..length - used].copyFrom(buffer[used..length])
+        length -= used
+    }
+}
+
+// A connection that fails ends alone.
+async Done connection(TcpStream conn, shared Store store) {
+    _ = await serve(conn, store)
+    return Done.Ended
+}
+
+async Result<void, IoError> listen(int port) {
+    var shards = List<shared locked Shard>()
+    for _ in 0..64 {
+        shards.add(new shared locked Shard { map = HashMap<string, List<byte>>() })
+    }
+    var store = new shared Store { shards = shards }
+    var address = $":{port}".toString()
+    var listener = new shared (try TcpListener.bind(read address))
+    var tasks = List<Task<Done>>()
+    tasks.add(acceptNext(share listener, 0))
+    while tasks.length() > 0 {
+        match await Task.whenAny(ref tasks) {
+            Accepted(conn) => {
+                tasks.add(connection(conn, share store))
+                tasks.add(acceptNext(share listener, 0))
+            }
+            AcceptFailed(_) => tasks.add(acceptNext(share listener, 10))
+            Ended => {}
+        }
+    }
+    return Ok()
+}
+
+void main(List<string> args) {
+    if args.length() != 1 || int.parse(args[0]) is not Ok(port) {
+        printError("usage: resp PORT")
+        exit(2)
+    }
+    if listen(port).wait() is Error(e) {
+        printError($"resp: {e}".toString())
+        exit(1)
+    }
+}

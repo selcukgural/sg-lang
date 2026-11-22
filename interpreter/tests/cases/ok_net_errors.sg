@@ -1,5 +1,7 @@
 // The errors of the network: an address that is taken, one that is not `host:port`, a host
-// that is not a number where nothing is looked up, and a port where nobody listens.
+// that is not a number where nothing is looked up, and a port where nobody listens: port 1,
+// which no test can take (a port let go here was once taken at once by another test of the
+// network running beside this one, and answered).
 void tell(read string what, Result<TcpStream, IoError> result) {
     match result {
         Ok(_) => print($"{what}: connected")
@@ -41,8 +43,9 @@ Result<void, IoError> main() {
     tell("no host", TcpStream.connect(":80"))
     tell("brackets left open", TcpStream.connect("[::1:80"))
     close(listener)
-    tell("nobody listens", TcpStream.connect(read taken))
-    var task = late(taken.clone())
+    var nobody = "127.0.0.1:1".clone()
+    tell("nobody listens", TcpStream.connect(read nobody))
+    var task = late(nobody)
     try task.wait()
     return Ok()
 }

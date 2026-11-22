@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 22 November 2026, the hundred-and-fifty-fifth slice (an exit with an error lets its tasks go, 1691-1695).
+Last brought up to date: 22 November 2026, the hundred-and-fifty-sixth slice (servers measured against Rust, Zig and C; the pool counts the cores a program may run on, as `available_parallelism` does, 1698-1707).
 
 ## Functions and variables
 

@@ -33,6 +33,10 @@ and their tables are in [The library against Rust and Zig](../benchmarks/library
 | [std/log](std/log) | A million lines, a hundred million that are off, a million from four tasks | 153 |
 | [std/net](std/net) | Echoes of 64 bytes to 64 KB, 1,000 connections at once, 50,000 one after another, 1 GB one way, 100 MB in lines, datagrams, ten million addresses read and written; async and blocking | 154 |
 
+Servers are measured in [server](server) (choices 1698-1707): a store that speaks a part of Redis's protocol
+and an HTTP server, each in SG, Rust, Zig and C, under one load written in C, on Linux, with their tables in
+[Servers against Rust, Zig and C](../benchmarks/server.md).
+
 Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 

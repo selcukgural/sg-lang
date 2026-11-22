@@ -1,0 +1,20 @@
+# The Linux the server lane is measured on (choice 1699): Rust, Clang for SG's C, Zig 0.17.1 (its
+# tarball checked against the checksum ziglang.org publishes), and redis-benchmark and wrk to hold
+# the load of `load/load.c` against once. Built once, with the network, from the repository's root:
+#   podman build -t sg-server -f trials/server/Containerfile trials/server
+# `measure.py` starts it and runs everything inside; see the top of that file.
+FROM docker.io/library/rust:1.99.1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang procps redis-tools wrk xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+ARG ZIG=0.17.1
+RUN set -e; arch="$(uname -m)"; \
+    case "$arch" in \
+      aarch64) sum=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795 ;; \
+      x86_64) sum=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a ;; \
+      *) echo "no Zig for $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/$ZIG/zig-$arch-linux-$ZIG.tar.xz"; \
+    echo "$sum  /tmp/zig.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/zig.tar.xz -C /opt; rm /tmp/zig.tar.xz; \
+    ln -s "/opt/zig-$arch-linux-$ZIG/zig" /usr/local/bin/zig

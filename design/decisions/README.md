@@ -29,7 +29,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [19 November 2026](2026-11-19.md) | 118–129 | Fuzzing and mutants, editors, the web site, and the library: hex, Base64, CRC-32, SHA-256, the command line, JSON, a log. |
 | [20 November 2026](2026-11-20.md) | 130–144 | Regular expressions, compression, zip, real programs, packages, and the fixes of the second review of safety. |
 | [21 November 2026](2026-11-21.md) | 145–152 | A const without calls, `copyFrom`, the normal forms of Unicode, default values of parameters, and `std` measured against Rust and Zig. |
-| [22 November 2026](2026-11-22.md) | 153–155 | Time, random numbers and the log measured against Rust and Zig; the network; an exit with an error lets its tasks go. |
+| [22 November 2026](2026-11-22.md) | 153–156 | Time, random numbers and the log measured against Rust and Zig; the network; an exit with an error lets its tasks go; servers measured against Rust, Zig and C. |
 
 ## Every slice
 
@@ -238,3 +238,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [154](2026-11-22.md#slice-154) | The network measured against Rust and Zig | 1678–1690 |
 | [155](2026-11-22.md#slice-155) | An exit with an error lets its tasks go | 1691–1696 |
 | [—](2026-11-22.md#golden-tests-several-at-a-time) | The golden tests built and run several at a time | 1697 |
+| [156](2026-11-22.md#slice-156) | The server lane: servers measured against Rust, Zig and C | 1698–1707 |

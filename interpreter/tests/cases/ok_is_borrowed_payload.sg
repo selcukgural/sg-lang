@@ -1,0 +1,21 @@
+// `is Ok(text)` on a `Result<read string, E>`: the name is the borrow the result holds, a
+// `read string`, and goes where a `read string` goes (it was a `read read string`, 156th slice).
+nint size(read string s) {
+    return s.length()
+}
+
+void main() {
+    var bytes = List<byte> { 104, 105, 33 }
+    if string.fromUtf8(bytes[0..3]) is Ok(text) {
+        print(size(text))
+        print(text)
+    }
+    var r = string.fromUtf8(bytes[0..2])
+    if r is Ok(t) {
+        print($"{t} {size(t)}")
+    }
+    var bad = List<byte> { 255 }
+    if string.fromUtf8(bad[0..1]) is Error(e) {
+        print(e)
+    }
+}

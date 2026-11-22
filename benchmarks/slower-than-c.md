@@ -187,6 +187,39 @@ says what is slower, by how much and against what, the choice that measured it, 
   once share a field, as the calls of the network now share one, and the wait for a socket carries only what
   it uses.
 
+- **A server on more than one core** (the server lane, [Servers](server.md), choice 1698): 50 connections
+  with a request in flight on each get 578,000 answers a second from SG's store, 607,000 from `tokio`'s, 900,000
+  from Zig's thread for each connection and 1,472,000 from C's thread on each core (0.64 times the best rival,
+  0.39 times C); HTTP the same. On one core SG answers 396,000 a second, more than C (349,000) and Rust (360,000):
+  the program is not slow, the spread over cores is. Each answer costs SG 2.7 µs of the kernel on four cores and
+  1.4 µs on one, C 1.4 µs on both, with the same calls of the system: SG's loop of the network is waited on by
+  one thread, which wakes the tasks of the sockets onto its ring, and the other threads take them from there, so
+  a request is read by one core and served by another (a wake of `futex`, the socket's data in another core's
+  cache). `tokio` is built the same way and does the same. Candidates: a loop of the network on each thread,
+  each socket on the loop of the thread that first waits for it and kept there, tasks taken by another thread
+  only when one has too many; the wakes of other tasks through an `eventfd` on each loop.
+- **The tail with 1,000 connections and 16 requests in flight on each** (the server lane): the answers a second
+  are those of the others (2.1 million, the load's own limit), but p99 is 15.0 ms and p99.9 19.2 ms, against
+  10.4 and 10.9 ms for C and 11.3 and 11.9 ms for `tokio`: some connections wait while others are served.
+  Candidates: those of the server on more than one core, and a look at the slot of the last task woken, which
+  runs a woken task before those waiting.
+- **A server that takes each connection through one task** (the server lane): with a connection for each
+  request SG answers 149,000 a second, Zig 198,000, C 202,000, with the least time of the processor of all
+  (5.0 ms for each thousand, Zig 14.4): every connection goes through the task that holds the list of tasks, a
+  task to take the next connection and one for the connection, and `Task.whenAny` looks for the task that ended
+  through the list and moves those after it, so a server with many connections pays for each that ends.
+  Candidates: a group of tasks that takes its ended tasks out by itself, which a server hands its connections
+  to, and `whenAny` that finds its task without a search.
+- **One connection, and smaller gaps** (the server lane; one run, which the median of three is to confirm): one
+  connection with a request in flight gets 27,000 answers a second from SG, 34,000 from Zig and 33,000 from C and
+  `tokio`, and with 16 in flight 497,000 from SG and 580,000 from `tokio`; HTTP at 70% of the slowest's answers a
+  second has a p99 of 292 µs in SG and 189 µs in hyper; 10,000 connections that each ask once a second hold
+  53.2 MB in SG and 50.5 MB in `tokio`; in the long run of 30 minutes (1,000 connections, each opened again after
+  1,000 answers) SG holds 22.2 MB and `tokio` 13.3 MB, neither growing. Not looked into yet; the first is likely the wake between cores of the
+  server on more than one core.
+- **100,000 idle connections are not quite idle** (the server lane): in 10 seconds with every connection silent
+  SG spends 0.45 s of the processor, `tokio` 0.36 s and C 0.22 s. Not looked into yet.
+
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
   producer is the same instructions as C's (one more for the bound of the list), and neither taking that

@@ -1585,6 +1585,68 @@ fn the_trial_of_net() {
     assert_eq!(compiled(&["udp", "async", "65536", "1", "1"]).0, 2, "a datagram too large");
 }
 
+/// The servers of the server lane in SG (choices 1701, 1704, 1706), held to what they must answer by
+/// the load of `trials/server/load/load.c`, quickly: the store filled and every answer checked byte
+/// for byte, with commands in flight, with values of 64 KB and with idle connections open; the HTTP
+/// server with connections kept, closed after each request, and at a fixed rate. Nothing is timed.
+/// The load waits on epoll or kqueue, so not on Windows.
+#[cfg(unix)]
+#[test]
+fn the_servers_of_the_server_lane() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_servers_of_the_server_lane");
+    let server = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials").join("server");
+    let load = dir.join("load");
+    let cc = sg::cc::compiler().unwrap();
+    let built = Command::new(&cc)
+        .args(["-O2", "-pthread", "-o"])
+        .arg(&load)
+        .arg(server.join("load").join("load.c"))
+        .arg("-lm")
+        .finished();
+    assert_eq!(ran(&built).0, 0, "the load: {}", ran(&built).2);
+    let resp = [
+        "--fill --conns 4 --pipeline 16 --keys 2000",
+        "--check --keys 2000 --conns 8 --duration 0.5 --warmup 0",
+        "--check --keys 2000 --conns 8 --pipeline 16 --duration 0.5 --warmup 0",
+        "--fill --conns 4 --pipeline 4 --keys 200 --value 65536",
+        "--check --keys 200 --value 65536 --conns 4 --duration 0.5 --warmup 0",
+        "--idle 200 --conns 4 --duration 0.5 --warmup 0",
+    ];
+    let http = [
+        "--check --conns 8 --duration 0.5 --warmup 0",
+        "--check --close --conns 4 --duration 0.5 --warmup 0",
+        "--check --conns 8 --rate 2000 --duration 0.5 --warmup 0",
+    ];
+    for (name, runs) in [("resp", &resp[..]), ("http", &http[..])] {
+        let source = server.join(name).join("sg").join(format!("{name}.sg")).to_string_lossy().into_owned();
+        let program = program(&dir, name).to_string_lossy().into_owned();
+        assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &program])), (0, String::new(), String::new()));
+        // A port the system has just given and taken back.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut child = Command::new(&program).arg(port.to_string()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        let started = std::time::Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(started.elapsed().as_secs() < 10, "{name} does not listen on {port}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for args in runs {
+            let out = Command::new(&load)
+                .arg(name)
+                .arg(format!("127.0.0.1:{port}"))
+                .args(args.split(' '))
+                .finished();
+            let (code, stdout, stderr) = ran(&out);
+            let answered = stdout.contains("\"answers\":") && !stdout.contains("\"answers\":0,");
+            assert!(code == 0 && answered, "{name} {args}: exit {code}\n{stdout}\n{stderr}");
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
 /// What `net address` prints of the addresses of `the_trial_of_net`, as Rust and Zig print it.
 const ADDRESSES: &str = "addresses 5\nv6 3\nports 74138\ncharacters 75\nsum 299\ninvalid 3\n";
 

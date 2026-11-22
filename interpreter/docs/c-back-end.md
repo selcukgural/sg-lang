@@ -95,7 +95,8 @@ is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in 
 (cancellation and async input and output, 403-416) were written in the checker and the interpreter; since
 the sixty-first, async functions, delays and cancellation are compiled too: an async function is a machine
 whose variables live in a frame, a task is one block with its frame inside, and a pool of threads, one
-for each core, runs the tasks that can go on (417-431). Since the sixty-second, async input and output is
+for each core (on Linux each core the program may run on, since the hundred-and-fifty-sixth slice), runs the
+tasks that can go on (417-431). Since the sixty-second, async input and output is
 compiled too: the work is done on threads of their own, started as they are needed, while the task waits,
 and a read the block of a reader can answer is done in place (432-440). The sixty-third slice (a list of
 tasks, `Task.whenAll` and `Task.whenAny`) was written in the checker, the interpreter and compiled code

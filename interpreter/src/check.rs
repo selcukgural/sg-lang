@@ -9588,10 +9588,13 @@ impl<'a> Checker<'a> {
             PatternKind::Or(_) | PatternKind::Null | PatternKind::Bool(_) | PatternKind::Range(..) => unreachable!("handled above"),
             PatternKind::Wildcard => Ok(()),
             PatternKind::Bind(name) => {
-                let ty = match mode {
-                    None => ty.clone(),
-                    Some(Mode::Read) => Ty::Read(Box::new(ty.clone())),
-                    Some(Mode::Ref) => Ty::Ref(Box::new(ty.clone())),
+                // A value that is a borrow already (`Ok(text)` of a `Result<read string, E>`)
+                // is that borrow, not a borrow of it; under `read` a `ref` is seen as `read`.
+                let ty = match (mode, ty) {
+                    (None, _) | (Some(_), Ty::Read(_)) | (Some(Mode::Ref), Ty::Ref(_)) => ty.clone(),
+                    (Some(Mode::Read), Ty::Ref(inner)) => Ty::Read(inner.clone()),
+                    (Some(Mode::Read), _) => Ty::Read(Box::new(ty.clone())),
+                    (Some(Mode::Ref), _) => Ty::Ref(Box::new(ty.clone())),
                 };
                 binds.push((name.clone(), ty, span));
                 Ok(())

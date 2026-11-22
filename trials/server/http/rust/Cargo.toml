@@ -1,0 +1,14 @@
+[package]
+name = "http"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# hyper 1, the HTTP of Rust's servers (axum, warp and others are built on it), its server of HTTP/1.1
+# over `tokio` with the runtime `#[tokio::main]` makes (choice 1706).
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"

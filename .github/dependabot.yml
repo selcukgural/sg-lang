@@ -1,7 +1,8 @@
 # Dependency updates: the GitHub Actions of the CI, the crate that fuzzes the front end (`fuzz/`,
 # which uses libfuzzer-sys), the extension for VS Code (`editors/vscode`, which uses
 # vscode-languageclient), the web site (`website/`, Docusaurus), the Rust versions of the trials
-# (`trials/`, Rust's `regex`; the Zig versions use only Zig's library and PCRE2 of the system), and the interpreter, which has no dependencies today and is watched for
+# (`trials/`: Rust's `regex`, the crates the library is measured against, `tokio` and hyper for the
+# servers; the Zig versions use only Zig's library and PCRE2 of the system), and the interpreter, which has no dependencies today and is watched for
 # the day it gets one.
 version: 2
 updates:
@@ -28,6 +29,19 @@ updates:
   - package-ecosystem: cargo
     directories:
       - /trials/grep/rust
+      - /trials/server/http/rust
+      - /trials/server/resp/rust
+      - /trials/std/checksum/rust
+      - /trials/std/compression/rust
+      - /trials/std/encoding/rust
+      - /trials/std/hash/rust
+      - /trials/std/json/rust
+      - /trials/std/log/rust
+      - /trials/std/net/rust
+      - /trials/std/random/rust
+      - /trials/std/time/rust
+      - /trials/std/unicode/rust
+      - /trials/std/zip/rust
       - /trials/wc/rust
     schedule:
       interval: weekly
