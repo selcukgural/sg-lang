@@ -4,6 +4,61 @@
 
 use std::path::{Path, PathBuf};
 
+/// How many programs the tests of this file build or run at once: one on each thread of the
+/// machine.
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |count| count.get())
+}
+
+/// A place among the programs that build or run at once. The tests of this file run side by side,
+/// and they share these places: several of them together still build or run no more programs at
+/// once than the machine has threads, so a program that waits for a time is not kept from the
+/// processor by a crowd.
+struct Slot;
+
+static BUSY: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+impl Slot {
+    fn take() -> Slot {
+        let most = threads();
+        let mut busy = BUSY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *busy >= most {
+            busy = FREED.wait(busy).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *busy += 1;
+        Slot
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *BUSY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
+        FREED.notify_one();
+    }
+}
+
+/// `work` on each of `items`, several at a time (see `Slot`). What each gives comes back in the
+/// order of `items`, so a report reads the same as one of a run one by one.
+fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<Option<R>>> = std::sync::Mutex::new(items.iter().map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..threads().min(items.len()) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(item) = items.get(at) else { break };
+                let done = {
+                    let _slot = Slot::take();
+                    work(item)
+                };
+                results.lock().unwrap()[at] = Some(done);
+            });
+        }
+    });
+    results.into_inner().unwrap().into_iter().map(|done| done.unwrap()).collect()
+}
+
 
 /// `PATH` as the tests of other programs see it: the folder of `sg-test-tool` (`tests/tool`) first,
 /// the program they start in place of `sh`, `cat` and their kin, which Windows does not have. It
@@ -485,18 +540,18 @@ fn modules() {
     }
     assert!(runs.len() > 10);
 
-    let mut failures = Vec::new();
-    for (path, tests, golden, within) in &runs {
+    let failures: Vec<String> = in_parallel(&runs, |(path, tests, golden, within)| {
         let actual = run_program(path, *tests, within);
         if update {
             write_golden(golden, &actual);
-            continue;
+            return None;
         }
         let expected = std::fs::read_to_string(golden_of(golden)).unwrap_or_default();
-        if actual != expected {
-            failures.push(format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", golden.strip_prefix(root).unwrap().display()));
-        }
-    }
+        (actual != expected).then(|| format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", golden.strip_prefix(root).unwrap().display()))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
 
@@ -524,40 +579,33 @@ fn needs_nothing_of_128_bits() {
         true => sg::cc::compiler().ok().and_then(|cc| Path::new(&cc).parent().map(|dir| dir.join("llvm-nm.exe"))).filter(|path| path.exists()).map_or_else(|| "llvm-nm".into(), PathBuf::into_os_string),
         false => std::ffi::OsString::from("nm"),
     };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let failures = std::sync::Mutex::new(Vec::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut built = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| loop {
-                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(path) = files.get(at) else { break };
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                let release = path.parent().is_some_and(|dir| dir.ends_with("release"));
-                let Ok(code) = sg::emit_c(&std::fs::read_to_string(path).unwrap(), &name, !release) else { continue };
-                let stem = format!("{}-{}", path.parent().unwrap().file_name().unwrap().to_string_lossy(), path.file_stem().unwrap().to_string_lossy());
-                let (c_file, object) = (work.join(format!("{stem}.c")), work.join(format!("{stem}.o")));
-                std::fs::write(&c_file, code).unwrap();
-                let made = c_command().args(["-std=c11", "-O0", "-w", "-c", "-o"]).arg(&object).arg(&c_file).output().unwrap();
-                if !made.status.success() {
-                    failures.lock().unwrap().push(format!("{name}: {}", String::from_utf8_lossy(&made.stderr)));
-                    continue;
-                }
-                built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let listed = std::process::Command::new(&nm).arg("-u").arg(&object).output().unwrap();
-                assert!(listed.status.success(), "nm: {}", String::from_utf8_lossy(&listed.stderr));
-                for line in String::from_utf8_lossy(&listed.stdout).lines() {
-                    let wanted = line.split_whitespace().last().unwrap_or_default();
-                    if ["ti3", "ti4", "mulodi4"].iter().any(|end| wanted.ends_with(end)) {
-                        failures.lock().unwrap().push(format!("{name} asks the C compiler's library for `{wanted}`"));
-                    }
-                }
-            });
+    // For each program: whether it was built, and what it asks for that it should not.
+    let done = in_parallel(&files, |path| {
+        let mut failures = Vec::new();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let release = path.parent().is_some_and(|dir| dir.ends_with("release"));
+        let Ok(code) = sg::emit_c(&std::fs::read_to_string(path).unwrap(), &name, !release) else { return (false, failures) };
+        let stem = format!("{}-{}", path.parent().unwrap().file_name().unwrap().to_string_lossy(), path.file_stem().unwrap().to_string_lossy());
+        let (c_file, object) = (work.join(format!("{stem}.c")), work.join(format!("{stem}.o")));
+        std::fs::write(&c_file, code).unwrap();
+        let made = c_command().args(["-std=c11", "-O0", "-w", "-c", "-o"]).arg(&object).arg(&c_file).output().unwrap();
+        if !made.status.success() {
+            failures.push(format!("{name}: {}", String::from_utf8_lossy(&made.stderr)));
+            return (false, failures);
         }
+        let listed = std::process::Command::new(&nm).arg("-u").arg(&object).output().unwrap();
+        assert!(listed.status.success(), "nm: {}", String::from_utf8_lossy(&listed.stderr));
+        for line in String::from_utf8_lossy(&listed.stdout).lines() {
+            let wanted = line.split_whitespace().last().unwrap_or_default();
+            if ["ti3", "ti4", "mulodi4"].iter().any(|end| wanted.ends_with(end)) {
+                failures.push(format!("{name} asks the C compiler's library for `{wanted}`"));
+            }
+        }
+        (true, failures)
     });
-    assert!(*built.get_mut() > 250, "only {} programs were compiled", built.get_mut());
-    let failures = failures.into_inner().unwrap();
+    let built = done.iter().filter(|(built, _)| *built).count();
+    let failures: Vec<String> = done.into_iter().flat_map(|(_, failures)| failures).collect();
+    assert!(built > 250, "only {built} programs were compiled");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -577,22 +625,19 @@ fn golden() {
     files.sort();
     assert!(!files.is_empty());
 
-    let mut failures = Vec::new();
-    for path in &files {
+    let failures: Vec<String> = in_parallel(&files, |path| {
         let actual = run_file(path);
         let golden = path.with_extension("out");
         if update {
             write_golden(&golden, &actual);
-            continue;
+            return None;
         }
         let expected = std::fs::read_to_string(golden_of(&golden)).unwrap_or_default();
-        if actual != expected {
-            failures.push(format!(
-                "--- {}\nexpected:\n{expected}\nactual:\n{actual}",
-                path.strip_prefix(root).unwrap().display()
-            ));
-        }
-    }
+        (actual != expected).then(|| format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", path.strip_prefix(root).unwrap().display()))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     assert!(failures.is_empty(), "{} file(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
 
@@ -643,19 +688,29 @@ fn compiled() {
 
     // `SG_NO_SANITIZERS=1` skips the second, slower build of every program.
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
-    let mut sanitized = 0;
-    let mut raced = 0;
-    // Programs on several threads that ran without the thread sanitizer, which Windows has not.
-    let mut unraced = 0;
-    let mut compiled = 0;
-    let mut ended_in_panic = 0;
-    let mut ended_by_signal = 0;
-    let mut leak_free_counted = 0;
-    let mut failures = Vec::new();
-    // The programs to look at for leaks: the name, the program, the program under the
-    // sanitizers, its command line and the file of its input.
-    let mut built: Vec<(String, PathBuf, PathBuf, Vec<String>, PathBuf)> = Vec::new();
-    for path in &files {
+    // What became of one program.
+    #[derive(Default)]
+    struct Done {
+        failures: Vec<String>,
+        compiled: bool,
+        sanitized: bool,
+        raced: bool,
+        // On several threads, and ran without the thread sanitizer, which Windows has not.
+        unraced: bool,
+        ended_in_panic: bool,
+        ended_by_signal: bool,
+        leak_free_counted: bool,
+        // To be looked at for leaks: the name, the program, the program under the sanitizers,
+        // its command line and the file of its input.
+        to_look_at: Option<(String, PathBuf, PathBuf, Vec<String>, PathBuf)>,
+    }
+    // The thread sanitizer has to see a race that is there before it is trusted.
+    if sanitizers && !cfg!(windows) {
+        race_check_sees_a_race(&work);
+    }
+    // Each program is built and run in a folder of its own, several at a time.
+    let done = in_parallel(&files, |path| {
+        let mut done = Done::default();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
         // no such count yet (the stack depth question of the design is open).
@@ -663,23 +718,23 @@ fn compiled() {
         // the stack, which ends at its guard page. (An array too big for the memory, of
         // `panic_array_no_memory`, is refused by `sg build`: no stack holds it, choice 1346.)
         if matches!(name.as_str(), "panic_stack_overflow.sg" | "panic_deep_value_written.sg") {
-            continue;
+            return done;
         }
         // Tasks that wait on channels for each other: the interpreter stops with a panic, and
         // compiled code waits for ever until the count of waiting tasks comes with the hardening.
         if name == "panic_channel_deadlock.sg" {
-            continue;
+            return done;
         }
         // The interpreter checks every read and write of raw memory against the blocks of
         // `Memory.allocate`; compiled code checks nothing there (it is written inside `unsafe`),
         // and leaves it to the sanitizers.
         if name.starts_with("panic_unsafe_") {
-            continue;
+            return done;
         }
         // A library that is not there: the interpreter says so before the program runs, and the
         // C compiler would refuse to link it.
         if name == "error_extern_no_library.sg" {
-            continue;
+            return done;
         }
         // A program the checker rejects, or one that uses what is not compiled yet.
         // In `tests/release` the build is a release build: overflow wraps.
@@ -695,7 +750,7 @@ fn compiled() {
             }
             false => (sg::emit_c(&std::fs::read_to_string(path).unwrap(), &name, !release), path.with_extension("out"), String::new()),
         };
-        let Ok(code) = code else { continue };
+        let Ok(code) = code else { return done };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let stem = if with_modules { format!("modules-{stem}") } else { stem };
         let (c_file, binary) = (work.join(format!("{stem}.c")), program_at(&work, &stem));
@@ -705,10 +760,10 @@ fn compiled() {
         std::fs::write(&c_file, &code).unwrap();
         let cc = c_command().args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(libraries_of(&code, &binary)).args(system_libs(&work)).output().unwrap();
         if !cc.status.success() {
-            failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
-            continue;
+            done.failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
+            return done;
         }
-        let given = given(path, &work.join("io"));
+        let given = given(path, &work.join("io").join(&stem));
         // Each run starts with an empty folder, so a file one run made is not there for the next.
         let run_given = |binary: &Path| {
             let _ = std::fs::remove_dir_all(&given.dir);
@@ -761,9 +816,9 @@ fn compiled() {
             false => actual == expected,
         };
         if !same(&actual) {
-            failures.push(format!("--- {name}\nexpected:\n{expected}\nactual:\n{actual}"));
+            done.failures.push(format!("--- {name}\nexpected:\n{expected}\nactual:\n{actual}"));
         }
-        compiled += 1;
+        done.compiled = true;
 
         // The same C again under the address and undefined-behaviour sanitizers: a use after
         // free, a double free or a read outside a buffer would stop the program here.
@@ -783,27 +838,27 @@ fn compiled() {
                 let run = run_given(&checked_binary);
                 let actual = shown(&run);
                 if !same(&actual) {
-                    failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
+                    done.failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
-                sanitized += 1;
+                done.sanitized = true;
                 // A panic does not unwind (the row "Copy and cleanup"): what the program owned
                 // is given back by the system, not freed, so it is not looked at for leaks.
                 // Whether a pointer to it is still in a register when the process ends is up to
                 // the C compiler, and a leak tool would judge that.
                 // One that a signal ended did not end at all, as far as its memory goes.
                 if String::from_utf8_lossy(&run.stderr).lines().any(|line| line.starts_with("panic: ")) {
-                    ended_in_panic += 1;
+                    done.ended_in_panic = true;
                 } else if run.status.code().is_none() {
-                    ended_by_signal += 1;
+                    done.ended_by_signal = true;
                 } else if cfg!(windows) {
                     // No LeakSanitizer on Windows: the count of blocks of the debug build looked
                     // (`leak:` in the output, compared above).
-                    leak_free_counted += 1;
+                    done.leak_free_counted = true;
                 } else {
-                    built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
+                    done.to_look_at = Some((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
                 }
             } else {
-                failures.push(format!("--- {name}: the C compiler rejected it under the sanitizers\n{}", String::from_utf8_lossy(&cc.stderr)));
+                done.failures.push(format!("--- {name}: the C compiler rejected it under the sanitizers\n{}", String::from_utf8_lossy(&cc.stderr)));
             }
         }
 
@@ -811,11 +866,8 @@ fn compiled() {
         // reach the same memory without a lock between them would stop it here. Windows has no
         // thread sanitizer: what was not checked there is counted, and said below.
         if sanitizers && threads && cfg!(windows) {
-            unraced += 1;
+            done.unraced = true;
         } else if sanitizers && threads {
-            if raced == 0 {
-                race_check_sees_a_race(&work);
-            }
             let raced_binary = program_at(&work, &format!("{stem}-tsan"));
             let cc = c_command()
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=thread", "-o"])
@@ -830,13 +882,29 @@ fn compiled() {
                 let run = run_given(&raced_binary);
                 let actual = shown(&run);
                 if !same(&actual) {
-                    failures.push(format!("--- {name}, under the thread sanitizer\nexpected:\n{expected}\nactual:\n{actual}"));
+                    done.failures.push(format!("--- {name}, under the thread sanitizer\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
-                raced += 1;
+                done.raced = true;
             } else {
-                failures.push(format!("--- {name}: the C compiler rejected it under the thread sanitizer\n{}", String::from_utf8_lossy(&cc.stderr)));
+                done.failures.push(format!("--- {name}: the C compiler rejected it under the thread sanitizer\n{}", String::from_utf8_lossy(&cc.stderr)));
             }
         }
+        done
+    });
+    let mut failures = Vec::new();
+    let (mut compiled, mut sanitized, mut raced, mut unraced) = (0, 0, 0, 0);
+    let (mut ended_in_panic, mut ended_by_signal, mut leak_free_counted) = (0, 0, 0);
+    let mut built = Vec::new();
+    for done in done {
+        failures.extend(done.failures);
+        compiled += usize::from(done.compiled);
+        sanitized += usize::from(done.sanitized);
+        raced += usize::from(done.raced);
+        unraced += usize::from(done.unraced);
+        ended_in_panic += usize::from(done.ended_in_panic);
+        ended_by_signal += usize::from(done.ended_by_signal);
+        leak_free_counted += usize::from(done.leak_free_counted);
+        built.extend(done.to_look_at);
     }
 
     // Leaks. First the check itself: it has to see a leak that is there.
@@ -849,23 +917,13 @@ fn compiled() {
         leak_check_sees_a_leak(&work);
 
         // Then every program, several at a time.
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let found = std::sync::Mutex::new(Vec::new());
-        let workers = std::thread::available_parallelism().map_or(4, |count| count.get()).min(8);
-        std::thread::scope(|scope| {
-            for _ in 0..workers {
-                scope.spawn(|| loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((name, plain, checked, args, input)) = built.get(index) else { break };
-                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                    if let Some(report) = left_behind(plain, checked, &args, input) {
-                        found.lock().unwrap().push(format!("--- {name}: memory was left behind\n{report}"));
-                    }
-                });
-            }
-        });
-        let mut found = found.into_inner().unwrap();
-        found.sort();
+        let found: Vec<String> = in_parallel(&built, |(name, plain, checked, args, input)| {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            left_behind(plain, checked, &args, input).map(|report| format!("--- {name}: memory was left behind\n{report}"))
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         leak_free = built.len() - found.len();
         failures.extend(found);
     } else if !sanitizers {
@@ -1044,43 +1102,48 @@ fn compiled_small_pools() {
     let work = root.join("target").join("compiled-pools");
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
-    let mut failures = Vec::new();
-    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async", "ok_channel_async"] {
+    let stems = ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async", "ok_channel_async"];
+    // (the program, the most threads of the pool, the pauses, the address sanitizer in place of the thread one)
+    let mut builds = Vec::new();
+    for stem in stems {
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
-        let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
-        let c_file = work.join(format!("{stem}.c"));
-        std::fs::write(&c_file, sg::emit_c(&source, &format!("{stem}.sg"), true).unwrap()).unwrap();
-        // (the most threads of the pool, the pauses, the address sanitizer in place of the thread one)
+        std::fs::write(work.join(format!("{stem}.c")), sg::emit_c(&source, &format!("{stem}.sg"), true).unwrap()).unwrap();
         for (most, paused, address) in [(1, false, false), (2, false, false), (2, true, false), (2, true, true)] {
             if paused && !sanitizers {
                 continue;
             }
-            let label = format!("{stem}-{most}{}{}", if paused { "-paused" } else { "" }, if address { "-address" } else { "" });
-            let binary = program_at(&work, &label);
-            let mut cc = c_command();
-            cc.args(["-std=c11", "-O1", "-g"]).arg(format!("-DSG_POOL_MOST={most}"));
-            if paused {
-                cc.arg("-DSG_PAUSE_WAKES");
-            }
-            // As in `compiled`, the thread sanitizer's build is not held to the warnings: gcc warns
-            // that it does not follow `atomic_thread_fence`, which the counts of `shared` use.
-            // Windows has no thread sanitizer: there the others look.
-            if sanitizers && (cfg!(windows) || address) {
-                cc.args(sanitizer_flags(&work));
-            } else if sanitizers {
-                cc.arg("-fsanitize=thread");
-            } else {
-                cc.args(warnings(stem));
-            }
-            let built = cc.arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
-            assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
-            let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()).stdin(std::process::Stdio::null()).output().unwrap();
-            let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
-            if actual != expected {
-                failures.push(format!("--- {label}\nexpected:\n{expected}\nactual:\n{actual}"));
-            }
+            builds.push((stem, most, paused, address));
         }
     }
+    let failures: Vec<String> = in_parallel(&builds, |&(stem, most, paused, address)| {
+        let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
+        let c_file = work.join(format!("{stem}.c"));
+        let label = format!("{stem}-{most}{}{}", if paused { "-paused" } else { "" }, if address { "-address" } else { "" });
+        let binary = program_at(&work, &label);
+        let mut cc = c_command();
+        cc.args(["-std=c11", "-O1", "-g"]).arg(format!("-DSG_POOL_MOST={most}"));
+        if paused {
+            cc.arg("-DSG_PAUSE_WAKES");
+        }
+        // As in `compiled`, the thread sanitizer's build is not held to the warnings: gcc warns
+        // that it does not follow `atomic_thread_fence`, which the counts of `shared` use.
+        // Windows has no thread sanitizer: there the others look.
+        if sanitizers && (cfg!(windows) || address) {
+            cc.args(sanitizer_flags(&work));
+        } else if sanitizers {
+            cc.arg("-fsanitize=thread");
+        } else {
+            cc.args(warnings(stem));
+        }
+        let built = cc.arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+        assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
+        let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()).stdin(std::process::Stdio::null()).output().unwrap();
+        let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+        (actual != expected).then(|| format!("--- {label}\nexpected:\n{expected}\nactual:\n{actual}"))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     if sanitizers && cfg!(windows) {
         eprintln!("thread sanitizer: not on Windows; the programs of small pools ran under the others");
     }
@@ -1138,9 +1201,10 @@ fn compiled_tests() {
     } else {
         eprintln!("SG_NO_SANITIZERS is set: the compiled tests were NOT run under the sanitizers and NOT looked at for leaks");
     }
-    let (mut compiled, mut alone) = (0, 0);
-    let mut failures = Vec::new();
-    for (path, golden, within) in &programs {
+    // For each program: what differs, whether it was compiled, and how many of its tests were
+    // looked at on their own.
+    let done = in_parallel(&programs, |(path, golden, within)| {
+        let (mut failures, mut alone) = (Vec::new(), 0);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let sources = match path.is_dir() {
             true => sg::load(path, true).unwrap(),
@@ -1148,7 +1212,7 @@ fn compiled_tests() {
         };
         // A program the checker rejects (its `.out` is that error), or one that uses what is
         // not compiled yet.
-        let Ok(code) = sg::emit_c_tests(&sources, true) else { continue };
+        let Ok(code) = sg::emit_c_tests(&sources, true) else { return (failures, false, alone) };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let (c_file, plain, checked) = (work.join(format!("{stem}.c")), program_at(&work, &stem), program_at(&work, &format!("{stem}-san")));
         std::fs::write(&c_file, &code).unwrap();
@@ -1168,7 +1232,7 @@ fn compiled_tests() {
             }
         }
         if rejected {
-            continue;
+            return (failures, false, alone);
         }
         let expected = std::fs::read_to_string(golden_of(golden)).unwrap_or_default();
         for (binary, _) in &builds {
@@ -1185,7 +1249,6 @@ fn compiled_tests() {
                 failures.push(format!("--- {name}: the exit code is {:?}, and the report ends with: {}", run.status.code(), expected.lines().last().unwrap_or_default()));
             }
         }
-        compiled += 1;
 
         // Each test on its own: the ones that pass must have freed everything.
         if sanitizers {
@@ -1208,6 +1271,13 @@ fn compiled_tests() {
                 }
             }
         }
+        (failures, true, alone)
+    });
+    let (mut failures, mut compiled, mut alone) = (Vec::new(), 0, 0);
+    for (differ, built, looked_at) in done {
+        failures.extend(differ);
+        compiled += usize::from(built);
+        alone += looked_at;
     }
     assert!(failures.is_empty(), "{} compiled test program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 4, "only {compiled} programs of tests were compiled: the back end skips too much");

@@ -7,6 +7,13 @@ error comes after what it printed, and an exit code other than 0 and 1 is a last
 `.args` file next to a program gives its command line, one word on each line, where `{dir}` is an empty folder
 of its own to write files into (it is written back as `{dir}` in the output); a `.in` file gives its input.
 
+The tests of `tests/golden.rs` build and run their programs several at a time: together they keep as many
+programs going as the machine has threads, and a report lists what differs in the order of the files, as a run
+one by one would. Each program is built and run in a folder of its own, and a program that listens takes a port
+the system chooses (`127.0.0.1:0`), so two programs never meet. On a machine of 16 threads the file takes a
+little under two minutes, where one program at a time took thirteen; the longest test is `compiled`, and most
+of its time is the C compiler.
+
 Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`,
 `links`, `aliasleak`, `clib`, `timing`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
 (`tests/modules/rootdir`, `examples/shop`, `examples/zlib`) is a program run as a folder; its output is in `main.out` and what

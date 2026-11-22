@@ -237,3 +237,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [153](2026-11-22.md#slice-153) | Time, random numbers and the log measured against Rust and Zig | 1667–1677 |
 | [154](2026-11-22.md#slice-154) | The network measured against Rust and Zig | 1678–1690 |
 | [155](2026-11-22.md#slice-155) | An exit with an error lets its tasks go | 1691–1696 |
+| [—](2026-11-22.md#golden-tests-several-at-a-time) | The golden tests built and run several at a time | 1697 |
