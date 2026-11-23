@@ -375,6 +375,8 @@ pub(crate) fn io_kind(code: i32) -> usize {
         10054 | 10053 | 10057 | 109 | 232 => 8,
         // WSAEADDRINUSE
         10048 => 9,
+        // WSAEADDRNOTAVAIL
+        10049 => 19,
         // ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
         80 | 183 => 12,
         267 => 13,

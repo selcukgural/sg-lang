@@ -1814,7 +1814,7 @@ Result<void, IoError> main() {
 "#;
 
 /// A client whose local ports run out (choice 1751 i): past them `connect` and `connectAsync` give
-/// an `IoError` and the program goes on, interpreted and compiled; once its connections are let go,
+/// `IoError.AddressNotAvailable` (1764) and the program goes on, interpreted and compiled; once its connections are let go,
 /// a new one connects. It needs a machine of 100 ports or so, and runs only on one: a step of
 /// `.github/workflows/linux.yml` narrows the range with `sysctl` after the other tests and runs this
 /// one alone with `SG_PORTS_NARROWED` set, and on our own machine `podman run --sysctl
@@ -1839,9 +1839,9 @@ fn a_client_out_of_local_ports() {
         let connected: u32 = counts.split(',').next().unwrap_or("").parse().unwrap_or(0);
         let all = format!("{name}: exit {code}\n{stdout}\n{stderr}");
         assert_eq!(code, 0, "{all}");
-        assert!(lines.first().is_some_and(|line| line.starts_with("refused: ")), "{all}");
+        assert_eq!(lines.first(), Some(&"refused: address not available"), "{all}");
         assert!(connected > 0 && connected <= ends[1] - ends[0] + 1, "{all}");
-        assert!(lines.iter().any(|line| line.starts_with("async: refused: ")), "{all}");
+        assert!(lines.contains(&"async: refused: address not available"), "{all}");
         assert_eq!(lines.last(), Some(&"connected again: ping"), "{all}");
     }
 }

@@ -391,7 +391,7 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `InvalidText(long position)` | A byte that is not UTF-8, at that place |
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
-| `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
+| `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `AddressNotAvailable`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
 
 Printed, an `IoError` is a sentence in lower case, as Go's errors are: `not found`, `permission denied`,
 `invalid text at byte 812`, `system error 5`, so `printError($"{path}: {cause}")` reads as a tool's message.

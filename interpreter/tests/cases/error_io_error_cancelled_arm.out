@@ -1,4 +1,4 @@
-error: this `match` does not handle `Cancelled`, `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong`, `AlreadyExists`, `NotDirectory`, `DirectoryNotEmpty`, `InvalidInput`, `MessageTooLong`, `NotSeekable`, `TooLong`
+error: this `match` does not handle `Cancelled`, `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong`, `AlreadyExists`, `NotDirectory`, `DirectoryNotEmpty`, `InvalidInput`, `MessageTooLong`, `NotSeekable`, `TooLong`, `AddressNotAvailable`
   every variant of `IoError` needs an arm
   --> error_io_error_cancelled_arm.sg:2:11
  2 |     match cause {

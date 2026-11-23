@@ -3,6 +3,7 @@ no port: host not found
 port too big: host not found
 a name: host not found
 v6 without brackets: host not found
+not ours: address not available
 no port: host not found
 no host: host not found
 brackets left open: host not found

@@ -396,8 +396,8 @@ no more memory idle. Its quick level runs in `cargo test` and, from this slice, 
 integration on Linux. It found SG's store holding all a client asked for that did not read (20 such clients, 3
 GB, as in the C version), now 64 KB of answers at a time, and a limit on a request that did not cover the
 sending of its answers; the servers can be stopped with SIGTERM and a grace. On a machine given 100 local
-ports, an SG client's connections past them give an `IoError` and the program goes on, a test run alone by the
-same job. In a short try of the heavy level
+ports, an SG client's connections past them give `IoError.AddressNotAvailable`, a variant new in this slice
+(1764), and the program goes on, a test run alone by the same job. In a short try of the heavy level
 SG's servers stood everywhere, C's spun with their descriptors taken, and `tokio`'s grew round by round after
 resets and clients that do not read ([What the servers stand](../../benchmarks/robustness.md)).
 

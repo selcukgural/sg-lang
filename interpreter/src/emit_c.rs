@@ -9993,7 +9993,8 @@ const IO_RUNTIME: &str = r#"
    of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty; 15 InvalidInput, which only
    the language's own module gives; 16 MessageTooLong, a datagram too long to send whole or for the
    buffer it was received into; 17 NotSeekable, `seek` on a stream that is not a file opened to
-   seek; 18 TooLong, `fill` on a reader whose block holds its limit already. The runtime gives
+   seek; 18 TooLong, `fill` on a reader whose block holds its limit already; 19 AddressNotAvailable,
+   an address not of the machine or no local port left. The runtime gives
    these itself as codes of its own, as it gives a place before the start of a file to `seek` as
    `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
@@ -10023,6 +10024,7 @@ static int sg_io_kind(int code) {
     case WSAECONNREFUSED: return 7;
     case WSAECONNRESET: case WSAECONNABORTED: case WSAENOTCONN: case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: return 8;
     case WSAEADDRINUSE: return 9;
+    case WSAEADDRNOTAVAIL: return 19;
     case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return 12;
     case ERROR_DIRECTORY: return 13;
     case ERROR_DIR_NOT_EMPTY: return 14;
@@ -10284,6 +10286,7 @@ static int sg_io_kind(int code) {
     case EMSGSIZE: return 16;
     case ESPIPE: return 17;
     case EADDRINUSE: return 9;
+    case EADDRNOTAVAIL: return 19;
     case ENOENT: return 0;
     case EEXIST: return 12;
     case ENOTDIR: return 13;

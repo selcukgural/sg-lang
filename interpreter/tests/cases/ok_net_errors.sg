@@ -1,5 +1,6 @@
 // The errors of the network: an address that is taken, one that is not `host:port`, a host
-// that is not a number where nothing is looked up, and a port where nobody listens: port 1,
+// that is not a number where nothing is looked up, an address that is not the machine's
+// (192.0.2.1, kept for documentation, is no machine's), and a port where nobody listens: port 1,
 // which no test can take (a port let go here was once taken at once by another test of the
 // network running beside this one, and answered).
 void tell(read string what, Result<TcpStream, IoError> result) {
@@ -39,6 +40,7 @@ Result<void, IoError> main() {
     told("port too big", TcpListener.bind("127.0.0.1:65536"))
     told("a name", TcpListener.bind("example.com:80"))
     told("v6 without brackets", TcpListener.bind("::1:80"))
+    told("not ours", TcpListener.bind("192.0.2.1:80"))
     tell("no port", TcpStream.connect("localhost"))
     tell("no host", TcpStream.connect(":80"))
     tell("brackets left open", TcpStream.connect("[::1:80"))

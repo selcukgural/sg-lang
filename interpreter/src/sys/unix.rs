@@ -365,10 +365,12 @@ pub(crate) const MESSAGE_TOO_LONG: i32 = if cfg!(target_os = "linux") { 90 } els
 /// (`sg_io_kind`): its number in the enum, and 5, `Other`, for a code with no variant of its own.
 pub(crate) fn io_kind(code: i32) -> usize {
     const QUOTA: i32 = if cfg!(target_os = "linux") { 122 } else { 69 };
-    // ECONNREFUSED; ECONNRESET, ECONNABORTED, EPIPE; EADDRINUSE: their numbers differ.
+    // ECONNREFUSED; ECONNRESET, ECONNABORTED, EPIPE; EADDRINUSE, EADDRNOTAVAIL: their numbers differ.
     const REFUSED: i32 = if cfg!(target_os = "linux") { 111 } else { 61 };
     const RESET: [i32; 2] = if cfg!(target_os = "linux") { [104, 103] } else { [54, 53] };
     const IN_USE: i32 = if cfg!(target_os = "linux") { 98 } else { 48 };
+    // EADDRNOTAVAIL: an address not of the machine, or no local port left.
+    const NOT_AVAILABLE: i32 = if cfg!(target_os = "linux") { 99 } else { 49 };
     const NOT_EMPTY: i32 = if cfg!(target_os = "linux") { 39 } else { 66 };
     // ENOTCONN: the other side of a connection has broken it off.
     const NOT_CONNECTED: i32 = if cfg!(target_os = "linux") { 107 } else { 57 };
@@ -379,6 +381,7 @@ pub(crate) fn io_kind(code: i32) -> usize {
         // ESPIPE: a pipe cannot seek.
         29 => 17,
         _ if code == IN_USE => 9,
+        _ if code == NOT_AVAILABLE => 19,
         _ if code == NOT_EMPTY => 14,
         // ENOENT
         2 => 0,

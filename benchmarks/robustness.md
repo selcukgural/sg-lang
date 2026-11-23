@@ -120,7 +120,7 @@ permission to watch the packets it was left here.
 
 The other side of the stand (choice 1751 i): an SG client on a machine given 100 local ports connects 300
 times to a server of its own and keeps every connection. Past the ports, `TcpStream.connect` and
-`connectAsync` give an `IoError` (`system error 99`, `EADDRNOTAVAIL`) and the program goes on; once its
+`connectAsync` give `IoError.AddressNotAvailable` (choice 1764; `EADDRNOTAVAIL`) and the program goes on; once its
 connections are let go, a new one connects and sends. On Linux 99 connections were made interpreted and 98
 compiled (the listener holds one of the 100 ports). It is the test `a_client_out_of_local_ports` of
 [`tests/cli.rs`](../interpreter/tests/cli.rs), which runs only on a machine so narrowed, since it would starve

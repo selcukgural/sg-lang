@@ -578,7 +578,7 @@ const IO_ERROR: &str = "IoError";
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
 /// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable,
-/// TooLong }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// TooLong, AddressNotAvailable }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -593,12 +593,13 @@ const IO_ERROR: &str = "IoError";
 /// send as one message, or one longer than the buffer it was received into. `NotSeekable`: `seek`
 /// on a stream that is not a file opened by `File` (a pipe, the input of the program), or on a
 /// writer that writes at the end (`File.openAppend`). `TooLong`: `fill` on a reader whose block
-/// holds its limit already, which `consume` makes room in (1736).
+/// holds its limit already, which `consume` makes room in (1736). `AddressNotAvailable`: the
+/// address is not one of the machine's, or no local port is left to connect from (1764).
 /// What an `IoError` is written as (1537), by variant: a short sentence in lower case, as Go's
 /// errors are, followed by the number a variant carries (`invalid text at byte 812`,
 /// `system error 5`); `Cancelled` writes no field. The interpreter and compiled code write it
 /// from this table.
-pub const IO_ERROR_TEXTS: [&str; 19] = [
+pub const IO_ERROR_TEXTS: [&str; 20] = [
     "not found",
     "permission denied",
     "is a folder",
@@ -618,6 +619,7 @@ pub const IO_ERROR_TEXTS: [&str; 19] = [
     "message too long",
     "cannot seek",
     "too long",
+    "address not available",
 ];
 
 fn io_error() -> EnumDecl {
@@ -648,6 +650,7 @@ fn io_error() -> EnumDecl {
         variant("MessageTooLong", Vec::new()),
         variant("NotSeekable", Vec::new()),
         variant("TooLong", Vec::new()),
+        variant("AddressNotAvailable", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }

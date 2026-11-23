@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`List<read T>` for `Vec<&T>`, 1732-1733; `buffered`, `consume` and `fill` for `fill_buf`, `sendPieces` for `write_vectored`, 1734-1738).
+Last brought up to date: 23 November 2026, the hundred-and-sixtieth slice (`IoError.AddressNotAvailable` for `ErrorKind::AddrNotAvailable`, 1764).
 
 ## Functions and variables
 
@@ -402,6 +402,7 @@ Last brought up to date: 23 November 2026, the hundred-and-fifty-ninth slice (`L
 | `file.seek(SeekFrom::Start(n))?` | `try reader.seek(SeekFrom.Start(n))`, `try writer.seek(...)` | built | `End(n)` and `Current(n)` too; gives the new place as a `long`. `Start` holds a `long`, and a place before the start is `InvalidInput`. A reader moves inside its block without the system for `Start` too, where `BufReader` does only for `seek_relative`; a writer writes what it holds first, as `BufWriter` does |
 | `file.stream_position()?` | `try reader.seek(SeekFrom.Current(0))` | built | |
 | `eprintln!("{path}: {e}")` of an `io::Error` | `printError($"{path}: {cause}")` | built | `not found`, `invalid text at byte 812`: a sentence in lower case, as Go's; Rust writes the system's own words and the code (`No such file or directory (os error 2)`) |
+| `ErrorKind::AddrNotAvailable` | `IoError.AddressNotAvailable` | built | `address not available`: an address not of the machine, or no local port left to connect from |
 | `ErrorKind::NotSeekable` | `IoError.NotSeekable` | built | Also a writer of `openAppend`; `Stdin.seek` and `seek` on the reader of a connection are compile errors, where `Stdin` has no `Seek` in Rust |
 | `tokio::io::AsyncSeekExt::seek` on a `BufWriter` | `try await writer.seekAsync(from)` | built | A reader seeks as it is in an async function, since it neither reads nor writes |
 | `writeln!(w, "{}", x)?` | `try w.writeLine(x)` | built | |
