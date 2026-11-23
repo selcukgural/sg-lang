@@ -64,6 +64,7 @@ const config = {
           { type: 'docSidebar', sidebarId: 'benchmarks', position: 'left', label: 'Benchmarks' },
           { to: '/docs/status', label: 'Status', position: 'left' },
           { type: 'docSidebar', sidebarId: 'about', position: 'left', label: 'About' },
+          { to: '/docs/about/community', label: 'Community', position: 'right' },
           { href: repo, label: 'GitHub', position: 'right' },
         ],
       },
@@ -71,8 +72,8 @@ const config = {
         style: 'dark',
         links: [
           { title: 'Learn', items: [{ label: 'Install', to: '/docs/learn/install' }, { label: 'A tour of SG', to: '/docs/learn/tour' }, { label: 'SG for Rust programmers', to: '/docs/learn/for-rust' }] },
-          { title: 'About', items: [{ label: 'Why SG', to: '/docs/about/why' }, { label: 'How it got here', to: '/docs/about/history' }, { label: 'The repository', to: '/docs/about/repository' }] },
-          { title: 'Project', items: [{ label: 'Status', to: '/docs/status' }, { label: 'Benchmarks', to: '/docs/benchmarks' }, { label: 'Source', href: repo }, { label: 'Security', href: `${repo}/blob/main/SECURITY.md` }] },
+          { title: 'About', items: [{ label: 'Why SG', to: '/docs/about/why' }, { label: 'How it got here', to: '/docs/about/history' }, { label: 'The repository', to: '/docs/about/repository' }, { label: 'Community', to: '/docs/about/community' }] },
+          { title: 'Project', items: [{ label: 'Status', to: '/docs/status' }, { label: 'Benchmarks', to: '/docs/benchmarks' }, { label: 'Source', href: repo }, { label: 'Mailing list', href: 'https://groups.google.com/g/sg-lang' }, { label: 'Security', href: `${repo}/blob/main/SECURITY.md` }] },
         ],
         copyright: 'SG is free software under the MIT or Apache 2.0 license. Pasha, the cat of SG.',
       },

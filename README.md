@@ -12,7 +12,8 @@
   <a href="https://sg-lang.org/docs/learn/tour">Tour</a> ·
   <a href="https://sg-lang.org/docs/learn/book/getting-started">Book</a> ·
   <a href="https://sg-lang.org/docs/learn/install">Install</a> ·
-  <a href="https://sg-lang.org/docs/status">Status</a>
+  <a href="https://sg-lang.org/docs/status">Status</a> ·
+  <a href="https://sg-lang.org/docs/about/community">Community</a>
 </p>
 
 SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
@@ -106,6 +107,7 @@ The programs in [interpreter/examples](interpreter/examples) show the language a
 | Build it, run it, change it | [The interpreter](interpreter/README.md): [the C back end](interpreter/docs/c-back-end.md) · [how it is built](interpreter/docs/architecture.md) · [how it is tested](interpreter/docs/testing.md) |
 | Find your way in the repository | [The repository](https://sg-lang.org/docs/about/repository): every folder, the design documents and the background essays |
 | Read the background | [Essays on C, Rust, Zig and Go](topics), the [reading list](sources/reading-list.md), and [how it got here](https://sg-lang.org/docs/about/history) |
+| Ask a question, share an idea | The [mailing list](https://groups.google.com/g/sg-lang) (join by an empty message to [sg-lang+subscribe@googlegroups.com](mailto:sg-lang+subscribe@googlegroups.com)); bugs go to [the issues](https://github.com/selcukgural/sg-lang/issues), security problems to [the security policy](SECURITY.md). [Community](https://sg-lang.org/docs/about/community) says where each thing goes |
 
 ## License
 
