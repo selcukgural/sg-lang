@@ -489,7 +489,31 @@ the ticker stopped: Cancelled
 
 A token may also come last on a channel's `send` and `receive`, which then give a `Result` whose error is
 `Cancelled`, and on the async calls of files, the network and other programs, where a cancel ends the wait. `source.cancelAfter(ms)` sets the time a source cancels itself again, from now: set before each read of a
-connection, it closes one that stays silent too long.
+connection, it closes one that stays silent too long. `CancellationSource.linked(read token)` makes a source that is
+cancelled when the token's source is, and by itself: a function given its caller's token sets a limit of its
+own beside it.
+
+```sg
+async Result<void, Cancelled> waitWithin(read CancellationToken token, int limit) {
+    var mine = CancellationSource.linked(read token)
+    mine.cancelAfter(limit)
+    try await Task.delay(10000, read mine.token())
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var caller = CancellationSource()
+    match await waitWithin(read caller.token(), 10) {
+        Ok => print("waited")
+        Error(_) => print($"its own limit ended the wait; the caller's source is cancelled: {caller.isCancelled()}")
+    }
+    return Ok()
+}
+```
+
+```text
+its own limit ended the wait; the caller's source is cancelled: false
+```
 
 ## Atomic values
 

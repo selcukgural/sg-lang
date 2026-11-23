@@ -1,0 +1,6 @@
+// A slice that may be missing is only read (1774): a `ref` to one is not in the language.
+void clear(ref byte[]? bytes) {
+}
+
+void main() {
+}

@@ -1,0 +1,113 @@
+// A `read T[]?`: a slice that may be missing (1774). A function gives one back (`null`, or a
+// window onto what it was lent) and takes one (`null`, or a slice); `is null`, `is not null`
+// (which narrows it to the slice) and `??` look into it, and a list of slices gives one from `get` and `removeLast`.
+struct Head {
+    List<byte> block
+    // Where each header's name and value begin and end in the block: four marks a header.
+    List<nint> marks
+
+    read byte[]? header(read this, read string name) from this {
+        var i = 0
+        while i + 3 < this.marks.length() {
+            if this.block[this.marks[i]..this.marks[i + 1]] == name.asBytes() {
+                return this.block[this.marks[i + 2]..this.marks[i + 3]]
+            }
+            i += 4
+        }
+        return null
+    }
+
+    // What another function gave is handed on.
+    read byte[]? host(read this) from this {
+        return this.header("host")
+    }
+}
+
+// A struct that carries one, as it carries a `read string?`.
+struct Look<from source> {
+    read byte[]? value
+}
+
+nint lookLength(read Look look) {
+    return lengthOr(look.value)
+}
+
+read int[]? tail(read int[] items, nint from) {
+    if from > items.length() {
+        return null
+    }
+    return items[from..]
+}
+
+nint lengthOr(read byte[]? bytes) {
+    if bytes is not null {
+        return bytes.length()
+    }
+    return -1
+}
+
+int sum(read int[]? items) {
+    if items is null {
+        return 0
+    }
+    int total = 0
+    for n in items {
+        total += n
+    }
+    return total
+}
+
+void main() {
+    var text = "host: example.com\r\nempty: \r\n"
+    var head = Head { block = List<byte>(), marks = List<nint> { 0, 4, 6, 17, 19, 24, 26, 26 } }
+    head.block.addAll(text.asBytes())
+
+    var host = head.header("host")
+    if host is not null {
+        print(string.fromUtf8(host) ?? "not text")
+    }
+    var empty = head.header("empty")
+    if empty is not null && empty.length() == 0 {
+        print("empty: there, of 0 bytes")
+    }
+    print(head.header("cookie") is null)
+    print(head.header("host") is not null)
+    print(lengthOr(head.host()))
+    print(lengthOr(head.header("cookie")))
+    print(lengthOr(null))
+
+    // A struct holds one.
+    var look = Look { value = head.header("host") }
+    print(lookLength(read look))
+    var nothing = Look { value = null }
+    print(lookLength(read nothing))
+
+    // `??` gives the slice, or another in its place.
+    var none = "none".asBytes()
+    var cookie = head.header("cookie") ?? none
+    print(string.fromUtf8(cookie) ?? "not text")
+
+    // A variable may hold one, and be given another.
+    var found = head.header("cookie")
+    print(found is null)
+    found = head.header("host")
+    print(lengthOr(found))
+
+    var numbers = List<int> { 1, 2, 3, 4 }
+    print(sum(tail(read numbers, 2)))
+    print(sum(tail(read numbers, 9)))
+    print(sum(numbers[1..3]))
+    print(sum(null))
+
+    // A list of windows gives one that may be missing.
+    var words = List<read byte[]>()
+    var line = "one two".asBytes()
+    words.add(line[0..3])
+    words.add(line[4..])
+    print(lengthOr(words.get(1)))
+    print(lengthOr(words.get(5)))
+    var last = words.removeLast()
+    print(lengthOr(last))
+    _ = words.removeLast()
+    print(lengthOr(words.removeLast()))
+}

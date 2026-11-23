@@ -515,6 +515,7 @@ A source cancels; its tokens are looked at by the work, where the work chooses.
 |---|---|
 | `CancellationSource()` | A source |
 | `CancellationSource CancellationSource.after(int ms)` | One that cancels by itself after so many milliseconds |
+| `CancellationSource CancellationSource.linked(read CancellationToken token)` | One cancelled when the token's source is, as well as by itself; cancelling it leaves that source as it is (tokio's `child_token()`) |
 | `CancellationToken token(read this)` | A token of the source |
 | `void cancel(read this)` | Cancels every token of it; again is nothing |
 | `void cancelAfter(read this, int ms)` | Cancels it `ms` from now, in place of any time set before (C#'s `CancelAfter`); 0 cancels now, and a cancelled source stays as it is |

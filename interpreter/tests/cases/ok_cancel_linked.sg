@@ -1,0 +1,87 @@
+// `CancellationSource.linked(read token)` (1775): a source that is cancelled when the token's
+// source is, as well as by its own `cancel` and `cancelAfter`; cancelling it leaves the token's
+// source as it is. Linked to `CancellationToken.None` it is a plain source, and linked to a
+// cancelled one it is cancelled at once. A linked source may outlive its parent, or go first.
+
+// A time limit of its own beside the caller's token: the wait ends at the sooner of the two.
+async Result<void, Cancelled> waitWithin(CancellationToken token, int limit) {
+    var mine = CancellationSource.linked(read token)
+    mine.cancelAfter(limit)
+    try await Task.delay(10000, read mine.token())
+    return Ok()
+}
+
+// A linked source that only the clock holds when the function ends: the clock lets it go.
+void leaveToTheClock(read CancellationToken token) {
+    var mine = CancellationSource.linked(read token)
+    mine.cancelAfter(5)
+}
+
+async Result<void, IoError> main() {
+    var parent = CancellationSource()
+    var child = CancellationSource.linked(read parent.token())
+    var other = CancellationSource.linked(read parent.token())
+    other.cancel()
+    print($"other cancelled, parent {parent.isCancelled()}, child {child.isCancelled()}")
+    parent.cancel()
+    print($"parent cancelled, child {child.isCancelled()}")
+
+    var plain = CancellationSource.linked(read CancellationToken.None)
+    print($"linked to None: {plain.isCancelled()}")
+    plain.cancel()
+    print($"cancelled by itself: {plain.isCancelled()}")
+
+    var late = CancellationSource.linked(read parent.token())
+    print($"linked to a cancelled source: {late.isCancelled()}")
+
+    // Three generations: the first cancels the last.
+    var first = CancellationSource()
+    var second = CancellationSource.linked(read first.token())
+    var third = CancellationSource.linked(read second.token())
+    first.cancel()
+    print($"chain: {second.isCancelled()} {third.isCancelled()}")
+
+    // Children let go of before the parent is cancelled leave its list.
+    var keeper = CancellationSource()
+    for _ in 0..100 {
+        var gone = CancellationSource.linked(read keeper.token())
+        if gone.isCancelled() {
+            print("never")
+        }
+    }
+    var kept = CancellationSource.linked(read keeper.token())
+    keeper.cancel()
+    print($"after 100 gone: {kept.isCancelled()}")
+
+    // A child that outlives its parent.
+    var orphan = makeOrphan()
+    print($"orphan: {orphan.isCancelled()}")
+    orphan.cancel()
+    print($"orphan cancelled: {orphan.isCancelled()}")
+
+    // A wait on a linked token ends when the parent is cancelled, or at the child's own time.
+    var caller = CancellationSource()
+    var waiting = waitWithin(caller.token(), 10000)
+    caller.cancel()
+    match await waiting {
+        Ok => print("not cancelled")
+        Error(_) => print("the caller's cancel ended the wait")
+    }
+    var patient = CancellationSource()
+    match await waitWithin(patient.token(), 5) {
+        Ok => print("not cancelled")
+        Error(_) => print($"the limit ended the wait, the caller's source {patient.isCancelled()}")
+    }
+
+    var held = CancellationSource()
+    leaveToTheClock(read held.token())
+    await Task.delay(50)
+    print($"the clock let it go, the source {held.isCancelled()}")
+    held.cancel()
+    return Ok()
+}
+
+CancellationSource makeOrphan() {
+    var parent = CancellationSource()
+    return CancellationSource.linked(read parent.token())
+}

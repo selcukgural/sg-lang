@@ -1,0 +1,5 @@
+error: a `ref byte[]?` is not in the language: a slice that may be missing is only read
+  --> error_slice_option_ref.sg:2:12
+ 2 | void clear(ref byte[]? bytes) {
+   |            ^^^^^^^^^^^
+  hint: `read byte[]?` to look at it, or `ref byte[]` once it is there

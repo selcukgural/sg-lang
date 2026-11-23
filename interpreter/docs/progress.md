@@ -400,10 +400,14 @@ ports, an SG client's connections past them give `IoError.AddressNotAvailable`, 
 (1764), and the program goes on, a test run alone by the same job. In a short try of the heavy level
 SG's servers stood everywhere, C's spun with their descriptors taken, and `tokio`'s grew round by round after
 resets and clients that do not read ([What the servers stand](../../benchmarks/robustness.md)).
+The hundred-and-sixty-first gives the library two things the language lacked, found by a first try of HTTP: a
+slice that may be missing, `read T[]?`, which a lookup that lends gives back (a window of length -1 in C, as a
+`read string?`), and `CancellationSource.linked(read token)`, a source cancelled with the token's source and
+by itself, so that a library sets a time limit of its own beside its caller's token (1774, 1775).
 
 ## Next
 
-Next come the heavy level of the stand, run at night, then HTTP/1.1; and a slice for the command line,
+Next come HTTP/1.1 (the slice 162, choices 1765 to 1773) and the heavy level of the stand, run at night; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

@@ -1,0 +1,5 @@
+error: `byte[]?` is not a type on its own: a slice only looks at items that something else owns
+  --> error_slice_option_owned.sg:4:5
+ 4 |     byte[]? value
+   |     ^^^^^^^
+  hint: `read byte[]?` for a window that may be missing, `List<byte>?` to own the items

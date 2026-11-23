@@ -30,7 +30,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [20 November 2026](2026-11-20.md) | 130–144 | Regular expressions, compression, zip, real programs, packages, and the fixes of the second review of safety. |
 | [21 November 2026](2026-11-21.md) | 145–152 | A const without calls, `copyFrom`, the normal forms of Unicode, default values of parameters, and `std` measured against Rust and Zig. |
 | [22 November 2026](2026-11-22.md) | 153–158 | Time, random numbers and the log measured against Rust and Zig; the network; an exit with an error lets its tasks go; servers measured against Rust, Zig and C; a loop of the network on each thread; a group of tasks, limits and a graceful end for a server. |
-| [23 November 2026](2026-11-23.md) | 159, 160 | A list of borrows, a reader that lends slices and a send of several pieces for a server; what the servers stand, and where they break. |
+| [23 November 2026](2026-11-23.md) | 159, 160, 161 | A list of borrows, a reader that lends slices and a send of several pieces for a server; what the servers stand, and where they break; a slice that may be missing and a linked source. |
 
 ## Every slice
 
@@ -243,4 +243,5 @@ while the slice was built and how it was tested. This folder is that record, one
 | [157](2026-11-22.md#slice-157) | The scheduler of the server lane: a loop of the network on each thread | 1708–1714 |
 | [158](2026-11-22.md#slice-158) | What a server needs of the library, first: a group of tasks, limits and a graceful end | 1715–1730 |
 | [159](2026-11-23.md#slice-159) | What a server needs of the library, second: a list of borrows, a reader that lends slices, `writev` | 1731–1749 |
-| [160](2026-11-23.md#slice-160) | What the servers stand, and where they break | 1750–1763 |
+| [160](2026-11-23.md#slice-160) | What the servers stand, and where they break | 1750–1764 |
+| [161](2026-11-23.md#slice-161) | A slice that may be missing, and a linked source | 1774–1775 |

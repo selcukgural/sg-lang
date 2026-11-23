@@ -2780,11 +2780,9 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 resolved = held(word, resolved, ty, names)?;
             }
         }
-        if matches!(resolved, Ty::Slice(_)) {
-            return Err(match suffix {
-                Suffix::Nullable => Diag::error(ty.span, "a slice that may be missing is not in the interpreter yet"),
-                _ => bare_slice(ty.span, &resolved),
-            });
+        // A slice that may be missing (1774) is lent: `read T[]?`, checked where the mode is.
+        if matches!(resolved, Ty::Slice(_)) && *suffix != Suffix::Nullable {
+            return Err(bare_slice(ty.span, &resolved));
         }
         resolved = match suffix {
             Suffix::Array(0) => return Err(Diag::error(ty.span, "an array has at least one item")),
@@ -2824,6 +2822,18 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     }
     if ty.mode.is_none() && matches!(resolved, Ty::Slice(_)) {
         return Err(bare_slice(ty.span, &resolved));
+    }
+    // A slice that may be missing is only lent, and only to be read (1774).
+    if let Ty::Nullable(slice) = &resolved {
+        if matches!(**slice, Ty::Slice(_)) && ty.mode != Some(Mode::Read) {
+            let Ty::Slice(item) = &**slice else { unreachable!() };
+            return Err(match ty.mode {
+                Some(Mode::Ref) => Diag::error(ty.span, format!("a `ref {slice}?` is not in the language: a slice that may be missing is only read"))
+                    .hint(format!("`read {slice}?` to look at it, or `ref {slice}` once it is there")),
+                _ => Diag::error(ty.span, format!("`{slice}?` is not a type on its own: a slice only looks at items that something else owns"))
+                    .hint(format!("`read {slice}?` for a window that may be missing, `List<{item}>?` to own the items")),
+            });
+        }
     }
     // A `List<Task<R>>` is kept where a task is: its tasks are waited for with
     // `Task.whenAll` and `Task.whenAny`.
@@ -11481,17 +11491,26 @@ impl<'a> Checker<'a> {
         Ok(Ty::Void)
     }
 
-    /// `CancellationSource.after(ms)`: a function of the source type. The token type has only
-    /// its constant, `CancellationToken.None`.
+    /// `CancellationSource.after(ms)` and `CancellationSource.linked(read token)` (1775):
+    /// functions of the source type. The token type has only its constant, `CancellationToken.None`.
     fn cancel_static(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
         if owner == "CancellationToken" {
             return Err(Diag::error(name_span, format!("`CancellationToken` has no function `{name}`"))
                 .hint("a token comes from its source: `source.token()`; `CancellationToken.None` is never cancelled"));
         }
+        if name == "linked" {
+            if args.len() != 1 {
+                return Err(Diag::error(span, format!("`CancellationSource.linked` takes 1 argument(s), {} given", args.len())));
+            }
+            self.token_arg(&mut args[0])?;
+            *callee = Callee::Cancel(CancelCall::Linked);
+            return Ok(Ty::Source);
+        }
         if name != "after" {
-            let diag = Diag::error(name_span, format!("`CancellationSource` has the function `after`, not `{name}`"));
+            let diag = Diag::error(name_span, format!("`CancellationSource` has the functions `after` and `linked`, not `{name}`"));
             return Err(match name {
                 "create" | "new" => diag.hint("`CancellationSource()` makes a source"),
+                "createLinkedTokenSource" | "child" | "childOf" | "withParent" => diag.hint("`CancellationSource.linked(read token)` is cancelled when the token's source is"),
                 _ => diag.hint("`CancellationSource.after(ms)` cancels itself after that many milliseconds"),
             });
         }
@@ -11550,7 +11569,7 @@ impl<'a> Checker<'a> {
             CancelCall::Token | CancelCall::Clone => Ty::Token,
             CancelCall::IsCancelled => Ty::Bool,
             CancelCall::Check => Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))),
-            CancelCall::New | CancelCall::After => unreachable!("functions of the type, not methods"),
+            CancelCall::New | CancelCall::After | CancelCall::Linked => unreachable!("functions of the type, not methods"),
         })
     }
 
@@ -13957,16 +13976,7 @@ impl<'a> Checker<'a> {
                 self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(item.clone())))], span)?;
                 Ok(Ty::Void)
             }
-            // `null` where `xs[i]` would panic.
-            // A list of windows (1732) has no `read byte[]?` to give: a slice that may be
-            // missing is not in the language.
-            (Ty::List(item), "get" | "removeLast") if matches!(item.strip_borrow(), Ty::Slice(_)) => {
-                Err(Diag::error(name_span, format!("`{name}` on a `{target}` is not in the language yet: it would give a slice that may be missing"))
-                    .hint(match name {
-                        "get" => "test the index against `length()`, then take the item with `xs[i]`",
-                        _ => "take the last item with `xs[xs.length() - 1]`, then make the list shorter",
-                    }))
-            }
+            // `null` where `xs[i]` would panic. A list of windows (1732) gives a `read T[]?` (1774).
             // On a list of borrows (1732) both give the borrow itself, or `null`: `read T?`.
             (Ty::List(item), "get") => {
                 arity(1)?;

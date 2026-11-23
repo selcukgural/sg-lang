@@ -1,0 +1,8 @@
+// A slice only looks at items that something else owns, so it is not kept on its own, missing
+// or not (1774).
+struct Head {
+    byte[]? value
+}
+
+void main() {
+}

@@ -739,6 +739,9 @@ pub enum CancelCall {
     /// `CancellationSource.after(ms)`: a source that cancels itself when that many
     /// milliseconds have gone by.
     After,
+    /// `CancellationSource.linked(read token)`: a source that is cancelled when the token's
+    /// source is, as well as by itself; cancelling it leaves the token's source as it is (1775).
+    Linked,
     /// `source.cancel()`
     Cancel,
     /// `source.cancelAfter(ms)`: the source cancels itself when that many milliseconds have

@@ -120,6 +120,9 @@ pub struct Cancel {
     /// The key of its own timer in `State::timers`, from `CancellationSource.after(ms)` or
     /// `source.cancelAfter(ms)`: a new time takes the place of the one before.
     clock: Option<(u64, u64)>,
+    /// The sources linked to it (`CancellationSource.linked`, 1775), cancelled with it; those
+    /// that are gone are let go of now and then.
+    linked: Vec<std::rc::Weak<RefCell<Cancel>>>,
 }
 
 /// A `TaskGroup` (1716 to 1719): its tasks, of which those that have ended are let go of the next
@@ -554,6 +557,11 @@ impl Sched {
             source.cancelled = true;
             (std::mem::take(&mut source.delays), std::mem::take(&mut source.waits))
         };
+        // The sources linked to it go first, as compiled code ends them: before its own waits.
+        let linked = std::mem::take(&mut source.borrow_mut().linked);
+        for child in linked.iter().filter_map(std::rc::Weak::upgrade) {
+            Sched::cancel(state, &child);
+        }
         // A wait for a socket or a thread ends at once; what the thread does goes on, and
         // what it gives is not lost where it can be kept (the input).
         for fiber in waits {
@@ -5323,6 +5331,22 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
                     self.source_after(ms, expr.span)
                 }
+                Callee::Cancel(CancelCall::Linked) => {
+                    let parent = self.token(&args[0], frame)?;
+                    let source = Rc::new(RefCell::new(Cancel::default()));
+                    if let Some(parent) = parent {
+                        let mut parent = parent.borrow_mut();
+                        if parent.cancelled {
+                            source.borrow_mut().cancelled = true;
+                        } else {
+                            if parent.linked.len() >= 64 && parent.linked.len().is_power_of_two() {
+                                parent.linked.retain(|child| child.strong_count() > 0);
+                            }
+                            parent.linked.push(Rc::downgrade(&source));
+                        }
+                    }
+                    Ok(Value::Source(source))
+                }
                 Callee::Cancel(CancelCall::CancelAfter) => {
                     let Value::Source(source) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls it on a source") };
                     let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
@@ -5350,7 +5374,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         CancelCall::IsCancelled => Value::Bool(is_cancelled),
                         CancelCall::Check if is_cancelled => failed(cancelled()),
                         CancelCall::Check => ok(Value::Void),
-                        CancelCall::New | CancelCall::After | CancelCall::CancelAfter => unreachable!("handled above"),
+                        CancelCall::New | CancelCall::After | CancelCall::Linked | CancelCall::CancelAfter => unreachable!("handled above"),
                     })
                 }
                 // Input and output in the interpreter is done when it is called, so the task

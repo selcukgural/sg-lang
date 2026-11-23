@@ -138,6 +138,7 @@ has a single meaning. `shared T?` says the pointer may be absent:
 void clear(ref Node*? list)                      // Rust: &mut Option<Box<Node>>, the caller's variable may become null
 (ref Node)? find(ref Tree t, int key)            // Rust: Option<&mut Node>, the borrow may be absent
 read Node? find(read Tree t, int key)            // Rust: Option<&Node>
+read byte[]? header(read this, read string name) from this   // Rust: Option<&[u8]>; only read (1774)
 shared checked DNode? next                       // Rust: Option<Rc<RefCell<DNode>>>
 ```
 

@@ -1,0 +1,5 @@
+error: `CancellationSource` has the functions `after` and `linked`, not `createLinkedTokenSource`
+  --> error_cancel_linked_name.sg:4:36
+ 4 |     var child = CancellationSource.createLinkedTokenSource(read parent.token())
+   |                                    ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `CancellationSource.linked(read token)` is cancelled when the token's source is

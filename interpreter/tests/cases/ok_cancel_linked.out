@@ -1,0 +1,12 @@
+other cancelled, parent false, child false
+parent cancelled, child true
+linked to None: false
+cancelled by itself: true
+linked to a cancelled source: true
+chain: true true
+after 100 gone: true
+orphan: false
+orphan cancelled: true
+the caller's cancel ended the wait
+the limit ended the wait, the caller's source false
+the clock let it go, the source false

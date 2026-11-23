@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-sixtieth slice (`IoError.AddressNotAvailable` for `ErrorKind::AddrNotAvailable`, 1764).
+Last brought up to date: 23 November 2026, the hundred-and-sixty-first slice (`read byte[]?` for `Option<&[u8]>`, 1774; `CancellationSource.linked` for `child_token()`, 1775).
 
 ## Functions and variables
 
@@ -205,6 +205,7 @@ Last brought up to date: 23 November 2026, the hundred-and-sixtieth slice (`IoEr
 | `if let Some(c) = x.circle()` | `if x is Circle(r)` | built | The names reach along `&&` |
 | `let Ok(v) = r else { return };` | `if r is not Ok(v) { return }`, then `v` | built | |
 | `Option<T>` | `T?` | built | `T` itself is never `null` |
+| `Option<&[u8]>`, `fn header(&self, name: &str) -> Option<&[u8]>` | `read byte[]?`, `read byte[]? header(read this, read string name) from this` | built | A window, of length -1 when it is missing; only `read` (1774) |
 | `None`, `Some(x)` | `null`, `x` | built | |
 | `if let Some(v) = x` | `if x is not null` | built | `x` is a `T` inside |
 | `x.unwrap_or(d)` | `x ?? d` | built | |
@@ -356,7 +357,8 @@ Last brought up to date: 23 November 2026, the hundred-and-sixtieth slice (`IoEr
 | `Box::pin(f(n - 1)).await` | `var t = f(n - 1)`, then `await t` | built | An async function that awaits itself is an error |
 | `async fn` in an `impl` | `async int total(read this)` | built | A method that lends `this` is awaited where it is written; one that takes `this` by value may start as a task. `create`, `format`, `equals`, `hash` and `compare` are not async |
 | `CancellationToken::new()` (tokio-util) | `CancellationSource()` | built | The source cancels, its tokens look; `CancellationSource.after(ms)` cancels itself |
-| `token.child_token()`, `token.clone()` | `source.token()`, `token.clone()` | built | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
+| `token.clone()` | `source.token()`, `token.clone()` | built | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
+| `token.child_token()`, then a time limit of its own | `CancellationSource.linked(read token)`, then `cancelAfter(ms)` | built | Cancelled with the token's source and by itself; one parent (1775) |
 | `token.cancel()` | `source.cancel()` | built | Through a `read` borrow, as `cancel(&self)` |
 | `tokio::time::timeout(d, read)` around each read, `sleep.as_mut().reset(deadline)` | `source.cancelAfter(ms)` before the read, `receiveAsync(ref buffer, read token)` | built | One source for a connection, its time set again before each read; a later time is one atomic write. The read gives `IoError.Cancelled` when it runs out |
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |

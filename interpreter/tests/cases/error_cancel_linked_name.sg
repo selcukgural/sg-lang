@@ -1,0 +1,5 @@
+// C#'s name for a linked source points to `linked` (1775).
+void main() {
+    var parent = CancellationSource()
+    var child = CancellationSource.createLinkedTokenSource(read parent.token())
+}

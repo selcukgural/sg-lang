@@ -191,8 +191,8 @@ It prints:
 
 In C the items are pointers, and a `read string` or a window is a start and a length, so a `List<read byte[]>`
 is laid out as the array of pieces the system's `writev` takes, and `conn.sendPieces(read pieces)` gives it to
-the system as it is. There is no `List<ref T>`, and a list of windows
-has no `get` or `removeLast`, which would give a slice that may be missing.
+the system as it is. There is no `List<ref T>`. A list of windows gives a slice that may be missing,
+`read T[]?`, from `get` and `removeLast`.
 
 ## `T[N]`
 

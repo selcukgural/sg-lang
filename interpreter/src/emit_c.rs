@@ -5307,6 +5307,13 @@ typedef struct sg_cancel {
     sg_delay clock;
     int64_t armed;
     int64_t want;
+    /* A source made by `CancellationSource.linked` (1775): the source of the token it was
+       given, which it holds, and `link`, its place on that source's list, which cancels it with
+       that source. NULL for any other source, which pays nothing for it. */
+    struct sg_cancel* parent;
+    sg_delay link;
+    /* Made linked: its `parent` is read and let go only under the clock's lock. */
+    bool linked;
 } sg_cancel;
 
 static sg_mtx sg_clock_lock = SG_MTX_INIT;
@@ -5609,28 +5616,92 @@ static inline sg_cancel* sg_cancel_more(sg_cancel* c) {
     if (c) __atomic_fetch_add(&c->refs, 1, __ATOMIC_RELAXED);
     return c;
 }
+static void sg_cancel_free(sg_cancel* c, bool held);
 static inline void sg_cancel_less(sg_cancel* c) {
-    if (c && __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) free(c);
+    if (c && __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) sg_cancel_free(c, false);
 }
 static inline void sg_drop_source(sg_cancel** p) { sg_cancel_less(*p); *p = NULL; }
 static inline sg_cancel* sg_move_source(sg_cancel** p) { sg_cancel* c = *p; *p = NULL; return c; }
 #define sg_drop_token sg_drop_source
 #define sg_move_token sg_move_source
 static inline bool sg_cancelled(const sg_cancel* c) { return c && __atomic_load_n(&c->cancelled, __ATOMIC_ACQUIRE); }
-/* The clock's lock is held: every delay that looks at the source ends now, in the order they
-   were started. */
+static void sg_cancel_link_over(sg_delay* d);
+/* The clock's lock is held: a linked source leaves its parent's list, if it is still there, and
+   lets its parent go. */
+static void sg_cancel_unlink(sg_cancel* c) {
+    sg_cancel* parent = c->parent;
+    if (!parent) return;
+    sg_delay* d = &c->link;
+    if (d->token) {
+        if (d->prev) d->prev->next = d->next;
+        else d->token->first = d->next;
+        if (d->next) d->next->prev = d->prev;
+        d->token = NULL;
+    }
+    c->parent = NULL;
+    if (__atomic_sub_fetch(&parent->refs, 1, __ATOMIC_ACQ_REL) == 0) sg_cancel_free(parent, true);
+}
+/* The clock's lock is held: a linked source leaves its parent (1775), which it needs no more;
+   the sources linked to this one are cancelled first, then every delay that looks at it ends,
+   each in the order they were started, as the interpreter does it. */
 static void sg_cancel_held(sg_cancel* c) {
     if (c->cancelled) return;
     __atomic_store_n(&c->cancelled, 1, __ATOMIC_RELEASE);
-    sg_delay* last = c->first;
-    while (last && last->next) last = last->next;
-    while (last) {
-        sg_delay* d = last;
-        last = d->prev;
-        /* A wait for a socket or for a thread is not on the clock. */
-        if (d->at >= 0) sg_heap_remove(d);
-        sg_delay_end(d, SG_CANCELLED);
+    sg_cancel_unlink(c);
+    for (int linked = 1; linked >= 0; linked--) {
+        sg_delay* last = c->first;
+        while (last && last->next) last = last->next;
+        while (last) {
+            sg_delay* d = last;
+            last = d->prev;
+            if ((d->over == sg_cancel_link_over) != linked) continue;
+            /* A wait for a socket or for a thread is not on the clock. */
+            if (d->at >= 0) sg_heap_remove(d);
+            sg_delay_end(d, SG_CANCELLED);
+        }
     }
+}
+/* The clock's lock is held: the source of `link` is cancelled with the source whose list it was
+   on, and has left that list. */
+static void sg_cancel_link_over(sg_delay* d) {
+    sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, link));
+    d->token = NULL;
+    sg_cancel_held(c);
+}
+/* `CancellationSource.linked(read token)` (1775): a source on the list of the token's source,
+   cancelled with it, or at once when it is already; for `CancellationToken.None` a plain one. */
+static sg_cancel* sg_cancel_linked(sg_cancel* parent) {
+    sg_cancel* c = sg_cancel_new();
+    if (!parent) return c;
+    if (sg_cancelled(parent)) {
+        c->cancelled = 1;
+        return c;
+    }
+    sg_mtx_lock(&sg_clock_lock);
+    if (parent->cancelled) {
+        c->cancelled = 1;
+    } else {
+        c->linked = true;
+        c->parent = sg_cancel_more(parent);
+        c->link.at = -1;
+        c->link.over = sg_cancel_link_over;
+        c->link.token = parent;
+        c->link.next = parent->first;
+        if (parent->first) parent->first->prev = &c->link;
+        parent->first = &c->link;
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    return c;
+}
+/* The last reference to a source is gone. A linked one leaves its parent first, under the
+   clock's lock (`held`: the caller holds it); a source made any other way takes no lock. */
+static void sg_cancel_free(sg_cancel* c, bool held) {
+    if (c->linked) {
+        if (!held) sg_mtx_lock(&sg_clock_lock);
+        sg_cancel_unlink(c);
+        if (!held) sg_mtx_unlock(&sg_clock_lock);
+    }
+    free(c);
 }
 static void sg_cancel_now(sg_cancel* c) {
     sg_mtx_lock(&sg_clock_lock);
@@ -5660,7 +5731,8 @@ static void sg_cancel_clock_over(sg_delay* d) {
     __atomic_store_n(&c->armed, 0, __ATOMIC_SEQ_CST);
     sg_cancel_held(c);
     SG_KEPT(-1);
-    sg_cancel_less(c);
+    /* The clock's lock is held: a linked source leaves its parent's list without taking it. */
+    if (__atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) sg_cancel_free(c, true);
 }
 /* `CancellationSource.after(ms)`: the clock holds the source until it cancels it. */
 static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
@@ -13090,6 +13162,11 @@ fn is_option(ty: &Ty) -> bool {
     matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..)))
 }
 
+/// A `T?` of text or of a slice, which a `read` lends as a window of length -1 for nothing.
+fn is_view_option(option: &Ty) -> bool {
+    matches!(option, Ty::Nullable(inner) if matches!(**inner, Ty::Str | Ty::Slice(_)))
+}
+
 /// A `read T?` whose `T?` would be a value and a flag: the `T?` behind it. In C it is not a
 /// pointer to that pair but a pointer to the `T`, null when there is nothing (for text, a
 /// window of length -1): what a function gives back points straight at what it was lent.
@@ -13799,7 +13876,12 @@ impl<'a> Emitter<'a> {
             _ if is_text_view(ty) => "sg_str".to_string(),
             Ty::Read(inner) if is_option(inner) => {
                 let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
-                if **held == Ty::Str { "sg_str".to_string() } else { format!("{}*", self.ctype(held, span)?) }
+                match &**held {
+                    Ty::Str => "sg_str".to_string(),
+                    // A slice that may be missing is its window, of length -1 when missing (1774).
+                    Ty::Slice(_) => self.ctype(held, span)?,
+                    _ => format!("{}*", self.ctype(held, span)?),
+                }
             }
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
             // What a `locked` value holds is the value; its mutex is in front of it (`sg_mutex`).
@@ -13894,14 +13976,21 @@ impl<'a> Emitter<'a> {
         Ok(format!("(({ctype}*)&{name})"))
     }
 
-    /// A `read T?` with nothing in it.
-    fn lent_none(&self, option: &Ty) -> &'static str {
-        if matches!(option, Ty::Nullable(inner) if **inner == Ty::Str) { "SG_NO_STR" } else { "NULL" }
+    /// A `read T?` with nothing in it: a null pointer, or a window of length -1 for text and
+    /// for a slice (1774).
+    fn lent_none(&self, option: &Ty) -> String {
+        match option {
+            Ty::Nullable(inner) if **inner == Ty::Str => "SG_NO_STR".to_string(),
+            Ty::Nullable(inner) if matches!(**inner, Ty::Slice(_)) => {
+                format!("((sg_{}){{ NULL, -1 }})", mangle(inner).expect("a slice has a C type"))
+            }
+            _ => "NULL".to_string(),
+        }
     }
 
     /// The C test that the `read T?` in `value` (a name) has something.
     fn lent_holds(&self, option: &Ty, value: &str) -> String {
-        if matches!(option, Ty::Nullable(inner) if **inner == Ty::Str) { format!("({value}.len >= 0)") } else { format!("({value} != NULL)") }
+        if is_view_option(option) { format!("({value}.len >= 0)") } else { format!("({value} != NULL)") }
     }
 
     /// A `read T?` made from a `T?` that is kept somewhere; `address`: a pointer to that `T?`.
@@ -18113,7 +18202,7 @@ impl<'a> Emitter<'a> {
             // Where a `read T?` is expected: `null` is no pointer, a borrowed `T` is the pointer
             // it already is, and a `ref T?` is tested for its flag.
             Ty::Read(to) if is_option(to) => match found {
-                Ty::Null => Ok(self.lent_none(to).to_string()),
+                Ty::Null => Ok(self.lent_none(to)),
                 Ty::Never => Ok(value),
                 _ if lent_option(found).is_some() => Ok(value),
                 Ty::Ref(inner) if inner == to => self.lend(&value, to, span),
@@ -20709,8 +20798,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Var(name) if self.narrowed(name, &expr.ty) => {
                 let place = self.lvalue(expr)?;
                 Ok(match &expr.ty {
-                    // A `read string?` that holds a text is the window itself.
-                    ty if is_text_view(ty) && lent_option(&self.local(name).ty).is_some() => place,
+                    // A `read string?` that holds a text is the window itself, and so is a
+                    // `read T[]?` that holds a slice (1774).
+                    ty if (is_text_view(ty) || is_window(ty)) && lent_option(&self.local(name).ty).is_some() => place,
                     ty if is_text_view(ty) => format!("sg_view(&{place})"),
                     ty if ty.is_borrow() => format!("(&{place})"),
                     _ => place,
@@ -20837,10 +20927,7 @@ impl<'a> Emitter<'a> {
                 };
                 if let Some(option) = lent_option(&inner.ty) {
                     let value = self.value(inner)?;
-                    let holds = match option {
-                        Ty::Nullable(held) if **held == Ty::Str => format!("({value}.len >= 0)"),
-                        _ => format!("({value} != NULL)"),
-                    };
+                    let holds = self.lent_holds(option, &value);
                     return Ok(if *negated { holds } else { format!("(!{holds})") });
                 }
                 let ty = inner.ty.strip_borrow();
@@ -21599,6 +21686,12 @@ impl<'a> Emitter<'a> {
                     let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
                     Ok(format!("sg_cancel_after({ms}, {})", self.loc(expr.span)))
                 }
+                // The token is lent: a pointer to it, which is the source or NULL.
+                Callee::Cancel(CancelCall::Linked) => {
+                    self.made.insert("tasks".to_string());
+                    let token = self.value(&args[0])?;
+                    Ok(format!("sg_cancel_linked((*{token}))"))
+                }
                 // A source and its tokens are one block; each method looks at it through a borrow.
                 Callee::Cancel(call) => {
                     // A token that a call has just made (`source.token().check()`) is dropped
@@ -21624,7 +21717,7 @@ impl<'a> Emitter<'a> {
                             let ctype = self.ctype(&expr.ty, expr.span)?;
                             format!("(sg_cancelled({source}) ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})")
                         }
-                        CancelCall::New | CancelCall::After => unreachable!("functions of the type, written above"),
+                        CancelCall::New | CancelCall::After | CancelCall::Linked => unreachable!("functions of the type, written above"),
                     })
                 }
                 Callee::Chan(call, told) => self.chan_call(*call, *told, recv, args, expr),
