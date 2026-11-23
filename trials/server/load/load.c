@@ -30,6 +30,17 @@
      --trickle MS     RESP: once answered, each idle connection begins a SET of a value of 1 MB and sends
                       one byte of it every MS milliseconds, as a slow client does (slowloris); one the
                       server closes is counted as cut, not as failed (choice 1724)
+     --ramp FROM,STEP,SECONDS
+                      the test of the breaking point (choice 1760): the load rises in stages of SECONDS,
+                      from FROM requests a second by STEP in each, until the server answers less than half
+                      of them in two stages running or --stages have gone; each connection asks once every
+                      --think milliseconds (20), so the connections grow with the load, up to --conns, and
+                      past it each asks more often. An answer later than --deadline milliseconds (100)
+                      after its request was due is a failure, and so is a request that could not go,
+                      on a connection the server refused or closed (opened again after half a second),
+                      or more than the deadline behind. A line of JSON for each stage, as soon as it is
+                      settled, and the errors of the server are counted, not fatal
+     --think MS, --deadline MS, --stages N
 
    It writes one line of JSON on the standard output when it ends, and `ready` on its own line once
    every idle connection is open and has been answered (for whoever measures the server meanwhile).
@@ -75,6 +86,9 @@ static bool close_each, fill, check;
 static int idle = 0, sources = 1, reconnect = 0;
 static double trickle = 0;
 static double report = 0;
+static double ramp_from = 0, ramp_step = 0, ramp_seconds = 0, think_ms = 20, deadline_ms = 100;
+static int ramp_stages = 100;
+#define MOST_STAGES 400
 
 /* ---- time */
 
@@ -138,6 +152,7 @@ typedef struct {
     int64_t due; /* when it was due to go (open loop) or went (closed) */
     int key;
     uint8_t op;
+    bool gone; /* --ramp: counted as failed already, its answer no longer counts */
 } pending;
 
 typedef struct conn {
@@ -167,6 +182,8 @@ typedef struct conn {
     int heap_at; /* where it is in the heap of the thread, -1 when not there */
     uint64_t served; /* answers on this connection, for --reconnect */
     uint32_t rand;
+    bool active;       /* --ramp: in use from its stage on */
+    int64_t reopen_at; /* --ramp: when a connection the server refused or closed is opened again */
 } conn;
 
 typedef struct {
@@ -186,6 +203,11 @@ typedef struct {
     char* scratch;
     size_t scratch_cap;
     char* in;
+    /* --ramp: what each stage gave, by the stage its request was due in, until it is published */
+    histogram* st_h[MOST_STAGES];
+    uint64_t st_ok[MOST_STAGES], st_late[MOST_STAGES], st_failed[MOST_STAGES], st_refused[MOST_STAGES];
+    int published; /* the stages it has handed in */
+    int stage_now; /* the stage whose connections and rate it has set */
 } worker;
 
 /* Byte j of the value of key k is alphabet[k % 26 + j]: 'a' + (k + j) % 26. */
@@ -238,6 +260,24 @@ static void poll_add(int p, conn* c, bool want_out) {
     if (kevent(p, ev, 2, NULL, 0, NULL) != 0) die("kevent");
 #endif
 }
+
+#ifdef __linux__
+#include <sys/syscall.h>
+/* epoll_wait to the nanosecond (epoll_pwait2, Linux 5.11), or to the millisecond, rounded up,
+   where the kernel has no epoll_pwait2. */
+static int poll_wait(int p, struct epoll_event* evs, int n, int64_t ns) {
+#ifdef SYS_epoll_pwait2
+    static bool missing;
+    if (!missing) {
+        struct timespec ts = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+        long k = syscall(SYS_epoll_pwait2, p, evs, n, &ts, NULL, 0);
+        if (k >= 0 || errno != ENOSYS) return (int)k;
+        missing = true;
+    }
+#endif
+    return epoll_wait(p, evs, n, (int)((ns + 999999) / 1000000));
+}
+#endif
 
 static void poll_out(int p, conn* c, bool want_out) {
 #ifdef __linux__
@@ -292,6 +332,13 @@ static conn* heap_pop(worker* w) {
 
 /* ---- opening */
 
+/* --ramp: where the stages begin, how long each is, and the stage a moment lies in */
+static int64_t ramp_t0, stage_ns = 1;
+static int stage_of(int64_t t) {
+    int64_t k = (t - ramp_t0) / stage_ns;
+    return k < 0 ? 0 : k >= MOST_STAGES ? MOST_STAGES - 1 : (int)k;
+}
+
 static void open_conn(worker* w, conn* c) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) die("socket");
@@ -317,6 +364,14 @@ static void open_conn(worker* w, conn* c) {
     c->saw_close = false;
     if (connect(fd, (struct sockaddr*)&target, sizeof target) != 0 && errno != EINPROGRESS) {
         atomic_fetch_add(&failed_connects, 1);
+        if (ramp_step > 0) {
+            close(fd);
+            c->fd = -1;
+            c->open = false;
+            w->st_refused[stage_of(now_ns())]++;
+            c->reopen_at = now_ns() + 500000000;
+            return;
+        }
         die("connect");
     }
     poll_add(w->poll, c, true);
@@ -330,6 +385,18 @@ static void close_conn(worker* w, conn* c) {
 }
 
 static void fail_conn(worker* w, conn* c, const char* why) {
+    /* --ramp: what the server refused or closed is counted, and the connection opened again soon */
+    if (ramp_step > 0) {
+        if (c->count > 0) {
+            pending* p = &c->ring[c->head];
+            if (!p->gone) w->st_failed[stage_of(p->due)]++;
+        }
+        w->st_refused[stage_of(now_ns())]++;
+        c->count = 0;
+        if (c->open) close_conn(w, c);
+        c->reopen_at = now_ns() + 500000000;
+        return;
+    }
     /* a slow client the server closed: what --trickle is there to see */
     if (trickle > 0 && c->is_idle && c->counted_ready && !c->dead) {
         w->cut++;
@@ -468,6 +535,29 @@ static void answered(worker* w, conn* c, bool ok) {
         w->wrong++;
         static atomic_int told;
         if (atomic_fetch_add(&told, 1) < 5) fprintf(stderr, "load: a wrong answer on connection %d: %.*s\n", c->index, c->line_len, c->line);
+    }
+    if (ramp_step > 0) {
+        int k = stage_of(p.due);
+        if (!p.gone) {
+            if (!w->st_h[k]) w->st_h[k] = calloc(1, sizeof(histogram));
+            record(w->st_h[k], (uint64_t)(t - p.due));
+            if (t - p.due <= (int64_t)(deadline_ms * 1e6)) w->st_ok[k]++;
+            else w->st_late[k]++;
+        }
+        if (t >= w->measure_to) return;
+        /* `next_due` is when the next request that has not gone is due; one more than the deadline
+           behind would only fail: it is counted so, and skipped */
+        while (c->next_due + (int64_t)(deadline_ms * 1e6) < t) {
+            w->st_failed[stage_of(c->next_due)]++;
+            c->next_due += c->interval;
+        }
+        if (c->next_due <= t) {
+            next_request(w, c, c->next_due);
+            c->next_due += c->interval;
+        } else {
+            heap_push(w, c);
+        }
+        return;
     }
     if (c->is_idle) {
         if (!c->counted_ready) {
@@ -630,6 +720,13 @@ static void start_conn(worker* w, conn* c, int64_t t) {
     poll_out(w->poll, c, c->out_len > 0);
     if (c->is_idle) {
         send_request(w, c, protocol == RESP ? OP_PING : OP_HTTP, 0, t);
+    } else if (ramp_step > 0) {
+        /* what fell due while it was being opened and is past saving is counted as failed */
+        while (c->next_due + (int64_t)(deadline_ms * 1e6) < t) {
+            w->st_failed[stage_of(c->next_due)]++;
+            c->next_due += c->interval;
+        }
+        if (c->heap_at < 0) heap_push(w, c);
     } else if (rate > 0) {
         heap_push(w, c);
     } else if (close_each) {
@@ -728,6 +825,122 @@ static void* run(void* arg) {
     return NULL;
 }
 
+/* ---- --ramp: the stages */
+
+static double stage_rate(int k) { return ramp_from + ramp_step * k; }
+static int stage_conns(int k) {
+    int64_t n = (int64_t)ceil(stage_rate(k) * think_ms / 1000.0);
+    return n < 1 ? 1 : n > conns ? conns : (int)n;
+}
+
+/* What every thread hands in for a stage once it is settled, and the line written of it. */
+static pthread_mutex_t st_lock = PTHREAD_MUTEX_INITIALIZER;
+static histogram* g_h[MOST_STAGES];
+static uint64_t g_ok[MOST_STAGES], g_late[MOST_STAGES], g_failed[MOST_STAGES], g_refused[MOST_STAGES];
+static int g_handed[MOST_STAGES];
+static int below_half;
+/* The last stage that is asked for and written: set when the server has fallen over. */
+static atomic_int ramp_final = -1;
+static _Atomic int64_t ramp_stop_at = INT64_MAX;
+static int ramp_last(void) {
+    int f = atomic_load(&ramp_final);
+    return f >= 0 ? f : ramp_stages - 1;
+}
+
+static void stage_line(int k) {
+    uint64_t asked = g_ok[k] + g_late[k] + g_failed[k];
+    histogram* h = g_h[k];
+    static histogram empty;
+    if (!h) h = &empty;
+    double availability = asked ? (double)g_ok[k] / (double)asked : 0;
+    printf("{\"stage\":%d,\"from_s\":%.1f,\"rate\":%.0f,\"conns\":%d,\"asked\":%" PRIu64 ",\"ok\":%" PRIu64
+           ",\"late\":%" PRIu64 ",\"failed\":%" PRIu64 ",\"refused\":%" PRIu64 ",\"ok_per_second\":%.0f,\"availability\":%.5f"
+           ",\"p50_us\":%.1f,\"p99_us\":%.1f,\"p999_us\":%.1f,\"max_us\":%.1f}\n",
+           k, k * ramp_seconds, stage_rate(k), stage_conns(k), asked, g_ok[k], g_late[k], g_failed[k], g_refused[k],
+           (double)g_ok[k] / ramp_seconds, availability, percentile(h, 50), percentile(h, 99), percentile(h, 99.9),
+           (double)h->max / 1000.0);
+    fflush(stdout);
+    /* fallen over: less than half answered in time in two stages running */
+    below_half = availability < 0.5 ? below_half + 1 : 0;
+    if ((below_half >= 2 || k + 1 >= ramp_stages) && atomic_load(&ramp_final) < 0) {
+        atomic_store(&ramp_final, k);
+        atomic_store(&ramp_stop_at, now_ns());
+    }
+}
+
+/* Each round of a thread's loop: the connections and the rate of a stage that has begun, the
+   connections to open again, and the stages settled (every request due in them answered, failed
+   or more than the deadline old), handed in. */
+static void ramp_tick(worker* w, int64_t now) {
+    int64_t stop = atomic_load(&ramp_stop_at);
+    if (stop < w->measure_to) w->measure_to = stop;
+    int k = stage_of(now);
+    if (k > w->stage_now && now < w->measure_to) {
+        w->stage_now = k;
+        int n = stage_conns(k), before = k > 0 ? stage_conns(k - 1) : 0;
+        int64_t interval = (int64_t)(1e9 * (double)n / stage_rate(k));
+        int64_t start = ramp_t0 + (int64_t)k * stage_ns;
+        /* the new connections join over the first second of the stage (half of it, if shorter), as
+           clients come, not all at once into the queue of the listener */
+        int64_t spread = stage_ns / 2 < 1000000000 ? stage_ns / 2 : 1000000000;
+        for (int i = 0; i < w->n; i++) {
+            conn* c = w->all[i];
+            if (c->is_idle || c->index >= n) continue;
+            c->interval = interval;
+            if (!c->active) {
+                c->active = true;
+                c->next_due = start + (int64_t)((double)spread * (double)(c->index - before) / (double)(n - before));
+                c->reopen_at = c->next_due - 50000000 > now ? c->next_due - 50000000 : now;
+            }
+        }
+    }
+    for (int i = 0; i < w->n; i++) {
+        conn* c = w->all[i];
+        if (!c->active || c->open || c->reopen_at == 0 || c->reopen_at > now || now >= w->measure_to) continue;
+        c->reopen_at = 0;
+        open_conn(w, c);
+    }
+    int64_t deadline = (int64_t)(deadline_ms * 1e6);
+    while (w->published <= ramp_last()) {
+        int s = w->published;
+        int64_t end = ramp_t0 + (int64_t)(s + 1) * stage_ns;
+        if (end > w->measure_to) end = w->measure_to;
+        if (now < end + deadline + 20000000) break;
+        for (int i = 0; i < w->n; i++) {
+            conn* c = w->all[i];
+            if (!c->active) continue;
+            if (c->count > 0) {
+                pending* p = &c->ring[c->head];
+                if (!p->gone && p->due < end) {
+                    p->gone = true;
+                    w->st_failed[stage_of(p->due)]++;
+                }
+            }
+            /* due and never sent: the connection was refused, being opened, or behind */
+            if (c->heap_at < 0)
+                while (c->next_due < end) {
+                    w->st_failed[stage_of(c->next_due)]++;
+                    c->next_due += c->interval;
+                }
+        }
+        pthread_mutex_lock(&st_lock);
+        if (w->st_h[s]) {
+            if (!g_h[s]) g_h[s] = calloc(1, sizeof(histogram));
+            for (int b = 0; b < BUCKETS; b++) g_h[s]->counts[b] += w->st_h[s]->counts[b];
+            g_h[s]->total += w->st_h[s]->total;
+            g_h[s]->sum += w->st_h[s]->sum;
+            if (w->st_h[s]->max > g_h[s]->max) g_h[s]->max = w->st_h[s]->max;
+        }
+        g_ok[s] += w->st_ok[s];
+        g_late[s] += w->st_late[s];
+        g_failed[s] += w->st_failed[s];
+        g_refused[s] += w->st_refused[s];
+        if (++g_handed[s] == threads && s <= ramp_last()) stage_line(s);
+        pthread_mutex_unlock(&st_lock);
+        w->published++;
+    }
+}
+
 static void* drive(void* arg) {
     worker* w = arg;
     int64_t t = now_ns();
@@ -735,7 +948,13 @@ static void* drive(void* arg) {
     w->measure_from = t + (int64_t)(warmup * 1e9);
     w->measure_to = w->measure_from + (int64_t)(duration * 1e9);
     int active = 0;
-    for (int i = 0; i < w->n; i++) {
+    if (ramp_step > 0) {
+        w->start = w->measure_from = ramp_t0;
+        w->measure_to = ramp_t0 + (int64_t)ramp_stages * stage_ns;
+        w->stage_now = -1;
+        ramp_tick(w, now_ns());
+    }
+    for (int i = 0; i < w->n && ramp_step == 0; i++) {
         conn* c = w->all[i];
         if (c->is_idle) continue;
         active++;
@@ -753,7 +972,7 @@ static void* drive(void* arg) {
 #endif
     for (;;) {
         int64_t now = now_ns();
-        if (now >= w->measure_to + 200000000) break; /* answers still on the way are not counted */
+        if (ramp_step == 0 && now >= w->measure_to + 200000000) break; /* answers still on the way are not counted */
         if (fill) {
             bool busy = false;
             for (int i = 0; i < w->n; i++) if (!w->all[i]->is_idle && !w->all[i]->dead && w->all[i]->count > 0) busy = true;
@@ -761,8 +980,15 @@ static void* drive(void* arg) {
         }
         while (w->heap_n > 0 && w->heap[0]->next_due <= now) {
             conn* c = heap_pop(w);
-            if (c->dead) continue;
-            if (c->next_due < w->measure_to) next_request(w, c, c->next_due);
+            if (c->dead || !c->open || c->connecting) continue;
+            if (c->next_due < w->measure_to) {
+                next_request(w, c, c->next_due);
+                if (ramp_step > 0) c->next_due += c->interval;
+            }
+        }
+        if (ramp_step > 0) {
+            ramp_tick(w, now);
+            if (w->published > ramp_last()) break;
         }
         /* --trickle: the next byte of every slow client */
         if (trickle > 0 && now >= w->trickle_next) {
@@ -778,20 +1004,21 @@ static void* drive(void* arg) {
             }
             w->trickle_next = now + (int64_t)(trickle * 1e6);
         }
-        int wait_ms = 50;
+        /* how long to wait for the system, to the microsecond, so that a request goes when it is
+           due and not up to a millisecond later, which would be charged to the server */
+        int64_t wait_ns = 50000000;
         if (w->heap_n > 0) {
             int64_t d = w->heap[0]->next_due - now;
-            wait_ms = d <= 0 ? 0 : (int)((d + 999999) / 1000000);
-            if (wait_ms > 50) wait_ms = 50;
+            wait_ns = d <= 0 ? 0 : d < wait_ns ? d : wait_ns;
         }
 #ifdef __linux__
-        int k = epoll_wait(w->poll, evs, 512, wait_ms);
+        int k = poll_wait(w->poll, evs, 512, wait_ns);
         for (int i = 0; i < k; i++) {
             conn* c = evs[i].data.ptr;
             on_event(w, c, evs[i].events & EPOLLIN, evs[i].events & EPOLLOUT, evs[i].events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP));
         }
 #else
-        struct timespec ts = {0, (long)wait_ms * 1000000};
+        struct timespec ts = {0, (long)wait_ns};
         int k = kevent(w->poll, NULL, 0, evs, 512, &ts);
         for (int i = 0; i < k; i++) {
             conn* c = evs[i].udata;
@@ -848,6 +1075,13 @@ int main(int argc, char** argv) {
         else if (TAKES("--report")) report = number(v, a);
         else if (TAKES("--reconnect")) reconnect = (int)number(v, a);
         else if (TAKES("--trickle")) trickle = number(v, a);
+        else if (TAKES("--ramp")) {
+            if (sscanf(v, "%lf,%lf,%lf", &ramp_from, &ramp_step, &ramp_seconds) != 3 || ramp_from <= 0 || ramp_step <= 0 || ramp_seconds <= 0)
+                usage("--ramp takes FROM,STEP,SECONDS, each above 0");
+        }
+        else if (TAKES("--think")) think_ms = number(v, a);
+        else if (TAKES("--deadline")) deadline_ms = number(v, a);
+        else if (TAKES("--stages")) ramp_stages = (int)number(v, a);
         else if (strcmp(a, "--close") == 0) close_each = true;
         else if (strcmp(a, "--fill") == 0) fill = true;
         else if (strcmp(a, "--check") == 0) check = true;
@@ -863,6 +1097,15 @@ int main(int argc, char** argv) {
     if (fill && protocol != RESP) usage("--fill is for RESP");
     if (trickle > 0 && (protocol != RESP || idle == 0)) usage("--trickle is for RESP, with --idle");
     if (reconnect && (pipeline != 1 || close_each)) usage("--reconnect is for one request at a time on kept connections");
+    if (ramp_step > 0) {
+        if (pipeline != 1 || close_each || rate > 0 || idle || fill || reconnect || trickle > 0)
+            usage("--ramp is for kept connections, one request at a time, and sets the rate itself");
+        if (ramp_stages < 1 || ramp_stages > MOST_STAGES || think_ms <= 0 || deadline_ms <= 0) usage("a value of --ramp out of range");
+        rate = ramp_from;
+        stage_ns = (int64_t)(ramp_seconds * 1e9);
+        duration = ramp_seconds * ramp_stages;
+        warmup = 0;
+    }
     if (fill) { warmup = 0; duration = 1e6; idle = 0; }
     signal(SIGPIPE, SIG_IGN);
     struct rlimit r;
@@ -916,6 +1159,7 @@ int main(int argc, char** argv) {
     /* then the load, with the idle ones still open (and watched: a server that drops one is an error) */
     pthread_t* ts = calloc((size_t)threads, sizeof(pthread_t));
     int64_t began = now_ns();
+    ramp_t0 = began + 50000000;
     for (int t = 0; t < threads; t++) pthread_create(&ts[t], NULL, drive, &ws[t]);
     for (int t = 0; t < threads; t++) pthread_join(ts[t], NULL);
     int64_t ended = now_ns();

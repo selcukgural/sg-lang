@@ -248,9 +248,10 @@ says what is slower, by how much and against what, the choice that measured it, 
   time (C 474,000, Rust 449,000), the HTTP server 470,000 (C 499,000, hyper 321,000 in that run; 438,000 for SG
   before). What is left, 11% more of the processor than C at that rate, is in the runtime: a fill of a reader
   takes the lock of the socket's slot twice (whether it is dry, and marking it dry), a wake is a compare and swap
-  on the task, and the parsing in SG takes about 2.5 times C's. A look at the slot without its lock is the next
-  candidate; the watch every millisecond, a pool that never steals and `TCP_NODELAY` were each measured and
-  changed nothing.
+  on the task, and the parsing in SG takes about 2.5 times C's. Most of it is in the processor's own time (165
+  ticks against C's 106; in the kernel 720 against 693). A look at the slot without its lock saved 1%, within the
+  noise, and the watch every millisecond, a pool that never steals and `TCP_NODELAY` changed nothing (each
+  measured); the parsing and the wake are the candidates left.
 
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a

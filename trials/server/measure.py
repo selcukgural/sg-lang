@@ -12,6 +12,19 @@ server that answers GET /ping, each written in SG, Rust, Zig and C, driven by on
     python3 trials/server/measure.py --runs 3     each case three times, the median kept
     python3 trials/server/measure.py --soak       also the long runs, 30 minutes for each server and
                                                   protocol (SOAK_SECONDS for another length)
+    python3 trials/server/measure.py --ramp       the test of the breaking point (1760), each server and
+                                                  protocol: the load rises in stages of 10 seconds until
+                                                  the server answers less than half of it in time; a line
+                                                  for each stage as it ends, where each server broke, and
+                                                  with --runs N how far apart N runs lie (`--native
+                                                  --ramp` on this machine)
+    python3 trials/server/measure.py --robust     the stand (1751, 1755, 1759): each server, the heavy
+                                                  level of `load/stand.c` (a million resets, 100,000
+                                                  clients beside 1,024 descriptors, 10,000 that do not
+                                                  read, a million requests that are not the protocol,
+                                                  SIGTERM with 50,000 open), SG also under the
+                                                  sanitizers; whether each stood, and its descriptors
+                                                  and memory (ROBUST_SCALE=0.05 for a short try)
 
 The image is built once: `podman build -t sg-server -f trials/server/Containerfile trials/server`.
 In it the repository is copied in, SG built (its build kept in the volume `sg-linux-target`, as the
@@ -64,6 +77,20 @@ LIMIT_MS = 5000
 SERVER_ARGS = {"sg-limit": ["--idle-limit", str(LIMIT_MS)]}
 KEYS = 10000
 SOAK_SECONDS = int(os.environ.get("SOAK_SECONDS", "1800"))
+# The test of the breaking point (1760): each connection asks once every THINK_MS, an answer later
+# than DEADLINE_MS after its request was due is a failure, and the load rises by `step` requests a
+# second in each stage of `seconds`. On Linux the connections come from four addresses, for ports
+# enough for 100,000 of them; elsewhere the load may hold 10,240 files.
+THINK_MS = 20
+DEADLINE_MS = 100
+# The server has two cores, as the pods of the video it follows had two (lesson 215 of Anton Putra's
+# tutorials), and the load the other six, so that the load is never what gives out first.
+RAMP_SERVER_CORES, RAMP_LOAD_CORES, RAMP_THREADS = "0-1", "2-7", 6
+RAMP = ({"from": 25000, "step": 25000, "seconds": 10, "stages": 60, "conns": 100000, "sources": 4} if LINUX else
+        {"from": 20000, "step": 20000, "seconds": 10, "stages": 40, "conns": 10000, "sources": 1})
+for key in RAMP:  # RAMP_SECONDS=3 RAMP_STAGES=4 for a short look
+    if os.environ.get(f"RAMP_{key.upper()}"):
+        RAMP[key] = int(os.environ[f"RAMP_{key.upper()}"])
 
 # ---- the cases (1702, 1706): name -> what the load is given. `rate` is a share of the slowest
 # server's answers a second with 50 connections; `fill` is the size of the values given first.
@@ -122,6 +149,7 @@ def build(languages, check_only=False):
     BIN.mkdir(parents=True, exist_ok=True)
     bins = {}
     run(["cc", "-O2", "-Wall", "-pthread", "-o", str(BIN / "load"), str(HERE / "load" / "load.c"), "-lm"])
+    run(["cc", "-std=c11", "-O2", "-Wall", "-o", str(BIN / "stand"), str(HERE / "load" / "stand.c")])
     for program in ["resp", "http"]:
         for lang in languages:
             if lang == "sg-limit":
@@ -152,10 +180,10 @@ def build(languages, check_only=False):
 # ---- one server
 
 class Server:
-    def __init__(self, path, port, pin, extra=()):
+    def __init__(self, path, port, pin, extra=(), cores=SERVER_CORES):
         cmd = [str(path), str(port), *extra]
         if pin and LINUX:
-            cmd = ["taskset", "-c", SERVER_CORES] + cmd
+            cmd = ["taskset", "-c", cores] + cmd
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.pid = self.proc.pid
         self.port = port
@@ -218,10 +246,10 @@ class Server:
         self.proc.wait()
 
 
-def load(bins, args, protocol, port, timeout=HUNG_SECONDS):
+def load(bins, args, protocol, port, timeout=HUNG_SECONDS, cores=LOAD_CORES):
     cmd = [str(BIN / "load"), protocol, f"127.0.0.1:{port}"] + args
     if LINUX:
-        cmd = ["taskset", "-c", LOAD_CORES] + cmd
+        cmd = ["taskset", "-c", cores] + cmd
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
@@ -364,6 +392,253 @@ def soak(case, lang, server, proc, base):
     return result
 
 
+# ---- the breaking point
+
+def cpu_of(pid):
+    """The time of the processor a process has spent, in seconds, or None once it is gone."""
+    try:
+        if LINUX:
+            parts = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return (int(parts[11]) + int(parts[12])) / os.sysconf("SC_CLK_TCK")
+        out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True,
+                             env={**os.environ, "LC_ALL": "C"}).stdout.strip().replace(",", ".")
+        if not out:
+            return None
+        return sum(float(x) * 60 ** i for i, x in enumerate(reversed(out.split(":"))))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def looked_at(server):
+    """Memory, threads and open files of a server, on any system."""
+    if server.proc.poll() is not None:
+        return {"rss_kb": 0, "hwm_kb": 0, "threads": 0, "fds": 0}
+    st = server.status()
+    fds = server.fds()
+    if not LINUX:
+        env = {**os.environ, "LC_ALL": "C"}
+        threads = subprocess.run(["ps", "-M", "-p", str(server.pid)], capture_output=True, text=True, env=env).stdout
+        st["threads"] = max(len(threads.splitlines()) - 1, 0)
+        files = subprocess.run(["lsof", "-n", "-P", "-p", str(server.pid)], capture_output=True, text=True, env=env).stdout
+        fds = max(len(files.splitlines()) - 1, 0)
+    return {**st, "fds": fds}
+
+
+def breaks(stages):
+    """Where a server broke (1760): the knee, the first stage whose p99 is ten times that of the
+    first stages or more than the deadline; saturation, the first that is answered less than 95% of
+    what was asked; availability, the first in which less than 99.9% is answered in time; and the
+    most it answered in time in a second."""
+    if not stages:
+        return {}
+    base = min(s["p99_us"] for s in stages[:2] if s["p99_us"] > 0) if any(s["p99_us"] > 0 for s in stages[:2]) else 0
+    first = lambda test: next((s["rate"] for s in stages if test(s)), None)
+    peak = max(stages, key=lambda s: s["ok_per_second"])
+    return {
+        "base_p99_us": base,
+        "knee": first(lambda s: s["p99_us"] > 10 * base or s["p99_us"] > DEADLINE_MS * 1000),
+        "saturation": first(lambda s: s["asked"] and (s["ok"] + s["late"]) < 0.95 * s["asked"]),
+        "availability": first(lambda s: s["availability"] < 0.999),
+        "peak_ok_per_second": peak["ok_per_second"],
+        "peak_rate": peak["rate"],
+    }
+
+
+def ramp_row(protocol, lang, s):
+    load_cores = f"{s['load_cores']:4.2f}" if s["load_cores"] >= 0 else "   ?"
+    return (f"{protocol:4} {lang:5} {s['stage']:3} asked {s['asked'] / RAMP['seconds']:>9,.0f}/s  in time {s['ok_per_second']:>9,.0f}/s  "
+            f"avail {s['availability'] * 100:6.2f}%  p50 {fmt_us(s['p50_us']):>9}  p99 {fmt_us(s['p99_us']):>9}  "
+            f"conns {s['conns']:>6,}  refused {s['refused']:>5,}  server {s['server_cores']:4.2f} cores "
+            f"{s['rss_kb'] / 1024:7.1f} MB {s['threads']:3} thr {s['fds']:>6} fds  load {load_cores} cores")
+
+
+def ramp_one(bins, protocol, lang):
+    port = next_port()
+    server = Server(bins[(protocol, lang)], port, pin=True, extra=SERVER_ARGS.get(lang, ()), cores=RAMP_SERVER_CORES)
+    try:
+        time.sleep(0.2)
+        base = looked_at(server)
+        if protocol == "resp":
+            fill = load(bins, ["--fill", "--conns", "8", "--pipeline", "16", "--keys", str(KEYS)], "resp", port)
+            r = finish(fill, server, f"ramp {lang}: fill")
+            if r["errors"] or r["wrong"]:
+                return {"failed": f"fill: {r['errors']} errors, {r['wrong']} wrong", "stages": []}
+        args = ["--threads", str(RAMP_THREADS), "--keys", str(KEYS), "--ramp", f"{RAMP['from']},{RAMP['step']},{RAMP['seconds']}",
+                "--stages", str(RAMP["stages"]), "--conns", str(RAMP["conns"]), "--think", str(THINK_MS),
+                "--deadline", str(DEADLINE_MS)]
+        if RAMP["sources"] > 1:
+            args += ["--sources", str(RAMP["sources"])]
+        proc = load(bins, args, protocol, port, cores=RAMP_LOAD_CORES)
+        # a load that does not end is stopped, with what the server was doing written down
+        limit = RAMP["stages"] * RAMP["seconds"] + HUNG_SECONDS
+        hung = []
+        def watch():
+            try:
+                proc.wait(timeout=limit)
+            except subprocess.TimeoutExpired:
+                hung.append(server.where())
+                proc.kill()
+        import threading
+        threading.Thread(target=watch, daemon=True).start()
+        stages = []
+        t_prev, s_prev, l_prev = time.time(), cpu_of(server.pid) or 0, cpu_of(proc.pid) or 0
+        for line in proc.stdout:
+            if not line.startswith('{"stage"'):
+                continue
+            d = json.loads(line)
+            now = time.time()
+            s_now = cpu_of(server.pid)
+            l_now = cpu_of(proc.pid)
+            d["server_cores"] = round(((s_now if s_now is not None else s_prev) - s_prev) / (now - t_prev), 3)
+            # the load may have ended by the time its last line is read: then its share is not known
+            d["load_cores"] = round((l_now - l_prev) / (now - t_prev), 3) if l_now is not None and l_now >= l_prev else -1
+            d.update(looked_at(server))
+            d["server_alive"] = server.proc.poll() is None
+            t_prev, s_prev, l_prev = now, s_now if s_now is not None else s_prev, l_now if l_now is not None else l_prev
+            stages.append(d)
+            print(ramp_row(protocol, lang, d), flush=True)
+        err = proc.stderr.read()
+        proc.wait()
+        result = {"stages": stages, "base": base, "breaks": breaks(stages), "load_stderr": err.strip()[-500:],
+                  "server_died": server.proc.poll() is not None}
+        if result["server_died"]:
+            result["server_stderr"] = server.proc.stderr.read().decode(errors="replace")[-1000:]
+            result["server_exit"] = server.proc.returncode
+        if hung:
+            result["failed"] = f"the load did not end after {limit} s"
+            result["where"] = hung[0]
+        return result
+    finally:
+        server.stop()
+
+
+def ramp(bins, languages, protocols, info, runs=1):
+    if LINUX:
+        print(f"# the server on cores {RAMP_SERVER_CORES}, the load on {RAMP_LOAD_CORES} with {RAMP_THREADS} threads", flush=True)
+    print(f"# the breaking point: from {RAMP['from']:,} requests a second, {RAMP['step']:,} more every "
+          f"{RAMP['seconds']} s; each connection asks every {THINK_MS} ms (up to {RAMP['conns']:,} connections); "
+          f"an answer later than {DEADLINE_MS} ms is a failure", flush=True)
+    results = {}
+    for protocol in protocols:
+        for lang in languages:
+            if lang == "sg-limit":
+                continue
+            tries = []
+            for n in range(runs):
+                r = ramp_one(bins, protocol, lang)
+                tries.append(r)
+                b = r.get("breaks", {})
+                if b:
+                    print(f"# {protocol} {lang}{f' run {n + 1}/{runs}' if runs > 1 else ''}: knee at {b['knee'] or '-'}, "
+                          f"saturated at {b['saturation'] or '-'}, availability below 99.9% at {b['availability'] or '-'}, "
+                          f"most in time {b['peak_ok_per_second']:,.0f}/s; the server {'DIED' if r['server_died'] else 'stayed up'}", flush=True)
+            # one run keeps its stages; several keep each, and how far their breaking points lie apart
+            r = tries[0] if runs == 1 else {"runs": tries}
+            if runs > 1:
+                spread = {}
+                for key in ["knee", "saturation", "availability", "peak_ok_per_second"]:
+                    values = sorted(t["breaks"][key] for t in tries if t.get("breaks", {}).get(key) is not None)
+                    if values:
+                        spread[key] = {"least": values[0], "median": values[len(values) // 2], "most": values[-1]}
+                r["spread"] = spread
+                p = spread.get("peak_ok_per_second")
+                if p:
+                    print(f"# {protocol} {lang} over {runs} runs: most in time {p['least']:,.0f} / {p['median']:,.0f} / "
+                          f"{p['most']:,.0f} (least / median / most)", flush=True)
+            results[f"{protocol} {lang}"] = r
+    OUT.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d-%H%M")
+    where = "linux" if LINUX else platform.system().lower()
+    path = OUT / f"ramp-{where}-{stamp}.json"
+    path.write_text(json.dumps({"machine": info, "ramp": RAMP, "think_ms": THINK_MS, "deadline_ms": DEADLINE_MS,
+                                "server_cores": RAMP_SERVER_CORES if LINUX else "all", "load_threads": RAMP_THREADS,
+                                "results": results}, indent=1))
+    print(f"# written to {path}")
+
+
+# ---- the stand (1751, 1755, 1759)
+
+# The heavy level of the stand, as each server stands it (1759): the counts are those of all the
+# rounds together; ROBUST_SCALE makes them smaller for a short try. "sg" alone: what only the SG
+# servers have flags for (--idle-limit, --grace; the others are not compared there, 1751 g).
+ROBUST_SCALE = float(os.environ.get("ROBUST_SCALE", "1"))
+ROBUST = [
+    {"name": "answers", "args": "answers --conns 250000 --at-once 5000 --rounds 4"},
+    {"name": "fds", "args": "fds --nofile 1024 --conns 100000 --rounds 3"},
+    {"name": "reset", "args": "reset --conns 250000 --at-once 100000 --rounds 4"},
+    {"name": "half", "args": "half --conns 250000 --at-once 10000 --rounds 4"},
+    {"name": "split", "args": "split --conns 25000 --at-once 2000 --rounds 4"},
+    {"name": "trickle", "args": "trickle --conns 25000 --at-once 5000 --rounds 3"},
+    {"name": "noread", "args": "noread --conns 10000 --value 4096 --rounds 3"},
+    {"name": "noread-limit", "args": "noread --conns 10000 --value 4096 --rounds 3 --idle 5000",
+     "server": ["--idle-limit", "5000"], "only": "sg"},
+    {"name": "term", "args": "term --conns 50000 --grace 2000 --margin 3000", "server": ["--grace", "2000"], "only": "sg"},
+    {"name": "fuzz", "args": "fuzz --conns 1000000 --at-once 500 --rounds 1"},
+    {"name": "fuzz-sanitized", "args": "fuzz --conns 1000000 --at-once 500 --rounds 1 --no-memory", "only": "sg-sanitized"},
+    {"name": "reset-sanitized", "args": "reset --conns 250000 --at-once 50000 --rounds 1 --no-memory", "only": "sg-sanitized"},
+    {"name": "term-sanitized", "args": "term --conns 50000 --grace 2000 --margin 30000 --no-memory",
+     "server": ["--grace", "2000"], "only": "sg-sanitized"},
+]
+COUNTS = {"--conns", "--at-once"}
+# A server that holds more is stopped by the stand, before the machine runs out (the image is also
+# given a limit of memory, `in_podman`).
+ROBUST_MOST_RSS_MB = 6000
+
+
+def scaled(args):
+    words = args.split()
+    for i, w in enumerate(words[:-1]):
+        if w in COUNTS:
+            words[i + 1] = str(max(1, int(int(words[i + 1]) * ROBUST_SCALE)))
+    return words
+
+
+def build_sanitized(protocol):
+    out = BIN / f"{protocol}-sg-sanitized"
+    c = BIN / f"{protocol}-sg-sanitized.c"
+    with open(c, "w") as f:
+        run([str(SG), "emit-c", str(HERE / protocol / "sg" / f"{protocol}.sg"), "--release"], stdout=f)
+    run(["cc", "-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o", str(out),
+         str(c), "-lm", "-pthread"])
+    return out
+
+
+def robust(bins, languages, protocols, info):
+    print(f"# the stand, heavy level{f' x{ROBUST_SCALE}' if ROBUST_SCALE != 1 else ''}; the server on cores "
+          f"{SERVER_CORES}, the stand on {LOAD_CORES}", flush=True)
+    results = []
+    for protocol in protocols:
+        sanitized = build_sanitized(protocol)
+        for case in ROBUST:
+            for lang in languages + ["sg-sanitized"]:
+                only = case.get("only")
+                if lang == "sg-limit" or (only and lang != only) or (not only and lang == "sg-sanitized"):
+                    continue
+                server = sanitized if lang == "sg-sanitized" else bins[(protocol, lang)]
+                cmd = [str(BIN / "stand"), protocol, *scaled(case["args"]), "--sources", "4",
+                       "--most-rss", str(ROBUST_MOST_RSS_MB), "--sanity", "5000", "--timeout", "3600", "--",
+                       *(["taskset", "-c", SERVER_CORES] if LINUX else []), str(server), "PORT", *case.get("server", [])]
+                if LINUX:
+                    cmd = ["taskset", "-c", LOAD_CORES] + cmd
+                started = time.time()
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=3700)
+                line = next((l for l in p.stdout.splitlines() if l.startswith("{")), None)
+                r = json.loads(line) if line else {"stood": False}
+                r.update({"protocol": protocol, "case": case["name"], "lang": lang, "exit": p.returncode,
+                          "errors": p.stderr.strip().splitlines()[:20], "wall_seconds": round(time.time() - started, 1)})
+                results.append(r)
+                said = "stood" if r.get("stood") else f"FELL ({r['errors'][0] if r['errors'] else f'exit {p.returncode}'})"
+                print(f"{protocol:4} {case['name']:16} {lang:12} {said}; descriptors {r.get('fds_base')} -> "
+                      f"{r.get('fds_after')}, idle KB {r.get('idle_kb')}, peak KB {r.get('peak_kb')}, "
+                      f"{r['wall_seconds']} s", flush=True)
+    OUT.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d-%H%M")
+    where = "linux" if LINUX else platform.system().lower()
+    path = OUT / f"robust-{where}-{stamp}.json"
+    path.write_text(json.dumps({"machine": info, "scale": ROBUST_SCALE, "cases": ROBUST, "results": results}, indent=1))
+    print(f"# written to {path}")
+
+
 def median_of(results):
     good = [r for r in results if "failed" not in r]
     if len(good) < len(results):
@@ -414,6 +689,9 @@ def main():
     ap.add_argument("--languages", default=",".join(LANGUAGES))
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--soak", action="store_true")
+    ap.add_argument("--ramp", action="store_true")
+    ap.add_argument("--robust", action="store_true")
+    ap.add_argument("--protocols", default="resp,http")
     ap.add_argument("--table", metavar="RESULTS", help="print the tables of a run's results, in Markdown")
     args = ap.parse_args()
 
@@ -426,6 +704,10 @@ def main():
     if args.check:
         return check(languages)
     bins = build(languages)
+    if args.ramp:
+        return ramp(bins, languages, args.protocols.split(","), machine(), args.runs)
+    if args.robust:
+        return robust(bins, languages, args.protocols.split(","), machine())
     # the long runs only when named, or with --soak, after everything else
     named = args.only.split(",") if args.only else None
     chosen = [c for c in cases() if (c["name"] in named if named else (args.soak or not c.get("soak")))]
@@ -549,7 +831,11 @@ def in_podman(argv):
              "--exclude=./trials/target -cf - . | tar -xf - -C /work && cd /work/interpreter && "
              "cargo build --release --quiet && cd /work && mkdir -p trials/target && "
              "ln -s /results trials/target/server && python3 trials/server/measure.py --native " + " ".join(argv))
-    cmd = ["podman", "run", "--rm", "--ulimit", "nofile=524288:524288",
+    # the stand's servers may grow past what the machine has: a limit, so that the kernel stops
+    # the server in the image and not the machine (the stand stops it before, --most-rss)
+    limit = ["--memory", "7g"] if "--robust" in argv else []
+    cmd = ["podman", "run", "--rm", "--ulimit", "nofile=524288:524288", *limit,
+           "-e", f"ROBUST_SCALE={ROBUST_SCALE}",
            "--sysctl", "net.core.somaxconn=65535", "--sysctl", "net.ipv4.tcp_max_syn_backlog=65535",
            "-v", f"{ROOT}:/src:ro", "-v", "sg-linux-target:/work/interpreter/target",
            "-v", "sg-server-cargo:/usr/local/cargo/registry", "-v", "sg-server-target:/work/trials/target/server-bin-linux",

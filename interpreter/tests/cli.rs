@@ -1647,6 +1647,108 @@ fn the_servers_of_the_server_lane() {
     }
 }
 
+/// The servers of the server lane stand what clients do to them (choices 1750 to 1753, 1759, 1761,
+/// 1762), as `trials/server/load/stand.c` does it, quickly: resets, halves closed, a byte at a time,
+/// clients that do not read, requests that are not the protocol, more clients than descriptors, and
+/// SIGTERM; after each round the server answers and holds no more descriptors than before, and clients
+/// that do not read make it hold no more than its bound. The rule that its memory does not grow round by
+/// round is held at the heavy level, on a quiet machine (1759): beside the other tests the allocator's
+/// arenas warm up for ten rounds and more. The release builds, and the builds under the address and
+/// undefined-behaviour sanitizers (with the leak check at the end, on Linux) for the requests that
+/// are not the protocol, the resets and the stop. On Linux 10,000 connections and the two servers
+/// at once; on macOS, which keeps the port of a connection the stand closed 30 s and has 16,384,
+/// a tenth of them and one server after the other. The stand waits on epoll or kqueue, so not on Windows.
+#[cfg(unix)]
+#[test]
+fn the_servers_stand() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_servers_stand");
+    let server = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials").join("server");
+    let stand = dir.join("stand");
+    let cc = sg::cc::compiler().unwrap();
+    let built = Command::new(&cc).args(["-std=c11", "-O2", "-o"]).arg(&stand).arg(server.join("load").join("stand.c")).finished();
+    assert_eq!(ran(&built).0, 0, "the stand: {}", ran(&built).2);
+    let linux = cfg!(target_os = "linux");
+    // macOS keeps the port of a connection the stand closed 30 s and has 16,384: a tenth there.
+    let n = |count: u32| if linux { count } else { count / 10 };
+    let runs: Vec<(String, &str)> = vec![
+        (format!("answers --conns {} --at-once 200 --rounds 2", n(10000)), ""),
+        // The server's 256 descriptors are outnumbered on macOS too.
+        (format!("fds --conns {} --rounds 2", if linux { 1000 } else { 400 }), ""),
+        (format!("reset --conns {} --at-once 500 --rounds 2", n(10000)), ""),
+        (format!("half --conns {} --at-once 500 --rounds 2", n(10000)), ""),
+        (format!("split --conns {} --at-once 200 --rounds 2", n(1000)), ""),
+        (format!("trickle --conns {} --at-once 500 --rounds 2", n(1000)), ""),
+        ("noread --conns 100 --rounds 2".to_string(), ""),
+        ("noread --conns 100 --rounds 2 --idle 1000".to_string(), "--idle-limit 1000"),
+        (format!("term --conns {} --grace 1000", n(10000)), "--grace 1000"),
+        (format!("fuzz --conns {} --at-once 50 --rounds 1", n(10000)), ""),
+    ];
+    let sanitized: Vec<(String, &str)> = vec![
+        (format!("fuzz --conns {} --at-once 50 --rounds 1", n(10000)), ""),
+        (format!("reset --conns {} --at-once 200 --rounds 1", n(2000)), ""),
+        (format!("term --conns {} --grace 1000 --margin 10000", n(2000)), "--grace 1000"),
+    ];
+    // The two servers at once, each on its own thread.
+    let jobs: Vec<_> = ["resp", "http"]
+        .into_iter()
+        .map(|name| {
+            let (dir, server, stand, cc, runs, sanitized) = (dir.clone(), server.clone(), stand.clone(), cc.clone(), runs.clone(), sanitized.clone());
+            let job = move || {
+                let source = server.join(name).join("sg").join(format!("{name}.sg")).to_string_lossy().into_owned();
+                let release = program(&dir, name).to_string_lossy().into_owned();
+                assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &release])), (0, String::new(), String::new()));
+                let c = sg(&dir, &["emit-c", &source, "--release"]);
+                assert_eq!(c.status.code(), Some(0), "{name}: {}", text(&c.stderr));
+                let c_file = dir.join(format!("{name}-sanitized.c"));
+                std::fs::write(&c_file, &c.stdout).unwrap();
+                let checked = program(&dir, &format!("{name}-sanitized"));
+                let out = Command::new(&cc)
+                    .args(["-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
+                    .arg(&checked)
+                    .arg(&c_file)
+                    .args(["-lm", "-pthread"])
+                    .finished();
+                assert_eq!(ran(&out).0, 0, "{name} under the sanitizers: {}", ran(&out).2);
+                let checked = checked.to_string_lossy().into_owned();
+                // The bound on what clients that do not read make a server hold is kept: two rounds
+                // are too few for the rule of rounds.
+                let memory = |args: &String| if args.starts_with("noread") { args.clone() } else { format!("{args} --no-memory") };
+                let plain = runs.iter().map(|(args, server_args)| (memory(args), *server_args, release.clone(), false));
+                let under = sanitized.iter().map(|(args, server_args)| (format!("{args} --no-memory --sanity 5000"), *server_args, checked.clone(), true));
+                for (args, server_args, program, is_sanitized) in plain.chain(under) {
+                    let out = Command::new(&stand)
+                        .arg(name)
+                        .args(args.split(' '))
+                        .arg("--timeout")
+                        .arg("240")
+                        .arg("--")
+                        .arg(&program)
+                        .arg("PORT")
+                        .args(server_args.split(' ').filter(|w| !w.is_empty()))
+                        .finished();
+                    let (code, stdout, stderr) = ran(&out);
+                    let under = if is_sanitized { " (under the sanitizers)" } else { "" };
+                    assert!(code == 0 && stdout.contains("\"stood\":true"), "{name} {args}{under}: exit {code}\n{stdout}\n{stderr}");
+                }
+            };
+            if linux {
+                Some(std::thread::spawn(job))
+            } else {
+                job();
+                None
+            }
+        })
+        .collect();
+    for job in jobs.into_iter().flatten() {
+        if let Err(cause) = job.join() {
+            std::panic::resume_unwind(cause);
+        }
+    }
+}
+
 /// What `net address` prints of the addresses of `the_trial_of_net`, as Rust and Zig print it.
 const ADDRESSES: &str = "addresses 5\nv6 3\nports 74138\ncharacters 75\nsum 299\ninvalid 3\n";
 

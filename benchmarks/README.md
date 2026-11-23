@@ -12,7 +12,8 @@ wins ([the rules](method.md#fairness)).
 | [SG against C on Windows](against-c-windows.md) | The same programs on Windows 11 on Arm |
 | [Programs against Rust and Zig](programs.md) | `wc` and `grep`, written in SG, Rust and Zig |
 | [The library against Rust and Zig](library.md) | The modules of `std` against Rust's crates and Zig's library: JSON, compression, zip, hashes, checksums, hex and Base64, Unicode, time, random numbers, the log, the network |
-| [Servers against Rust, Zig and C](server.md) | A store that speaks Redis's protocol and an HTTP server, on Linux, under one load: answers a second, p99 and p99.9, memory for each connection, idle and under load, and a run of 30 minutes |
+| [Servers against Rust, Zig and C](server.md) | A store that speaks Redis's protocol and an HTTP server, on Linux, under one load: answers a second, p99 and p99.9, memory for each connection, idle and under load, the breaking point, and a run of 30 minutes |
+| [What the servers stand](robustness.md) | The same servers against clients that reset, close half, send a byte at a time, do not read, send what is not the protocol, outnumber the descriptors, and SIGTERM |
 | [Slower than C, and could be better](slower-than-c.md) | Every place where SG was found slower, and what would fix it |
 | [How it is measured](method.md) | The rules of fairness, the machines, the compilers, and how to run it all again |
 

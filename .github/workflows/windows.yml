@@ -1,6 +1,7 @@
 # The tests on Windows (design/04, "Windows, the direction"): every push to `main` runs
 # `cargo test` on x86-64 and on 64-bit Arm. Nobody waits for them: what they find is noted and
-# made right. Linux and macOS are tested where the code is written. The only actions are GitHub's
+# made right. Linux has a workflow of its own (`linux.yml`); macOS is tested where the code is
+# written. The only actions are GitHub's
 # own checkout and cache, pinned to their commits; the token only reads.
 name: windows
 

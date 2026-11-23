@@ -6,6 +6,7 @@ Two servers, each written in SG, Rust, Zig and C, and one load that drives them 
 
 | Folder | What it is |
 |---|---|
+| [load/stand.c](load/stand.c) | The stand, in C (choices 1750-1763): starts a server and does to it what it must stand, resets, halves closed, a byte at a time, clients that do not read, requests that are not the protocol, more clients than descriptors, SIGTERM; after each round the server must answer, be back to its descriptors and hold no more memory idle. What each scenario does is written at its top; the results are in [What the servers stand](../../benchmarks/robustness.md) |
 | [load](load) | The load, in C: closed loop (answers a second) or open loop (`--rate`, the time of each answer counted from when it was due, so a server that stalls is charged for what waited behind it), idle connections from several source addresses, a check of every answer byte for byte, a line for each interval of a long run (`--report`), connections opened again (`--reconnect`) |
 | [resp](resp) | A store that speaks a part of RESP2, Redis's protocol: PING, GET, SET, DEL, over 64 maps each behind a lock |
 | [http](http) | An HTTP/1.1 server that answers GET /ping with `pong`, connections kept open |
@@ -22,6 +23,8 @@ podman build -t sg-server -f trials/server/Containerfile trials/server   # once
 python3 trials/server/measure.py              # every case, on Linux in the image
 python3 trials/server/measure.py --soak       # and the long runs, 30 minutes each
 python3 trials/server/measure.py --check      # each server held to what it must answer, natively
+python3 trials/server/measure.py --ramp       # the breaking point, each server and protocol
+python3 trials/server/measure.py --robust     # the stand, heavy level, each server (ROBUST_SCALE=0.05 to try)
 python3 trials/server/measure.py --languages sg,sg-limit,rust,zig,c --only resp-trickle-10k --runs 3
                                               # slow clients, and SG's store with --idle-limit 5000 beside the others
 ```
@@ -31,5 +34,10 @@ when named, since the other servers have no such limit (choice 1724). The load's
 connections slow clients, each sending a byte of an unending SET every MS milliseconds; one the server closes is
 counted as cut.
 
+The SG servers take `--idle-limit MS` (a connection that goes that long without a whole request, or with
+its answers not taken in, is closed) and `--grace MS` (the first SIGTERM or Ctrl-C stops them taking
+connections, gives those open that long, and they end with 0); the others have neither.
+
 `interpreter/tests/cli.rs` (`the_servers_of_the_server_lane`) builds the SG servers and the load and
-runs the check on every test run, on Linux and macOS.
+runs the check on every test run, on Linux and macOS; `the_servers_stand` runs the stand's quick level
+against them, built for release and under the sanitizers (10,000 connections on Linux, a tenth on macOS).

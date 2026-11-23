@@ -384,10 +384,24 @@ is let go, so a program that ends right after `whenAll` no longer finds it taken
 Before it, a thread of the pool that went to sleep on its own loop of the network could lose the wake sent to
 it, when the clock's watch held that loop for a short round just then, and wait for ever; it now looks at its
 flag once it holds the loop.
+The hundred-and-sixtieth asks what the servers stand and where they break (1750-1763). A load that rises
+until each server answers less than half of it in time finds SG's store breaking at 449,000 requests a second on
+two cores, beside Rust's 449,000 and C's 474,000, and its HTTP server at 470,000, beside C's 499,000 and hyper's
+321,000; past that point SG and `tokio` keep answering 350,000 a second while C answers almost nothing in time.
+SG read its sockets with `read`, the others with `recv`; with `recv` the store answers 11% more before it breaks.
+A stand of its own, `trials/server/load/stand.c`, starts a server and resets its connections at random points,
+closes half of them, sends a byte at a time, does not read, sends what is not the protocol, outnumbers its
+descriptors and sends it SIGTERM; after each round the server must answer, be back to its descriptors and hold
+no more memory idle. Its quick level runs in `cargo test` and, from this slice, in a job of the continuous
+integration on Linux. It found SG's store holding all a client asked for that did not read (20 such clients, 3
+GB, as in the C version), now 64 KB of answers at a time, and a limit on a request that did not cover the
+sending of its answers; the servers can be stopped with SIGTERM and a grace. In a short try of the heavy level
+SG's servers stood everywhere, C's spun with their descriptors taken, and `tokio`'s grew round by round after
+resets and clients that do not read ([What the servers stand](../../benchmarks/robustness.md)).
 
 ## Next
 
-Next come the tests of robustness, then HTTP/1.1; and a slice for the command line,
+Next come the heavy level of the stand, run at night, and its scenario of local ports, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

@@ -6,10 +6,13 @@
 // body of up to 1 MB, answers every whole request the block holds, where it lies, and sends the
 // answers together.
 //
-//     http PORT
+//     http PORT [--idle-limit MS] [--grace MS]
 //
 // Every connection is a task of a `TaskGroup`, which lets go of each as it ends, as in
-// `../../resp/sg/resp.sg`.
+// `../../resp/sg/resp.sg`, and `--idle-limit` and `--grace` are those of the store: a connection
+// that goes that many milliseconds without a whole request, or with its answers not taken in, is
+// closed; the first SIGTERM or Ctrl-C stops the server taking connections and gives those open
+// that many milliseconds to end (choice 1751).
 
 // ---- reading a request
 
@@ -296,50 +299,98 @@ nint serveAll(read byte[] bytes, ref List<byte> out) {
 
 // ---- a connection
 
-async Result<void, IoError> serve(TcpStream conn) {
+async Result<void, IoError> serve(TcpStream conn, int idleLimit) {
     var reader = conn.reader(2097152)
     var out = List<byte>()
+    CancellationSource? idle = null
+    var token = CancellationToken.None
+    if idleLimit > 0 {
+        var made = CancellationSource()
+        token = made.token()
+        made.cancelAfter(idleLimit)
+        idle = made
+    }
     while true {
-        if !try await reader.fillAsync() {
+        if !try await reader.fillAsync(read token) {
             return Ok()
         }
         out.clear()
         var used = serveAll(reader.buffered(), ref out)
         if out.length() > 0 {
-            try await conn.sendAsync(read out)
+            try await conn.sendAsync(read out, read token)
         }
         if used < 0 {
             return Ok()
         }
         reader.consume(used)
-    }
-}
-
-// A connection that fails ends alone.
-async void connection(TcpStream conn) {
-    _ = await serve(conn)
-}
-
-// Takes connections for ever; one the listener fails to take (too many open files, say) is tried
-// again after 10 ms.
-async Result<void, IoError> listen(int port) {
-    var address = $":{port}".toString()
-    var listener = try TcpListener.bind(read address)
-    var connections = TaskGroup()
-    while true {
-        match await listener.acceptAsync() {
-            Ok(conn) => connections.add(connection(conn))
-            Error(_) => await Task.delay(10)
+        if idle is not null && used > 0 {
+            idle.cancelAfter(idleLimit)
         }
     }
 }
 
+// A connection that fails, or is too slow, ends alone.
+async void connection(TcpStream conn, int idleLimit) {
+    _ = await serve(conn, idleLimit)
+}
+
+// Waits for SIGTERM or Ctrl-C and cancels `stop`; the listener goes with it, so a second ends the
+// program.
+async void watch(SignalListener signals, CancellationSource stop) {
+    if await signals.nextAsync() is Ok(_) {
+        stop.cancel()
+    }
+}
+
+// Takes connections until a signal comes with `grace` given, for ever without; one the listener
+// fails to take (too many open files, say) is tried again after 10 ms.
+async Result<void, IoError> listen(int port, int idleLimit, int grace) {
+    var address = $":{port}".toString()
+    var listener = try TcpListener.bind(read address)
+    var connections = TaskGroup()
+    var accepting = CancellationToken.None
+    if grace > 0 {
+        var stop = CancellationSource()
+        accepting = stop.token()
+        connections.add(watch(Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate }), stop))
+    }
+    while true {
+        match await listener.acceptAsync(read accepting) {
+            Ok(conn) => connections.add(connection(conn, idleLimit))
+            Error(Cancelled(_)) => break
+            Error(_) => await Task.delay(10)
+        }
+    }
+    var late = CancellationSource.after(grace)
+    _ = await connections.whenAll(read late.token())
+    return Ok()
+}
+
+const string Usage = "usage: http PORT [--idle-limit MS] [--grace MS]"
+
 void main(List<string> args) {
-    if args.length() != 1 || int.parse(args[0]) is not Ok(port) {
-        printError("usage: http PORT")
+    if args.length() % 2 != 1 || int.parse(args[0]) is not Ok(port) {
+        printError(Usage)
         exit(2)
     }
-    if listen(port).wait() is Error(e) {
+    int idleLimit = 0
+    int grace = 0
+    for i in 0..args.length() / 2 {
+        var name = args[1 + 2 * i]
+        if int.parse(args[2 + 2 * i]) is not Ok(ms) || ms <= 0 {
+            printError(Usage)
+            exit(2)
+        }
+        if name == "--idle-limit" {
+            idleLimit = ms
+        } else if name == "--grace" {
+            grace = ms
+        } else {
+            printError(Usage)
+            exit(2)
+        }
+    }
+    if listen(port, idleLimit, grace).wait() is Error(e) {
         printError($"http: {e}".toString())
         exit(1)
     }

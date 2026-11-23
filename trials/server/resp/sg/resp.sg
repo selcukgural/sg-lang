@@ -3,15 +3,21 @@
 // through a `StreamReader`, whose block starts at 4 KB and grows when one command does not fit,
 // answers every whole command the block holds, where it lies, and sends the answers together; a
 // command of more than 1,024 parts, a part of more than 1 MB, or a command that does not fit in
-// 4 MB closes the connection.
+// 4 MB closes the connection. The answers of one block are sent 64 KB at a time (the last answer
+// whole), and the commands after them are run once they are sent, so that a client that asks for
+// much and reads nothing holds 64 KB of the server and the answer it stopped at, not what it asked
+// for (the stand of choice 1751 found 20 such clients holding 3 GB of the C version, and of this
+// one before).
 //
-//     resp PORT [--idle-limit MS]
+//     resp PORT [--idle-limit MS] [--grace MS]
 //
 // Every connection is a task of a `TaskGroup`, which lets go of each as it ends. With
-// `--idle-limit`, a connection that takes longer than that many milliseconds to send a whole request,
-// from when its first byte is awaited, is closed: the C,
-// Rust and Zig versions have no such limit, so the tables measure SG without it, and the cost and
-// the gain of it on their own (choice 1724). A key is text: a key that is not UTF-8 is answered
+// `--idle-limit`, a connection that goes that many milliseconds without a whole request, or with
+// its answers not taken in, is closed: the C, Rust and Zig versions have no such limit, so the
+// tables measure SG without it, and the cost and the gain of it on their own (choice 1724). With
+// `--grace`, the first SIGTERM or Ctrl-C stops the server taking connections, those open have that
+// many milliseconds to end, the rest are cut, and the server ends with 0 (choice 1751; a second
+// signal ends it at once). A key is text: a key that is not UTF-8 is answered
 // with an error, where the C, Rust and Zig versions take any bytes (a map of SG is keyed by text,
 // a number or a type of its own).
 
@@ -165,11 +171,14 @@ void run(read Store store, read byte[] bytes, read List<nint> starts, read List<
     }
 }
 
-// Answers every whole command in `bytes`; how many bytes it used, or -1 when the client broke the
-// protocol.
+// The answers one round of a connection holds before it sends them.
+const nint MostAnswers = 65536
+
+// Answers the whole commands in `bytes` until `MostAnswers` bytes of answers are written; how many
+// bytes it used, or -1 when the client broke the protocol.
 nint serveAll(read Store store, read byte[] bytes, ref List<nint> starts, ref List<nint> ends, ref List<byte> out) {
     nint used = 0
-    while used < bytes.length() {
+    while used < bytes.length() && out.length() < MostAnswers {
         if bytes[used] != '*' {
             return -1
         }
@@ -228,34 +237,40 @@ async Result<void, IoError> serve(TcpStream conn, shared Store store, int idleLi
     var out = List<byte>()
     var starts = List<nint>()
     var ends = List<nint>()
-    // The time a request may take, from when its first byte is awaited: set again only while no
-    // part of a request waits in the block, so it closes a client that stays silent and one that
-    // sends a byte now and then and never a whole request. Without a limit there is no source and
-    // no token, and a connection costs nothing more.
+    // The time a connection may go without a whole request, or with its answers not taken in: set
+    // again each time a whole request has been answered, so it closes a client that stays silent,
+    // one that sends a byte now and then and never a whole request, and one that does not read.
+    // Without a limit there is no source and no token, and a connection costs nothing more.
     CancellationSource? idle = null
     var token = CancellationToken.None
     if idleLimit > 0 {
         var made = CancellationSource()
         token = made.token()
+        made.cancelAfter(idleLimit)
         idle = made
     }
     while true {
-        if idle is not null && reader.buffered().length() == 0 {
-            idle.cancelAfter(idleLimit)
-        }
         if !try await reader.fillAsync(read token) {
             return Ok()
         }
-        out.clear()
-        var used = serveAll(read store, reader.buffered(), ref starts, ref ends, ref out)
-        if used < 0 {
-            putText(ref out, "-ERR Protocol error\r\n")
-            try await conn.sendAsync(read out)
-            return Ok()
-        }
-        reader.consume(used)
-        if out.length() > 0 {
-            try await conn.sendAsync(read out)
+        while true {
+            out.clear()
+            var used = serveAll(read store, reader.buffered(), ref starts, ref ends, ref out)
+            if used < 0 {
+                putText(ref out, "-ERR Protocol error\r\n")
+                try await conn.sendAsync(read out, read token)
+                return Ok()
+            }
+            reader.consume(used)
+            if out.length() > 0 {
+                try await conn.sendAsync(read out, read token)
+            }
+            if idle is not null && used > 0 {
+                idle.cancelAfter(idleLimit)
+            }
+            if out.length() < MostAnswers {
+                break
+            }
         }
     }
 }
@@ -265,9 +280,17 @@ async void connection(TcpStream conn, shared Store store, int idleLimit) {
     _ = await serve(conn, store, idleLimit)
 }
 
-// Takes connections for ever; one the listener fails to take (too many open files, say) is tried
-// again after 10 ms.
-async Result<void, IoError> listen(int port, int idleLimit) {
+// Waits for SIGTERM or Ctrl-C and cancels `stop`; the listener goes with it, so a second ends the
+// program.
+async void watch(SignalListener signals, CancellationSource stop) {
+    if await signals.nextAsync() is Ok(_) {
+        stop.cancel()
+    }
+}
+
+// Takes connections until a signal comes with `grace` given, for ever without; one the listener
+// fails to take (too many open files, say) is tried again after 10 ms.
+async Result<void, IoError> listen(int port, int idleLimit, int grace) {
     var shards = List<shared locked Shard>()
     for _ in 0..64 {
         shards.add(new shared locked Shard { map = HashMap<string, List<byte>>() })
@@ -276,27 +299,49 @@ async Result<void, IoError> listen(int port, int idleLimit) {
     var address = $":{port}".toString()
     var listener = try TcpListener.bind(read address)
     var connections = TaskGroup()
+    var accepting = CancellationToken.None
+    if grace > 0 {
+        var stop = CancellationSource()
+        accepting = stop.token()
+        connections.add(watch(Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate }), stop))
+    }
     while true {
-        match await listener.acceptAsync() {
+        match await listener.acceptAsync(read accepting) {
             Ok(conn) => connections.add(connection(conn, share store, idleLimit))
+            Error(Cancelled(_)) => break
             Error(_) => await Task.delay(10)
         }
     }
+    var late = CancellationSource.after(grace)
+    _ = await connections.whenAll(read late.token())
+    return Ok()
 }
 
+const string Usage = "usage: resp PORT [--idle-limit MS] [--grace MS]"
+
 void main(List<string> args) {
+    if args.length() % 2 != 1 || int.parse(args[0]) is not Ok(port) {
+        printError(Usage)
+        exit(2)
+    }
     int idleLimit = 0
-    if args.length() == 3 && args[1] == "--idle-limit" && int.parse(args[2]) is Ok(ms) && ms > 0 {
-        idleLimit = ms
-    } else if args.length() != 1 {
-        printError("usage: resp PORT [--idle-limit MS]")
-        exit(2)
+    int grace = 0
+    for i in 0..args.length() / 2 {
+        var name = args[1 + 2 * i]
+        if int.parse(args[2 + 2 * i]) is not Ok(ms) || ms <= 0 {
+            printError(Usage)
+            exit(2)
+        }
+        if name == "--idle-limit" {
+            idleLimit = ms
+        } else if name == "--grace" {
+            grace = ms
+        } else {
+            printError(Usage)
+            exit(2)
+        }
     }
-    if int.parse(args[0]) is not Ok(port) {
-        printError("usage: resp PORT [--idle-limit MS]")
-        exit(2)
-    }
-    if listen(port, idleLimit).wait() is Error(e) {
+    if listen(port, idleLimit, grace).wait() is Error(e) {
         printError($"resp: {e}".toString())
         exit(1)
     }

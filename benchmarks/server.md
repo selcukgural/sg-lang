@@ -137,6 +137,45 @@ last receive emptied the connection, and it kept a room of its own in the frame 
 a connection fills its block as `receiveAsync` receives, in the one room every call of the network shares, and
 the fields of a reader lie with no room between them (96 bytes before, 72 now).
 
+## The breaking point
+
+The load rises until each server breaks (choice 1760), as Anton Putra's videos do it: each connection asks once
+every 20 ms, counted from when the request was due; the load goes up by 25,000 requests a second every 10
+seconds (more connections as it rises, up to 100,000 from four addresses of the loopback); an answer later than
+100 ms is a failure, and the ramp stops two stages after less than half is answered in time. The server has two
+cores (0-1) and the load six (2-7, `load --ramp`), so the server is the limit; `python3 trials/server/measure.py
+--ramp`. The knee is where p99 is ten times that of the first stage or 100 ms, the saturation where less than 95%
+of what is asked is answered, and "most in time" the most answered in time in one stage.
+
+On Linux, 23 November 2026, after the 160th slice's change of `read` to `recv` (the Zig row is of the run before
+it, with SG's earlier numbers beside it):
+
+| | SG | C | Rust | Zig |
+|---|---|---|---|---|
+| Store: most in time | 448,775/s | 473,775/s | 448,775/s | 248,775/s |
+| Store: knee, saturation | 475,000, 500,000 | 475,000, 525,000 | 475,000, 500,000 | 275,000, 275,000 |
+| Store: past the breaking point | 350,000/s in time at 775,000 asked, p50 13 ms | 1,534/s at 525,000 | 345,000/s, p50 63 ms | 50,000/s, 1.5 GB held |
+| HTTP: most in time | 469,883/s | 498,775/s | 321,068/s (hyper) | 248,621/s |
+| HTTP: knee, saturation | 475,000, 500,000 | 525,000, 550,000 | 325,000, 350,000 | 175,000, 275,000 |
+| HTTP: past the breaking point | 375,000/s at 800,000 asked, p50 11 ms | 3,328/s at 525,000 | 211,000/s, p50 65 ms | 103,000/s, 1.5 GB held |
+
+Before the change (the run of the same morning) SG's store broke at 403,919 a second and its HTTP server at
+438,384: SG read its sockets with `read`, the others with `recv`, which takes a shorter way through Linux with
+SELinux on ([Slower than C](slower-than-c.md#tasks-async-and-signals), "The breaking point of the store"). C, the fastest until it breaks,
+then answers almost nothing in time: each of its threads keeps reading every request that comes and answers each
+too late. SG and Rust keep answering as much as they can, and SG's waits are a fifth of Rust's.
+
+On macOS (the M3 Max, natively, 20,000 more a second every stage, up to 10,000 connections from one address; the
+load and the servers share the cores, so these say less):
+
+| | SG | C | Rust | Zig |
+|---|---|---|---|---|
+| Store: most in time, saturation | 99,020/s, 140,000 | 99,020/s, 120,000 | 99,020/s, 120,000 | 99,020/s, 120,000 |
+| HTTP: most in time, saturation | 119,020/s, 140,000 | 119,020/s, 140,000 | 99,020/s, 120,000 | 99,020/s, 120,000 |
+
+The results are in `trials/target/server/ramp-*.json`. Three runs of each, for how far apart runs on the virtual
+machine lie, are to be taken at night (`--ramp --runs 3`).
+
 ## The long run
 
 Thirty minutes of the store at half the slowest server's answers a second, 1,000 connections, each opened again
@@ -178,6 +217,10 @@ the long runs, `--runs 3` takes the median of three, and `--table` prints these 
   with `-O2`. Rust and SG hash the keys with SipHash-1-3 and a key drawn at the start, as C does; Zig's map uses
   Wyhash, with no key. Rust, Zig and C set `TCP_NODELAY` on each connection, as servers do; SG has no way to ask
   for it yet. hyper adds a `date` to every answer. SG's keys must be UTF-8, the others take any bytes.
+- **Waiting to the nanosecond.** Since the 160th slice the load waits with `epoll_pwait2` on Linux (to the
+  nanosecond; `epoll_wait`, to the millisecond, where the kernel lacks it) and `kevent` on macOS, so an open
+  loop sends on time at rates where a wait rounded up to a millisecond would bunch the requests; it changes every
+  measurement of an open loop, of every server alike.
 - **The load.** [`load/load.c`](../trials/server/load/load.c), four threads. In a closed loop each connection
   sends its next request when an answer comes (the answers a second); in an open loop (`--rate`) the requests
   go out at a fixed rate and the time of each answer is counted from when its request was due, not from when it

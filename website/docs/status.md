@@ -64,7 +64,10 @@ be worse than the best rival, under load or not. Servers are measured on Linux a
 memory in SG than in Rust and Zig in all but two cases, 100,000 idle connections at 4.96 KB each, and since each
 thread of the pool has a loop of the network of its own, 50 connections get 1.49 times the answers of Zig's
 threads and 0.91 times C's. At 70% of the load the tail is C's, not `tokio`'s, and what is still slower is
-listed.
+listed. Under a load that rises until they break, SG's servers answer as much as Rust's and nearly as much as
+C's, and keep answering past that point where C's do not; against clients that reset, close half, trickle, do
+not read, send what is not the protocol or outnumber the descriptors they stand
+([what the servers stand](benchmarks/robustness.md)).
 
 ## Not yet
 

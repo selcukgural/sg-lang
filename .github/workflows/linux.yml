@@ -1,0 +1,42 @@
+# The tests on Linux (choice 1754): every push to `main` runs the whole `cargo test --release` on
+# GitHub's Ubuntu, for whether it is right, not how fast it is (the numbers are measured on a
+# machine of our own, `trials/server/measure.py`). Among them is the stand of the server lane
+# (`tests/cli.rs`, `the_servers_stand`): 10,000 connections that reset, close half, send a byte at
+# a time, do not read, send what is not the protocol, and SIGTERM, against the servers built for
+# release and under the sanitizers. The only action is GitHub's own checkout, pinned to its
+# commit; the token only reads.
+name: linux
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: interpreter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Clang and LLD build for the RISC-V machine and QEMU boots the kernel of `examples/kernel`
+      # (`tests/kernel.rs`); zlib, SQLite and curl are the libraries of the examples and tests.
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld qemu-system-misc zlib1g-dev libsqlite3-dev libcurl4-openssl-dev
+          cargo --version
+          clang --version
+      - name: Tests
+        run: cargo test --release
