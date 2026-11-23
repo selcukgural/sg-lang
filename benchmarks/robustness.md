@@ -116,11 +116,21 @@ runs of four of the scenario split, none of C's in four, and on Linux never. The
 open, so no program could tell; the test on macOS ends its connections with a close instead. Without
 permission to watch the packets it was left here.
 
+## A client out of local ports
+
+The other side of the stand (choice 1751 i): an SG client on a machine given 100 local ports connects 300
+times to a server of its own and keeps every connection. Past the ports, `TcpStream.connect` and
+`connectAsync` give an `IoError` (`system error 99`, `EADDRNOTAVAIL`) and the program goes on; once its
+connections are let go, a new one connects and sends. On Linux 99 connections were made interpreted and 98
+compiled (the listener holds one of the 100 ports). It is the test `a_client_out_of_local_ports` of
+[`tests/cli.rs`](../interpreter/tests/cli.rs), which runs only on a machine so narrowed, since it would starve
+the tests beside it: a last step of the job on Linux narrows the range with `sysctl` and runs it alone, and on
+this machine `podman run --sysctl net.ipv4.ip_local_port_range="40000 40099"` does.
+
 ## What is not tried
 
 A limit of memory by cgroup on the server, TLS, a load over IPv6, Windows, a network that loses or delays
-packets, io_uring, and the scenario of 100 local ports (choice 1751 i: a connect that finds no port gives an
-`IoError` and the program goes on), which is still to be written. The long run of 30 minutes is
+packets and io_uring. The long run of 30 minutes is
 [on the page of the servers](server.md#the-long-run) and stays a run at night on this machine (choice 1757).
 
 ## How it is measured

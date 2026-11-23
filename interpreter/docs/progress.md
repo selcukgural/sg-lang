@@ -395,13 +395,15 @@ descriptors and sends it SIGTERM; after each round the server must answer, be ba
 no more memory idle. Its quick level runs in `cargo test` and, from this slice, in a job of the continuous
 integration on Linux. It found SG's store holding all a client asked for that did not read (20 such clients, 3
 GB, as in the C version), now 64 KB of answers at a time, and a limit on a request that did not cover the
-sending of its answers; the servers can be stopped with SIGTERM and a grace. In a short try of the heavy level
+sending of its answers; the servers can be stopped with SIGTERM and a grace. On a machine given 100 local
+ports, an SG client's connections past them give an `IoError` and the program goes on, a test run alone by the
+same job. In a short try of the heavy level
 SG's servers stood everywhere, C's spun with their descriptors taken, and `tokio`'s grew round by round after
 resets and clients that do not read ([What the servers stand](../../benchmarks/robustness.md)).
 
 ## Next
 
-Next come the heavy level of the stand, run at night, and its scenario of local ports, then HTTP/1.1; and a slice for the command line,
+Next come the heavy level of the stand, run at night, then HTTP/1.1; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

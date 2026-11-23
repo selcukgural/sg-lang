@@ -1749,6 +1749,103 @@ fn the_servers_stand() {
     }
 }
 
+/// A client on a machine given 100 local ports (the test of `a_client_out_of_local_ports`).
+#[cfg(target_os = "linux")]
+const PORTS: &str = r#"void letGo(List<TcpStream> conns) {
+}
+
+async Result<bool, IoError> late(string address) {
+    match await TcpStream.connectAsync(read address) {
+        Ok(_) => {
+            print("async: connected")
+            return Ok(true)
+        }
+        Error(cause) => {
+            print($"async: refused: {cause}")
+            return Ok(false)
+        }
+    }
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var clients = List<TcpStream>()
+    var served = List<TcpStream>()
+    int refused = 0
+    for _ in 0..300 {
+        match TcpStream.connect(read address) {
+            Ok(conn) => {
+                clients.add(conn)
+                var other = try listener.accept()
+                served.add(other)
+            }
+            Error(cause) => {
+                if refused == 0 {
+                    print($"refused: {cause}")
+                }
+                refused += 1
+            }
+        }
+    }
+    print($"connected: {clients.length()}, refused: {refused}")
+    var task = late(address.clone())
+    if try task.wait() {
+        _ = try listener.accept()
+    }
+    letGo(served)
+    letGo(clients)
+    var again = try TcpStream.connect(read address)
+    var other = try listener.accept()
+    try again.send("ping".asBytes())
+    var buffer = byte[4](0)
+    nint got = 0
+    while got < 4 {
+        var n = try other.receive(ref buffer[got..])
+        if n == 0 {
+            break
+        }
+        got += n
+    }
+    var word = string.fromUtf8(buffer[0..got]) ?? "not text"
+    print($"connected again: {word}")
+    return Ok()
+}
+"#;
+
+/// A client whose local ports run out (choice 1751 i): past them `connect` and `connectAsync` give
+/// an `IoError` and the program goes on, interpreted and compiled; once its connections are let go,
+/// a new one connects. It needs a machine of 100 ports or so, and runs only on one: a step of
+/// `.github/workflows/linux.yml` narrows the range with `sysctl` after the other tests and runs this
+/// one alone with `SG_PORTS_NARROWED` set, and on our own machine `podman run --sysctl
+/// net.ipv4.ip_local_port_range="40000 40099"` does (`benchmarks/robustness.md`). Narrowed beside
+/// the other tests, it would starve them.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_out_of_local_ports() {
+    let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap_or_default();
+    let ends: Vec<u32> = range.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+    if ends.len() != 2 || ends[1] - ends[0] >= 200 {
+        // The job that narrows the range says so, and the test is not left out there unseen.
+        assert!(std::env::var_os("SG_PORTS_NARROWED").is_none(), "SG_PORTS_NARROWED, but the local ports are {}", range.trim());
+        eprintln!("the local ports are not narrowed ({}): a_client_out_of_local_ports not run", range.trim());
+        return;
+    }
+    let dir = work("a_client_out_of_local_ports");
+    for (mut way, name) in both_ways(&dir, &[("ports", PORTS)]) {
+        let (code, stdout, stderr) = ran(&way.finished());
+        let lines: Vec<&str> = stdout.lines().collect();
+        let counts = lines.iter().find_map(|line| line.strip_prefix("connected: ")).unwrap_or("");
+        let connected: u32 = counts.split(',').next().unwrap_or("").parse().unwrap_or(0);
+        let all = format!("{name}: exit {code}\n{stdout}\n{stderr}");
+        assert_eq!(code, 0, "{all}");
+        assert!(lines.first().is_some_and(|line| line.starts_with("refused: ")), "{all}");
+        assert!(connected > 0 && connected <= ends[1] - ends[0] + 1, "{all}");
+        assert!(lines.iter().any(|line| line.starts_with("async: refused: ")), "{all}");
+        assert_eq!(lines.last(), Some(&"connected again: ping"), "{all}");
+    }
+}
+
 /// What `net address` prints of the addresses of `the_trial_of_net`, as Rust and Zig print it.
 const ADDRESSES: &str = "addresses 5\nv6 3\nports 74138\ncharacters 75\nsum 299\ninvalid 3\n";
 
