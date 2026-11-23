@@ -310,7 +310,7 @@ What is refused:
   pair (`\ud800` alone);
 - a name twice in one object;
 - arrays and objects nested deeper than 128 (or the `maxDepth` of `JsonOptions`), so that a text cannot
-  exhaust the stack.
+  make a value deeper than the program expects.
 
 Writing escapes only what JSON needs: the quote, the backslash and the control characters (`\n`, `\t`, others
 as `\u001b`). Other characters stay as they are, in UTF-8. Writing a `Number` that is NaN or infinite is a
@@ -329,8 +329,8 @@ out, as `shift_remove` of Rust's `IndexMap` does.
 
 `toJson` writes as many levels as `Json.parse` reads, 128, and a value made in the program that is nested
 deeper is a panic, as NaN is: what is written is read back. `JsonOptions { maxDepth = n }` given to both
-writes and reads deeper. There is no upper bound, but each level takes some of the stack, in reading and in
-writing:
+writes and reads deeper. There is no upper bound: both keep the arrays and objects open on a list, not in a
+recursion, so a level takes no stack, and `maxDepth = 1000000` reads and writes a million levels:
 
 ```sg
 void main() {

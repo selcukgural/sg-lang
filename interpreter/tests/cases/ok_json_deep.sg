@@ -1,0 +1,39 @@
+// `Json.parse` and `toJson` keep the arrays and objects open on lists, not in a recursion
+// (choice 1820): with a `maxDepth` of 5001, a text 5001 deep is read and written back,
+// in an array and in an object, with what is around and after each level.
+string nested(nint depth, bool objects) {
+    var text = string.withCapacity(depth * 12)
+    for i in 0..depth {
+        if objects {
+            text.write($"{{\"k{i % 10}\":1,\"v\":")
+        } else {
+            text.write("[1,")
+        }
+    }
+    text.write("[]")
+    for _ in 0..depth {
+        if objects {
+            text.write(",\"z\":{}}")
+        } else {
+            text.write(",{}]")
+        }
+    }
+    return text
+}
+
+void main() {
+    nint depth = 5000
+    var options = JsonOptions { maxDepth = 5001 }
+    for objects in (List<bool> { false, true }) {
+        var text = nested(depth, objects)
+        var value = Json.parse(read text, options) ?? JsonValue.Null
+        var back = value.toJson(options)
+        print($"{text.length()} {back == text} {back[0..30]}")
+        // One level deeper than the limit, read and written.
+        var tight = JsonOptions { maxDepth = (int)depth }
+        match Json.parse(read text, tight) {
+            Ok(_) => print("read")
+            Error(e) => print(e)
+        }
+    }
+}

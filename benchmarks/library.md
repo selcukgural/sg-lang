@@ -20,16 +20,21 @@ since their work takes microseconds (1553, 1801).
 the numbers; `copy` reads it and writes it back on one line; `lines` reads a document on each line and walks
 each. 100 MB of each kind from `trials/inputs/json.sg`, seed 1: records (numbers whole and not, texts with
 escapes and letters past ASCII, nested objects and arrays), one record a line, and polygons of coordinates
-of seventeen digits, as `canada.json`. Apple M3 Max, 21 November 2026:
+of seventeen digits, as `canada.json`. Apple M3 Max, 24 November 2026:
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |
 |---|---|---|---|---|---|
-| Records, read and summed | 0.476 s, 786 MB | 0.494 s, 786 MB | 0.668 s, 1286 MB | 0.552 s, 1074 MB | 0.697 s, 1191 MB |
-| Records, read and written back | 0.688 s, 881 MB | 0.722 s, 881 MB | 0.763 s, 1286 MB | 0.719 s, 1074 MB | 0.889 s, 1191 MB |
-| A document a line, each read and summed | 0.392 s, 2.4 MB | 0.412 s, 2.4 MB | 0.543 s, 2.8 MB | 0.464 s, 2.2 MB | 0.582 s, 2.3 MB |
-| Coordinates, read and summed | 0.355 s, 518 MB | 0.358 s, 518 MB | 0.415 s, 1117 MB | 0.457 s, 942 MB | 0.591 s, 1066 MB |
-| Size, stripped | 99 KB | 99 KB | 485 KB | 426 KB | 522 KB |
+| Records, read and summed | 0.495 s, 786 MB | 0.521 s, 786 MB | 0.678 s, 1286 MB | 0.548 s, 1074 MB | 0.701 s, 1191 MB |
+| Records, read and written back | 0.645 s, 881 MB | 0.662 s, 881 MB | 0.760 s, 1286 MB | 0.716 s, 1074 MB | 0.884 s, 1191 MB |
+| A document a line, each read and summed | 0.412 s, 2.4 MB | 0.445 s, 2.4 MB | 0.545 s, 2.9 MB | 0.471 s, 2.1 MB | 0.589 s, 2.3 MB |
+| Coordinates, read and summed | 0.363 s, 518 MB | 0.360 s, 518 MB | 0.413 s, 1117 MB | 0.455 s, 942 MB | 0.585 s, 1066 MB |
+| Size, stripped | 100 KB | 116 KB | 485 KB | 426 KB | 522 KB |
 | Lines | 130 | 130 | 111 | 110 | 110 |
+
+Since slice 167 `Json.parse` and `toJson` keep the arrays and objects open on a list, not in a recursion, so
+that `maxDepth` is the only bound (1829); against the recursion, measured side by side, reading takes 1% to 6%
+longer, most in a document a line, which takes a list for each (best of nine, on the
+build of the day before it: 0.471 s to 0.485 s, 0.611 s to 0.634 s, 0.391 s to 0.414 s, 0.348 s to 0.352 s).
 
 Rust is `serde_json` 1.0.154 into a `Value`, with `preserve_order` and `float_roundtrip` (1638); without
 them the coordinates take 0.386 s and come out other numbers. Zig is `std.json` into a `Value`, in an arena

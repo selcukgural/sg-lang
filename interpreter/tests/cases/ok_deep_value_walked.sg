@@ -1,0 +1,31 @@
+// The interpreter walks a value with a list of its own, not by recursion (choice 1820): a chain
+// of a million links is written, compared, copied and let go, as compiled code does on its stack
+// of 1 GB (1821). The interpreter stopped writing it with a panic before.
+struct Node : Formattable, Equatable, Clonable {
+    int value
+    Node*? next
+}
+
+Node chain(int count, int last) {
+    var head = Node { value = last, next = null }
+    for i in 1..count {
+        head = Node { value = i, next = new head }
+    }
+    return head
+}
+
+void main() {
+    int count = 1000000
+    var a = chain(count, 0)
+    var c = chain(count, 1)
+    var text = $"{a}".toString()
+    print(text.length())
+    print(text[0..48])
+    print(text[text.length() - 40..])
+    var d = a.clone()
+    print($"{d == a} {a == c} {d != c}")
+    var nodes = List<Node>()
+    nodes.add(c)
+    nodes.add(d)
+    print(nodes.indexOf(read a) ?? -1)
+}

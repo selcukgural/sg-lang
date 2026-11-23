@@ -448,10 +448,15 @@ put apart and its errors boxed it takes about 2.5 KB, so about 380,000 calls fit
 1820: the interpreter lets go of a value with a list of its own, where Rust's recursive drop ended it
 without a word at ten million levels.
 
+Slice 167 finished 1820 as 1827-1830 narrowed it: compiled code stays as it is, its stack of 1 GB holding ten
+million levels, and the interpreter writes, copies, compares and makes the keys of a value with a list of its
+own, so it walks a chain of a million links as compiled code does (writing one was a panic); a map, a set and
+a channel are let go with the list too. `Json.parse` and `toJson` keep what is open on a list, so `maxDepth`
+is the only bound: a million levels read and written compiled in 0.8 s, at a cost of 1% to 6% in reading.
+
 ## Next
 
-Next comes slice 167: what the language walks (`drop`, `clone`, `==`, `compare`, `hash`, writing, the JSON
-writer) walked with a loop, so no value however deep overflows a stack (1820). Then the heavy level of
+Next comes the heavy level of
 the stand, run at night, the other trials looked at as `jq` was (1812), a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

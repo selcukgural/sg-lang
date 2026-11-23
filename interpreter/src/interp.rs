@@ -175,6 +175,15 @@ impl Drop for ChanEnd {
     }
 }
 
+/// What is left in a channel is let go with `let_go`, however deep it is.
+impl Drop for Chan {
+    fn drop(&mut self) {
+        for item in self.items.get_mut().drain(..) {
+            let_go(item);
+        }
+    }
+}
+
 /// A fiber that waits on a channel, to send (`sends`) or to receive.
 struct ChanWait {
     fiber: usize,
@@ -1347,8 +1356,16 @@ impl<V> Table<V> {
 
 /// A key of a `HashMap` or an item of a `HashSet`: an integer, a `bool`, text, or a struct
 /// or an enum made of such parts (an enum starts with the position of its variant).
+///
+/// The parts are one list, those of a struct or an enum inside it between `Begin` and `End`,
+/// so that a key is made, hashed, compared and let go of by loops however deep the value is
+/// (choice 1820). It is in the order a tree of parts would be: `End` is below every part, as
+/// a list of parts is below a longer one that starts with the same, and `Begin` above every
+/// part that is not a struct or an enum.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
+    /// The end of the parts of a struct or an enum inside another.
+    End,
     Null,
     Bool(bool),
     Int(i128),
@@ -1356,7 +1373,105 @@ pub enum Key {
     /// it is what `equals` and `compare` look at.
     Float(i64),
     Str(Rc<String>),
+    /// The start of the parts of a struct or an enum inside another.
+    Begin,
     Parts(Vec<Key>),
+}
+
+/// What `Interp::show` has left to write, the next last: text as it is, a value, or a part
+/// of one, read when its turn comes.
+enum Writing<'a> {
+    Text(&'a str),
+    /// The value and whether it is inside another.
+    Value(Value, bool),
+    Part(Cell),
+}
+
+/// The parts of a value for `Interp::show`, `separator` between them, the last first.
+fn between<'a>(parts: impl Iterator<Item = Cell>, separator: &'a str) -> Vec<Writing<'a>> {
+    let mut list = Vec::new();
+    for part in parts {
+        if !list.is_empty() {
+            list.push(Writing::Text(separator));
+        }
+        list.push(Writing::Part(part));
+    }
+    list.reverse();
+    list
+}
+
+/// A value `Interp::cloned` is making: what it is, what it is copied from, and the copies of
+/// its parts made so far.
+struct Copying {
+    kind: CopyOf,
+    from: CopyFrom,
+    made: Vec<Cell>,
+}
+
+enum CopyOf {
+    Struct(Rc<str>),
+    Enum(Rc<str>, usize),
+    Array,
+    List,
+    Map(Rc<RefCell<Entries>>),
+    Set(Rc<RefCell<Table<Value>>>),
+    Ptr,
+}
+
+enum CopyFrom {
+    Fields(Rc<Fields>),
+    Cells(Rc<Vec<Cell>>),
+    /// The keys and values of a map, one after the other.
+    Entries(Vec<(Value, Cell)>),
+    Values(Vec<Value>),
+}
+
+impl CopyFrom {
+    /// The part at `at` as it is now; `None` past the last.
+    fn part(&self, at: usize) -> Option<Value> {
+        match self {
+            CopyFrom::Fields(fields) => fields.cells.get(at).map(|part| part.borrow().clone()),
+            CopyFrom::Cells(cells) => cells.get(at).map(|part| part.borrow().clone()),
+            CopyFrom::Entries(entries) => entries.get(at / 2).map(|(key, item)| match at % 2 {
+                0 => key.clone(),
+                _ => item.borrow().clone(),
+            }),
+            CopyFrom::Values(values) => values.get(at).cloned(),
+        }
+    }
+}
+
+impl Copying {
+    /// The copy, its parts all made.
+    fn finish(self) -> Value {
+        let made = self.made;
+        match self.kind {
+            CopyOf::Struct(name) => Value::Struct(name, Fields::plain(made)),
+            CopyOf::Enum(name, index) => Value::Enum(name, index, Rc::new(made)),
+            CopyOf::Array => Value::Array(Rc::new(made)),
+            CopyOf::List => Value::List(Rc::new(RefCell::new(made))),
+            CopyOf::Map(entries) => {
+                let mut copies = Vec::with_capacity(made.len() / 2);
+                let mut parts = made.into_iter();
+                while let (Some(key), Some(item)) = (parts.next(), parts.next()) {
+                    copies.push((taken(key), item));
+                }
+                let table = entries.borrow().with_held(copies);
+                Value::Map(Rc::new(RefCell::new(table)))
+            }
+            CopyOf::Set(items) => {
+                let copies = made.into_iter().map(taken).collect();
+                let table = items.borrow().with_held(copies);
+                Value::Set(Rc::new(RefCell::new(table)))
+            }
+            CopyOf::Ptr => Value::Ptr(made.into_iter().next().expect("what it points to")),
+        }
+    }
+}
+
+/// The value of a cell no other place holds.
+fn taken(part: Cell) -> Value {
+    Rc::try_unwrap(part).map(RefCell::into_inner).unwrap_or_else(|part| part.borrow().clone())
 }
 
 /// The total order of `equals` and `compare`: every `NaN` is one value, below every other;
@@ -1440,6 +1555,56 @@ fn float_literal(text: &str, ty: FloatTy) -> f64 {
 }
 
 fn key_of(value: &Value) -> Key {
+    let value = behind_pointers(value.clone());
+    let mut parts = Vec::new();
+    // The fields still to be gone over, the next last; `None` is the end of a struct or an enum.
+    let mut left: Vec<Option<Cell>> = Vec::new();
+    if !open_parts(&value, &mut parts, &mut left) {
+        return part_key(&value);
+    }
+    while let Some(next) = left.pop() {
+        let Some(field) = next else {
+            parts.push(Key::End);
+            continue;
+        };
+        let value = behind_pointers(field.borrow().clone());
+        let at = parts.len();
+        parts.push(Key::Begin);
+        left.push(None);
+        if !open_parts(&value, &mut parts, &mut left) {
+            left.pop();
+            parts[at] = part_key(&value);
+        }
+    }
+    Key::Parts(parts)
+}
+
+/// The value a key is made of, behind any pointers and borrows.
+fn behind_pointers(mut value: Value) -> Value {
+    while let Value::Ptr(inner) | Value::Borrow(inner) = &value {
+        let inner = inner.borrow().clone();
+        value = inner;
+    }
+    value
+}
+
+/// Of a struct or an enum, puts the position of the variant with the parts and the fields on
+/// the list to be gone over, the first last; whether the value has fields.
+fn open_parts(value: &Value, parts: &mut Vec<Key>, left: &mut Vec<Option<Cell>>) -> bool {
+    let fields: &[Cell] = match value {
+        Value::Struct(_, fields) => &fields.cells,
+        Value::Enum(_, index, fields) => {
+            parts.push(Key::Int(*index as i128));
+            fields
+        }
+        _ => return false,
+    };
+    left.extend(fields.iter().rev().cloned().map(Some));
+    true
+}
+
+/// The key of a value that is not made of parts.
+fn part_key(value: &Value) -> Key {
     match value {
         Value::Bool(value) => Key::Bool(*value),
         Value::Int(_, value) => Key::Int(*value),
@@ -1447,12 +1612,6 @@ fn key_of(value: &Value) -> Key {
         Value::Float(_, value) => Key::Float(float_key(*value)),
         Value::Str(text) => Key::Str(text.clone()),
         Value::Null => Key::Null,
-        Value::Struct(_, fields) => Key::Parts(fields.iter().map(|field| key_of(&field.borrow())).collect()),
-        Value::Enum(_, index, fields) => {
-            let parts = fields.iter().map(|field| key_of(&field.borrow()));
-            Key::Parts(std::iter::once(Key::Int(*index as i128)).chain(parts).collect())
-        }
-        Value::Ptr(inner) | Value::Borrow(inner) => key_of(&inner.borrow()),
         _ => unreachable!("the checker only lets `Hashable` values be keys"),
     }
 }
@@ -2271,6 +2430,21 @@ fn let_go(value: Value) {
                     }
                 }
             }
+            Value::Map(entries) => {
+                if let Ok(entries) = Rc::try_unwrap(entries) {
+                    for (key, item) in entries.into_inner().held.into_iter().rev() {
+                        if let Ok(only) = Rc::try_unwrap(item) {
+                            left.push(only.into_inner());
+                        }
+                        left.push(key);
+                    }
+                }
+            }
+            Value::Set(items) => {
+                if let Ok(items) = Rc::try_unwrap(items) {
+                    left.extend(items.into_inner().held.into_iter().rev());
+                }
+            }
             Value::Shared(held) => {
                 if Rc::strong_count(&held) == 1 {
                     // `Held` leaves `LIVE` as it is let go; its value is then this cell's alone.
@@ -2306,7 +2480,7 @@ fn keep_parts(left: &mut Vec<Value>, parts: Vec<Cell>) {
 
 /// Whether a value holds others that `let_go` takes apart.
 fn takes_apart(value: &Value) -> bool {
-    matches!(value, Value::Ptr(_) | Value::Enum(..) | Value::Array(_) | Value::Slice(_) | Value::List(_) | Value::Struct(..) | Value::Shared(_))
+    matches!(value, Value::Ptr(_) | Value::Enum(..) | Value::Array(_) | Value::Slice(_) | Value::List(_) | Value::Struct(..) | Value::Shared(_) | Value::Map(_) | Value::Set(_))
 }
 
 impl Frame {
@@ -2754,19 +2928,6 @@ fn stack_spent() -> bool {
     let here = 0u8;
     let used = base.saturating_sub(std::hint::black_box(&here) as *const u8 as usize);
     base != 0 && used > crate::STACK_BYTES - STACK_SPARE
-}
-
-/// The values the interpreter writes, compares and copies are walked by recursion, as deep as
-/// they are nested (a list of a million links). Before the stack runs out that is a panic of
-/// the program, as deep recursion of its own is, not a fault of the interpreter. The stack
-/// grows down on every machine the interpreter runs on.
-fn stack_room(span: Span, what: &str) -> Res<()> {
-    match stack_spent() {
-        true => Err(Diag::panic(span, format!("stack overflow: the value is nested too deep to be {what} here"))
-            .note("the interpreter walks a value by recursion; a loop of the program can walk it one link at a time")
-            .into()),
-        false => Ok(()),
-    }
 }
 
 /// `100000000` as `100 000 000`.
@@ -6620,86 +6781,104 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// How a value is written as text. A struct with a `format` method of its own writes
     /// itself; any other struct or enum is written field by field. `inside`: the value is
     /// part of another one, where text is quoted to keep the parts apart.
+    ///
+    /// The parts are written with a list of what is left to write, not by recursion, so that
+    /// a value however deep is written (choice 1820); each is taken out of its place when its
+    /// turn comes, as the recursion took it.
     fn show(&mut self, value: &Value, inside: bool, span: Span) -> Res<String> {
-        stack_room(span, "written")?;
-        let list = |interp: &mut Self, fields: &[Cell]| -> Res<Vec<String>> {
-            let mut parts = Vec::new();
-            for field in fields {
-                let value = field.borrow().clone();
-                parts.push(interp.show(&value, true, span)?);
-            }
-            Ok(parts)
-        };
-        match value {
-            Value::Ptr(inner) | Value::Borrow(inner) => {
-                let value = inner.borrow().clone();
-                self.show(&value, inside, span)
-            }
-            Value::Shared(held) => {
-                let value = held.value.borrow().clone();
-                self.show(&value, inside, span)
-            }
-            Value::Array(_) | Value::Slice(_) | Value::Bytes(..) => self.show(&as_list(value.clone()), inside, span),
-            Value::Str(text) if inside => Ok(format!("{text:?}")),
-            Value::Char(value) if inside => Ok(quoted_char(*value)),
-            Value::Null => Ok("null".to_string()),
-            Value::Void => Ok(String::new()),
-            Value::Struct(name, fields) => {
-                if let Some(text) = self.own_format(name, value, span)? {
-                    return Ok(text);
+        let mut out = String::new();
+        let mut left = vec![Writing::Value(value.clone(), inside)];
+        while let Some(next) = left.pop() {
+            let (value, inside) = match next {
+                Writing::Text(text) => {
+                    out.push_str(text);
+                    continue;
                 }
-                let decl = self.structs[&**name];
-                let parts = list(self, fields)?;
-                let named: Vec<String> = decl.fields.iter().zip(parts).map(|(field, text)| format!("{} = {text}", field.name)).collect();
-                // A struct without fields is written by its name alone, as in Rust.
-                Ok(match named.is_empty() {
-                    true => short_name(name).to_string(),
-                    false => format!("{} {{ {} }}", short_name(name), named.join(", ")),
-                })
-            }
-            Value::Enum(name, index, fields) => {
-                if let Some(text) = self.own_format(name, value, span)? {
-                    return Ok(text);
+                Writing::Value(value, inside) => (value, inside),
+                Writing::Part(part) => (part.borrow().clone(), true),
+            };
+            match value {
+                Value::Ptr(inner) | Value::Borrow(inner) => left.push(Writing::Value(inner.borrow().clone(), inside)),
+                Value::Shared(held) => left.push(Writing::Value(held.value.borrow().clone(), inside)),
+                Value::Array(_) | Value::Slice(_) | Value::Bytes(..) => left.push(Writing::Value(as_list(value), inside)),
+                Value::Str(text) if inside => out.push_str(&format!("{text:?}")),
+                Value::Char(value) if inside => out.push_str(&quoted_char(value)),
+                Value::Null => out.push_str("null"),
+                Value::Void => {}
+                Value::Struct(ref name, ref fields) => {
+                    if let Some(text) = self.own_format(name, &value, span)? {
+                        out.push_str(&text);
+                        continue;
+                    }
+                    // A struct without fields is written by its name alone, as in Rust.
+                    out.push_str(short_name(name));
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let decl = self.structs[&**name];
+                    out.push_str(" { ");
+                    left.push(Writing::Text(" }"));
+                    for (at, (field, part)) in decl.fields.iter().zip(fields.iter()).enumerate().rev() {
+                        left.push(Writing::Part(part.clone()));
+                        left.push(Writing::Text(" = "));
+                        left.push(Writing::Text(&field.name));
+                        if at > 0 {
+                            left.push(Writing::Text(", "));
+                        }
+                    }
                 }
-                // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
-                if &**name == "IoError" {
-                    let text = crate::check::IO_ERROR_TEXTS[*index];
-                    return Ok(match *index {
-                        4 | 5 => format!("{text}{}", list(self, fields)?.join("")),
-                        _ => text.to_string(),
+                Value::Enum(ref name, index, ref fields) => {
+                    if let Some(text) = self.own_format(name, &value, span)? {
+                        out.push_str(&text);
+                        continue;
+                    }
+                    // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
+                    if &**name == "IoError" {
+                        out.push_str(crate::check::IO_ERROR_TEXTS[index]);
+                        if let 4 | 5 = index {
+                            left.extend(fields.iter().rev().cloned().map(Writing::Part));
+                        }
+                        continue;
+                    }
+                    out.push_str(match &**name {
+                        "Result" => ["Ok", "Error"][index],
+                        _ => self.enums[&**name].variants[index].name.as_str(),
                     });
+                    if !fields.is_empty() {
+                        out.push('(');
+                        left.push(Writing::Text(")"));
+                        left.extend(between(fields.iter().cloned(), ", "));
+                    }
                 }
-                let word = match &**name {
-                    "Result" => ["Ok", "Error"][*index],
-                    _ => self.enums[&**name].variants[*index].name.as_str(),
-                };
-                let parts = list(self, fields)?;
-                Ok(match parts.is_empty() {
-                    true => word.to_string(),
-                    false => format!("{word}({})", parts.join(", ")),
-                })
-            }
-            // `[1, 2]`, `{"x": 10}`, `{1, 2}`
-            Value::List(items) => {
-                let items: Vec<Cell> = items.borrow().clone();
-                Ok(format!("[{}]", list(self, &items)?.join(", ")))
-            }
-            Value::Set(items) => {
-                let items: Vec<Cell> = items.borrow().values().cloned().map(cell).collect();
-                Ok(format!("{{{}}}", list(self, &items)?.join(", ")))
-            }
-            Value::Map(entries) => {
-                let entries: Vec<(Value, Cell)> = entries.borrow().values().cloned().collect();
-                let mut parts = Vec::new();
-                for (key, value) in entries {
-                    let value = value.borrow().clone();
-                    parts.push(format!("{}: {}", self.show(&key, true, span)?, self.show(&value, true, span)?));
+                // `[1, 2]`, `{"x": 10}`, `{1, 2}`
+                Value::List(items) => {
+                    out.push('[');
+                    left.push(Writing::Text("]"));
+                    left.extend(between(items.borrow().iter().cloned(), ", "));
                 }
-                Ok(format!("{{{}}}", parts.join(", ")))
+                Value::Set(items) => {
+                    out.push('{');
+                    left.push(Writing::Text("}"));
+                    left.extend(between(items.borrow().values().cloned().map(cell), ", "));
+                }
+                Value::Map(entries) => {
+                    out.push('{');
+                    left.push(Writing::Text("}"));
+                    let entries = entries.borrow();
+                    for (at, (key, item)) in entries.values().enumerate().collect::<Vec<_>>().into_iter().rev() {
+                        left.push(Writing::Part(item.clone()));
+                        left.push(Writing::Text(": "));
+                        left.push(Writing::Value(key.clone(), true));
+                        if at > 0 {
+                            left.push(Writing::Text(", "));
+                        }
+                    }
+                }
+                Value::Formatter(_) => unreachable!("the checker does not let a `Formatter` be written"),
+                other => out.push_str(&other.format()),
             }
-            Value::Formatter(_) => unreachable!("the checker does not let a `Formatter` be written"),
-            other => Ok(other.format()),
         }
+        Ok(out)
     }
 
     /// An operator on two values. On a struct or an enum `==` is `equals` and `<` is `compare`.
@@ -6754,78 +6933,105 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// `.clone()` made by the language (choice 1818): a type's own `clone` where it writes one, else
     /// a copy of every part that owns; a `shared` value is one more owner of what it points to, a
-    /// `weak` one one more looker.
+    /// `weak` one one more looker. The parts are copied with a list of the values being made,
+    /// not by recursion, so that a value however deep is copied (choice 1820); each part is
+    /// taken out of its place when its turn comes, and a type's own `clone` is called in the
+    /// order the recursion called it.
     fn cloned(&mut self, value: &Value, span: Span) -> Res<Value> {
-        stack_room(span, "cloned")?;
-        if let Value::Struct(name, _) | Value::Enum(name, ..) = value {
-            if let Some(func) = self.methods.get(&**name).and_then(|methods| methods.get("clone")).copied() {
-                return self.call(func, Some(Value::Borrow(cell(value.clone()))), Vec::new(), span);
+        let mut making: Vec<Copying> = Vec::new();
+        let mut next = value.clone();
+        loop {
+            let mut made = match self.copy_start(next, span)? {
+                Ok(made) => made,
+                Err(copying) => match copying.from.part(0) {
+                    Some(part) => {
+                        making.push(copying);
+                        next = part;
+                        continue;
+                    }
+                    None => copying.finish(),
+                },
+            };
+            // A copy made is given to the value it is part of, whose next part is copied next;
+            // when it has no more, it is made and given to its own.
+            loop {
+                let Some(top) = making.last_mut() else { return Ok(made) };
+                top.made.push(cell(made));
+                if let Some(part) = top.from.part(top.made.len()) {
+                    next = part;
+                    break;
+                }
+                made = making.pop().expect("the top").finish();
             }
         }
-        Ok(match value {
-            Value::Struct(name, fields) => Value::Struct(name.clone(), Fields::plain(self.cloned_cells(&fields[..], span)?)),
-            Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, Rc::new(self.cloned_cells(fields, span)?)),
-            Value::Array(items) => Value::Array(Rc::new(self.cloned_cells(items, span)?)),
-            Value::List(items) => {
-                let items = items.borrow().clone();
-                Value::List(Rc::new(RefCell::new(self.cloned_cells(&items, span)?)))
+    }
+
+    /// Where `cloned` starts on a value: the copy, when it is made at once, or the value to be
+    /// made of copies of its parts.
+    fn copy_start(&mut self, value: Value, span: Span) -> Res<Result<Value, Copying>> {
+        let value = strip(value);
+        if let Value::Struct(name, _) | Value::Enum(name, ..) = &value {
+            if let Some(func) = self.methods.get(&**name).and_then(|methods| methods.get("clone")).copied() {
+                return Ok(Ok(self.call(func, Some(Value::Borrow(cell(value.clone()))), Vec::new(), span)?));
             }
+        }
+        let (kind, from) = match value {
+            Value::Struct(name, fields) => (CopyOf::Struct(name), CopyFrom::Fields(fields)),
+            Value::Enum(name, index, fields) => (CopyOf::Enum(name, index), CopyFrom::Cells(fields)),
+            Value::Array(items) => (CopyOf::Array, CopyFrom::Cells(items)),
+            Value::List(items) => (CopyOf::List, CopyFrom::Cells(Rc::new(items.borrow().clone()))),
             Value::Map(entries) => {
                 let held: Vec<(Value, Cell)> = entries.borrow().values().cloned().collect();
-                let mut copies = Vec::with_capacity(held.len());
-                for (key, item) in &held {
-                    let item = item.borrow().clone();
-                    copies.push((self.cloned(key, span)?, cell(self.cloned(&item, span)?)));
-                }
-                let table = entries.borrow().with_held(copies);
-                Value::Map(Rc::new(RefCell::new(table)))
+                (CopyOf::Map(entries), CopyFrom::Entries(held))
             }
             Value::Set(items) => {
                 let held: Vec<Value> = items.borrow().values().cloned().collect();
-                let mut copies = Vec::with_capacity(held.len());
-                for item in &held {
-                    copies.push(self.cloned(item, span)?);
-                }
-                let table = items.borrow().with_held(copies);
-                Value::Set(Rc::new(RefCell::new(table)))
+                (CopyOf::Set(items), CopyFrom::Values(held))
             }
-            Value::Ptr(inner) => {
-                let inner = inner.borrow().clone();
-                Value::Ptr(cell(self.cloned(&inner, span)?))
-            }
-            Value::Borrow(inner) => {
-                let inner = inner.borrow().clone();
-                self.cloned(&inner, span)?
-            }
-            other => other.clone(),
-        })
+            Value::Ptr(inner) => (CopyOf::Ptr, CopyFrom::Cells(Rc::new(vec![inner]))),
+            other => return Ok(Ok(other.clone())),
+        };
+        Ok(Err(Copying { kind, from, made: Vec::new() }))
     }
 
-    fn cloned_cells(&mut self, items: &[Cell], span: Span) -> Res<Vec<Cell>> {
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            let value = item.borrow().clone();
-            out.push(cell(self.cloned(&value, span)?));
-        }
-        Ok(out)
-    }
-
-    /// `a.equals(b)`: the struct's own `equals`, or field by field.
+    /// `a.equals(b)`: the struct's own `equals`, or field by field. The pairs of parts left to
+    /// compare are on a list, not in a recursion, so that values however deep are compared
+    /// (choice 1820); each pair is taken out of its places when its turn comes, and a type's
+    /// own `equals` is called in the order the recursion called it.
     fn equal(&mut self, left: &Value, right: &Value, span: Span) -> Res<bool> {
-        stack_room(span, "compared")?;
-        let (left, right) = (as_list(owned(left.clone())), as_list(owned(right.clone())));
+        let mut left_over: Vec<(Cell, Cell)> = Vec::new();
+        let mut next = Some((left.clone(), right.clone()));
+        loop {
+            let (left, right) = match next.take() {
+                Some(pair) => pair,
+                None => match left_over.pop() {
+                    Some((a, b)) => (a.borrow().clone(), b.borrow().clone()),
+                    None => return Ok(true),
+                },
+            };
+            if !self.equal_here(left, right, &mut left_over, span)? {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Whether two values may be equal: what decides it here, else their parts, put on the list
+    /// in pairs, the first last.
+    fn equal_here(&mut self, left: Value, right: Value, left_over: &mut Vec<(Cell, Cell)>, span: Span) -> Res<bool> {
+        let (left, right) = (as_list(owned(left)), as_list(owned(right)));
         if let Some(result) = self.compared("equals", &left, &right, span)? {
             return Ok(matches!(result, Value::Bool(true)));
         }
+        let mut pairs = |a: &[Cell], b: &[Cell]| left_over.extend(a.iter().cloned().zip(b.iter().cloned()).rev());
         // Collections: a list item by item in order; a set and a map by what they hold,
         // whatever the order.
-        let pairs: Vec<(Cell, Cell)> = match (&left, &right) {
+        match (&left, &right) {
             (Value::List(a), Value::List(b)) => {
                 let (a, b) = (a.borrow(), b.borrow());
                 if a.len() != b.len() {
                     return Ok(false);
                 }
-                a.iter().cloned().zip(b.iter().cloned()).collect()
+                pairs(&a, &b);
             }
             (Value::Set(a), Value::Set(b)) => {
                 let (a, b) = (a.borrow(), b.borrow());
@@ -6836,40 +7042,23 @@ impl<'a, 'e> Interp<'a, 'e> {
                 if a.len() != b.len() || !a.keys().all(|key| b.contains_key(key)) {
                     return Ok(false);
                 }
-                a.keys().zip(a.values()).map(|(key, (_, value))| (value.clone(), b.get(key).expect("just tested").1.clone())).collect()
+                let found: Vec<(Cell, Cell)> = a.keys().zip(a.values()).map(|(key, (_, value))| (value.clone(), b.get(key).expect("just tested").1.clone())).collect();
+                left_over.extend(found.into_iter().rev());
             }
-            _ => Vec::new(),
-        };
-        if matches!(left, Value::List(_) | Value::Map(_)) {
-            for (a, b) in pairs {
-                let (a, b) = (a.borrow().clone(), b.borrow().clone());
-                if !self.equal(&a, &b, span)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        let (left_fields, right_fields) = match (&left, &right) {
-            (Value::Struct(_, a), Value::Struct(_, b)) => (&a.cells, &b.cells),
-            (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => (&**a, &**b),
+            (Value::List(_) | Value::Map(_), _) => {}
+            (Value::Struct(_, a), Value::Struct(_, b)) => pairs(&a.cells, &b.cells),
+            (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => pairs(a, b),
             (Value::Enum(..), Value::Enum(..)) => return Ok(false),
             // A `T?` that holds a value on one side only: the value may be one that is no key.
-            (Value::Null, Value::Null) => return Ok(true),
+            (Value::Null, Value::Null) => {}
             (Value::Null, _) | (_, Value::Null) => return Ok(false),
             _ => return Ok(key_of(&left) == key_of(&right)),
-        };
-        for (a, b) in left_fields.iter().zip(right_fields.iter()) {
-            let (a, b) = (a.borrow().clone(), b.borrow().clone());
-            if !self.equal(&a, &b, span)? {
-                return Ok(false);
-            }
         }
         Ok(true)
     }
 
     /// `a.compare(b)`: the struct's own `compare`; numbers and text have their order.
     fn compare(&mut self, left: &Value, right: &Value, span: Span) -> Res<std::cmp::Ordering> {
-        stack_room(span, "compared")?;
         let (left, right) = (owned(left.clone()), owned(right.clone()));
         match self.compared("compare", &left, &right, span)? {
             Some(Value::Int(_, result)) => Ok(result.cmp(&0)),
@@ -9249,5 +9438,58 @@ mod let_go_tests {
             .join();
         // Each `shared` value left `LIVE` as it was let go.
         assert_eq!(built.ok(), Some(0));
+    }
+
+    #[test]
+    fn a_deep_key_is_made_compared_and_let_go_without_a_deep_stack() {
+        let done = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(|| {
+                const DEEP: usize = 1_000_000;
+                let chain = |last: i128| {
+                    let mut value = Value::Enum("Link".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Int, last))]));
+                    for _ in 0..DEEP {
+                        value = Value::Struct("Node".into(), Fields::plain(vec![cell(Value::Int(IntTy::Int, 1)), cell(Value::Ptr(cell(value)))]));
+                    }
+                    value
+                };
+                let (a, b, c) = (chain(0), chain(0), chain(1));
+                let (ka, kb, kc) = (key_of(&a), key_of(&b), key_of(&c));
+                let same = ka == kb && ka < kc;
+                let mut set: Table<Value> = Table::new();
+                set.insert(ka, a);
+                let found = set.contains_key(&kb) && !set.contains_key(&kc);
+                let_go(Value::Set(Rc::new(RefCell::new(set))));
+                let mut map: Entries = Table::new();
+                map.insert(kb, (b, cell(c)));
+                let_go(Value::Map(Rc::new(RefCell::new(map))));
+                drop(kc);
+                same && found
+            })
+            .unwrap()
+            .join();
+        assert_eq!(done.ok(), Some(true));
+    }
+
+    #[test]
+    fn a_key_of_parts_is_in_the_order_of_its_tree() {
+        // `Begin`/`End` keep the order a tree of parts had: a part that is a struct is above one
+        // that is not, a shorter list of parts below a longer one that starts the same.
+        let int = |n: i128| Value::Int(IntTy::Int, n);
+        let node = |parts: Vec<Value>| Value::Struct("S".into(), Fields::plain(parts.into_iter().map(cell).collect()));
+        let ordered = [
+            node(vec![int(1), node(vec![])]),
+            node(vec![int(1), node(vec![int(0)])]),
+            node(vec![int(1), node(vec![int(0), int(0)])]),
+            node(vec![int(1), node(vec![int(1)])]),
+            node(vec![int(1), node(vec![int(1)]), int(0)]),
+            node(vec![int(2)]),
+        ];
+        for pair in ordered.windows(2) {
+            assert!(key_of(&pair[0]) < key_of(&pair[1]), "{:?} < {:?}", key_of(&pair[0]), key_of(&pair[1]));
+        }
+        let text = |t: &str| Value::Str(Rc::new(t.to_string()));
+        assert!(key_of(&node(vec![text("z")])) < key_of(&node(vec![node(vec![])])));
+        assert_eq!(key_of(&node(vec![int(1), node(vec![int(2)])])), key_of(&node(vec![int(1), node(vec![int(2)])])));
     }
 }

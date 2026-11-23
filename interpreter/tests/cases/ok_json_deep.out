@@ -1,0 +1,4 @@
+35002 true [1,[1,[1,[1,[1,[1,[1,[1,[1,[1,
+line 1, column 15001: nested deeper than 5000
+100002 true {"k0":1,"v":{"k1":1,"v":{"k2":
+line 1, column 60001: nested deeper than 5000

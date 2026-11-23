@@ -49,10 +49,10 @@ memory each held, the size of each program, and the builds with checks are on th
 | grep | `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.133 s | 0.129 s (Zig) | 1.03 |
 | grep | `'in [0-9]{4} ms: .*日本'` | 0.061 s | 0.073 s (Zig) | 0.84 |
 | grep | `-v -c INFO` | 0.049 s | 0.062 s (Zig) | 0.79 |
-| json | Records, read and summed | 0.476 s | 0.552 s (Zig) | 0.86 |
-| json | Records, read and written back | 0.688 s | 0.719 s (Zig) | 0.96 |
-| json | A document a line, each read and summed | 0.392 s | 0.464 s (Zig) | 0.84 |
-| json | Coordinates, read and summed | 0.355 s | 0.415 s (Rust) | 0.86 |
+| json | Records, read and summed | 0.495 s | 0.548 s (Zig) | 0.90 |
+| json | Records, read and written back | 0.645 s | 0.716 s (Zig) | 0.90 |
+| json | A document a line, each read and summed | 0.412 s | 0.471 s (Zig) | 0.87 |
+| json | Coordinates, read and summed | 0.363 s | 0.413 s (Rust) | 0.88 |
 | compression | 100 MB of a log, compressed | 1.616 s | 0.949 s (Rust, `zlib-rs`) | 1.70 |
 | compression | 100 MB of a log, opened | 0.084 s | 0.086 s (Rust, `zlib-rs`) | 0.98 |
 | compression | 99,640 records, each compressed and opened | 1.562 s | 1.551 s (Rust) | 1.01 |
