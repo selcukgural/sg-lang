@@ -142,6 +142,10 @@ starts at 4 KB and doubles up to its limit (`conn.reader(limit)`, 64 KB unless g
 that holds its limit already is `IoError.TooLong`, until `consume` makes room. `readLine` and the other
 reads go on from the same block.
 
+`Stdin` is one reader for every task, with one block. The first task that calls `fill`, `buffered` or
+`consume` on it holds the input, and a read of `Stdin` by any other task after that is a panic, so the bytes
+a task looks at do not change under it. Tasks that only read lines of the input share it until then.
+
 ```sg
 // Records of a length byte and that many bytes.
 Result<void, IoError> main() {

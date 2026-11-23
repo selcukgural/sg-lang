@@ -1,0 +1,10 @@
+held: 0
+panic: another task holds `Stdin`: the first that called `fill`, `buffered` or `consume` on it
+  the input is read by that task alone once it looks at its block
+  --> panic_stdin_held.sg:5:19
+ 5 |     _ = try await Stdin.readLineAsync(ref line)
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in the task `readOne` started here:
+  --> panic_stdin_held.sg:12:16
+ 12 |     var task = readOne()
+    |                ^^^^^^^^^

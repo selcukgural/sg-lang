@@ -1,0 +1,20 @@
+// A task of its own thread that reads the input after the program filled its block is a panic
+// (1746); the program reads on.
+Result<int, IoError> countLines() {
+    int count = 0
+    for line in Stdin.lines() {
+        _ = try line
+        count += 1
+    }
+    return Ok(count)
+}
+
+Result<void, IoError> main() {
+    _ = try Stdin.fill()
+    var line = ""
+    _ = try Stdin.readLine(ref line)
+    print($"first: {line}")
+    var task = Task.run(countLines)
+    print(try task.wait())
+    return Ok()
+}

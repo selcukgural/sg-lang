@@ -378,7 +378,8 @@ starts at 4 KB and grows to its limit, past which `fill` is the new `IoError.Too
 windows of a list with `writev`, the list's memory given to the system as it is. The two servers read through
 the reader where they kept a buffer of their own, in the same time and memory (an idle connection holds 4.95 KB
 where it held 4.98), and a head with a body of 64 KB goes out with `sendPieces` in 0.97 times the time of C's
-`writev`, 0.60 times that of a copy into one buffer. A task of a `TaskGroup` is now freed before the group's lock
+`writev`, 0.60 times that of a copy into one buffer. The first task that looks at the block of `Stdin` holds
+the input, and a read of it by another task after that is a panic (1746). A task of a `TaskGroup` is now freed before the group's lock
 is let go, so a program that ends right after `whenAll` no longer finds it taken.
 Before it, a thread of the pool that went to sleep on its own loop of the network could lose the wake sent to
 it, when the clock's watch held that loop for a short round just then, and wait for ever; it now looks at its

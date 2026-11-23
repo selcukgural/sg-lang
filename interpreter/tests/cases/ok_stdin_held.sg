@@ -1,0 +1,32 @@
+// The input before anyone holds it, and in the task that holds it (1746): tasks read lines of
+// it in turn until one looks at its block; that task then reads it as it likes, with
+// `buffered`, `consume`, `fill`, `readLine` and `lines`.
+async Result<void, IoError> readOne(int number) {
+    var line = ""
+    _ = try await Stdin.readLineAsync(ref line)
+    print($"task {number}: {line}")
+    return Ok()
+}
+
+async Result<void, IoError> holder() {
+    var view = Stdin.buffered()
+    var end = view.indexOf(10) ?? view.length()
+    print($"holder sees: {string.fromUtf8(view[0..end]) ?? "not text"}")
+    Stdin.consume(end + 1)
+    _ = try await Stdin.fillAsync()
+    var line = ""
+    _ = try await Stdin.readLineAsync(ref line)
+    print($"holder reads: {line}")
+    var rest = try await Stdin.readTextAsync()
+    print($"holder rest: {rest.length()} bytes")
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    try await readOne(1)
+    var second = readOne(2)
+    try await second
+    var held = holder()
+    try await held
+    return Ok()
+}

@@ -47,12 +47,15 @@ pub struct Input {
     at: usize,
     /// The input can make the program wait: a pipe, a terminal, a socket.
     pub waits: bool,
+    /// The fiber of the task that holds the input: the first that called `fill`, `buffered`
+    /// or `consume` on it (choice 1746).
+    pub holder: Option<usize>,
 }
 
 impl Input {
     pub fn new(source: Box<dyn Read + Send>, waits: bool) -> Input {
         let shared = Arc::new(Shared { source: Mutex::new(source), ahead: Mutex::new(Ahead::default()) });
-        Input { shared, block: Vec::new(), at: 0, waits }
+        Input { shared, block: Vec::new(), at: 0, waits, holder: None }
     }
 
     /// What the thread has read goes behind what the block holds.

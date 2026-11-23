@@ -1655,6 +1655,8 @@ typedef struct sg_task {
     /* Whether the block of the task came aligned beyond 16 bytes, by what it holds: its
        arguments may be, and they are not in the type that frees it (`sg_task_free`). */
     bool aligned;
+    /* The task holds the input (choice 1746, `sg_in_hold`). In the room after `aligned`. */
+    bool holds_in;
     /* An exit with an error let the task go (choice 1691): every wait in it that can say so
        ends with `Cancelled`, now and from then on. Set once, never cleared. */
     int cut;
@@ -4633,6 +4635,7 @@ static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name
     task->run = run;
     task->kind = SG_THREAD;
     task->cut = 0;
+    task->holds_in = false;
     task->waiter = NULL;
     int code = sg_thread_start(&task->thread, sg_task_main, task, false);
     if (code != 0) sg_refused(code, "this task", at);
@@ -5269,6 +5272,7 @@ static void sg_job_start(sg_task* job, bool (*poll)(sg_task*), const char* name,
     job->poll = poll;
     job->kind = SG_ASYNC;
     job->cut = 0;
+    job->holds_in = false;
     job->waiter = NULL;
     job->closing = NULL;
     job->next = NULL;
@@ -10479,9 +10483,37 @@ static inline bool sg_in_after_fill(sg_reader* r) {
     while (sg_in_filling) sg_cnd_wait(&sg_in_filled, &sg_in_lock);
     return r->at < r->len || r->ended;
 }
+/* The block of the input is one for every task, and `buffered` lends it where it lies: the first
+   task that calls `fill`, `buffered` or `consume` on the input holds it, and a read of the input
+   by any other task after that is a panic (choice 1746), so the bytes under a borrow do not
+   change. 0 while nobody holds it, 1 when the program holds it outside of any task, 2 when a
+   task does, the one marked `holds_in`. The claim is made under `sg_in_lock`, so a read another
+   task has begun ends first; an async read looks again each time it goes on (`sg_io_go_`), so
+   one that waited while the input was claimed stops before it moves the bytes of the block. */
+static int sg_in_held = 0;
+static inline void sg_in_hold(bool claim, const char* loc) {
+    sg_task* me = sg_task_now;
+    int held = __atomic_load_n(&sg_in_held, __ATOMIC_ACQUIRE);
+    if (held == 0) {
+        if (!claim) return;
+        sg_mtx_lock(&sg_in_lock);
+        held = sg_in_held;
+        if (held == 0) {
+            if (me) me->holds_in = true;
+            __atomic_store_n(&sg_in_held, me ? 2 : 1, __ATOMIC_RELEASE);
+        }
+        sg_mtx_unlock(&sg_in_lock);
+        if (held == 0) return;
+    }
+    if (held == 1 ? !me : me && me->holds_in) return;
+    sg_panicf(loc, "another task holds `Stdin`: the first that called `fill`, `buffered` or `consume` on it\n  the input is read by that task alone once it looks at its block");
+}
+#define SG_IN_HOLD(r, claim, loc) do { if ((r) == &sg_stdin) sg_in_hold((claim), (loc)); } while (0)
 #else
 #define SG_IN_TAKE(r) ((void)0)
 #define SG_IN_GIVE(r) ((void)0)
+/* Without tasks nobody else reads the input; the place a panic would name is still used. */
+#define SG_IN_HOLD(r, claim, loc) ((void)(r), (void)(claim), (void)(loc))
 #define sg_in_after_fill(r) false
 #endif
 #if SG_NET
@@ -10858,7 +10890,7 @@ static inline void sg_drop_reader(sg_reader* r) {
 }
 static inline sg_reader sg_move_reader(sg_reader* r) { sg_reader out = *r; r->block = NULL; return out; }
 /* `reader.lines()`: where it reads from, and whether it has met the end or an error. */
-typedef struct { sg_reader* r; bool done; } sg_read_lines;
+typedef struct { sg_reader* r; bool done; const char* loc; } sg_read_lines;
 
 /* A file written through a block of 64 KB, or the output and the standard error (`std` 1 and
    2): the output through the block `print` writes into (`sg_out_bytes`), the standard error
@@ -19086,26 +19118,31 @@ impl<'a> Emitter<'a> {
                 self.io_glue("sg_writer_close_r", &[Ty::Writer], &body, &gives, span)?;
                 self.call("sg_writer_close_r".to_string(), Some(receiver), args, head, &expr.ty)
             }
-            StreamCall::Lines => Ok(format!("((sg_read_lines){{ {}, false }})", self.list_address(recv)?)),
+            StreamCall::Lines => {
+                let (temp, loc) = (self.temp(), self.loc(span));
+                Ok(format!("({{ sg_reader* {temp} = {}; SG_IN_HOLD({temp}, false, {loc}); (sg_read_lines){{ {temp}, false, {loc} }}; }})", self.list_address(recv)?))
+            }
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
             // The bytes the block holds, looked at where they are.
             StreamCall::Buffered => {
                 let (window, temp) = (self.ctype(&expr.ty, span)?, self.temp());
                 let reader = self.list_address(recv)?;
-                Ok(format!("({{ sg_reader* {temp} = {reader}; ({window}){{ {temp}->block + {temp}->at, {temp}->len - {temp}->at }}; }})"))
+                let loc = self.loc(span);
+                Ok(format!("({{ sg_reader* {temp} = {reader}; SG_IN_HOLD({temp}, true, {loc}); ({window}){{ {temp}->block + {temp}->at, {temp}->len - {temp}->at }}; }})"))
             }
             StreamCall::Consume => {
                 let temp = self.temp();
                 let reader = self.list_address(recv)?;
                 let count = self.value(&args[0])?;
                 let loc = self.loc(span);
-                Ok(format!("({{ sg_reader* {temp} = {reader}; int64_t {temp}n = {count}; SG_IN_TAKE({temp}); sg_reader_consume({temp}, {temp}n, {loc}); SG_IN_GIVE({temp}); }})"))
+                Ok(format!("({{ sg_reader* {temp} = {reader}; int64_t {temp}n = {count}; SG_IN_HOLD({temp}, true, {loc}); SG_IN_TAKE({temp}); sg_reader_consume({temp}, {temp}n, {loc}); SG_IN_GIVE({temp}); }})"))
             }
             // The glue of `fill` takes where the block ended for `fillAsync`, which the call
             // without `Async` does not look at.
             StreamCall::Fill => {
                 let (fname, _) = self.stream_glue(call, &expr.ty, false, span)?;
-                Ok(format!("{fname}({}, 0)", self.list_address(recv)?))
+                let (temp, loc) = (self.temp(), self.loc(span));
+                Ok(format!("({{ sg_reader* {temp} = {}; SG_IN_HOLD({temp}, true, {loc}); {fname}({temp}, 0); }})", self.list_address(recv)?))
             }
             // `SeekFrom` holds a `long` in each of its variants (0 `Start`, 1 `End`, 2 `Current`).
             StreamCall::Seek => {
@@ -19136,7 +19173,11 @@ impl<'a> Emitter<'a> {
             }
             StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::WriteBytes => {
                 let (fname, params) = self.stream_glue(call, &expr.ty, false, span)?;
-                let receiver = self.list_address(recv)?;
+                let mut receiver = self.list_address(recv)?;
+                if call != StreamCall::WriteBytes {
+                    let (temp, loc) = (self.temp(), self.loc(span));
+                    receiver = format!("({{ sg_reader* {temp} = {receiver}; SG_IN_HOLD({temp}, false, {loc}); {temp}; }})");
+                }
                 let receiver = self.part(recv, &params[0], receiver, before);
                 self.call(fname.to_string(), Some(receiver), args, head, &expr.ty)
             }
@@ -19244,7 +19285,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(
             self.glue,
             "static bool sg_read_lines_next(sg_read_lines* it, {item}* out) {{ if (it->done) return false; \
-             sg_string line = SG_LIT(\"\", 0); bool more = false; int64_t bad = 0; SG_IN_TAKE(it->r); int code = sg_read_line(it->r, &line, &more, &bad); SG_IN_GIVE(it->r); \
+             sg_string line = SG_LIT(\"\", 0); bool more = false; int64_t bad = 0; SG_IN_HOLD(it->r, false, it->loc); SG_IN_TAKE(it->r); int code = sg_read_line(it->r, &line, &more, &bad); SG_IN_GIVE(it->r); \
              if (code == 0 && more) {{ *out = ({item}){{ .tag = 0, .u.v0 = {{ line }} }}; return true; }} \
              sg_drop_string(&line); it->done = true; if (code == 0) return false; \
              *out = ({item}){{ .tag = 1, .u.v1 = {{ code == -1 ? sg_io_bad_text(bad) : sg_io_error(code) }} }}; return true; }}"
@@ -19818,7 +19859,8 @@ impl<'a> Emitter<'a> {
     /// gives, are a block in the frame (`sg_io_F`), written by a function that takes them as the
     /// call would (`sg_io_of_F`, `_t` with a token, which it looks at then). A cancelled token
     /// gives the error at once, and a read of a reader its block can answer is done in place
-    /// (`reader`: the reader). What it gave is the value.
+    /// (`reader`: the reader). What it gave is the value. A panic of a reader's read points
+    /// at the call of its method, inside the `await`.
     fn await_io(&mut self, fname: &str, params: &[Ty], reader: Option<Part>, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
         self.made.insert("async io".to_string());
         let span = expr.span;
@@ -19887,6 +19929,11 @@ impl<'a> Emitter<'a> {
                 ),
                 None => String::new(),
             };
+            // A read of the input looks whether another task holds it (1746), each time it goes on.
+            let hold = match &reader {
+                Some(_) => format!("SG_IN_HOLD(x->a0, {}, loc); ", hidden == 1),
+                None => String::new(),
+            };
             let now = match &reader {
                 Some(_) => format!(
                     " for (;;) {{ if (!sg_reader_try(x->a0)) break; if ({fname}_n({gets}, &x->r)) {{ SG_IN_GIVE(x->a0); x->io.done = 1; return; }} \
@@ -19897,7 +19944,7 @@ impl<'a> Emitter<'a> {
             };
             let _ = writeln!(
                 self.glue,
-                "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ x->mode = 0; \
+                "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ x->mode = 0; {hold}\
                  if (x->cancelled) {{ {cancelled} }}{net}{lapped}{now} \
                  sg_io_start(&x->io, sg_io_run_{fname}, loc); }}\n\
                  static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
@@ -19912,8 +19959,12 @@ impl<'a> Emitter<'a> {
             takes.push(Ty::Read(Box::new(Ty::Token)));
         }
         self.sigs.insert(setter.clone(), takes);
+        let at = match (&reader, &expr.kind) {
+            (Some(_), ExprKind::Await(inner)) => inner.span,
+            _ => span,
+        };
         let value = self.call(setter, reader, args, head, &Ty::Void)?;
-        let (io, loc) = (self.temp(), self.loc(span));
+        let (io, loc) = (self.temp(), self.loc(at));
         self.pre.push(format!("sg_io_{fname} {io} = {value};"));
         self.pre.push(format!("sg_io_go_{fname}(&{io}, {loc});"));
         self.resume_point(span);

@@ -1,0 +1,15 @@
+// The first task that looks at the block of the input holds it (1746): an async read of the
+// input by another task is then a panic, so the bytes under a borrow do not change.
+async Result<void, IoError> readOne() {
+    var line = ""
+    _ = try await Stdin.readLineAsync(ref line)
+    print($"read: {line}")
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    print($"held: {Stdin.buffered().length()}")
+    var task = readOne()
+    try await task
+    return Ok()
+}

@@ -5276,7 +5276,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
                 Callee::Stream(StreamCall::Consume) => self.reader_consume(recv, &args[0], expr.span, frame),
-                Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
+                Callee::Stream(call) => self.stream(*call, recv, args, None, expr.span, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
                 Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
                 Callee::Group(call, told) => self.group(*call, *told, recv, args, expr.span, frame),
@@ -5387,17 +5387,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                             _ => None,
                         };
                         if let Some(reader) = reader {
+                            self.input_held(&reader, *call == StreamCall::Fill, expr.span)?;
                             let base = self.io.input.borrow().buffer().len();
                             if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
                                 return Ok(self.ended_task(cancelled, expr.span));
                             }
                             if *call == StreamCall::Fill {
+                                self.input_held(&reader, true, expr.span)?;
                                 let value = self.reader_fill(&reader, base, None, expr.span)?;
                                 return Ok(self.ended_task(value, expr.span));
                             }
                         }
                     }
-                    let value = self.stream(*call, recv, &args[..given], token, frame)?;
+                    let value = self.stream(*call, recv, &args[..given], token, expr.span, frame)?;
                     Ok(self.ended_task(value, expr.span))
                 }
                 Callee::Wait => {
@@ -7279,8 +7281,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// The methods of a `StreamReader` and a `StreamWriter`.
     /// A method of a reader or a writer. `token`: the async method was given one, which is
     /// looked at after the arguments, before the work.
-    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, frame: &mut Frame) -> Res<Value> {
+    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
+        if let Value::Reader(reader) = &stream {
+            if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill | StreamCall::Buffered) {
+                self.input_held(reader, matches!(call, StreamCall::Fill | StreamCall::Buffered), at)?;
+            }
+        }
         if let (StreamCall::Fill | StreamCall::Buffered, Value::Reader(reader)) = (call, &stream) {
             return match call {
                 StreamCall::Fill => {
@@ -7616,11 +7623,32 @@ impl<'a, 'e> Interp<'a, 'e> {
         })
     }
 
+    /// A read of the input by a task that does not hold it is a panic once a task holds it: the
+    /// first that called `fill`, `buffered` or `consume` on it (`claim`), so the bytes of the
+    /// block under a borrow do not change (choice 1746). Any other reader goes on.
+    fn input_held(&self, reader: &Rc<RefCell<Reader>>, claim: bool, at: Span) -> Res<()> {
+        if !reader.borrow().is_stdin() {
+            return Ok(());
+        }
+        let mut input = self.io.input.borrow_mut();
+        match input.holder {
+            None if claim => input.holder = Some(self.me),
+            Some(holder) if holder != self.me => {
+                return Err(Diag::panic(at, "another task holds `Stdin`: the first that called `fill`, `buffered` or `consume` on it")
+                    .note("the input is read by that task alone once it looks at its block")
+                    .into());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// `reader.consume(n)`: the first `n` bytes of the block are given out; more than it holds
     /// is a panic (1737).
     fn reader_consume(&mut self, recv: &'a Expr, count: &'a Expr, at: Span, frame: &mut Frame) -> Res<Value> {
         let Value::Reader(reader) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `consume` on a reader") };
         let Value::Int(_, count) = strip(self.expr(count, frame)?) else { unreachable!("the checker makes the count a number") };
+        self.input_held(&reader, true, at)?;
         let mut held = reader.borrow_mut();
         let holds = match (&held.file, &held.net) {
             (Some(file), _) => file.buffer().len(),
@@ -7776,6 +7804,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             return Ok(None);
         }
         let reader = lines.borrow().reader.clone();
+        self.input_held(&reader, false, at)?;
         let line = cell(Value::Str(Rc::new(String::new())));
         let result = self.read_line(&reader, &line, at)?;
         Ok(match result {

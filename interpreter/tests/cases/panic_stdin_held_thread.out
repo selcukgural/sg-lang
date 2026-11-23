@@ -1,0 +1,10 @@
+first: one
+panic: another task holds `Stdin`: the first that called `fill`, `buffered` or `consume` on it
+  the input is read by that task alone once it looks at its block
+  --> panic_stdin_held_thread.sg:5:17
+ 5 |     for line in Stdin.lines() {
+   |                 ^^^^^^^^^^^^^
+  in the task `countLines` started here:
+  --> panic_stdin_held_thread.sg:17:16
+ 17 |     var task = Task.run(countLines)
+    |                ^^^^^^^^^^^^^^^^^^^^
