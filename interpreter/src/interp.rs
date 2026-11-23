@@ -2218,8 +2218,95 @@ impl Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        while self.0.pop().is_some() {}
+        while let Some((_, slot)) = self.0.pop() {
+            let_go_cell(slot);
+        }
     }
+}
+
+/// Lets a place go: its value, if this was the last place that held it, by `let_go`.
+fn let_go_cell(slot: Cell) {
+    if let Ok(only) = Rc::try_unwrap(slot) {
+        let_go(only.into_inner());
+    }
+}
+
+/// Lets a value go with a list of its own on the heap, not by the recursion of Rust's drop,
+/// so that a value nested as deep as memory holds (a chain of ten million links) is let go
+/// without running out of stack (choice 1820): the parts only it holds are taken apart, and
+/// each is let go in the order the recursion would (the first field first, each with all it
+/// holds), so a `Writer` inside writes its buffer where it did. A part another place holds
+/// too, a `Disposable` struct (its fields wait for `dispose`) and what holds nothing are let
+/// go as they are.
+fn let_go(value: Value) {
+    if !takes_apart(&value) {
+        return;
+    }
+    // The list is kept for the next value this thread lets go; a value let go inside this one
+    // (a task's frame) finds it taken and makes its own.
+    let mut left = LET_GO.take();
+    left.push(value);
+    while let Some(value) = left.pop() {
+        // What it held goes on the list first field last, so that the first is let go next.
+        match value {
+            Value::Ptr(cell) => {
+                if let Ok(only) = Rc::try_unwrap(cell) {
+                    left.push(only.into_inner());
+                }
+            }
+            Value::Enum(_, _, fields) | Value::Array(fields) | Value::Slice(fields) => {
+                if let Ok(cells) = Rc::try_unwrap(fields) {
+                    keep_parts(&mut left, cells);
+                }
+            }
+            Value::List(items) => {
+                if let Ok(items) = Rc::try_unwrap(items) {
+                    keep_parts(&mut left, items.into_inner());
+                }
+            }
+            Value::Struct(_, fields) => {
+                if let Ok(mut fields) = Rc::try_unwrap(fields) {
+                    if fields.disposed_as.is_none() {
+                        keep_parts(&mut left, std::mem::take(&mut fields.cells));
+                    }
+                }
+            }
+            Value::Shared(held) => {
+                if Rc::strong_count(&held) == 1 {
+                    // `Held` leaves `LIVE` as it is let go; its value is then this cell's alone.
+                    let value = held.value.clone();
+                    drop(held);
+                    if let Ok(only) = Rc::try_unwrap(value) {
+                        left.push(only.into_inner());
+                    }
+                }
+            }
+            other => drop(other),
+        }
+    }
+    // A list grown by a deep value is not kept.
+    if left.capacity() <= 4096 {
+        LET_GO.set(left);
+    }
+}
+
+thread_local! {
+    /// The list `let_go` works with, kept between values.
+    static LET_GO: std::cell::Cell<Vec<Value>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Puts the parts only this value held on the list, the first last.
+fn keep_parts(left: &mut Vec<Value>, parts: Vec<Cell>) {
+    for part in parts.into_iter().rev() {
+        if let Ok(only) = Rc::try_unwrap(part) {
+            left.push(only.into_inner());
+        }
+    }
+}
+
+/// Whether a value holds others that `let_go` takes apart.
+fn takes_apart(value: &Value) -> bool {
+    matches!(value, Value::Ptr(_) | Value::Enum(..) | Value::Array(_) | Value::Slice(_) | Value::List(_) | Value::Struct(..) | Value::Shared(_))
 }
 
 impl Frame {
@@ -4061,7 +4148,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let mut ended = Ok(());
         while let Some(mut scope) = frame.scopes.pop() {
             while let Some(slot) = scope.pop() {
-                drop(slot);
+                let_go_cell(slot);
                 if ended.is_ok() && !stops && !self.started.is_empty() {
                     ended = self.unwaited();
                 }
@@ -4269,7 +4356,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             if let Some(width) = width {
                 fits_bits(&new, width, stmt.span)?;
             }
-            *target.borrow_mut() = new;
+            let old = std::mem::replace(&mut *target.borrow_mut(), new);
+            let_go(old);
         }
         Ok(Flow::Next)
     }
@@ -9125,4 +9213,41 @@ pub(crate) fn lonely_wait<'i>(cond: &str, items: &'i [LockItem], text: impl Fn(&
 /// The hint of `lonely_wait`: the task that gives says, inside the value, that it is done.
 pub(crate) fn lonely_hint(value: &str, name: &str) -> String {
     format!("a task with no more to give says so inside the value before it lets it go, `lock {value} as {name} {{ {name}.done = true }}`, and the condition looks at it: `when ... || {name}.done`")
+}
+
+#[cfg(test)]
+mod let_go_tests {
+    use super::*;
+
+    /// A value a million levels deep, of each kind `let_go` takes apart, is let go on a stack of
+    /// 256 KB, which the recursion of Rust's drop would overflow (choice 1820).
+    #[test]
+    fn a_deep_value_is_let_go_without_a_deep_stack() {
+        let built = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(|| {
+                const DEEP: usize = 1_000_000;
+                let mut chain = Value::Null;
+                for _ in 0..DEEP {
+                    chain = Value::Ptr(cell(chain));
+                }
+                let_go(chain);
+                let mut tree = Value::Null;
+                for level in 0..DEEP {
+                    tree = match level % 5 {
+                        0 => Value::Enum("Tree".into(), 1, Rc::new(vec![cell(Value::Int(IntTy::Int, 1)), cell(tree)])),
+                        1 => Value::List(Rc::new(RefCell::new(vec![cell(tree)]))),
+                        2 => Value::Array(Rc::new(vec![cell(tree)])),
+                        3 => Value::Struct("Node".into(), Fields::plain(vec![cell(tree), cell(Value::Bool(true))])),
+                        _ => Value::Shared(Held::new(tree, false, Span { start: 0, end: 0 })),
+                    };
+                }
+                let_go(tree);
+                LIVE.with(|live| live.borrow().held.len())
+            })
+            .unwrap()
+            .join();
+        // Each `shared` value left `LIVE` as it was let go.
+        assert_eq!(built.ok(), Some(0));
+    }
 }
