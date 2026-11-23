@@ -293,7 +293,7 @@ It prints:
 stopped
 ```
 
-Measured on Linux against the servers as they were ([Servers](../../benchmarks/server.md#a-group-of-tasks-slow-clients-and-a-limit-on-a-request)):
+Measured on Linux against the servers as they were ([Servers](../benchmarks/server.md#a-group-of-tasks-slow-clients-and-a-limit-on-a-request)):
 the group costs nothing (1,361,000 answers a second with 50 connections, against 1,355,000 with a list), and an
 idle connection still holds 4.98 KB. A limit on the time of a request costs 3 to 4% of the answers and a tenth
 on the p99. Beside 10,000 clients that send a byte a second, it closes all of them within its 5 seconds, gives
