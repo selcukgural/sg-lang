@@ -238,6 +238,19 @@ says what is slower, by how much and against what, the choice that measured it, 
   whose ready sockets a thread with nothing to do hears of at once (an epoll of the loops' epolls).
 - **100,000 idle connections are not quite idle** (the server lane): in 10 seconds with every connection silent
   SG spends 0.42 s of the processor, `tokio` 0.32 s and C 0.21 s. Not looked into yet.
+- **The breaking point of the store** (the server lane, the 160th slice, choice 1760): with two cores for the
+  server and a load that rises by 25,000 requests a second every 10 s, SG's store answered at most 404,000 a
+  second in time, against 474,000 for C and 449,000 for `tokio`. A profile with the kernel at a fixed 350,000 a
+  second found SG reading its sockets with `read`, which on Linux goes the longer way through the kernel (with
+  SELinux on, as in the virtual machine of the measurements, a check of the policy on every read); C and Rust
+  call `recv`. Now `recv` reads a socket and `read` only the pipe of another program: the processor for the same
+  load fell by 8% (968 ticks of 10 ms in 8 s to 888; Rust 906, C 800), and the store answers 449,000 a second in
+  time (C 474,000, Rust 449,000), the HTTP server 470,000 (C 499,000, hyper 321,000 in that run; 438,000 for SG
+  before). What is left, 11% more of the processor than C at that rate, is in the runtime: a fill of a reader
+  takes the lock of the socket's slot twice (whether it is dry, and marking it dry), a wake is a compare and swap
+  on the task, and the parsing in SG takes about 2.5 times C's. A look at the slot without its lock is the next
+  candidate; the watch every millisecond, a pool that never steals and `TCP_NODELAY` were each measured and
+  changed nothing.
 
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a

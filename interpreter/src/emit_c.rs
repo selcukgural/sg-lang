@@ -6517,6 +6517,11 @@ static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
     *got = n;
     return 0;
 }
+/* The pipe of another program is read on a thread of its own on Windows (`SG_LAPPED`), never here. */
+static int sg_net_take_now(int fd, uint8_t* to, int64_t len, int64_t* got, bool pipe) {
+    (void)pipe;
+    return sg_net_recv_now(fd, to, len, got);
+}
 static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* sent) {
     int n = send(SG_SOCK(fd), (const char*)from, sg_net_most(len), 0);
     if (n < 0) return sg_net_error();
@@ -6535,12 +6540,17 @@ static int sg_net_accept_now(int lfd, int* out, bool nb) {
     *out = fd;
     return 0;
 }
-static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
-    /* `read`, which is `recv` without flags on a socket, and reads a pipe too. */
-    ssize_t n = read(fd, to, (size_t)len);
+/* `recv` on a socket, and `read` on the pipe of another program (`pipe`), which `recv` does not
+   take. `read` would do on a socket as well, but on Linux it is the longer way through the kernel:
+   with SELinux on, it cost the store of the server lane 8% of its processor. */
+static int sg_net_take_now(int fd, uint8_t* to, int64_t len, int64_t* got, bool pipe) {
+    ssize_t n = pipe ? read(fd, to, (size_t)len) : recv(fd, to, (size_t)len, 0);
     if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     *got = n;
     return 0;
+}
+static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
+    return sg_net_take_now(fd, to, len, got, false);
 }
 static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* sent) {
 #ifdef MSG_NOSIGNAL
@@ -6571,9 +6581,10 @@ static int sg_net_accept(const sg_listener* l, sg_socket* out) {
         if ((code = sg_net_poll(l->fd, false))) return code;
     }
 }
-static int sg_net_recv(sg_socket* s, uint8_t* to, int64_t len, int64_t* got) {
+/* `pipe`: the socket is the pipe of another program (see `sg_net_take_now`). */
+static int sg_net_recv(sg_socket* s, uint8_t* to, int64_t len, int64_t* got, bool pipe) {
     for (;;) {
-        int code = sg_net_recv_now(s->fd, to, len, got);
+        int code = sg_net_take_now(s->fd, to, len, got, pipe);
         if (!code) return 0;
         if (sg_net_again(code, false)) continue;
         if (code != SG_E_AGAIN) return code;
@@ -8199,7 +8210,7 @@ static bool sg_net_go(sg_net_op* op) {
                 {
                     sg_sock_room(r);
                     int64_t got = 0, room = r->cap - r->len;
-                    code = sg_net_recv_now(op->fd, r->block + r->len, room, &got);
+                    code = sg_net_take_now(op->fd, r->block + r->len, room, &got, r->own);
                     if (!code) {
                         if (got == 0) r->ended = true;
                         r->len += got;
@@ -8301,11 +8312,11 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
            loop at once, as `receiveAsync` does, without a call of the system told there is nothing. */
         int c = SG_E_AGAIN;
         if (!sg_slot_is_dry(s->fd, 1)) {
-            c = sg_net_recv_now(s->fd, r->block + r->len, r->cap - r->len, &got);
+            c = sg_net_take_now(s->fd, r->block + r->len, r->cap - r->len, &got, r->own);
             if (!c && got > 0 && got < r->cap - r->len) sg_slot_dry(s->fd, 1, seen);
         }
 #else
-        int c = sg_net_recv_now(s->fd, r->block + r->len, r->cap - r->len, &got);
+        int c = sg_net_take_now(s->fd, r->block + r->len, r->cap - r->len, &got, r->own);
 #endif
         if (!c) {
             if (got == 0) r->ended = true;
@@ -10517,7 +10528,7 @@ static inline void sg_in_hold(bool claim, const char* loc) {
 #define sg_in_after_fill(r) false
 #endif
 #if SG_NET
-static int sg_net_recv(struct sg_socket_s* s, uint8_t* to, int64_t len, int64_t* got);
+static int sg_net_recv(struct sg_socket_s* s, uint8_t* to, int64_t len, int64_t* got, bool pipe);
 /* What a read of the reader of a connection needs before it can be done. SG_NEED_MORE: more than
    the block held when `fillAsync` began, where the bytes it held ended at `want`, counted as
    `done` counts. */
@@ -10571,7 +10582,7 @@ static void sg_sock_room(sg_reader* r) {
 static int sg_sock_fill(sg_reader* r) {
     sg_sock_room(r);
     int64_t got = 0;
-    int code = sg_net_recv(r->sock, r->block + r->len, r->cap - r->len, &got);
+    int code = sg_net_recv(r->sock, r->block + r->len, r->cap - r->len, &got, r->own);
     if (code) return code;
     if (got == 0) r->ended = true;
     r->len += got;
@@ -10712,7 +10723,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
         r->at += n;
         while (n < len && !r->ended) {
             int64_t put = 0;
-            if ((code = sg_net_recv(r->sock, to + n, len - n, &put))) break;
+            if ((code = sg_net_recv(r->sock, to + n, len - n, &put, r->own))) break;
             if (put == 0) r->ended = true;
             n += put;
         }
@@ -19637,7 +19648,7 @@ impl<'a> Emitter<'a> {
             NetCall::Receive => (
                 "sg_net_receive_r",
                 vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Ref)],
-                format!("int64_t got = 0; int code = sg_net_recv(a0, a1.ptr, a1.len, &got); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};"),
+                format!("int64_t got = 0; int code = sg_net_recv(a0, a1.ptr, a1.len, &got, false); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};"),
             ),
             NetCall::Send => (
                 "sg_net_send_r",
