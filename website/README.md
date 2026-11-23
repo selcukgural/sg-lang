@@ -10,7 +10,7 @@ built with Docusaurus, published by Cloudflare Pages from this folder.
 
 - `docs/` holds the pages: `learn/` (install, the tour), `reference/` and `library/` (pointers into the
   repository until the preview), `about/` (why SG, its history, the repository, and the community: the mailing
-  list and where each kind of question goes) and `status.md`. `learn/for-rust.md` is made from
+  list, Discussions and where each kind of question goes) and `status.md`. `learn/for-rust.md` is made from
   `design/06-rust-to-sg.md`, and `benchmarks/` from the repository's `benchmarks/`, by
   `scripts/sync-docs.mjs` before every start and build: change those files, not the copies.
 - Every ```` ```sg ```` block on a page is a whole program, and `npm run check` runs it with `sg`: the
