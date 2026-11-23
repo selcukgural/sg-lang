@@ -520,6 +520,7 @@ A source cancels; its tokens are looked at by the work, where the work chooses.
 | `void cancel(read this)` | Cancels every token of it; again is nothing |
 | `void cancelAfter(read this, int ms)` | Cancels it `ms` from now, in place of any time set before (C#'s `CancelAfter`); 0 cancels now, and a cancelled source stays as it is |
 | `bool isCancelled(read this)` | On a source and on a token |
+| `bool canBeCancelled(read this)` on a token | `false` for `CancellationToken.None`, `true` for a token of a source (C#'s `CanBeCanceled`): a library that sets a time limit of its own links a source only to a token that can cancel |
 | `Result<void, Cancelled> check(read this)` on a token | `Error(Cancelled { })` once it is cancelled |
 | `CancellationToken clone(read this)` | One more token |
 | `CancellationToken.None` | A token never cancelled |

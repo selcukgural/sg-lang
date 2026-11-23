@@ -2537,6 +2537,32 @@ fn block_count_sees_a_leak() {
     assert!(release.contains("#define SG_COUNT 0\n"));
 }
 
+/// A `CancellationSource` set to cancel itself later and then let go is seen by nobody, so the
+/// clock does not keep it until its time: a server that sets one for each connection to a minute
+/// would otherwise hold every connection's source, and its place on the clock, for that minute
+/// (a million of them took 470 MB). The C of the program is made to fail when the clock still
+/// holds more than the one source the program keeps.
+#[test]
+fn a_source_let_go_leaves_the_clock() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("source-let-go");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let source = "async Result<void, IoError> main() {\n    var outer = CancellationSource()\n    var kept = CancellationSource()\n    kept.cancelAfter(60000)\n    for _ in 0..1000 {\n        var s = CancellationSource()\n        s.cancelAfter(60000)\n        var l = CancellationSource.linked(read outer.token())\n        l.cancelAfter(60000)\n    }\n    var short = CancellationSource()\n    short.cancelAfter(5)\n    _ = await Task.delay(1000, read short.token())\n    print(\"done\")\n    print(kept.isCancelled())\n    return Ok()\n}\n";
+    let code = sg::emit_c_sources(&sg::Sources::single(source, "let_go.sg"), false).unwrap();
+    let find = "sg_out_put(\"done\\n\", 5);";
+    assert!(code.contains(find), "the place to look at the clock is not in the C");
+    let put = format!("if (sg_heap_len != 1) {{ fprintf(stderr, \"the clock holds %d\\n\", (int)sg_heap_len); exit(3); }} {find}");
+    let c_file = work.join("let_go.c");
+    std::fs::write(&c_file, code.replacen(find, &put, 1)).unwrap();
+    let binary = program_at(&work, "let_go");
+    let cc = c_command().args(["-std=c11", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&binary).output().unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+    assert!(run.status.success() && said == "done\nfalse\n", "{said}");
+}
+
 /// A const calls no function (choice 1606), so one that would never end is refused at once,
 /// at its call, before anything runs: it once ran until a budget of steps was spent.
 #[test]

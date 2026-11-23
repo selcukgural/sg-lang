@@ -3472,6 +3472,14 @@ static inline int64_t sg_clock(int id) {
     return whole * 1000000000 + part * 1000000000 / hz;
 }
 static inline int64_t sg_monotonic(void) { return sg_clock(CLOCK_MONOTONIC); }
+/* `Clock.wallSeconds()`: `GetSystemTimeAsFileTime` keeps the time of the last tick of the
+   system's clock, read for nothing. */
+static inline int64_t sg_wall_seconds(void) {
+    FILETIME t;
+    GetSystemTimeAsFileTime(&t);
+    int64_t units = (int64_t)(((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime);
+    return (units - INT64_C(116444736000000000)) / 10000000;
+}
 /* `Clock.offsetAt(seconds)`: the seconds the time zone of the system is ahead of UTC then, by the
    rules Windows keeps for that year; 0 when Windows does not say. `TZ` is not read. */
 static int32_t sg_local_offset(int64_t seconds) {
@@ -3499,6 +3507,17 @@ static inline int64_t sg_clock(clockid_t id) {
 static inline int64_t sg_monotonic(void) { return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 #else
 static inline int64_t sg_monotonic(void) { return sg_clock(CLOCK_MONOTONIC); }
+#endif
+/* `Clock.wallSeconds()`: on Linux the clock the kernel keeps at its last tick, read without the
+   counter of the processor, which costs much in a virtual machine (an HTTP server reads it for
+   the `Date` of each answer: 2% of its time, choice 1786); `time` elsewhere. */
+#if defined(__linux__)
+#ifndef CLOCK_REALTIME_COARSE
+#define CLOCK_REALTIME_COARSE 5
+#endif
+static inline int64_t sg_wall_seconds(void) { return sg_clock(CLOCK_REALTIME_COARSE) / 1000000000; }
+#else
+static inline int64_t sg_wall_seconds(void) { return (int64_t)time(NULL); }
 #endif
 /* `Clock.offsetAt(seconds)`: the seconds the time zone of the system (`TZ`, `/etc/localtime`) is
    ahead of UTC then; 0 when the C library does not say. The offset is the local date and time
@@ -5334,6 +5353,28 @@ static int64_t sg_heap_len = 0;
 static int64_t sg_heap_cap = 0;
 static int64_t sg_clock_order = 0;
 static int64_t sg_now(void) { return sg_clock(CLOCK_MONOTONIC); }
+/* The time `cancelAfter` counts from (1786): on Linux the monotonic clock of the kernel's last
+   tick and the length of a tick, read without the counter of the processor, which costs much in a
+   virtual machine (a server that sets its source before each read and each send spent 3% of its
+   time there). It is never before `sg_now()`, so a source never cancels early, and at most a tick
+   (1 to 4 ms) late. Elsewhere `sg_now()`. */
+#if defined(__linux__)
+#ifndef CLOCK_MONOTONIC_COARSE
+#define CLOCK_MONOTONIC_COARSE 6
+#endif
+static int64_t sg_tick_ns = 0;
+static int64_t sg_now_late(void) {
+    int64_t tick = __atomic_load_n(&sg_tick_ns, __ATOMIC_RELAXED);
+    if (tick == 0) {
+        struct timespec r;
+        tick = clock_getres(CLOCK_MONOTONIC_COARSE, &r) == 0 && r.tv_sec == 0 ? r.tv_nsec : -1;
+        __atomic_store_n(&sg_tick_ns, tick, __ATOMIC_RELAXED);
+    }
+    return tick < 0 ? sg_now() : sg_clock(CLOCK_MONOTONIC_COARSE) + tick;
+}
+#else
+static inline int64_t sg_now_late(void) { return sg_now(); }
+#endif
 static inline bool sg_sooner(const sg_delay* a, const sg_delay* b) { return a->due < b->due || (a->due == b->due && a->order < b->order); }
 static inline void sg_heap_set(int64_t i, sg_delay* d) { sg_heap[i] = d; d->at = i; }
 static void sg_heap_up(int64_t i) {
@@ -5617,8 +5658,16 @@ static inline sg_cancel* sg_cancel_more(sg_cancel* c) {
     return c;
 }
 static void sg_cancel_free(sg_cancel* c, bool held);
+static void sg_cancel_unheld(sg_cancel* c);
+/* A source the clock alone still holds, set to cancel itself later, can be seen by no one: no
+   variable, token or linked source is left to look at it. It leaves the clock and is freed now,
+   not when its time comes (a server that sets a source of each connection to 60 seconds would
+   otherwise keep every connection's source, and its place on the clock, that long). */
 static inline void sg_cancel_less(sg_cancel* c) {
-    if (c && __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) sg_cancel_free(c, false);
+    if (!c) return;
+    int64_t left = __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL);
+    if (left == 0) sg_cancel_free(c, false);
+    else if (left == 1 && __atomic_load_n(&c->armed, __ATOMIC_SEQ_CST) != 0) sg_cancel_unheld(c);
 }
 static inline void sg_drop_source(sg_cancel** p) { sg_cancel_less(*p); *p = NULL; }
 static inline sg_cancel* sg_move_source(sg_cancel** p) { sg_cancel* c = *p; *p = NULL; return c; }
@@ -5703,6 +5752,19 @@ static void sg_cancel_free(sg_cancel* c, bool held) {
     }
     free(c);
 }
+/* Under the clock's lock the clock either holds the source on its heap, and so has not taken it
+   off to cancel it, or has let it go already. */
+static void sg_cancel_unheld(sg_cancel* c) {
+    sg_mtx_lock(&sg_clock_lock);
+    if (c->clock.at >= 0 && __atomic_load_n(&c->refs, __ATOMIC_ACQUIRE) == 1) {
+        sg_heap_remove(&c->clock);
+        __atomic_store_n(&c->armed, 0, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&c->refs, 0, __ATOMIC_RELEASE);
+        SG_KEPT(-1);
+        sg_cancel_free(c, true);
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+}
 static void sg_cancel_now(sg_cancel* c) {
     sg_mtx_lock(&sg_clock_lock);
     sg_cancel_held(c);
@@ -5759,7 +5821,7 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
 static void sg_cancel_after_again(sg_cancel* c, int32_t ms, const char* loc) {
     if (ms < 0) sg_panicf(loc, "`cancelAfter(%d)`: a time is not negative", (int)ms);
     if (sg_cancelled(c)) return;
-    int64_t due = sg_now() + (int64_t)ms * 1000000;
+    int64_t due = sg_now_late() + (int64_t)ms * 1000000;
     __atomic_store_n(&c->want, due, __ATOMIC_SEQ_CST);
     int64_t armed = __atomic_load_n(&c->armed, __ATOMIC_SEQ_CST);
     if (ms > 0 && armed != 0 && armed <= due) return;
@@ -12030,6 +12092,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         } else if func.is_async {
             let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
             emitter.made.insert("tasks".to_string());
+            if tracks(&func.name, None) {
+                emitter.tracked.extend([format!("a_init_{name}"), format!("a_start_{name}")]);
+            }
             emitter.sigs.insert(format!("a_init_{name}"), params.clone());
             emitter.sigs.insert(format!("a_start_{name}"), params);
         } else {
@@ -12055,6 +12120,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
                 let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
                 emitter.made.insert("tasks".to_string());
                 emitter.async_methods.insert(format!("{owner}.{}", method.name));
+                if tracks(&method.name, Some(owner)) {
+                    emitter.tracked.extend([format!("a_init_{name}"), format!("a_start_{name}")]);
+                }
                 emitter.sigs.insert(format!("a_init_{name}"), params.clone());
                 emitter.sigs.insert(format!("a_start_{name}"), params);
                 continue;
@@ -16164,6 +16232,12 @@ impl<'a> Emitter<'a> {
             params.push((self.ctype(&ty, param.ty.span)?, format!("v_{}", param.name)));
             scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false, drop: None });
         }
+        // A function of the language's own module keeps where the program called it in its
+        // frame, as a function that does not wait has it as its last parameter.
+        self.at = self.tracked.contains(&format!("a_init_{name}"));
+        if self.at {
+            params.push(("const char*".to_string(), "sg_caller".to_string()));
+        }
         self.ret = ret.clone();
         self.temps = 0;
         self.closing = None;
@@ -16189,6 +16263,7 @@ impl<'a> Emitter<'a> {
         }
         self.scopes.clear();
         self.closing = None;
+        self.at = false;
         let awaits = self.awaits.take().expect("set above");
         written?;
         // The borrows of `shared checked` values, one on each line.
@@ -19476,6 +19551,7 @@ impl<'a> Emitter<'a> {
             if let Some((recv, owner, this, whole)) = method {
                 leading.push(self.method_receiver(recv, owner, this, whole)?);
             }
+            self.site = Some(inner.span);
             let init = self.call_with(format!("a_init_{name}"), leading, args, head, &Ty::Void)?;
             self.pre.push(format!("{init};"));
             self.resume_point(expr.span);
@@ -21599,6 +21675,7 @@ impl<'a> Emitter<'a> {
             // An async function called without `await`: a task, started at once.
             ExprKind::Call { name, args, callee: Callee::Plain, .. } if self.asyncs.contains(name.as_str()) => {
                 let site = self.site(c_string(short_name(name)), expr.span);
+                self.site = Some(expr.span);
                 self.call(format!("a_start_{}", cname(name)), Some(site), args, head, &expr.ty)
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
@@ -21651,6 +21728,7 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
                     let site = self.site(c_string(name), expr.span);
+                    self.site = Some(expr.span);
                     self.call(format!("a_start_{}", cname(&format!("{owner}.{name}"))), Some(site), args, head, &expr.ty)
                 }
                 Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
@@ -21713,6 +21791,7 @@ impl<'a> Emitter<'a> {
                         }
                         CancelCall::Token | CancelCall::Clone => format!("sg_cancel_more({source})"),
                         CancelCall::IsCancelled => format!("sg_cancelled({source})"),
+                        CancelCall::CanBeCancelled => format!("({source} != NULL)"),
                         CancelCall::Check => {
                             let ctype = self.ctype(&expr.ty, expr.span)?;
                             format!("(sg_cancelled({source}) ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})")
@@ -21772,6 +21851,7 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
                     let site = self.site(c_string(name), expr.span);
+                    self.site = Some(expr.span);
                     self.call(format!("a_start_{}", cname(&format!("{owner}.{name}"))), Some(site), args, head, &expr.ty)
                 }
                 Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
@@ -21783,6 +21863,7 @@ impl<'a> Emitter<'a> {
                     if self.async_methods.contains(&full) {
                         let site = self.site(c_string(name), expr.span);
                         let receiver = self.method_receiver(recv, owner, *this, *whole)?;
+                        self.site = Some(expr.span);
                         return self.call_with(format!("a_start_{}", cname(&full)), vec![site, receiver], args, false, &expr.ty);
                     }
                     let receiver = self.method_receiver(recv, owner, *this, *whole)?;
@@ -22254,7 +22335,12 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Clock(call) => {
                     self.made.insert("clock".to_string());
-                    Ok(if *call == ClockCall::Wall { "sg_clock(CLOCK_REALTIME)".to_string() } else { "sg_monotonic()".to_string() })
+                    Ok(match call {
+                        ClockCall::Wall => "sg_clock(CLOCK_REALTIME)",
+                        ClockCall::WallSeconds => "sg_wall_seconds()",
+                        _ => "sg_monotonic()",
+                    }
+                    .to_string())
                 }
                 // `Entropy.fill(ref bytes)`: the system's random bytes into the slice.
                 Callee::Entropy => {

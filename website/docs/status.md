@@ -67,7 +67,8 @@ threads and 0.91 times C's. At 70% of the load the tail is C's, not `tokio`'s, a
 listed. Under a load that rises until they break, SG's servers answer as much as Rust's and nearly as much as
 C's, and keep answering past that point where C's do not; against clients that reset, close half, trickle, do
 not read, send what is not the protocol or outnumber the descriptors they stand
-([what the servers stand](benchmarks/robustness.md)).
+([what the servers stand](benchmarks/robustness.md)). The HTTP server is now written on the language's own
+[`std/http`](library/http.md), which reads HTTP/1.1 to the rules of RFC 9112, 2.2% behind the server written by hand before it.
 
 ## Not yet
 

@@ -1,5 +1,5 @@
 error: `CancellationToken` has no method `cancel`
-  methods: isCancelled, check, clone
+  methods: isCancelled, check, clone, canBeCancelled
   a token only looks; its source cancels it: `source.cancel()`
   --> error_cancel_token_cancel.sg:4:11
  4 |     token.cancel()

@@ -156,7 +156,10 @@ def build(languages, check_only=False):
                 continue
             out = BIN / f"{program}-{lang}"
             src = HERE / program / lang
-            if lang == "sg":
+            if lang in ("sg", "sg-by-hand"):
+                # `sg-by-hand`: the HTTP server written before `std` had HTTP (choice 1771)
+                if not (src / f"{program}.sg").exists():
+                    continue
                 run([str(SG), "build", str(src / f"{program}.sg"), "-o", str(out), "--release"])
             elif lang == "c":
                 run(["cc", "-O2", "-Wall", "-pthread", "-o", str(out), str(src / f"{program}.c")])
@@ -521,7 +524,7 @@ def ramp(bins, languages, protocols, info, runs=1):
     results = {}
     for protocol in protocols:
         for lang in languages:
-            if lang == "sg-limit":
+            if lang == "sg-limit" or (lang == "sg-by-hand" and protocol != "http"):
                 continue
             tries = []
             for n in range(runs):
@@ -612,7 +615,7 @@ def robust(bins, languages, protocols, info):
         for case in ROBUST:
             for lang in languages + ["sg-sanitized"]:
                 only = case.get("only")
-                if lang == "sg-limit" or (only and lang != only) or (not only and lang == "sg-sanitized"):
+                if lang == "sg-limit" or (only and lang != only) or (not only and lang == "sg-sanitized") or (protocol, lang) not in bins and lang != "sg-sanitized":
                     continue
                 server = sanitized if lang == "sg-sanitized" else bins[(protocol, lang)]
                 cmd = [str(BIN / "stand"), protocol, *scaled(case["args"]), "--sources", "4",
@@ -729,7 +732,7 @@ def main():
         else:
             rate = case.get("rate")
         for lang in languages:
-            if lang == "sg-limit" and case["protocol"] != "resp":
+            if (lang == "sg-limit" and case["protocol"] != "resp") or (lang == "sg-by-hand" and case["protocol"] != "http"):
                 continue
             rs = [one(bins, case, lang, rate) for _ in range(args.runs)]
             r = median_of(rs)

@@ -1,0 +1,82 @@
+parts, GET /1.1 HTTP/1.1:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  transfer-encoding: chunked
+  
+  4
+  one,
+  3
+  two
+  0
+  
+  
+parts, GET /1.0 HTTP/1.0:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  
+  one,two
+parts, HEAD /head HTTP/1.1:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  transfer-encoding: chunked
+  
+  
+headers:
+  a name with a space: invalid input
+  a value with a line break: invalid input
+  content-length: invalid input
+  a type with a line break: invalid input
+  HTTP/1.1 201 Created
+  date: <date>
+  x-kept: yes
+  connection: close
+  content-length: 4
+  
+  made
+100 Continue:
+  first: HTTP/1.1 100 Continue
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 8
+  
+  got body
+closed by the server, GET /1 HTTP/1.1:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 2
+  
+  /1HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 5
+  
+  /last
+closed by the server, GET /after HTTP/1.1:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 6
+  
+  /after
+a head that takes too long:
+  closed, refused 0, after the limit: true
+  the client got 0 bytes
+a connection with nothing to say:
+  closed, refused 0, after the limit: true
+  the client got 0 bytes
+the module's limit, with a token given:
+  closed, refused 0, after the limit: true
+  the client got 0 bytes
+the caller's token, cancelled:
+  the caller's token: cancelled
+  the client got 0 bytes

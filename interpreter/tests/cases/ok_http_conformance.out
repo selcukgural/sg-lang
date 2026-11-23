@@ -1,0 +1,505 @@
+a request:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 29
+  
+  GET /ping 1.1 host 'a' body 0
+HEAD:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  
+kept open, then closed:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 26
+  
+  GET /1 1.1 host 'a' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 26
+  
+  GET /2 1.1 host 'a' body 0
+HTTP/1.0 closes:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 27
+  
+  GET /old 1.0 host '' body 0
+HTTP/1.0 kept alive:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: keep-alive
+  content-length: 25
+  
+  GET /a 1.0 host '' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 25
+  
+  GET /b 1.0 host '' body 0
+lines ending in LF alone:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 27
+  
+  GET /lf 1.1 host 'a' body 0
+empty lines first:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 29
+  
+  GET /late 1.1 host 'a' body 0
+a body read:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  POST /body 1.1 host 'a' body 5
+a body not read, then the next:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 30
+  
+  POST /skip 1.1 host 'a' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 29
+  
+  GET /next 1.1 host 'a' body 0
+chunks:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  POST /body 1.1 host 'a' body 5
+chunks not read, then the next:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 30
+  
+  POST /skip 1.1 host 'a' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 29
+  
+  GET /next 1.1 host 'a' body 0
+two equal lengths:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  POST /body 1.1 host 'a' body 2
+Expect: 100-continue:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  POST /body 1.1 host 'a' body 2
+pipelined:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 26
+  
+  GET /1 1.1 host 'a' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  content-length: 26
+  
+  GET /2 1.1 host 'a' body 0HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 26
+  
+  GET /3 1.1 host 'a' body 0
+Upgrade, let be:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 27
+  
+  GET /up 1.1 host 'a' body 0
+a chunk size with zeros in front:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 30
+  
+  POST /body 1.1 host 'a' body 2
+a Host with a port:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 38
+  
+  GET / 1.1 host 'a.example:8080' body 0
+a Host of an IPv6 address:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 34
+  
+  GET / 1.1 host '[::1]:8080' body 0
+an empty Host:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 24
+  
+  GET / 1.1 host '' body 0
+a whole URL as the target:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 58
+  
+  GET http://b.example:81/p?q 1.1 host 'b.example:81' body 0
+OPTIONS *:
+  HTTP/1.1 200 OK
+  date: <date>
+  content-type: text/plain
+  connection: close
+  content-length: 29
+  
+  OPTIONS * 1.1 host 'a' body 0
+a Host with a user:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a Host with a path:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a Host with a port not of digits:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a Host of a port alone:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a target that is not a path:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+* for GET:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a URL of another scheme:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a URL without a host:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a URL with a user:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+no Host:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+two Hosts:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+Content-Length and Transfer-Encoding:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+two lengths that differ:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a length with a sign:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a length as a list:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a coding other than chunked:
+  (refused 501)
+  HTTP/1.1 501 Not Implemented
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 15
+  
+  Not Implemented
+chunked not last:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+chunked in HTTP/1.0:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a folded line:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a space before the colon:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a bare CR:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a zero byte in a value:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+two spaces in the request line:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a version not 1:
+  (refused 505)
+  HTTP/1.1 505 HTTP Version Not Supported
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 26
+  
+  HTTP Version Not Supported
+a version that is no version:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+CONNECT:
+  (refused 501)
+  HTTP/1.1 501 Not Implemented
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 15
+  
+  Not Implemented
+a target too long:
+  (refused 414)
+  HTTP/1.1 414 URI Too Long
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 12
+  
+  URI Too Long
+a header too long:
+  (refused 431)
+  HTTP/1.1 431 Request Header Fields Too Large
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 31
+  
+  Request Header Fields Too Large
+too many headers:
+  (refused 431)
+  HTTP/1.1 431 Request Header Fields Too Large
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 31
+  
+  Request Header Fields Too Large
+a body too large:
+  (refused 413)
+  HTTP/1.1 413 Content Too Large
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 17
+  
+  Content Too Large
+chunks too large:
+  (refused 413)
+  HTTP/1.1 413 Content Too Large
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 17
+  
+  Content Too Large
+a chunk size that is not hex:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request
+a chunk size too large to hold:
+  (refused 413)
+  HTTP/1.1 413 Content Too Large
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 17
+  
+  Content Too Large
+a chunk longer than it said:
+  (refused 400)
+  HTTP/1.1 400 Bad Request
+  date: <date>
+  connection: close
+  content-type: text/plain
+  content-length: 11
+  
+  Bad Request

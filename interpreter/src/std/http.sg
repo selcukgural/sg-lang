@@ -1,0 +1,1644 @@
+// HTTP/1.1 on the server's side of a connection (RFC 9112), as Zig's `std.http.Server` does it:
+// no callbacks, the program pulls each request and answers it (choices 1765 to 1785).
+//
+//     var conn = HttpConnection(stream)
+//     while try await conn.receiveHeadAsync() {
+//         var req = conn.request()
+//         ...
+//         try await conn.respondAsync(200, "text/plain", body)
+//     }
+//
+// A request is read where it lies in the connection's block, with nothing copied: the method,
+// the target and every header are places in it (1767). The module keeps connections open (1.0
+// and 1.1), answers pipelined requests in order and sends their answers together (1777), reads a
+// body of `Content-Length` bytes or in chunks, sends `100 Continue` once the body is asked for,
+// lets go of a body nobody read before the next request, and answers what is malformed or too
+// large itself, closing the connection (1776): a `Host` that is not `host[:port]` (1790), a target
+// that is not a path, a whole `http` URL or `*` for `OPTIONS` (1791), a request line longer than
+// the head may be (414, 1792).
+
+// ---- options
+
+public struct HttpOptions : Copyable {
+    // The most bytes of a head, the request line and the headers; more is answered 414 when the
+    // request line has not ended by then, 431 when it has.
+    public int maxHeadBytes = 8192
+    // The most headers of a request; more is answered 431.
+    public int maxHeaders = 100
+    // The most bytes of a body; more is answered 413 when it is asked for.
+    public long maxBodyBytes = 1048576
+    // Milliseconds a head may take from its first byte; 0 for no limit. Past it the connection
+    // is closed with no answer.
+    public int headTimeout = 10000
+    // Milliseconds a connection may wait for the next request, for more of a body, or for its
+    // answers to be taken in; 0 for no limit.
+    public int idleTimeout = 60000
+
+    void check(read this) {
+        if this.maxHeadBytes < 64 {
+            panic($"HttpOptions.maxHeadBytes is {this.maxHeadBytes}: it is at least 64")
+        }
+        if this.maxHeaders < 1 {
+            panic($"HttpOptions.maxHeaders is {this.maxHeaders}: it is at least 1")
+        }
+        if this.maxBodyBytes < 0 {
+            panic($"HttpOptions.maxBodyBytes is {this.maxBodyBytes}: it is not negative")
+        }
+        if this.headTimeout < 0 || this.idleTimeout < 0 {
+            panic("HttpOptions: a time is not negative")
+        }
+    }
+}
+
+// ---- the request
+
+// A request where it lies in the block of its connection: what `conn.request()` gives, until the
+// connection reads again.
+public struct HttpRequest<from conn> {
+    read HttpConnection conn
+
+    // `GET`, `POST`: a token, as the request wrote it.
+    public read string method(read this) from conn {
+        return httpText(this.conn.block[this.conn.start..this.conn.marks[0]])
+    }
+
+    // What the request asks for: `/path?query` for most, as it was written, not decoded.
+    public read string target(read this) from conn {
+        return httpText(this.conn.block[this.conn.marks[1]..this.conn.marks[2]])
+    }
+
+    // The host the request is for, with its port when it has one, as written: from the target
+    // when the target is a whole URL (absolute-form, whose host RFC 9112 puts before `Host`'s),
+    // from `Host` otherwise; empty when there is none, as HTTP/1.0 may send (1791).
+    public read byte[] host(read this) from conn {
+        return this.conn.block[this.conn.hostStart..this.conn.hostEnd]
+    }
+
+    // 0 for HTTP/1.0, 1 for HTTP/1.1.
+    public int minorVersion(read this) {
+        return this.conn.minor
+    }
+
+    // The value of the first header of this name, in any case, with the spaces around it left
+    // out; `null` when there is none.
+    public read byte[]? header(read this, read string name) from conn {
+        var want = name.asBytes()
+        var marks = read this.conn.marks
+        nint i = 3
+        while i < marks.length() {
+            if httpSameName(this.conn.block[marks[i]..marks[i + 1]], want) {
+                return this.conn.block[marks[i + 2]..marks[i + 3]]
+            }
+            i += 4
+        }
+        return null
+    }
+
+    // How many headers the request has.
+    public nint headerCount(read this) {
+        return (this.conn.marks.length() - 3) / 4
+    }
+
+    // The name of header `i`, as it was written; a panic outside `0..headerCount()`.
+    public read string headerName(read this, nint i) from conn {
+        var at = this.conn.httpHeaderAt(i)
+        return httpText(this.conn.block[this.conn.marks[at]..this.conn.marks[at + 1]])
+    }
+
+    // The value of header `i`; a panic outside `0..headerCount()`.
+    public read byte[] headerValue(read this, nint i) from conn {
+        var at = this.conn.httpHeaderAt(i)
+        return this.conn.block[this.conn.marks[at + 2]..this.conn.marks[at + 3]]
+    }
+
+    // Whether the request comes with a body, of a length or in chunks.
+    public bool hasBody(read this) {
+        return this.conn.bodyKind != 0
+    }
+
+    // The body, once `receiveBody` has read it; empty for a request without one. A panic before.
+    public read byte[] body(read this) from conn {
+        if this.conn.bodyKind != 0 && !this.conn.bodyRead {
+            panic("the body of a request is read with `receiveBodyAsync()` before `body()`")
+        }
+        return this.conn.block[this.conn.bodyStart..this.conn.bodyEnd]
+    }
+}
+
+// ---- the connection
+
+public struct HttpConnection {
+    TcpStream stream
+    HttpOptions options
+    // What has come from the client: the request being served starts at `start`, and the bytes
+    // up to `filled` have come.
+    List<byte> block
+    nint start
+    nint filled
+    // Where the head of the request being served ends, the byte after its empty line; 0 when no
+    // request is being served.
+    nint headStop
+    // Where the method ends, where the target starts and ends, then four for each header: where
+    // its name starts and ends, where its value starts and ends.
+    List<nint> marks
+    // Where the host of `host()` lies in the block.
+    nint hostStart
+    nint hostEnd
+    int minor
+    // Whether the connection stays open after this request is answered.
+    bool keep
+    bool isHead
+    // 0 none, 1 `Content-Length`, 2 chunked.
+    int bodyKind
+    long bodyLength
+    bool expectContinue
+    bool bodyRead
+    nint bodyStart
+    nint bodyEnd
+    // Where the next request starts once the body of this one is known: -1 before.
+    nint next
+    // 0 not yet, 1 begun with chunks, 2 begun until the connection closes, 3 answered.
+    int answer
+    // `false` once the connection is closed for good.
+    bool open
+    int? refusedWith
+    // Answers that wait to be sent, and the headers `addHeader` gave for the next one.
+    List<byte> out
+    List<byte> extra
+    // The `Date` of the second `dateSecond`, written out (1784).
+    long dateSecond
+    List<byte> date
+    // The time limits of the calls made without a token (1785).
+    CancellationSource limit
+
+    public HttpConnection create(TcpStream stream, HttpOptions options = HttpOptions {}) {
+        options.check()
+        return HttpConnection {
+            stream = stream, options = options, block = List<byte>.repeat(0, 4096), start = 0, filled = 0,
+            headStop = 0, marks = List<nint>.withCapacity(32), hostStart = 0, hostEnd = 0, minor = 1, keep = true, isHead = false, bodyKind = 0,
+            bodyLength = 0, expectContinue = false, bodyRead = false, bodyStart = 0, bodyEnd = 0, next = 0,
+            answer = 3, open = true, refusedWith = null, out = List<byte>(), extra = List<byte>(),
+            dateSecond = -1, date = List<byte>.repeat(0, 29), limit = CancellationSource()
+        }
+    }
+
+    // The request being served, where it lies; a panic when none is.
+    public HttpRequest request(read this) from this {
+        if this.headStop == 0 {
+            panic("no request is being served: `receiveHeadAsync()` gives one")
+        }
+        return HttpRequest { conn = this }
+    }
+
+    // The status the module answered a malformed or too large request with before closing the
+    // connection (400, 413, 414, 431, 501, 505), or `null` (1783).
+    public int? refused(read this) {
+        return this.refusedWith
+    }
+
+    // Closes the connection once the request being served is answered (1793): an answer not begun
+    // yet says `connection: close`, and the next `receiveHeadAsync()` is `false`. Called after the
+    // answer, the connection ends without waiting for another request.
+    public void closeAfterAnswer(ref this) {
+        this.keep = false
+    }
+
+    // ---- receiving a head
+
+    // Reads the head of the next request: `true` when there is one, `false` when the client has
+    // gone, a time limit ran out, or the request was malformed and answered (`refused()`).
+    public async Result<bool, IoError> receiveHeadAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        if !try await this.leaveRequestAsync(read token) {
+            return Ok(false)
+        }
+        var started = false
+        while true {
+            var step = this.headStep()
+            if step == 0 {
+                return Ok(true)
+            }
+            if step > 1 {
+                try await this.refuseAsync(step, read token)
+                return Ok(false)
+            }
+            try await this.flushAsync(read token)
+            var ms = this.options.idleTimeout
+            if started || this.filled > this.start {
+                ms = this.options.headTimeout
+            }
+            started = started || this.filled > this.start
+            this.roomForHead()
+            if !try await this.fillAsync(ms, !started, read token) {
+                this.open = false
+                return Ok(false)
+            }
+        }
+    }
+
+    // As `receiveHeadAsync`, waiting on the thread; without time limits.
+    public Result<bool, IoError> receiveHead(ref this) {
+        if !try this.leaveRequest() {
+            return Ok(false)
+        }
+        while true {
+            var step = this.headStep()
+            if step == 0 {
+                return Ok(true)
+            }
+            if step > 1 {
+                try this.refuse(step)
+                return Ok(false)
+            }
+            try this.flush()
+            this.roomForHead()
+            if !try this.fill() {
+                this.open = false
+                return Ok(false)
+            }
+        }
+    }
+
+    // Ends the request being served before the next is read: one not answered is a panic; a body
+    // nobody read is read and let go. `false` when the connection is to close.
+    async Result<bool, IoError> leaveRequestAsync(ref this, read CancellationToken token) {
+        if !this.leaving() {
+            if this.open {
+                try await this.flushAsync(read token)
+                this.open = false
+            }
+            return Ok(false)
+        }
+        if this.headStop > 0 && this.bodyKind != 0 && !this.bodyRead {
+            if !try await this.bodyAsync(true, read token) {
+                return Ok(false)
+            }
+        }
+        this.startNext()
+        return Ok(true)
+    }
+
+    Result<bool, IoError> leaveRequest(ref this) {
+        if !this.leaving() {
+            if this.open {
+                try this.flush()
+                this.open = false
+            }
+            return Ok(false)
+        }
+        if this.headStop > 0 && this.bodyKind != 0 && !this.bodyRead {
+            if !try this.body(true) {
+                return Ok(false)
+            }
+        }
+        this.startNext()
+        return Ok(true)
+    }
+
+    bool leaving(read this) {
+        if this.answer != 3 {
+            panic("a request is answered before the next is received: `respondAsync`, or `endAsync` after `beginAsync`")
+        }
+        return this.open && this.keep
+    }
+
+    // The next request starts where this one ended; what is left of the block moves to its start
+    // when the block is full.
+    void startNext(ref this) {
+        if this.headStop > 0 {
+            this.start = this.next
+        }
+        this.headStop = 0
+        this.marks.clear()
+        this.extra.clear()
+        if this.start == this.filled {
+            this.start = 0
+            this.filled = 0
+        }
+    }
+
+    // Room to receive more of a head: what is left moves to the start of the block, and the block
+    // grows up to the head limit (1778).
+    void roomForHead(ref this) {
+        if this.filled < this.block.length() {
+            return
+        }
+        if this.start > 0 {
+            var n = this.filled - this.start
+            this.block[0..n].copyFrom(this.block[this.start..this.filled])
+            this.start = 0
+            this.filled = n
+        }
+        if this.filled == this.block.length() {
+            this.grow(this.block.length() * 2)
+        }
+    }
+
+    void grow(ref this, nint size) {
+        if size > this.block.length() {
+            var more = List<byte>.repeat(0, size - this.block.length())
+            this.block.addAll(read more)
+        }
+    }
+
+    // 0 when the head of a request is whole in the block and read, 1 when more is needed, or the
+    // status to refuse it with.
+    int headStep(ref this) {
+        // Empty lines before a request are let go (RFC 9112, 2.2).
+        while this.start < this.filled && (this.block[this.start] == '\n' || (this.block[this.start] == '\r' && this.start + 1 < this.filled && this.block[this.start + 1] == '\n')) {
+            this.start += 1
+        }
+        var most = this.start + (nint)this.options.maxHeadBytes
+        var stop = httpHeadStop(read this.block, this.start, this.filled, most)
+        if stop < 0 {
+            if this.filled >= most {
+                // A request line that has not ended within the limit is a target too long.
+                if (this.block[this.start..most].indexOf('\n') ?? -1) < 0 {
+                    return 414
+                }
+                return 431
+            }
+            return 1
+        }
+        return this.parse(stop)
+    }
+
+    // ---- reading a head
+
+    int parse(ref this, nint stop) {
+        var b = read this.block
+        this.marks.clear()
+        this.keep = true
+        this.isHead = false
+        this.bodyKind = 0
+        this.bodyLength = 0
+        this.expectContinue = false
+        this.bodyRead = false
+        this.refusedWith = null
+        this.hostStart = 0
+        this.hostEnd = 0
+        // The request line.
+        var q = this.start
+        while q < stop && httpIsToken(b[q]) {
+            q += 1
+        }
+        if q == this.start || b[q] != ' ' {
+            return 400
+        }
+        this.marks.add(q)
+        q += 1
+        var targetStart = q
+        while q < stop && b[q] > ' ' && b[q] < 0x7f {
+            q += 1
+        }
+        if q == targetStart || b[q] != ' ' {
+            return 400
+        }
+        this.marks.add(targetStart)
+        this.marks.add(q)
+        q += 1
+        if q + 8 > stop || b[q] != 'H' || b[q + 1] != 'T' || b[q + 2] != 'T' || b[q + 3] != 'P' || b[q + 4] != '/' || b[q + 6] != '.' {
+            return 400
+        }
+        var major = b[q + 5]
+        var minor = b[q + 7]
+        if major < '0' || major > '9' || minor < '0' || minor > '9' {
+            return 400
+        }
+        q += 8
+        var lineEnd = httpLineEnd(b, q)
+        if lineEnd != q {
+            return 400
+        }
+        if major != '1' {
+            return 505
+        }
+        this.minor = 1
+        if minor == '0' {
+            this.minor = 0
+            this.keep = false
+        }
+        var method = b[this.start..this.marks[0]]
+        if httpSame(method, "CONNECT") {
+            return 501
+        }
+        this.isHead = httpSame(method, "HEAD")
+        // The form of the target (1791): a path, a whole `http` or `https` URL, whose host stands
+        // for `Host`'s, or `*` for `OPTIONS`.
+        nint authorityStart = -1
+        nint authorityEnd = -1
+        var target = b[targetStart..this.marks[2]]
+        if target[0] == '*' {
+            if target.length() != 1 || !httpSame(method, "OPTIONS") {
+                return 400
+            }
+        } else if target[0] != '/' {
+            nint scheme = 0
+            if target.length() >= 7 && httpSameName(target[0..7], "http://".asBytes()) {
+                scheme = 7
+            } else if target.length() >= 8 && httpSameName(target[0..8], "https://".asBytes()) {
+                scheme = 8
+            } else {
+                return 400
+            }
+            var end = scheme
+            while end < target.length() && target[end] != '/' && target[end] != '?' && target[end] != '#' {
+                end += 1
+            }
+            // An `http` URL has a host (RFC 9110, 4.2.1).
+            if end == scheme || !httpHostValid(target[scheme..end]) {
+                return 400
+            }
+            authorityStart = targetStart + scheme
+            authorityEnd = targetStart + end
+        }
+        q = httpNextLine(b, q)
+        // The headers.
+        var hosts = 0
+        var lengths = 0
+        var chunked = false
+        var coded = false
+        while true {
+            var eol = httpLineEnd(b, q)
+            if eol < 0 {
+                return 400
+            }
+            if eol == q {
+                break
+            }
+            // A line folded onto the one before (obs-fold) is refused.
+            if b[q] == ' ' || b[q] == '\t' {
+                return 400
+            }
+            var nameStart = q
+            while q < eol && httpIsToken(b[q]) {
+                q += 1
+            }
+            if q == nameStart || q == eol || b[q] != ':' {
+                return 400
+            }
+            var nameEnd = q
+            q += 1
+            while q < eol && (b[q] == ' ' || b[q] == '\t') {
+                q += 1
+            }
+            var valueStart = q
+            var valueEnd = eol
+            while valueEnd > valueStart && (b[valueEnd - 1] == ' ' || b[valueEnd - 1] == '\t') {
+                valueEnd -= 1
+            }
+            for i in valueStart..valueEnd {
+                var c = b[i]
+                if (c < ' ' && c != '\t') || c == 0x7f {
+                    return 400
+                }
+            }
+            if this.marks.length() >= 3 + 4 * (nint)this.options.maxHeaders {
+                return 431
+            }
+            this.marks.add(nameStart)
+            this.marks.add(nameEnd)
+            this.marks.add(valueStart)
+            this.marks.add(valueEnd)
+            var name = b[nameStart..nameEnd]
+            var value = b[valueStart..valueEnd]
+            if httpSameName(name, "host".asBytes()) {
+                // `host[:port]`, or empty (RFC 9112, 3.2; 1790).
+                if value.length() > 0 && !httpHostValid(value) {
+                    return 400
+                }
+                hosts += 1
+                this.hostStart = valueStart
+                this.hostEnd = valueEnd
+            } else if httpSameName(name, "content-length".asBytes()) {
+                var length = httpLength(value)
+                if length < 0 || (lengths > 0 && length != this.bodyLength) {
+                    return 400
+                }
+                lengths += 1
+                this.bodyLength = length
+            } else if httpSameName(name, "transfer-encoding".asBytes()) {
+                var codings = httpTokens(value)
+                if codings != 1 {
+                    if codings == 0 || codings == 2 {
+                        return 400
+                    }
+                    return 501
+                }
+                if chunked {
+                    return 400
+                }
+                chunked = true
+                coded = true
+            } else if httpSameName(name, "connection".asBytes()) {
+                if httpHasToken(value, "close") {
+                    this.keep = false
+                } else if this.minor == 1 || httpHasToken(value, "keep-alive") {
+                    this.keep = this.keep || httpHasToken(value, "keep-alive")
+                }
+            } else if httpSameName(name, "expect".asBytes()) {
+                if this.minor == 1 && httpSameName(value, "100-continue".asBytes()) {
+                    this.expectContinue = true
+                }
+            }
+            q = httpNextLine(b, eol)
+        }
+        if (this.minor == 1 && hosts != 1) || hosts > 1 {
+            return 400
+        }
+        if authorityStart >= 0 {
+            this.hostStart = authorityStart
+            this.hostEnd = authorityEnd
+        }
+        if coded && (lengths > 0 || this.minor == 0) {
+            return 400
+        }
+        if chunked {
+            this.bodyKind = 2
+        } else if this.bodyLength > 0 {
+            this.bodyKind = 1
+        }
+        this.headStop = stop
+        this.next = -1
+        if this.bodyKind == 0 {
+            this.bodyRead = true
+            this.next = stop
+        }
+        this.bodyStart = stop
+        this.bodyEnd = stop
+        this.answer = 0
+        return 0
+    }
+
+    nint httpHeaderAt(read this, nint i) {
+        var count = (this.marks.length() - 3) / 4
+        if i < 0 || i >= count {
+            panic($"header {i} of a request with {count}")
+        }
+        return 3 + 4 * i
+    }
+
+    // ---- reading a body
+
+    // Reads the body of the request being served into the block: `true` when it is whole,
+    // `false` when the client has gone, a time limit ran out, or it is larger than
+    // `maxBodyBytes`, which is answered 413 (1780). `100 Continue` is sent first when the client
+    // waits for it.
+    public async Result<bool, IoError> receiveBodyAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        this.bodyAsked()
+        return await this.bodyAsync(false, read token)
+    }
+
+    // As `receiveBodyAsync`, waiting on the thread; without time limits.
+    public Result<bool, IoError> receiveBody(ref this) {
+        this.bodyAsked()
+        return this.body(false)
+    }
+
+    void bodyAsked(read this) {
+        if this.headStop == 0 {
+            panic("no request is being served: `receiveHeadAsync()` gives one")
+        }
+        if this.answer != 0 {
+            panic("the body of a request is received before it is answered")
+        }
+    }
+
+    // `letGo`: the body is read only to reach the next request; over the limit the connection
+    // closes without an answer.
+    async Result<bool, IoError> bodyAsync(ref this, bool letGo, read CancellationToken token) {
+        if this.bodyRead {
+            return Ok(true)
+        }
+        if !letGo && this.expectContinue && this.filled == this.headStop {
+            this.out.addAll("HTTP/1.1 100 Continue\r\n\r\n".asBytes())
+            this.expectContinue = false
+        }
+        var w = this.headStop
+        var r = this.headStop
+        long left = -1
+        while true {
+            var step = this.bodyStep(ref w, ref r, ref left)
+            if step == 0 {
+                return Ok(true)
+            }
+            if step > 1 {
+                if letGo {
+                    this.open = false
+                    return Ok(false)
+                }
+                try await this.refuseAsync(step, read token)
+                return Ok(false)
+            }
+            try await this.flushAsync(read token)
+            if !try await this.fillAsync(this.options.idleTimeout, false, read token) {
+                this.open = false
+                return Ok(false)
+            }
+        }
+    }
+
+    Result<bool, IoError> body(ref this, bool letGo) {
+        if this.bodyRead {
+            return Ok(true)
+        }
+        if !letGo && this.expectContinue && this.filled == this.headStop {
+            this.out.addAll("HTTP/1.1 100 Continue\r\n\r\n".asBytes())
+            this.expectContinue = false
+        }
+        var w = this.headStop
+        var r = this.headStop
+        long left = -1
+        while true {
+            var step = this.bodyStep(ref w, ref r, ref left)
+            if step == 0 {
+                return Ok(true)
+            }
+            if step > 1 {
+                if letGo {
+                    this.open = false
+                    return Ok(false)
+                }
+                try this.refuse(step)
+                return Ok(false)
+            }
+            try this.flush()
+            if !try this.fill() {
+                this.open = false
+                return Ok(false)
+            }
+        }
+    }
+
+    // 0 when the body is whole, 1 when more is needed (with room in the block for it), or 413.
+    // A body in chunks is put together where it lies: `w` is where the next byte of it goes, `r`
+    // where the next byte of the chunks is read, `left` what is left of the chunk being read (-1
+    // between chunks, -2 in the trailers).
+    int bodyStep(ref this, ref nint w, ref nint r, ref long left) {
+        if this.bodyKind == 1 {
+            if this.bodyLength > this.options.maxBodyBytes {
+                return 413
+            }
+            var stop = this.headStop + (nint)this.bodyLength
+            if this.filled >= stop {
+                this.bodyEnd = stop
+                this.next = stop
+                this.bodyRead = true
+                return 0
+            }
+            this.grow(stop)
+            return 1
+        }
+        while true {
+            if left > 0 {
+                var have = this.filled - r
+                var take = (nint)left
+                if have < take {
+                    take = have
+                }
+                if w != r {
+                    this.block[w..w + take].copyFrom(this.block[r..r + take])
+                }
+                w += take
+                r += take
+                left -= (long)take
+                if left > 0 {
+                    break
+                }
+                left = 0
+            }
+            if left == 0 {
+                // The line end after the data of a chunk.
+                var dataEnd = httpLineEnd(read this.block, r)
+                if dataEnd == -2 {
+                    break
+                }
+                if dataEnd != r {
+                    return 400
+                }
+                r = httpNextLine(read this.block, dataEnd)
+                left = -1
+            }
+            var eol = httpLineEnd(read this.block, r)
+            if eol == -2 {
+                if this.filled - r > 4096 {
+                    return 400
+                }
+                break
+            }
+            if eol < 0 {
+                return 400
+            }
+            if left == -2 {
+                // A trailer, or the empty line that ends the body.
+                if eol == r {
+                    r = httpNextLine(read this.block, eol)
+                    this.bodyEnd = w
+                    this.next = r
+                    this.bodyRead = true
+                    // What came after the body moves next to it.
+                    if this.next != this.filled && w != r {
+                        var n = this.filled - r
+                        this.block[w..w + n].copyFrom(this.block[r..this.filled])
+                        this.filled = w + n
+                        this.next = w
+                    } else if this.next == this.filled {
+                        this.filled = w
+                        this.next = w
+                    }
+                    return 0
+                }
+                if (long)(r - this.headStop) > (long)this.options.maxHeadBytes {
+                    return 431
+                }
+                r = httpNextLine(read this.block, eol)
+                continue
+            }
+            // The size of the next chunk, in hex, then any extensions.
+            long size = 0
+            var q = r
+            while q < eol && httpHexValue(this.block[q]) >= 0 {
+                // Past 2^59 the next digit would not fit; zeros in front are let be.
+                if size >= 0x800000000000000 {
+                    return 413
+                }
+                size = size * 16 + (long)httpHexValue(this.block[q])
+                q += 1
+            }
+            if q == r || (q < eol && this.block[q] != ';' && this.block[q] != ' ' && this.block[q] != '\t') {
+                return 400
+            }
+            if (long)(w - this.headStop) + size > this.options.maxBodyBytes {
+                return 413
+            }
+            r = httpNextLine(read this.block, eol)
+            if size == 0 {
+                left = -2
+            } else {
+                left = size
+            }
+        }
+        // More is needed: what is not read yet moves next to what is put together, and the block
+        // grows if that leaves no room.
+        if w != r {
+            var n = this.filled - r
+            this.block[w..w + n].copyFrom(this.block[r..this.filled])
+            this.filled = w + n
+            r = w
+        }
+        if this.filled == this.block.length() {
+            this.grow(this.block.length() * 2)
+        }
+        return 1
+    }
+
+    // ---- answering
+
+    // Adds a header to the next answer (1781): `IoError.InvalidInput` for a name that is not a
+    // token, a value with a line break or another control byte in it, or one of the headers the
+    // module writes itself (`content-length`, `transfer-encoding`, `connection`, `date`).
+    public Result<void, IoError> addHeader(ref this, read string name, read string value) {
+        var n = name.asBytes()
+        if n.length() == 0 {
+            return Error(IoError.InvalidInput)
+        }
+        for c in n {
+            if !httpIsToken(c) {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        if httpSameName(n, "content-length".asBytes()) || httpSameName(n, "transfer-encoding".asBytes()) || httpSameName(n, "connection".asBytes()) || httpSameName(n, "date".asBytes()) {
+            return Error(IoError.InvalidInput)
+        }
+        var v = value.asBytes()
+        for c in v {
+            if (c < ' ' && c != '\t') || c == 0x7f {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        this.extra.addAll(n)
+        this.extra.addAll(": ".asBytes())
+        this.extra.addAll(v)
+        this.extra.addAll("\r\n".asBytes())
+        return Ok()
+    }
+
+    // Answers the request being served with a body of known length (1766). `contentType` empty
+    // writes no `content-type`. The answer may wait to be sent with the next when the next
+    // request is whole in the block already (1777).
+    public async Result<void, IoError> respondAsync(ref this, int status, read string contentType, read byte[] body, read CancellationToken token = CancellationToken.None) {
+        try this.writeAnswer(status, contentType, body)
+        if this.holds() {
+            return Ok()
+        }
+        return await this.sendOutAsync(read token)
+    }
+
+    // As `respondAsync`, waiting on the thread; without time limits.
+    public Result<void, IoError> respond(ref this, int status, read string contentType, read byte[] body) {
+        try this.writeAnswer(status, contentType, body)
+        return this.sendOrHold()
+    }
+
+    // Starts an answer of a length not known yet (1782): its parts are sent in chunks, or for
+    // HTTP/1.0 until the connection closes.
+    public async Result<void, IoError> beginAsync(ref this, int status, read string contentType, read CancellationToken token = CancellationToken.None) {
+        try this.writeBegin(status, contentType)
+        if this.out.length() >= HttpHeldBytes {
+            try await this.flushAsync(read token)
+        }
+        return Ok()
+    }
+
+    public Result<void, IoError> begin(ref this, int status, read string contentType) {
+        try this.writeBegin(status, contentType)
+        if this.out.length() >= HttpHeldBytes {
+            try this.flush()
+        }
+        return Ok()
+    }
+
+    // Sends a part of the answer `beginAsync` started; an empty part sends nothing.
+    public async Result<void, IoError> writeAsync(ref this, read byte[] part, read CancellationToken token = CancellationToken.None) {
+        this.writePart(part)
+        if this.holds() {
+            return Ok()
+        }
+        return await this.sendOutAsync(read token)
+    }
+
+    public Result<void, IoError> write(ref this, read byte[] part) {
+        this.writePart(part)
+        return this.sendOrHold()
+    }
+
+    // Ends the answer `beginAsync` started.
+    public async Result<void, IoError> endAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        this.writeEnd()
+        if this.holds() {
+            return Ok()
+        }
+        return await this.sendOutAsync(read token)
+    }
+
+    public Result<void, IoError> end(ref this) {
+        this.writeEnd()
+        return this.sendOrHold()
+    }
+
+    // Sends the answers that wait.
+    public async Result<void, IoError> flushAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        return await this.sendOutAsync(read token)
+    }
+
+    public Result<void, IoError> flush(ref this) {
+        if this.out.length() == 0 {
+            return Ok()
+        }
+        try this.stream.send(read this.out)
+        this.out.clear()
+        return Ok()
+    }
+
+    void answering(read this) {
+        if this.headStop == 0 || this.answer == 3 {
+            panic("no request waits for an answer: `receiveHeadAsync()` gives one")
+        }
+    }
+
+    Result<void, IoError> writeAnswer(ref this, int status, read string contentType, read byte[] body) {
+        this.answering()
+        if this.answer != 0 {
+            panic("an answer begun with `beginAsync` goes on with `writeAsync` and ends with `endAsync`")
+        }
+        if (status == 204 || status == 304) && body.length() > 0 {
+            panic($"an answer {status} has no body")
+        }
+        try this.writeHead(status, contentType)
+        if status != 204 && status != 304 {
+            this.out.addAll("content-length: ".asBytes())
+            httpDecimal(ref this.out, (long)body.length())
+            this.out.addAll("\r\n".asBytes())
+        }
+        this.endHead()
+        if !this.isHead {
+            this.out.addAll(body)
+        }
+        this.answer = 3
+        return Ok()
+    }
+
+    Result<void, IoError> writeBegin(ref this, int status, read string contentType) {
+        this.answering()
+        if this.answer != 0 {
+            panic("an answer is begun once")
+        }
+        if status == 204 || status == 304 {
+            panic($"an answer {status} has no body to begin")
+        }
+        if this.minor == 0 {
+            this.keep = false
+        }
+        try this.writeHead(status, contentType)
+        if this.minor == 1 {
+            this.out.addAll("transfer-encoding: chunked\r\n".asBytes())
+            this.answer = 1
+        } else {
+            this.answer = 2
+        }
+        this.endHead()
+        return Ok()
+    }
+
+    void writePart(ref this, read byte[] part) {
+        if this.answer != 1 && this.answer != 2 {
+            panic("`writeAsync` sends a part of an answer `beginAsync` began")
+        }
+        if part.length() == 0 || this.isHead {
+            return
+        }
+        if this.answer == 1 {
+            httpHex(ref this.out, part.length())
+            this.out.addAll("\r\n".asBytes())
+            this.out.addAll(part)
+            this.out.addAll("\r\n".asBytes())
+        } else {
+            this.out.addAll(part)
+        }
+    }
+
+    void writeEnd(ref this) {
+        if this.answer != 1 && this.answer != 2 {
+            panic("`endAsync` ends an answer `beginAsync` began")
+        }
+        if this.answer == 1 && !this.isHead {
+            this.out.addAll("0\r\n\r\n".asBytes())
+        }
+        this.answer = 3
+    }
+
+    // The status line, `date`, `content-type`, the headers of `addHeader`, and `connection: close`
+    // when the connection closes after this answer; the empty line is `endHead`'s.
+    Result<void, IoError> writeHead(ref this, int status, read string contentType) {
+        if status < 200 || status > 999 {
+            panic($"an answer has a status of 200 to 999, not {status}")
+        }
+        var type = contentType.asBytes()
+        for c in type {
+            if (c < ' ' && c != '\t') || c == 0x7f {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        // A body nobody read keeps the connection only when it can be let go of: not one the
+        // client waits to send, nor one over the limit.
+        if this.bodyKind != 0 && !this.bodyRead && (this.expectContinue || (this.bodyKind == 1 && this.bodyLength > this.options.maxBodyBytes)) {
+            this.keep = false
+        }
+        this.out.addAll("HTTP/1.1 ".asBytes())
+        httpDecimal(ref this.out, (long)status)
+        this.out.add(' ')
+        this.out.addAll(httpReason(status).asBytes())
+        this.out.addAll("\r\ndate: ".asBytes())
+        this.writeDate()
+        this.out.addAll("\r\n".asBytes())
+        if type.length() > 0 {
+            this.out.addAll("content-type: ".asBytes())
+            this.out.addAll(type)
+            this.out.addAll("\r\n".asBytes())
+        }
+        this.out.addAll(read this.extra)
+        this.extra.clear()
+        if !this.keep {
+            this.out.addAll("connection: close\r\n".asBytes())
+        } else if this.minor == 0 {
+            this.out.addAll("connection: keep-alive\r\n".asBytes())
+        }
+        return Ok()
+    }
+
+    void endHead(ref this) {
+        this.out.addAll("\r\n".asBytes())
+    }
+
+    // `Date` as RFC 9110 writes it, `Sun, 06 Nov 1994 08:49:37 GMT`, made again once a second
+    // from the seconds the system keeps cheaply.
+    void writeDate(ref this) {
+        var now = Clock.wallSeconds()
+        if now != this.dateSecond {
+            this.dateSecond = now
+            httpDate(ref this.date, now)
+        }
+        this.out.addAll(read this.date)
+    }
+
+    // Whether the answers are sent now: not when the connection stays open and the next request
+    // is whole in the block already, unless enough waits (1777).
+    bool holds(read this) {
+        if this.answer != 3 || !this.keep || this.out.length() >= HttpHeldBytes || this.next < 0 {
+            return false
+        }
+        var most = this.next + (nint)this.options.maxHeadBytes
+        return httpHeadStop(read this.block, this.next, this.filled, most) >= 0
+    }
+
+    Result<void, IoError> sendOrHold(ref this) {
+        if this.holds() {
+            return Ok()
+        }
+        try this.flush()
+        if this.answer == 3 && !this.keep {
+            this.open = false
+        }
+        return Ok()
+    }
+
+    // ---- refusing
+
+    void writeRefusal(ref this, int status) {
+        this.refusedWith = status
+        this.keep = false
+        this.isHead = false
+        this.extra.clear()
+        if this.headStop == 0 {
+            this.minor = 1
+        }
+        var text = httpReason(status)
+        this.out.addAll("HTTP/1.1 ".asBytes())
+        httpDecimal(ref this.out, (long)status)
+        this.out.add(' ')
+        this.out.addAll(text.asBytes())
+        this.out.addAll("\r\ndate: ".asBytes())
+        this.writeDate()
+        this.out.addAll("\r\nconnection: close\r\ncontent-type: text/plain\r\ncontent-length: ".asBytes())
+        httpDecimal(ref this.out, (long)text.length())
+        this.out.addAll("\r\n\r\n".asBytes())
+        this.out.addAll(text.asBytes())
+        this.answer = 3
+        this.open = false
+    }
+
+    // Answers a request the module does not take and closes the connection (1776); a client that
+    // does not take the answer in is let go of.
+    async Result<void, IoError> refuseAsync(ref this, int status, read CancellationToken token) {
+        this.writeRefusal(status)
+        if await this.flushAsync(read token) is Error(e) {
+            if e is Cancelled(_) && token.isCancelled() {
+                return Error(e)
+            }
+            return Ok()
+        }
+        if status == 413 || status == 414 || status == 431 {
+            await this.lingerAsync(read token)
+        }
+        return Ok()
+    }
+
+    // A client refused while it still sends (a head or a body too large) would have its answer
+    // lost to the reset that closing on bytes not read sends: what it sends is read and let go
+    // of until it stops for `HttpLingerQuiet` milliseconds, for `HttpLingerMost` at most, as
+    // nginx's lingering close does.
+    async void lingerAsync(ref this, read CancellationToken token) {
+        var until = Clock.monotonic() + (long)HttpLingerMost * 1000000
+        long drained = 0
+        while drained < HttpLingerBytes && Clock.monotonic() < until {
+            this.start = 0
+            this.filled = 0
+            match await this.fillAsync(HttpLingerQuiet, false, read token) {
+                Ok(true) => drained += (long)this.filled
+                _ => return
+            }
+        }
+    }
+
+    Result<void, IoError> refuse(ref this, int status) {
+        this.writeRefusal(status)
+        _ = this.flush()
+        return Ok()
+    }
+
+    // ---- the network, with the time limits
+
+    // The token the next wait looks at: the connection's own source, set to cancel `ms` from now,
+    // when no token is given; one linked to the token given otherwise (1785).
+    async Result<bool, IoError> fillAsync(ref this, int ms, bool idle, read CancellationToken token) {
+        var room = this.block.length() - this.filled
+        if room == 0 {
+            panic("no room in the block of an HTTP connection")
+        }
+        if !token.canBeCancelled() {
+            var mine = this.armed(ms)
+            match await this.stream.receiveAsync(ref this.block[this.filled..], read mine) {
+                Ok(n) => return this.took(n)
+                Error(Cancelled(_)) => return Ok(false)
+                Error(e) => return Error(e)
+            }
+        }
+        var linked = CancellationSource.linked(read token)
+        if ms > 0 {
+            linked.cancelAfter(ms)
+        }
+        match await this.stream.receiveAsync(ref this.block[this.filled..], read linked.token()) {
+            Ok(n) => return this.took(n)
+            Error(Cancelled(c)) => {
+                if token.isCancelled() {
+                    return Error(IoError.Cancelled(c))
+                }
+                return Ok(false)
+            }
+            Error(e) => return Error(e)
+        }
+    }
+
+    Result<bool, IoError> took(ref this, nint n) {
+        if n == 0 {
+            return Ok(false)
+        }
+        this.filled += n
+        return Ok(true)
+    }
+
+    Result<bool, IoError> fill(ref this) {
+        var n = try this.stream.receive(ref this.block[this.filled..])
+        return this.took(n)
+    }
+
+    // Sends the answers that wait, within `idleTimeout`: a client that does not take them in by
+    // then is let go of, as one that sends nothing is (1783); the caller's token cancelled is
+    // `Cancelled`. The connection closes once an answer that ends it is sent.
+    async Result<void, IoError> sendOutAsync(ref this, read CancellationToken token) {
+        if this.out.length() > 0 {
+            Result<void, IoError> sent = Ok()
+            if !token.canBeCancelled() {
+                var mine = this.armed(this.options.idleTimeout)
+                sent = await this.stream.sendAsync(read this.out, read mine)
+            } else {
+                var linked = CancellationSource.linked(read token)
+                if this.options.idleTimeout > 0 {
+                    linked.cancelAfter(this.options.idleTimeout)
+                }
+                sent = await this.stream.sendAsync(read this.out, read linked.token())
+            }
+            this.out.clear()
+            match sent {
+                Ok => {}
+                Error(Cancelled(c)) => {
+                    if token.isCancelled() {
+                        return Error(IoError.Cancelled(c))
+                    }
+                    this.open = false
+                    return Ok()
+                }
+                Error(e) => return Error(e)
+            }
+        }
+        if this.answer == 3 && !this.keep {
+            this.open = false
+        }
+        return Ok()
+    }
+
+    // A token of the connection's own source, set to cancel `ms` from now (a time far off for 0);
+    // a source that has cancelled is made again.
+    CancellationToken armed(ref this, int ms) {
+        if this.limit.isCancelled() {
+            this.limit = CancellationSource()
+        }
+        if ms > 0 {
+            this.limit.cancelAfter(ms)
+        } else {
+            this.limit.cancelAfter(HttpFarOff)
+        }
+        return this.limit.token()
+    }
+}
+
+// Answers held for the next request are sent once they come to this many bytes (1777).
+const nint HttpHeldBytes = 65536
+// How long a refused client may go on sending (see `lingerAsync`).
+const int HttpLingerQuiet = 100
+const int HttpLingerMost = 2000
+const long HttpLingerBytes = 1048576
+// The time limit of 0 in milliseconds: some 24 days.
+const int HttpFarOff = 2000000000
+
+// ---- bytes
+
+read string httpText(read byte[] bytes) {
+    return string.fromUtf8(bytes) ?? ""
+}
+
+// What each byte may be: 1 a byte of a token (RFC 9110, 5.6.2), 2 a byte of a host's name besides `%XX`
+// (RFC 3986: unreserved and sub-delims). A table: with the checks of `Host` and the target (1790, 1791), the
+// chains of comparisons it stands for cost the server some 2% of its time for each request.
+const byte[256] HttpBytes = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 3, 0, 1, 3, 1, 3, 3, 2, 2, 3, 3, 2, 3, 3, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 2, 0, 2, 0, 0,
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 1, 3,
+    1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 1, 0, 3, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+}
+
+bool httpIsToken(byte c) {
+    return (HttpBytes[c] & 1) != 0
+}
+
+// Whether `v` is `host[:port]` as RFC 3986 writes them, with a host that is not empty: an IP
+// address in brackets, or letters, digits, `-._~`, `%` and two hex digits, and `!$&'()*+,;=`;
+// a port of digits, which may be none. An IPv6 address is looked at for its bytes, not its form.
+bool httpHostValid(read byte[] v) {
+    nint i = 0
+    var n = v.length()
+    if n > 0 && v[0] == '[' {
+        i = 1
+        if i < n && (v[i] == 'v' || v[i] == 'V') {
+            // IPvFuture: `v`, hex digits, `.`, then unreserved, sub-delims and `:`.
+            i += 1
+            var hex = i
+            while i < n && httpHexValue(v[i]) >= 0 {
+                i += 1
+            }
+            if i == hex || i >= n || v[i] != '.' {
+                return false
+            }
+            i += 1
+            var rest = i
+            while i < n && v[i] != ']' && (httpIsHostByte(v[i]) || v[i] == ':') {
+                i += 1
+            }
+            if i == rest {
+                return false
+            }
+        } else {
+            var colons = 0
+            while i < n && (httpHexValue(v[i]) >= 0 || v[i] == ':' || v[i] == '.') {
+                if v[i] == ':' {
+                    colons += 1
+                }
+                i += 1
+            }
+            if colons < 2 {
+                return false
+            }
+        }
+        if i >= n || v[i] != ']' {
+            return false
+        }
+        i += 1
+    } else {
+        while i < n && v[i] != ':' {
+            if v[i] == '%' {
+                if i + 2 >= n || httpHexValue(v[i + 1]) < 0 || httpHexValue(v[i + 2]) < 0 {
+                    return false
+                }
+                i += 3
+            } else if httpIsHostByte(v[i]) {
+                i += 1
+            } else {
+                return false
+            }
+        }
+        if i == 0 {
+            return false
+        }
+    }
+    if i < n {
+        if v[i] != ':' {
+            return false
+        }
+        i += 1
+        while i < n {
+            if v[i] < '0' || v[i] > '9' {
+                return false
+            }
+            i += 1
+        }
+    }
+    return true
+}
+
+// An unreserved byte of RFC 3986 or a sub-delim: what a host's name may hold besides `%XX`.
+bool httpIsHostByte(byte c) {
+    return (HttpBytes[c] & 2) != 0
+}
+
+// Whether `a` is `word`, in any case; `word` is written in small letters.
+bool httpSameName(read byte[] a, read byte[] word) {
+    if a.length() != word.length() {
+        return false
+    }
+    for i in 0..a.length() {
+        var c = a[i]
+        if c >= 'A' && c <= 'Z' {
+            c += 32
+        }
+        var d = word[i]
+        if d >= 'A' && d <= 'Z' {
+            d += 32
+        }
+        if c != d {
+            return false
+        }
+    }
+    return true
+}
+
+bool httpSame(read byte[] a, read string word) {
+    return a == word.asBytes()
+}
+
+// Whether a list of tokens separated by commas has `word` among them, in any case.
+bool httpHasToken(read byte[] v, read string word) {
+    var w = word.asBytes()
+    nint i = 0
+    while i < v.length() {
+        while i < v.length() && (v[i] == ' ' || v[i] == '\t' || v[i] == ',') {
+            i += 1
+        }
+        var start = i
+        while i < v.length() && v[i] != ',' {
+            i += 1
+        }
+        var end = i
+        while end > start && (v[end - 1] == ' ' || v[end - 1] == '\t') {
+            end -= 1
+        }
+        if httpSameName(v[start..end], w) {
+            return true
+        }
+    }
+    return false
+}
+
+// What a `transfer-encoding` holds: 1 for `chunked` alone, 0 for nothing or an empty item, 2 for
+// `chunked` that is not last, 3 for a coding the module does not take (501).
+int httpTokens(read byte[] v) {
+    var w = "chunked".asBytes()
+    nint i = 0
+    var count = 0
+    var last = false
+    var other = false
+    while i < v.length() {
+        while i < v.length() && (v[i] == ' ' || v[i] == '\t') {
+            i += 1
+        }
+        var start = i
+        while i < v.length() && v[i] != ',' {
+            i += 1
+        }
+        var end = i
+        while end > start && (v[end - 1] == ' ' || v[end - 1] == '\t') {
+            end -= 1
+        }
+        if end == start {
+            return 0
+        }
+        count += 1
+        last = httpSameName(v[start..end], w)
+        if !last {
+            other = true
+        }
+        if i < v.length() {
+            i += 1
+        }
+    }
+    if count == 0 {
+        return 0
+    }
+    if other {
+        return 3
+    }
+    if count > 1 || !last {
+        return 2
+    }
+    return 1
+}
+
+// A `content-length` of digits only, or -1.
+long httpLength(read byte[] v) {
+    if v.length() == 0 || v.length() > 18 {
+        return -1
+    }
+    long n = 0
+    for c in v {
+        if c < '0' || c > '9' {
+            return -1
+        }
+        n = n * 10 + (long)(c - '0')
+    }
+    return n
+}
+
+int httpHexValue(byte c) {
+    if c >= '0' && c <= '9' {
+        return c - '0'
+    }
+    if c >= 'a' && c <= 'f' {
+        return c - 'a' + 10
+    }
+    if c >= 'A' && c <= 'F' {
+        return c - 'A' + 10
+    }
+    return -1
+}
+
+// Where the line at `at` ends: the place of its `\n`, or of the `\r` before it; -2 when the block
+// holds no `\n` yet, -1 for a `\r` that is not followed by `\n` (a bare CR is refused).
+nint httpLineEnd(read List<byte> b, nint at) {
+    var i = at
+    var n = b.length()
+    while i < n {
+        var c = b[i]
+        if c == '\n' {
+            if i > at && b[i - 1] == '\r' {
+                return i - 1
+            }
+            return i
+        }
+        if c == '\r' && i + 1 < n && b[i + 1] != '\n' {
+            return -1
+        }
+        i += 1
+    }
+    return -2
+}
+
+// The start of the line after the one ending at `eol`.
+nint httpNextLine(read List<byte> b, nint eol) {
+    if b[eol] == '\r' {
+        return eol + 2
+    }
+    return eol + 1
+}
+
+// The byte after the empty line that ends a head starting at `from`, looked for before `end` and
+// `most`; -1 when there is none yet. A line may end in `\r\n` or in `\n` alone.
+nint httpHeadStop(read List<byte> b, nint from, nint end, nint most) {
+    var limit = end
+    if limit > most {
+        limit = most
+    }
+    var i = from
+    while i < limit {
+        var found = b[i..limit].indexOf('\n') ?? -1
+        if found < 0 {
+            return -1
+        }
+        i += found
+        if i + 1 < end && b[i + 1] == '\n' {
+            return i + 2
+        }
+        if i + 2 < end && b[i + 1] == '\r' && b[i + 2] == '\n' {
+            return i + 3
+        }
+        i += 1
+    }
+    return -1
+}
+
+void httpDecimal(ref List<byte> out, long n) {
+    var digits = byte[20](0)
+    var i = 20
+    while true {
+        i -= 1
+        digits[i] = (byte)('0' + n % 10)
+        n /= 10
+        if n == 0 {
+            break
+        }
+    }
+    out.addAll(digits[i..20])
+}
+
+void httpHex(ref List<byte> out, nint n) {
+    var digits = byte[16](0)
+    var i = 16
+    while true {
+        i -= 1
+        var d = n % 16
+        if d < 10 {
+            digits[i] = (byte)('0' + d)
+        } else {
+            digits[i] = (byte)('a' + d - 10)
+        }
+        n /= 16
+        if n == 0 {
+            break
+        }
+    }
+    out.addAll(digits[i..16])
+}
+
+// `Sun, 06 Nov 1994 08:49:37 GMT` for so many seconds since 1970 in UTC, written over the 29
+// bytes of `out` (days to the date as Howard Hinnant's `civil_from_days`).
+void httpDate(ref List<byte> out, long seconds) {
+    var days = seconds / 86400
+    var rest = seconds % 86400
+    if rest < 0 {
+        rest += 86400
+        days -= 1
+    }
+    var weekday = (days + 4) % 7
+    if weekday < 0 {
+        weekday += 7
+    }
+    var z = days + 719468
+    var era = z / 146097
+    if z < 0 && z % 146097 != 0 {
+        era -= 1
+    }
+    var doe = z - era * 146097
+    var yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    var year = yoe + era * 400
+    var doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    var mp = (5 * doy + 2) / 153
+    var day = doy - (153 * mp + 2) / 5 + 1
+    var month = mp + 3
+    if mp >= 10 {
+        month = mp - 9
+    }
+    if month <= 2 {
+        year += 1
+    }
+    var names = "SunMonTueWedThuFriSat".asBytes()
+    var months = "JanFebMarAprMayJunJulAugSepOctNovDec".asBytes()
+    var w = (nint)weekday * 3
+    var m = (nint)(month - 1) * 3
+    out[0] = names[w]
+    out[1] = names[w + 1]
+    out[2] = names[w + 2]
+    out[3] = ','
+    out[4] = ' '
+    out[5] = (byte)('0' + day / 10)
+    out[6] = (byte)('0' + day % 10)
+    out[7] = ' '
+    out[8] = months[m]
+    out[9] = months[m + 1]
+    out[10] = months[m + 2]
+    out[11] = ' '
+    out[12] = (byte)('0' + year / 1000 % 10)
+    out[13] = (byte)('0' + year / 100 % 10)
+    out[14] = (byte)('0' + year / 10 % 10)
+    out[15] = (byte)('0' + year % 10)
+    out[16] = ' '
+    var hour = rest / 3600
+    var minute = rest / 60 % 60
+    var second = rest % 60
+    out[17] = (byte)('0' + hour / 10)
+    out[18] = (byte)('0' + hour % 10)
+    out[19] = ':'
+    out[20] = (byte)('0' + minute / 10)
+    out[21] = (byte)('0' + minute % 10)
+    out[22] = ':'
+    out[23] = (byte)('0' + second / 10)
+    out[24] = (byte)('0' + second % 10)
+    out[25] = ' '
+    out[26] = 'G'
+    out[27] = 'M'
+    out[28] = 'T'
+}
+
+// The reason a status is written with; empty for one with none known, which HTTP allows.
+string httpReason(int status) {
+    match status {
+        200 => return "OK"
+        201 => return "Created"
+        202 => return "Accepted"
+        204 => return "No Content"
+        206 => return "Partial Content"
+        301 => return "Moved Permanently"
+        302 => return "Found"
+        303 => return "See Other"
+        304 => return "Not Modified"
+        307 => return "Temporary Redirect"
+        308 => return "Permanent Redirect"
+        400 => return "Bad Request"
+        401 => return "Unauthorized"
+        403 => return "Forbidden"
+        404 => return "Not Found"
+        405 => return "Method Not Allowed"
+        406 => return "Not Acceptable"
+        408 => return "Request Timeout"
+        409 => return "Conflict"
+        410 => return "Gone"
+        411 => return "Length Required"
+        412 => return "Precondition Failed"
+        413 => return "Content Too Large"
+        414 => return "URI Too Long"
+        415 => return "Unsupported Media Type"
+        416 => return "Range Not Satisfiable"
+        417 => return "Expectation Failed"
+        422 => return "Unprocessable Content"
+        428 => return "Precondition Required"
+        429 => return "Too Many Requests"
+        431 => return "Request Header Fields Too Large"
+        500 => return "Internal Server Error"
+        501 => return "Not Implemented"
+        502 => return "Bad Gateway"
+        503 => return "Service Unavailable"
+        504 => return "Gateway Timeout"
+        505 => return "HTTP Version Not Supported"
+        _ => return ""
+    }
+}

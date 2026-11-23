@@ -33,6 +33,10 @@ These are the numbers of one run of each case, taken on 22 November 2026 with th
 
 ### HTTP
 
+SG's column was measured with the server written by hand on `TcpStream`. Since the 162nd slice the lane's server
+is written on `std/http` (`HttpConnection`), which stood within 2.2% of the hand-written one with the same time
+limits ([library.md](library.md#http)); the next run of the lane, with it, replaces this column.
+
 | Case | SG | Rust | Zig | C |
 |---|---|---|---|---|
 | 50 connections kept open | 1,386k/s, 73 µs, 1.8 MB | 536k/s, 184 µs, 3.2 MB | 907k/s, 124 µs, 13.9 MB | 1,441k/s, 79 µs, 1.5 MB |

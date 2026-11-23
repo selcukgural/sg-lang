@@ -1,0 +1,17 @@
+// A method that adds one field of its own to another: the two lists are apart, so the one that
+// grows cannot move the other (`ref this` lends the fields, each a place of its own).
+struct Reply {
+    List<byte> out
+    List<byte> extra
+
+    void join(ref this) {
+        this.out.addAll(read this.extra)
+        this.out.addAll(this.extra[0..1])
+    }
+}
+
+void main() {
+    var reply = Reply { out = List<byte> { 1 }, extra = List<byte> { 2, 3 } }
+    reply.join()
+    print(reply.out.length())
+}

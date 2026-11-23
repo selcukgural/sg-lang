@@ -1,0 +1,22 @@
+HTTP/1.1 200 OK
+date: <date>
+content-type: text/plain
+content-length: 4
+
+/a 3HTTP/1.1 200 OK
+date: <date>
+content-type: text/plain
+transfer-encoding: chunked
+
+1
+a
+2
+bc
+0
+
+HTTP/1.1 200 OK
+date: <date>
+content-type: text/plain
+content-length: 4
+
+/b 0

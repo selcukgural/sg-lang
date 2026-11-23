@@ -1,0 +1,19 @@
+// A request that is not answered before the next is read is a panic: the client would wait for
+// an answer that never comes.
+async Result<void, IoError> serve(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        print(conn.request().target())
+    }
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = try await TcpStream.connectAsync(read address)
+    var accepted = try await listener.acceptAsync()
+    try await client.sendAsync("GET /first HTTP/1.1\r\nHost: a\r\n\r\nGET /second HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await serve(accepted)
+    return Ok()
+}

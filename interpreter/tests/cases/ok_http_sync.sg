@@ -1,0 +1,51 @@
+// `HttpConnection` without async: the server runs on a thread of its own (`Task.run`) and each
+// call waits on it (choice 1766). A body is read, an answer is sent in parts, and the client's
+// requests come pipelined, in one send; after `/b` the server closes the connection itself
+// (choice 1793), its answer held for the request after it sent first.
+Result<void, IoError> serve(TcpListener listener) {
+    var stream = try listener.accept()
+    var conn = HttpConnection(stream)
+    while try conn.receiveHead() {
+        var target = conn.request().target().clone()
+        if target == "/parts" {
+            try conn.begin(200, "text/plain")
+            try conn.write("a".asBytes())
+            try conn.write("bc".asBytes())
+            try conn.end()
+        } else if try conn.receiveBody() {
+            var length = conn.request().body().length()
+            try conn.respond(200, "text/plain", $"{target} {length}".toString().asBytes())
+            if target == "/b" {
+                conn.closeAfterAnswer()
+            }
+        }
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener)
+    var client = try TcpStream.connect(read address)
+    try client.send("POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\n\r\nabcGET /parts HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\nGET /never HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    var got = List<byte>()
+    var buffer = byte[4096](0)
+    while true {
+        var n = try client.receive(ref buffer[..])
+        if n == 0 {
+            break
+        }
+        got.addAll(buffer[0..n])
+    }
+    try server.wait()
+    var text = string.fromUtf8(read got) ?? "(not UTF-8)"
+    for line in text.split("\r\n") {
+        if line.startsWith("date: ") {
+            print("date: <date>")
+        } else {
+            print(line)
+        }
+    }
+    return Ok()
+}

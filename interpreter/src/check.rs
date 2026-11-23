@@ -5424,6 +5424,11 @@ impl<'a> Checker<'a> {
             // What a call returns borrows from what its signature names: the one borrowed
             // parameter, or those after `from`. A built-in method lends from its receiver.
             ExprKind::Method { recv, name, args, callee, .. } => {
+                // `$"...".toString()` writes the text out into one of its own: what the pieces
+                // borrowed is read then, and the text keeps none of it.
+                if name == "toString" && matches!(recv.ty.strip_borrow(), Ty::Fmt) && !self.holds(&expr.ty) {
+                    return Vec::new();
+                }
                 // `slot.take()` and `slot.replace(v)` give what was in the place.
                 if matches!(callee, Callee::Take | Callee::Replace) {
                     return self.loans_of(recv, mutable);
@@ -5903,7 +5908,14 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let same_place = store_path(part).is_some_and(|(other, other_path)| self.var_named(other).is_some_and(|var| var.id == root) && overlaps(&other_path));
-            let lent = self.loans_of(part, false).iter().any(|loan| loan.root == root && overlaps(&loan.path));
+            // The mark "what this parameter holds" is not the parameter's own fields: a named
+            // place of it (`read this.extra` while `this.out` grows) is told apart by its path.
+            let mut place = part;
+            while let ExprKind::Borrow { expr: inner, .. } | ExprKind::AsSlice(inner) | ExprKind::Slice { recv: inner, .. } = &place.kind {
+                place = inner;
+            }
+            let named = store_path(place).is_some();
+            let lent = self.loans_of(part, false).iter().any(|loan| loan.root == root && !(loan.held && named) && overlaps(&loan.path));
             if same_place || lent {
                 let (text, into) = (&self.src[part.span.start..part.span.end], &self.src[recv.span.start..recv.span.end]);
                 let items = matches!(part.ty.strip_borrow(), Ty::Slice(_));
@@ -11533,11 +11545,12 @@ impl<'a> Checker<'a> {
             (Ty::Source, "token") => CancelCall::Token,
             (_, "isCancelled") => CancelCall::IsCancelled,
             (Ty::Token, "check") => CancelCall::Check,
+            (Ty::Token, "canBeCancelled") => CancelCall::CanBeCancelled,
             (Ty::Token, "clone") => CancelCall::Clone,
             _ => {
                 let known: &[&str] = match target {
                     Ty::Source => &["cancel", "cancelAfter", "token", "isCancelled"],
-                    _ => &["isCancelled", "check", "clone"],
+                    _ => &["isCancelled", "check", "clone", "canBeCancelled"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -11549,6 +11562,7 @@ impl<'a> Checker<'a> {
                     (Ty::Token, "cancel") => diag.note("a token only looks; its source cancels it: `source.cancel()`"),
                     (Ty::Token, "cancelAfter") => diag.note("a token only looks; its source cancels it: `source.cancelAfter(ms)`"),
                     (Ty::Source, "check") => diag.hint(format!("a token looks: `{text}.token().check()`, or `{text}.isCancelled()`")),
+                    (Ty::Source, "canBeCancelled") => diag.note("a source can always be cancelled; `canBeCancelled()` tells a token of one from `CancellationToken.None`"),
                     (Ty::Source, "clone") => diag.note("a source has one owner; `token()` gives as many tokens of it as are needed"),
                     _ => diag,
                 });
@@ -11567,7 +11581,7 @@ impl<'a> Checker<'a> {
         Ok(match call {
             CancelCall::Cancel | CancelCall::CancelAfter => Ty::Void,
             CancelCall::Token | CancelCall::Clone => Ty::Token,
-            CancelCall::IsCancelled => Ty::Bool,
+            CancelCall::IsCancelled | CancelCall::CanBeCancelled => Ty::Bool,
             CancelCall::Check => Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))),
             CancelCall::New | CancelCall::After | CancelCall::Linked => unreachable!("functions of the type, not methods"),
         })
@@ -12835,9 +12849,13 @@ impl<'a> Checker<'a> {
                     return Ok(Ty::Bool);
                 }
                 // The two readings of the clock, which only the language's own module makes.
-                if owner == "Clock" && self.names.module(span) == STD_MODULE && matches!(name, "monotonic" | "wall") {
+                if owner == "Clock" && self.names.module(span) == STD_MODULE && matches!(name, "monotonic" | "wall" | "wallSeconds") {
                     self.args(name, args, &[], span)?;
-                    *callee = Callee::Clock(if name == "wall" { ClockCall::Wall } else { ClockCall::Monotonic });
+                    *callee = Callee::Clock(match name {
+                        "wall" => ClockCall::Wall,
+                        "wallSeconds" => ClockCall::WallSeconds,
+                        _ => ClockCall::Monotonic,
+                    });
                     return Ok(Ty::Int(IntTy::Long));
                 }
                 // The offset of the time zone of the system at a moment, in seconds.

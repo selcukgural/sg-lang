@@ -44,7 +44,9 @@
                 then, then SIGTERM: the server must end with 0 within --grace + --margin
                 milliseconds (g; no rounds)
      fuzz       --conns connections, each sending a request that is not the protocol (lengths too
-                long or negative, numbers past 64 bits, halves, random bytes, heads too large),
+                long or negative, numbers past 64 bits, halves, random bytes, heads too large; for
+                HTTP also the ways of smuggling a request: a length and chunks together, a folded
+                line, a space before the colon, a chunk size that is not one),
                 drawn from --seed; most then close their sending half and must be answered or
                 closed within --deadline milliseconds (1,000), the rest reset; a plain client is
                 asked after each thousand (h)
@@ -1251,8 +1253,19 @@ static void make_fuzz(conn* c) {
             put(&o, big, next_rand(r) % 65536);
             break;
         default:
-            for (int j = 0; j < 10; j++) put(&o, valid.p, valid.n);
-            put(&o, "GET /p\x00ng HTTP/1.1\r\nHost: s\r\nContent-Length: 0000000000000000000000001\r\n\r\nx", 75);
+            /* The last draw is shared by five, so that the cases before it come as often as
+               they did: the ways a request is smuggled past a server in front (choice 1772). */
+            switch (next_rand(r) % 5) {
+            case 0: puts_(&o, "POST /ping HTTP/1.1\r\nHost: s\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /ping HTTP/1.1\r\nHost: s\r\n\r\n"); break;
+            case 1: puts_(&o, "GET /ping HTTP/1.1\r\nHost: s\r\nX-A: one\r\n Transfer-Encoding: chunked\r\n\r\n"); break;
+            case 2: puts_(&o, "POST /ping HTTP/1.1\r\nHost: s\r\nTransfer-Encoding : chunked\r\nContent-Length: 3\r\n\r\nabc"); break;
+            case 3: puts_(&o, next_rand(r) % 2 ? "POST /ping HTTP/1.1\r\nHost: s\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n"
+                                               : "POST /ping HTTP/1.1\r\nHost: s\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffffff\r\nabc\r\n"); break;
+            default:
+                for (int j = 0; j < 10; j++) put(&o, valid.p, valid.n);
+                put(&o, "GET /p\x00ng HTTP/1.1\r\nHost: s\r\nContent-Length: 0000000000000000000000001\r\n\r\nx", 75);
+                break;
+            }
             break;
         }
     }

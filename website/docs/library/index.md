@@ -76,6 +76,8 @@ from each item to its source.
   the text and no more, a pattern of the program checked when it is compiled.
 - [Compression](./compression.md): `Deflate`, `Zlib` and `Gzip`, both ways, at once or as a stream; zlib's
   bytes at every level, and a limit on what is opened.
+- [HTTP](./http.md): `HttpConnection`, `HttpRequest` and `HttpOptions`, the server's side of HTTP/1.1, each
+  request pulled and answered, read where it lies, and what is malformed or too large refused by the module.
 - [Zip archives](./zip.md): `ZipReader` and `ZipWriter`, archives checked for Zip Slip and bombs before anything
   is read.
 

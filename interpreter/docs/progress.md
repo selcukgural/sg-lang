@@ -404,10 +404,18 @@ The hundred-and-sixty-first gives the library two things the language lacked, fo
 slice that may be missing, `read T[]?`, which a lookup that lends gives back (a window of length -1 in C, as a
 `read string?`), and `CancellationSource.linked(read token)`, a source cancelled with the token's source and
 by itself, so that a library sets a time limit of its own beside its caller's token (1774, 1775).
+The hundred-and-sixty-second is `std/http`, the server's side of HTTP/1.1, written in SG: the program pulls each
+request and answers it, a request is read where it lies with nothing copied, connections are kept open and
+pipelined answers sent together, and what is malformed or too large the module answers itself, `Host` and the
+form of the target checked as RFC 9112 asks (1765 to 1794). The lane's HTTP server is written on it, 2.2%
+behind the one written by hand with the same limits; 55 requests on the edges of HTTP/1.1 are a golden test,
+and 62 are set beside hyper's answers by hand. Writing it put right the checker's view of a field written
+from another and of formatted text, gave tokens `canBeCancelled()`, and let a source of cancellation let go of
+leave the clock at once.
 
 ## Next
 
-Next come HTTP/1.1 (the slice 162, choices 1765 to 1773) and the heavy level of the stand, run at night; and a slice for the command line,
+Next comes the heavy level of the stand, run at night; and a slice for the command line,
 the environment and paths. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)

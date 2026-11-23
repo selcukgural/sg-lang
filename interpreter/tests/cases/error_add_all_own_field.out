@@ -1,0 +1,6 @@
+error: `this.out[0..1]` looks at `this.out`, which this call adds to
+  `this.out` may move to a larger block while it grows, and `this.out[0..1]` would be read from the old one
+  --> error_add_all_own_field.sg:7:25
+ 7 |         this.out.addAll(this.out[0..1])
+   |                         ^^^^^^^^^^^^^^
+  hint: add the items one by one: `this.out.add(this.out[i])` copies each before the list grows

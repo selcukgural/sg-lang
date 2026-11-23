@@ -329,3 +329,72 @@ With a body of 64 KB the copy is two fifths of the time, and `sendPieces` takes 
 with 4 KB the call of the system is most of it, and the four are within 3%. Neither server of the server lane
 sends this way: the store reads a value under the lock of its map, and the body of the HTTP server is 4 bytes.
 
+
+## http
+
+`std/http` is measured as the HTTP server of the server lane ([server.md](server.md)), which is written on
+`HttpConnection` since the 162nd slice (`trials/server/http/sg`), against the server SG had before it, written
+by hand on `TcpStream` (`trials/server/http/sg-by-hand`, choice 1771: no more than 3% behind it). Both answer
+GET /ping with connections kept open; the module also reads every header to the rules of RFC 9112, writes a
+`date`, and has its time limits on (10 s for a head, 60 s idle), which the hand-written server has only with
+`--idle-limit`. The Linux machine of the lane (8 cores, the server on 4, the load of `load/load.c` on the other
+4), three rounds taken in turn, the median, 23 November 2026; answers a second, and the processor's ticks the
+server spent for each thousand answers:
+
+| Case | By hand | By hand, `--idle-limit 60000` | `std/http` |
+|---|---|---|---|
+| 50 connections kept open | 1,348k/s, 0.228 | 1,375k/s, 0.227 | 1,375k/s, 0.226 |
+| 1,000 connections kept open | 1,390k/s, 0.222 | 1,411k/s, 0.220 | 1,379k/s, 0.227 |
+
+At 1,000 connections the module is 2.2% behind the hand-written server with the same limits. The first
+version was 7.6% behind: it found the end of a head a byte at a time, sent through four async functions one
+inside the other, and read the clock three times for each request, which costs much in a virtual machine;
+a head is now looked through with `memchr`, an answer is sent from the function that wrote it, the `date` is
+the second the kernel keeps, and `cancelAfter` counts from the kernel's last tick (choice 1786).
+
+The checks of `Host` and of the target RFC 9112 asks for (choices 1790 to 1792) were measured the same way,
+seven rounds at 1,000 connections, later the same day, when the machine gave every server a little less:
+
+| 1,000 connections kept open | answers a second | ticks / 1,000 answers |
+|---|---|---|
+| By hand, `--idle-limit 60000` | 1,360k/s | 0.215 |
+| `std/http` before the checks | 1,321k/s | 0.223 |
+| `std/http` with the checks, bytes told apart by comparisons | 1,309k/s | 0.226 |
+| `std/http` with the checks, bytes told apart by a table | 1,322k/s | 0.224 |
+
+The checks cost about 2% with the comparisons; with a table of 256 bytes for what a byte of a token or of a host
+may be, they cost nothing that shows, and the module stays 2.7% behind the hand-written server. At 50
+connections the versions change places with the order they are run in: the one with the table 2.6% behind the
+one before the checks when run after it, 1.5% ahead when run first.
+
+### Against hyper
+
+What the module answers to requests on the edges of HTTP/1.1 is set beside what hyper 1 answers to the
+same bytes (choice 1794): `trials/server/http/conformance/compare.py` sends each of 62 requests, the 55 of
+the golden test `ok_http_conformance` and seven more ways of smuggling a request, on a connection of its
+own to two servers that answer alike (`echo.sg` and `hyper/`, with the same limits: a head of 8 KB, 100
+headers, a body of 1 MB checked against its length first, as axum does), and writes the statuses that come
+back and whether the server closed. On a Mac, 23 November 2026, 42 cases are the same and 20 differ:
+
+| Requests | `std/http` | hyper | Why |
+|---|---|---|---|
+| No `Host`, two, or one that is not `host[:port]` (6 cases) | 400, closed | answered, kept open | RFC 9112 3.2 says 400 (a MUST); hyper leaves `Host` to the program |
+| A target that is not a path, a whole `http` URL, or `*` for `OPTIONS` (4 cases: `p`, `GET *`, `ftp://`, a URL with a user) | 400, closed | answered, kept open | RFC 9112 3.2 and RFC 9110 4.2.4; hyper leaves it to the program |
+| `Content-Length` and `Transfer-Encoding` both | 400, closed | the chunks read, answered, closed | RFC 9112 6.1 allows either; refusing is the safer of the two, as a proxy before the server may have read the length |
+| `Transfer-Encoding: gzip, chunked`; `chunked, chunked` | 501; 400 | waits for the body | the module takes no coding but `chunked` and refuses `chunked` twice; hyper reads the chunks and leaves the rest to the program |
+| `HTTP/2.0` in the request line | 505 | 400 | both refuse; 505 says why |
+| `CONNECT` | 501 | given to the program | the module makes no tunnels |
+| A request line longer than 8 KB | 414 | 431 | RFC 9112 3 asks 414 for a target too long |
+| A header line longer than 8 KB | 431, closed | 431, closed or reset | the module reads what the client still sends before it closes (choice 1787); hyper closes at once, and the reset that sends can take the answer away; the client saw a reset in each of three runs here, and for the long request line in one |
+| A chunk of 1 MB or more announced, its bytes not sent | 413 | waits for them | the module refuses the size as it reads it |
+| A chunk size of 19 hex digits | 413 | 400 | both refuse |
+| `Expect: 100-continue` with the body sent with the head | 200 | 100, then 200 | the module does not ask for a body it already has (RFC 9110 10.1.1 lets it) |
+
+Where both refuse, what they refuse is the same: a length that differs, has a sign or is a list, a folded
+line, a space before the colon, a bare CR, a zero byte, a version that is no version, a method or a header
+name that is not a token, too many headers, a chunk size that is not hex. A `Host` of an IPv6 address is
+looked at for the bytes it may hold, not for its whole form. A run takes about two minutes:
+
+```sh
+python3 trials/server/http/conformance/compare.py
+```

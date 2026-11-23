@@ -1,337 +1,39 @@
-// The HTTP server of the server lane in SG (choice 1706), as `../c/http.c` describes it: GET /ping
-// answered with "pong" over HTTP/1.1 with connections kept open; the request line and every header
-// read and checked (`Host` in HTTP/1.1, `Connection`, a body of `Content-Length` bytes let go,
-// `Transfer-Encoding` answered 501); a head of more than 8 KB answered 431, anything else wrong 400;
-// each connection reads through a `StreamReader`, whose block starts at 4 KB and grows to hold a
-// body of up to 1 MB, answers every whole request the block holds, where it lies, and sends the
-// answers together.
+// The HTTP server of the server lane in SG, on `HttpConnection` of the language's own module
+// (choice 1771): GET /ping answered with "pong" over HTTP/1.1 with connections kept open, as
+// `../c/http.c` describes it. The module reads and checks the request line and every header,
+// lets go of a body nobody read, answers what is malformed or too large, and sends the answers
+// of pipelined requests together.
 //
 //     http PORT [--idle-limit MS] [--grace MS]
 //
 // Every connection is a task of a `TaskGroup`, which lets go of each as it ends, as in
-// `../../resp/sg/resp.sg`, and `--idle-limit` and `--grace` are those of the store: a connection
-// that goes that many milliseconds without a whole request, or with its answers not taken in, is
-// closed; the first SIGTERM or Ctrl-C stops the server taking connections and gives those open
-// that many milliseconds to end (choice 1751).
+// `../../resp/sg/resp.sg`. `--idle-limit` is the module's `idleTimeout` and `headTimeout`: a
+// connection that goes that many milliseconds without a whole request, or with its answers not
+// taken in, is closed (the module's own limits, 60 and 10 seconds, without it); the first SIGTERM
+// or Ctrl-C stops the server taking connections and gives those open that many milliseconds to
+// end (choice 1751).
 
-// ---- reading a request
-
-bool isToken(byte c) {
-    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-        return true
-    }
-    return "!#$%&'*+-.^_`|~".asBytes().contains(c)
-}
-
-// Whether `a` is `word` (written in small letters), in any case.
-bool isWordIgnoringCase(read byte[] a, read string word) {
-    var w = word.asBytes()
-    if a.length() != w.length() {
-        return false
-    }
-    for i in 0..a.length() {
-        var c = a[i]
-        if c >= 'A' && c <= 'Z' {
-            c += 32
-        }
-        if c != w[i] {
-            return false
-        }
-    }
-    return true
-}
-
-// Whether a list of tokens separated by commas has `word` among them, in any case.
-bool hasToken(read byte[] v, read string word) {
-    nint i = 0
-    while i < v.length() {
-        while i < v.length() && (v[i] == ' ' || v[i] == '\t' || v[i] == ',') {
-            i += 1
-        }
-        var start = i
-        while i < v.length() && v[i] != ',' {
-            i += 1
-        }
-        var end = i
-        while end > start && (v[end - 1] == ' ' || v[end - 1] == '\t') {
-            end -= 1
-        }
-        if isWordIgnoringCase(v[start..end], word) {
-            return true
-        }
-    }
-    return false
-}
-
-// Where `\r\n\r\n` begins among the first `most` bytes, or -1.
-nint headEnd(read byte[] bytes, nint most) {
-    var limit = bytes.length()
-    if limit > most {
-        limit = most
-    }
-    nint i = 0
-    while i + 3 < limit {
-        if bytes[i + 3] != '\n' {
-            i += 1
-            continue
-        }
-        if bytes[i] == '\r' && bytes[i + 1] == '\n' && bytes[i + 2] == '\r' {
-            return i
-        }
-        i += 1
-    }
-    return -1
-}
-
-// Where the next `\r\n` begins at or after `at`, before `stop`; `stop` when there is none.
-nint lineEnd(read byte[] bytes, nint at, nint stop) {
-    var i = at
-    while i + 1 < stop + 2 {
-        if bytes[i] == '\r' && bytes[i + 1] == '\n' {
-            return i
-        }
-        i += 1
-    }
-    return stop
-}
-
-void answer(ref List<byte> out, int status, bool keep, bool headOnly) {
-    var line = "400 Bad Request"
-    var body = "bad request"
-    var extra = ""
-    match status {
-        200 => {
-            line = "200 OK"
-            body = "pong"
-        }
-        404 => {
-            line = "404 Not Found"
-            body = "not found"
-        }
-        405 => {
-            line = "405 Method Not Allowed"
-            body = "method not allowed"
-            extra = "allow: GET, HEAD\r\n"
-        }
-        431 => {
-            line = "431 Request Header Fields Too Large"
-            body = "head too large"
-        }
-        501 => {
-            line = "501 Not Implemented"
-            body = "not implemented"
-        }
-        _ => {}
-    }
-    out.addAll("HTTP/1.1 ".asBytes())
-    out.addAll(line.asBytes())
-    out.addAll("\r\n".asBytes())
-    if !keep {
-        out.addAll("connection: close\r\n".asBytes())
-    }
-    out.addAll("content-length: ".asBytes())
-    putDecimal(ref out, body.length())
-    out.addAll("\r\ncontent-type: text/plain\r\n".asBytes())
-    out.addAll(extra.asBytes())
-    out.addAll("\r\n".asBytes())
-    if !headOnly {
-        out.addAll(body.asBytes())
-    }
-}
-
-void putDecimal(ref List<byte> out, nint n) {
-    var digits = byte[20](0)
-    var i = 20
-    while true {
-        i -= 1
-        digits[i] = (byte)('0' + n % 10)
-        n /= 10
-        if n == 0 {
-            break
-        }
-    }
-    out.addAll(digits[i..20])
-}
-
-// Answers every whole request in `bytes`: how many bytes it used, or -1 when the connection is to
-// be closed after the answers so far.
-nint serveAll(read byte[] bytes, ref List<byte> out) {
-    nint p = 0
-    while p < bytes.length() {
-        var rest = bytes[p..bytes.length()]
-        var found = headEnd(rest, 8192)
-        if found < 0 {
-            if rest.length() >= 8192 {
-                answer(ref out, 431, false, false)
-                return -1
-            }
-            return p
-        }
-        var stop = p + found
-        var headStop = stop + 4
-        // the request line
-        var q = p
-        while q < stop && isToken(bytes[q]) {
-            q += 1
-        }
-        var method = bytes[p..q]
-        if method.length() == 0 || q >= stop || bytes[q] != ' ' {
-            answer(ref out, 400, false, false)
-            return -1
-        }
-        q += 1
-        var targetStart = q
-        while q < stop && bytes[q] > ' ' && bytes[q] < 0x7f {
-            q += 1
-        }
-        var target = bytes[targetStart..q]
-        if target.length() == 0 || q >= stop || bytes[q] != ' ' {
-            answer(ref out, 400, false, false)
-            return -1
-        }
-        q += 1
-        var lineStop = lineEnd(bytes, q, stop)
-        var version = bytes[q..lineStop]
-        int minor = 0
-        if version.length() == 8 && version[0..7] == "HTTP/1.".asBytes() && (version[7] == '0' || version[7] == '1') {
-            minor = version[7] - '0'
-        } else {
-            answer(ref out, 400, false, false)
-            return -1
-        }
-        q = lineStop + 2
-        // the headers
-        var keep = minor == 1
-        var host = false
-        var chunked = false
-        long length = 0
-        var hasLength = false
-        while q < stop {
-            var nameStart = q
-            while q < stop && isToken(bytes[q]) {
-                q += 1
-            }
-            var name = bytes[nameStart..q]
-            if name.length() == 0 || q >= stop || bytes[q] != ':' {
-                answer(ref out, 400, false, false)
-                return -1
-            }
-            q += 1
-            while q < stop && (bytes[q] == ' ' || bytes[q] == '\t') {
-                q += 1
-            }
-            var valueStart = q
-            var eol = lineEnd(bytes, q, stop)
-            var valueEnd = eol
-            while valueEnd > valueStart && (bytes[valueEnd - 1] == ' ' || bytes[valueEnd - 1] == '\t') {
-                valueEnd -= 1
-            }
-            var value = bytes[valueStart..valueEnd]
-            for c in value {
-                if (c < ' ' && c != '\t') || c == 0x7f {
-                    answer(ref out, 400, false, false)
-                    return -1
-                }
-            }
-            if isWordIgnoringCase(name, "host") {
-                if host {
-                    answer(ref out, 400, false, false)
-                    return -1
-                }
-                host = true
-            } else if isWordIgnoringCase(name, "connection") {
-                if hasToken(value, "close") {
-                    keep = false
-                } else if hasToken(value, "keep-alive") {
-                    keep = true
-                }
-            } else if isWordIgnoringCase(name, "content-length") {
-                if value.length() == 0 || value.length() > 9 {
-                    answer(ref out, 400, false, false)
-                    return -1
-                }
-                long v = 0
-                for c in value {
-                    if c < '0' || c > '9' {
-                        answer(ref out, 400, false, false)
-                        return -1
-                    }
-                    v = v * 10 + (c - '0')
-                }
-                if hasLength && v != length {
-                    answer(ref out, 400, false, false)
-                    return -1
-                }
-                hasLength = true
-                length = v
-            } else if isWordIgnoringCase(name, "transfer-encoding") {
-                chunked = true
-            }
-            q = eol + 2
-        }
-        if chunked {
-            answer(ref out, 501, false, false)
-            return -1
-        }
-        if (minor == 1 && !host) || length > 1048576 {
-            answer(ref out, 400, false, false)
-            return -1
-        }
-        if bytes.length() - headStop < length {
-            return p
-        }
-        var get = method == "GET".asBytes()
-        var head = method == "HEAD".asBytes()
-        var status = 404
+async Result<void, IoError> serve(TcpStream stream, HttpOptions options) {
+    var conn = HttpConnection(stream, options)
+    while try await conn.receiveHeadAsync() {
+        var req = conn.request()
+        var get = req.method() == "GET"
+        var head = req.method() == "HEAD"
         if !get && !head {
-            status = 405
-        } else if target == "/ping".asBytes() {
-            status = 200
-        }
-        answer(ref out, status, keep, head)
-        p = headStop + (nint)length
-        if !keep {
-            return -1
+            try conn.addHeader("allow", "GET, HEAD")
+            try await conn.respondAsync(405, "text/plain", "method not allowed".asBytes())
+        } else if req.target() == "/ping" {
+            try await conn.respondAsync(200, "text/plain", "pong".asBytes())
+        } else {
+            try await conn.respondAsync(404, "text/plain", "not found".asBytes())
         }
     }
-    return p
-}
-
-// ---- a connection
-
-async Result<void, IoError> serve(TcpStream conn, int idleLimit) {
-    var reader = conn.reader(2097152)
-    var out = List<byte>()
-    CancellationSource? idle = null
-    var token = CancellationToken.None
-    if idleLimit > 0 {
-        var made = CancellationSource()
-        token = made.token()
-        made.cancelAfter(idleLimit)
-        idle = made
-    }
-    while true {
-        if !try await reader.fillAsync(read token) {
-            return Ok()
-        }
-        out.clear()
-        var used = serveAll(reader.buffered(), ref out)
-        if out.length() > 0 {
-            try await conn.sendAsync(read out, read token)
-        }
-        if used < 0 {
-            return Ok()
-        }
-        reader.consume(used)
-        if idle is not null && used > 0 {
-            idle.cancelAfter(idleLimit)
-        }
-    }
+    return Ok()
 }
 
 // A connection that fails, or is too slow, ends alone.
-async void connection(TcpStream conn, int idleLimit) {
-    _ = await serve(conn, idleLimit)
+async void connection(TcpStream stream, HttpOptions options) {
+    _ = await serve(stream, options)
 }
 
 // Waits for SIGTERM or Ctrl-C and cancels `stop`; the listener goes with it, so a second ends the
@@ -344,7 +46,7 @@ async void watch(SignalListener signals, CancellationSource stop) {
 
 // Takes connections until a signal comes with `grace` given, for ever without; one the listener
 // fails to take (too many open files, say) is tried again after 10 ms.
-async Result<void, IoError> listen(int port, int idleLimit, int grace) {
+async Result<void, IoError> listen(int port, HttpOptions options, int grace) {
     var address = $":{port}".toString()
     var listener = try TcpListener.bind(read address)
     var connections = TaskGroup()
@@ -356,7 +58,7 @@ async Result<void, IoError> listen(int port, int idleLimit, int grace) {
     }
     while true {
         match await listener.acceptAsync(read accepting) {
-            Ok(conn) => connections.add(connection(conn, idleLimit))
+            Ok(conn) => connections.add(connection(conn, options))
             Error(Cancelled(_)) => break
             Error(_) => await Task.delay(10)
         }
@@ -373,7 +75,7 @@ void main(List<string> args) {
         printError(Usage)
         exit(2)
     }
-    int idleLimit = 0
+    var options = HttpOptions {}
     int grace = 0
     for i in 0..args.length() / 2 {
         var name = args[1 + 2 * i]
@@ -382,7 +84,8 @@ void main(List<string> args) {
             exit(2)
         }
         if name == "--idle-limit" {
-            idleLimit = ms
+            options.idleTimeout = ms
+            options.headTimeout = ms
         } else if name == "--grace" {
             grace = ms
         } else {
@@ -390,7 +93,7 @@ void main(List<string> args) {
             exit(2)
         }
     }
-    if listen(port, idleLimit, grace).wait() is Error(e) {
+    if listen(port, options, grace).wait() is Error(e) {
         printError($"http: {e}".toString())
         exit(1)
     }

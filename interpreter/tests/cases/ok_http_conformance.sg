@@ -1,0 +1,153 @@
+// What `HttpConnection` answers to requests on the edges of HTTP/1.1 (choice 1772): each case
+// sends its bytes on a connection of its own and prints every byte of what comes back until the
+// server closes, the `date` written as `<date>` once its form is checked. The server answers
+// with the method, the target, the host and the length of the body; it reads the body only for
+// a target that starts with `/body`.
+
+async Result<void, IoError> serve(TcpStream stream) {
+    var conn = HttpConnection(stream, HttpOptions { idleTimeout = 5000, headTimeout = 5000 })
+    while try await conn.receiveHeadAsync() {
+        var reads = false
+        if conn.request().target().startsWith("/body") {
+            reads = true
+        }
+        if reads && !try await conn.receiveBodyAsync() {
+            break
+        }
+        var req = conn.request()
+        var length = 0
+        if reads {
+            length = (int)req.body().length()
+        }
+        var host = string.fromUtf8(req.host()) ?? "(not UTF-8)"
+        var text = $"{req.method()} {req.target()} 1.{req.minorVersion()} host '{host}' body {length}".toString()
+        try await conn.respondAsync(200, "text/plain", text.asBytes())
+    }
+    if conn.refused() is not null {
+        print($"  (refused {conn.refused() ?? 0})")
+    }
+    return Ok()
+}
+
+// Every byte that comes back, as lines, with the date checked and hidden.
+void show(read byte[] got) {
+    var text = string.fromUtf8(got) ?? "(not UTF-8)"
+    for line in text.split("\r\n") {
+        if line.startsWith("date: ") {
+            var date = line[6..]
+            if date.length() == 29 && date.endsWith(" GMT") && date[3] == ',' {
+                print("  date: <date>")
+            } else {
+                print($"  date of a wrong form: {date}")
+            }
+        } else {
+            print($"  {line}")
+        }
+    }
+}
+
+async Result<void, IoError> run(read TcpListener listener, read string name, read byte[] request) {
+    print($"{name}:")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = try await TcpStream.connectAsync(read address)
+    var conn = try await listener.acceptAsync()
+    var server = serve(conn)
+    _ = await client.sendAsync(request)
+    var got = List<byte>()
+    var buffer = byte[4096](0)
+    while true {
+        match await client.receiveAsync(ref buffer[..]) {
+            Ok(0) => break
+            Ok(n) => got.addAll(buffer[0..n])
+            Error(cause) => {
+                print($"  client: {cause}")
+                break
+            }
+        }
+    }
+    if await server is Error(cause) {
+        print($"  server: {cause}")
+    }
+    show(read got)
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var many = List<byte>()
+    many.addAll("GET / HTTP/1.1\r\nhost: a\r\n".asBytes())
+    for i in 0..101 {
+        many.addAll($"x-{i}: {i}\r\n".toString().asBytes())
+    }
+    many.addAll("connection: close\r\n\r\n".asBytes())
+    var long = List<byte>()
+    long.addAll("GET /".asBytes())
+    for _ in 0..8200 {
+        long.add('a')
+    }
+    long.addAll(" HTTP/1.1\r\nhost: a\r\n\r\n".asBytes())
+    var wide = List<byte>()
+    wide.addAll("GET / HTTP/1.1\r\nhost: a\r\nx-wide: ".asBytes())
+    for _ in 0..8200 {
+        wide.add('a')
+    }
+    wide.addAll("\r\n\r\n".asBytes())
+
+    try await run(read listener, "a request", "GET /ping HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "HEAD", "HEAD /ping HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "kept open, then closed", "GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "HTTP/1.0 closes", "GET /old HTTP/1.0\r\n\r\nGET /never HTTP/1.0\r\n\r\n".asBytes())
+    try await run(read listener, "HTTP/1.0 kept alive", "GET /a HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /b HTTP/1.0\r\n\r\n".asBytes())
+    try await run(read listener, "lines ending in LF alone", "GET /lf HTTP/1.1\nHost: a\nConnection: close\n\n".asBytes())
+    try await run(read listener, "empty lines first", "\r\n\r\nGET /late HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "a body read", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".asBytes())
+    try await run(read listener, "a body not read, then the next", "POST /skip HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloGET /next HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "chunks", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2;name=value\r\nde\r\n0\r\nx-trailer: 1\r\n\r\n".asBytes())
+    try await run(read listener, "chunks not read, then the next", "POST /skip HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\nGET /next HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "two equal lengths", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".asBytes())
+    try await run(read listener, "Expect: 100-continue", "POST /body HTTP/1.1\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".asBytes())
+    try await run(read listener, "pipelined", "GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\n\r\nGET /3 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "Upgrade, let be", "GET /up HTTP/1.1\r\nHost: a\r\nUpgrade: h2c\r\nConnection: Upgrade, HTTP2-Settings, close\r\nHTTP2-Settings: AAMAAABkAAQAoAAAAAIAAAAA\r\n\r\n".asBytes())
+    try await run(read listener, "a chunk size with zeros in front", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n00000000000000000002\r\nhi\r\n0\r\n\r\n".asBytes())
+    try await run(read listener, "a Host with a port", "GET / HTTP/1.1\r\nHost: a.example:8080\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "a Host of an IPv6 address", "GET / HTTP/1.1\r\nHost: [::1]:8080\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "an empty Host", "GET / HTTP/1.1\r\nHost:\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "a whole URL as the target", "GET http://b.example:81/p?q HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await run(read listener, "OPTIONS *", "OPTIONS * HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    // Refused.
+    try await run(read listener, "a Host with a user", "GET / HTTP/1.1\r\nHost: u@a\r\n\r\n".asBytes())
+    try await run(read listener, "a Host with a path", "GET / HTTP/1.1\r\nHost: a/b\r\n\r\n".asBytes())
+    try await run(read listener, "a Host with a port not of digits", "GET / HTTP/1.1\r\nHost: a:8x\r\n\r\n".asBytes())
+    try await run(read listener, "a Host of a port alone", "GET / HTTP/1.1\r\nHost: :80\r\n\r\n".asBytes())
+    try await run(read listener, "a target that is not a path", "GET p HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "* for GET", "GET * HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "a URL of another scheme", "GET ftp://a/p HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "a URL without a host", "GET http:///p HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "a URL with a user", "GET http://u@a/p HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "no Host", "GET / HTTP/1.1\r\n\r\n".asBytes())
+    try await run(read listener, "two Hosts", "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n".asBytes())
+    try await run(read listener, "Content-Length and Transfer-Encoding", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".asBytes())
+    try await run(read listener, "two lengths that differ", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc".asBytes())
+    try await run(read listener, "a length with a sign", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: +2\r\n\r\nhi".asBytes())
+    try await run(read listener, "a length as a list", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 2, 2\r\n\r\nhi".asBytes())
+    try await run(read listener, "a coding other than chunked", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n".asBytes())
+    try await run(read listener, "chunked not last", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked, chunked\r\n\r\n".asBytes())
+    try await run(read listener, "chunked in HTTP/1.0", "POST /body HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".asBytes())
+    try await run(read listener, "a folded line", "GET / HTTP/1.1\r\nHost: a\r\nX-Long: one\r\n two\r\n\r\n".asBytes())
+    try await run(read listener, "a space before the colon", "GET / HTTP/1.1\r\nHost : a\r\n\r\n".asBytes())
+    try await run(read listener, "a bare CR", "GET / HTTP/1.1\r\nHost: a\rb\r\n\r\n".asBytes())
+    try await run(read listener, "a zero byte in a value", "GET / HTTP/1.1\r\nHost: a\u{0}b\r\n\r\n".asBytes())
+    try await run(read listener, "two spaces in the request line", "GET  / HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "a version not 1", "GET / HTTP/2.0\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "a version that is no version", "GET / HTTQ/1.1\r\nHost: a\r\n\r\n".asBytes())
+    try await run(read listener, "CONNECT", "CONNECT a:443 HTTP/1.1\r\nHost: a:443\r\n\r\n".asBytes())
+    try await run(read listener, "a target too long", read long)
+    try await run(read listener, "a header too long", read wide)
+    try await run(read listener, "too many headers", read many)
+    try await run(read listener, "a body too large", "POST /body HTTP/1.1\r\nHost: a\r\nContent-Length: 2000000\r\n\r\n".asBytes())
+    try await run(read listener, "chunks too large", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n".asBytes())
+    try await run(read listener, "a chunk size that is not hex", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n".asBytes())
+    try await run(read listener, "a chunk size too large to hold", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffffff1\r\nhi\r\n".asBytes())
+    try await run(read listener, "a chunk longer than it said", "POST /body HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabc\r\n0\r\n\r\n".asBytes())
+    return Ok()
+}

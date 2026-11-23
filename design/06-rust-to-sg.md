@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-sixty-first slice (`read byte[]?` for `Option<&[u8]>`, 1774; `CancellationSource.linked` for `child_token()`, 1775).
+Last brought up to date: 23 November 2026, the hundred-and-sixty-second slice (`std/http` for hyper's server of HTTP/1.1, 1765 to 1794; `token.canBeCancelled()`, 1785).
 
 ## Functions and variables
 
@@ -360,6 +360,7 @@ Last brought up to date: 23 November 2026, the hundred-and-sixty-first slice (`r
 | `token.clone()` | `source.token()`, `token.clone()` | built | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
 | `token.child_token()`, then a time limit of its own | `CancellationSource.linked(read token)`, then `cancelAfter(ms)` | built | Cancelled with the token's source and by itself; one parent (1775) |
 | `token.cancel()` | `source.cancel()` | built | Through a `read` borrow, as `cancel(&self)` |
+| `Option<&CancellationToken>`, `None` for no token | `read CancellationToken token = CancellationToken.None`, `token.canBeCancelled()` | built | `false` for `None` (C#'s `CanBeCanceled`, 1785): a library links a source to the token only when it can cancel |
 | `tokio::time::timeout(d, read)` around each read, `sleep.as_mut().reset(deadline)` | `source.cancelAfter(ms)` before the read, `receiveAsync(ref buffer, read token)` | built | One source for a connection, its time set again before each read; a later time is one atomic write. The read gives `IoError.Cancelled` when it runs out |
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
 | `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | built | Gives `Error(Cancelled { })` when the token is cancelled first |
@@ -497,6 +498,20 @@ Last brought up to date: 23 November 2026, the hundred-and-sixty-first slice (`r
 | `("example.com", 53).to_socket_addrs()?` | `try SocketAddress.lookup("example.com:53")` | built | A `List<SocketAddress>`; `HostNotFound` when the name has none. `lookupAsync` looks it up on a thread. On Windows the name goes to the system in UTF-16 (`GetAddrInfoW`), not through the code page as Rust's |
 | `addr.ip()`, `addr.port()` | `address.host()`, `address.port()` | built | `host()` is text: there is no `IpAddr` type |
 | `socket.join_multicast_v4(...)`, `set_broadcast(true)`, `set_ttl`, `peek_from` | none yet | designed | Later |
+
+## HTTP
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `http1::Builder::new().serve_connection(io, service_fn(answer))` (hyper) | `var conn = HttpConnection(stream)`, `while try await conn.receiveHeadAsync() { ... }` | built | No callback: the program pulls each request and answers it, as Zig's `std.http.Server` (1766); without `Async` the calls wait on the thread |
+| `req.method()`, `req.uri()`, `req.headers().get("x")` | `var req = conn.request()`, `req.method()`, `req.target()`, `req.header("x")` | built | A view of the request where it lies in the connection's block, `HttpRequest<from conn>`: nothing copied (1767); a header is `read byte[]?`, in any case |
+| `req.uri().authority()`, else the `Host` header | `req.host()` | built | The URL's host when the target is a whole URL, `Host`'s otherwise (1791); `Host` is checked to be `host[:port]` (1790) |
+| `Limited::new(body, limit).collect().await` | `try await conn.receiveBodyAsync()`, then `conn.request().body()` | built | The whole body in the block, chunks put together in place; over `maxBodyBytes` 413 and closed; `100 Continue` when the client waits for it |
+| `Response::builder().status(200).header(k, v).body(b)` | `try conn.addHeader(k, v)`, `try await conn.respondAsync(200, "text/plain", body)` | built | The module writes the status line, `date`, `content-length`, `content-type`, and `connection: close` when it closes |
+| A `StreamBody` of chunks | `beginAsync(status, type)`, `writeAsync(part)`, `endAsync()` | built | In chunks, or for HTTP/1.0 until the connection closes |
+| `header_read_timeout`, `keep_alive(false)`, `graceful_shutdown()` | `HttpOptions { headTimeout, idleTimeout, maxHeadBytes, maxHeaders, maxBodyBytes }`, `conn.closeAfterAnswer()` | built | A malformed request is answered by the module (400, 413, 414, 431, 501, 505) and `conn.refused()` says with what; where SG and hyper answer differently, and why: [library.md](../benchmarks/library.md#against-hyper) |
+| `pipeline_flush(true)` | Answers held while the next request is whole in the block, `flushAsync()` | built | Up to 64 KB sent together (1777) |
+| hyper's client, HTTP/2, TLS | none yet | designed | Later slices (1765) |
 
 ## Time
 

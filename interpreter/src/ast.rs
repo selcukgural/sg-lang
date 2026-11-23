@@ -601,6 +601,10 @@ pub enum ClockCall {
     Monotonic,
     /// `Clock.wall()`: the nanoseconds of the clock of the system since 1970, as a `long`.
     Wall,
+    /// `Clock.wallSeconds()`: the whole seconds of the clock of the system since 1970, as a
+    /// `long`, read where the system keeps them cheaply (a `Date` of HTTP needs no more); it may be
+    /// a few milliseconds behind `wall()`.
+    WallSeconds,
     /// `Clock.offsetAt(seconds)`: how many seconds the time zone of the system is ahead of UTC
     /// at that many seconds since 1970, as an `int`; 0 when the system does not say.
     OffsetAt,
@@ -752,6 +756,9 @@ pub enum CancelCall {
     Token,
     /// `source.isCancelled()`, `token.isCancelled()`
     IsCancelled,
+    /// `token.canBeCancelled()` (1785): whether the token has a source, so is not
+    /// `CancellationToken.None`.
+    CanBeCancelled,
     /// `token.check()`: `Error(Cancelled { })` once the token is cancelled, `Ok()` before.
     Check,
     /// `token.clone()`: one more token of the same source.

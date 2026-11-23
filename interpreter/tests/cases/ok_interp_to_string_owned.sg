@@ -1,0 +1,22 @@
+// A text made with `$"...".toString()` is one of its own: it keeps nothing of what its pieces
+// borrowed, so the value they borrowed from may be changed while it is read.
+struct Box {
+    List<byte> data
+
+    void put(ref this, read byte[] bytes) {
+        this.data.addAll(bytes)
+    }
+
+    read byte[] view(read this) from this {
+        return this.data[0..1]
+    }
+}
+
+void main() {
+    var b = Box { data = List<byte> { 65, 66 } }
+    var text = string.fromUtf8(b.view()) ?? ""
+    var line = $"got {text}".toString()
+    b.put(line.asBytes())
+    print(line)
+    print(string.fromUtf8(read b.data) ?? "")
+}

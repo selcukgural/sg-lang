@@ -1,0 +1,193 @@
+// What `HttpConnection` does beyond reading a request: an answer of a length not known (in
+// chunks for HTTP/1.1, until the connection closes for HTTP/1.0, a head alone for HEAD), the
+// headers of `addHeader` and the ones it refuses, `100 Continue` sent once the body is asked for,
+// the time limits of the module, a token of the caller (choices 1776 to 1785), and a connection
+// the server closes itself (1793).
+
+async Result<void, IoError> parts(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        try await conn.beginAsync(200, "text/plain")
+        try await conn.writeAsync("one,".asBytes())
+        try await conn.writeAsync("".asBytes())
+        try await conn.writeAsync("two".asBytes())
+        try await conn.endAsync()
+    }
+    return Ok()
+}
+
+// `/last` is answered with the connection to close; `/after` is answered, then the connection
+// closes, the answer held for the request after it sent first.
+async Result<void, IoError> closes(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        var target = conn.request().target().clone()
+        if target == "/last" {
+            conn.closeAfterAnswer()
+        }
+        try await conn.respondAsync(200, "text/plain", target.asBytes())
+        if target == "/after" {
+            conn.closeAfterAnswer()
+        }
+    }
+    return Ok()
+}
+
+void told(read string what, Result<void, IoError> result) {
+    match result {
+        Ok => print($"  {what}: taken")
+        Error(cause) => print($"  {what}: {cause}")
+    }
+}
+
+async Result<void, IoError> headers(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        try conn.addHeader("x-kept", "yes")
+        told("a name with a space", conn.addHeader("x bad", "1"))
+        told("a value with a line break", conn.addHeader("x-bad", "a\r\nb"))
+        told("content-length", conn.addHeader("Content-Length", "3"))
+        told("a type with a line break", await conn.respondAsync(200, "text/plain\r\nx-sneaked: 1", "no".asBytes()))
+        try await conn.respondAsync(201, "", "made".asBytes())
+    }
+    return Ok()
+}
+
+async Result<void, IoError> continues(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        if try await conn.receiveBodyAsync() {
+            var body = (string.fromUtf8(conn.request().body()) ?? "").clone()
+            try await conn.respondAsync(200, "text/plain", $"got {body}".toString().asBytes())
+        }
+    }
+    return Ok()
+}
+
+async Result<void, IoError> waits(TcpStream stream, HttpOptions options, CancellationToken token) {
+    var conn = HttpConnection(stream, options)
+    var from = Instant.now()
+    match await conn.receiveHeadAsync(read token) {
+        Ok(true) => print("  a request")
+        Ok(false) => print($"  closed, refused {conn.refused() ?? 0}, after the limit: {from.elapsed().milliseconds() >= 150}")
+        Error(cause) => print($"  the caller's token: {cause}")
+    }
+    return Ok()
+}
+
+// Every byte that comes back, the date hidden.
+void show(read byte[] got) {
+    var text = string.fromUtf8(got) ?? "(not UTF-8)"
+    for line in text.split("\r\n") {
+        if line.startsWith("date: ") {
+            print("  date: <date>")
+        } else {
+            print($"  {line}")
+        }
+    }
+}
+
+// What comes until the server closes: shown, or only counted.
+async Result<void, IoError> rest(ref TcpStream client, bool shown) {
+    var got = List<byte>()
+    var buffer = byte[4096](0)
+    while true {
+        var n = try await client.receiveAsync(ref buffer[..])
+        if n == 0 {
+            break
+        }
+        got.addAll(buffer[0..n])
+    }
+    if shown {
+        show(read got)
+    } else {
+        print($"  the client got {got.length()} bytes")
+    }
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+
+    var requests = List<string> {
+        "GET /1.1 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+        "GET /1.0 HTTP/1.0\r\n\r\n",
+        "HEAD /head HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"
+    }
+    for request in requests {
+        print($"parts, {request.split("\r\n").next() ?? ""}:")
+        var client = try await TcpStream.connectAsync(read address)
+        var accepted1 = try await listener.acceptAsync()
+        var server = parts(accepted1)
+        try await client.sendAsync(request.asBytes())
+        try await rest(ref client, true)
+        try await server
+    }
+
+    print("headers:")
+    var client = try await TcpStream.connectAsync(read address)
+    var accepted2 = try await listener.acceptAsync()
+    var server = headers(accepted2)
+    try await client.sendAsync("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".asBytes())
+    try await rest(ref client, true)
+    try await server
+
+    print("100 Continue:")
+    client = try await TcpStream.connectAsync(read address)
+    var accepted3 = try await listener.acceptAsync()
+    server = continues(accepted3)
+    try await client.sendAsync("POST / HTTP/1.1\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".asBytes())
+    var buffer = byte[64](0)
+    var n = try await client.receiveAsync(ref buffer[..])
+    print($"  first: {(string.fromUtf8(buffer[0..n]) ?? "").trim()}")
+    try await client.sendAsync("body".asBytes())
+    try await rest(ref client, true)
+    try await server
+
+    var closing = List<string> {
+        "GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /last HTTP/1.1\r\nHost: a\r\n\r\nGET /never HTTP/1.1\r\nHost: a\r\n\r\n",
+        "GET /after HTTP/1.1\r\nHost: a\r\n\r\nGET /never HTTP/1.1\r\nHost: a\r\n\r\n"
+    }
+    for request in closing {
+        print($"closed by the server, {request.split("\r\n").next() ?? ""}:")
+        client = try await TcpStream.connectAsync(read address)
+        var accepted8 = try await listener.acceptAsync()
+        server = closes(accepted8)
+        try await client.sendAsync(request.asBytes())
+        try await rest(ref client, true)
+        try await server
+    }
+
+    print("a head that takes too long:")
+    client = try await TcpStream.connectAsync(read address)
+    var accepted4 = try await listener.acceptAsync()
+    server = waits(accepted4, HttpOptions { headTimeout = 200 }, CancellationToken.None)
+    try await client.sendAsync("GET / HTTP/1.1\r\nHo".asBytes())
+    try await server
+    try await rest(ref client, false)
+
+    print("a connection with nothing to say:")
+    client = try await TcpStream.connectAsync(read address)
+    var accepted5 = try await listener.acceptAsync()
+    server = waits(accepted5, HttpOptions { idleTimeout = 200 }, CancellationToken.None)
+    try await server
+    try await rest(ref client, false)
+
+    print("the module's limit, with a token given:")
+    var never = CancellationSource()
+    client = try await TcpStream.connectAsync(read address)
+    var accepted6 = try await listener.acceptAsync()
+    server = waits(accepted6, HttpOptions { idleTimeout = 200 }, never.token())
+    try await server
+    try await rest(ref client, false)
+
+    print("the caller's token, cancelled:")
+    var soon = CancellationSource.after(100)
+    client = try await TcpStream.connectAsync(read address)
+    var accepted7 = try await listener.acceptAsync()
+    server = waits(accepted7, HttpOptions {}, soon.token())
+    try await server
+    try await rest(ref client, false)
+    return Ok()
+}

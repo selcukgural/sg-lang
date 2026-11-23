@@ -1,0 +1,15 @@
+// A method that adds a field of its own to itself is refused as a variable is: the list may
+// move while it grows.
+struct Reply {
+    List<byte> out
+
+    void twice(ref this) {
+        this.out.addAll(this.out[0..1])
+    }
+}
+
+void main() {
+    var reply = Reply { out = List<byte> { 1 } }
+    reply.twice()
+    print(reply.out.length())
+}

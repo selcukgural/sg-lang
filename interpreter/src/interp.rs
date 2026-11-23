@@ -5269,6 +5269,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let Value::Int(_, seconds) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `offsetAt` a `long`") };
                     Ok(Value::Int(IntTy::Int, i128::from(local_offset(seconds as i64))))
                 }
+                Callee::Clock(ClockCall::WallSeconds) => Ok(Value::Int(IntTy::Long, clock(true).div_euclid(1_000_000_000))),
                 Callee::Clock(call) => Ok(Value::Int(IntTy::Long, clock(*call == ClockCall::Wall))),
                 Callee::Os(os) => Ok(Value::Bool(os.here())),
                 Callee::Entropy => {
@@ -5372,6 +5373,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         }
                         CancelCall::Token | CancelCall::Clone => Value::Token(source),
                         CancelCall::IsCancelled => Value::Bool(is_cancelled),
+                        CancelCall::CanBeCancelled => Value::Bool(source.is_some()),
                         CancelCall::Check if is_cancelled => failed(cancelled()),
                         CancelCall::Check => ok(Value::Void),
                         CancelCall::New | CancelCall::After | CancelCall::Linked | CancelCall::CancelAfter => unreachable!("handled above"),

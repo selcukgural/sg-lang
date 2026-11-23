@@ -1,0 +1,52 @@
+// The server of the conformance comparison (choice 1794), on `HttpConnection`: every request is
+// answered 200 with `METHOD TARGET 1.MINOR host 'HOST' body LENGTH`, the body read only for a
+// target that starts with `/body`, as `hyper/src/main.rs` answers it. What the module refuses it
+// answers itself.
+//
+//     echo PORT
+
+async Result<void, IoError> serve(TcpStream stream) {
+    var conn = HttpConnection(stream, HttpOptions { headTimeout = 5000, idleTimeout = 5000 })
+    while try await conn.receiveHeadAsync() {
+        var reads = conn.request().target().startsWith("/body")
+        if reads && !try await conn.receiveBodyAsync() {
+            break
+        }
+        var req = conn.request()
+        var length = 0
+        if reads {
+            length = (int)req.body().length()
+        }
+        var host = string.fromUtf8(req.host()) ?? "(not UTF-8)"
+        var text = $"{req.method()} {req.target()} 1.{req.minorVersion()} host '{host}' body {length}".toString()
+        try await conn.respondAsync(200, "text/plain", text.asBytes())
+    }
+    return Ok()
+}
+
+async void connection(TcpStream stream) {
+    _ = await serve(stream)
+}
+
+async Result<void, IoError> listen(int port) {
+    var address = $"127.0.0.1:{port}".toString()
+    var listener = try TcpListener.bind(read address)
+    var connections = TaskGroup()
+    while true {
+        match await listener.acceptAsync() {
+            Ok(conn) => connections.add(connection(conn))
+            Error(_) => await Task.delay(10)
+        }
+    }
+}
+
+void main(List<string> args) {
+    if args.length() != 1 || int.parse(args[0]) is not Ok(port) {
+        printError("usage: echo PORT")
+        exit(2)
+    }
+    if listen(port).wait() is Error(cause) {
+        printError($"echo: {cause}".toString())
+        exit(1)
+    }
+}
