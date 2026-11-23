@@ -9,15 +9,14 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## The library
 
-- **A regular expression where the DFA reads every byte** (`grep` on the address, 1.27 times Rust's `regex` and 1.48 times Zig's PCRE2, choices 1535,
-  1536, 1541, 1803): SG's DFA reads each line from its start, where Rust's `regex` finds the inner text
-  (`@example.com `) first and reads back and forth from it, and PCRE2's JIT makes machine code of the
-  pattern. The search in any case (`-i error`, now 0.077 s against Rust's 0.086 s and Zig's 0.070 s, whose PCRE2 is 1.10 times faster) and the check of each read of
-  the DFA's table (a sixth of the time) were taken off this list in the hundred-and-sixty-fourth slice.
-  Candidate: Rust's search from the inner text, its DFA run backwards from it to where a match starts and
-  forwards from there. `findAll` over 100 MB took 1.4 to 45 times Rust's before that slice (`\bcache\b` the
-  most), for the same reasons and because Rust's looks for an inner text through the whole text with vector
-  instructions before its DFA starts.
+- **A regular expression where the DFA reads every byte** (`grep` on the address, 1.03 times Zig's PCRE2,
+  choices 1535, 1536, 1541, 1803, slices 164 and 165): since the hundred-and-sixty-fifth slice SG searches
+  from the inner text (`@example.com `) as Rust's `regex` does and is ahead of Rust (0.133 s against 0.148 s);
+  PCRE2's JIT, which makes machine code of the pattern, takes 0.129 s. `findAll` over 100 MB is now at about
+  Rust's time where a pattern has a rare inner text (`\bcache\b` 0.032 s against 0.037 s), but 1.42 times Rust's
+  on `[a-z]+ [a-z]+`, whose inner text, a space, is almost everywhere (0.301 s against 0.212 s), and 1.26 times
+  on `(?i)error` (0.063 s against 0.050 s). For the first the search from the space costs what the search
+  before it cost (0.303 s); the candidate is a cheaper loop of the DFA. The second is not looked into yet.
 
 - **Decomposing a text** (NFD of 16 MB in eight languages, 1.24 times Rust's `icu_normalizer`, choice
   1612, 1613): SG looks up the record of each character a decomposition gives, for its class, and pushes the

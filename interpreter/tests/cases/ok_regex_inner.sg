@@ -1,0 +1,51 @@
+// A search from the inner text (choice 1804): where the inner text is, what comes before it read
+// backwards to where a match starts, and the pattern read forwards from there. With assertions,
+// in any case, past ASCII, with groups, with what comes before it able to match nothing; patterns
+// whose part before the inner text may hold its first character, which are searched the usual way,
+// since a match could start earlier; and a text where the forward reads would cover the same text
+// again and again, which goes the usual way from the place it would. What it prints was checked
+// against Go's `regexp`.
+
+void show(read string pattern, read string text) {
+    var re = Regex.compile(read pattern) ?? panic("a pattern")
+    var first = "none"
+    var found = re.find(read text)
+    if found is not null {
+        first = $"{found}".toString()
+    }
+    print($"{pattern}: {re.findAll(read text)} first {first} isMatch {re.isMatch(read text)}")
+}
+
+void main() {
+    var log = "2026-11-01T00:00:02Z INFO  barbara39@example.com PUT /api/items/710\n2026-11-01T00:00:03Z TRACE ada46@example.com GET /login3497\nx alan7@example.com DELETE /a"
+    show("""[a-z]+[0-9]+@example\.com (PUT|DELETE)""", read log)
+    show("""[a-z]+[0-9]+@example\.com (PUT|DELETE)""", "ada46@example.com GET")
+    show("""\bcache\b""", "cache xcache cache_ cache. (cache)")
+    show("""(?m)^\w+: error$""", "disk: error\nnet: error!\n x: error\nio: error")
+    show("""(?i)[0-9]+ error""", "12 ERROR, 3 error, x Error, 45 eRRoR")
+    show("""[a-z]+日本""", "ab日本 c日本 日本 é日本")
+    show("""[a-z]*@x""", "@x a@x 9@x ab@xy")
+    show("""\d*@""", "12@ @ 3a@")
+    show("""(?:foo|ba+r)=1""", "xbaar=1 foo=1 fo=1 bar=12")
+    show("""[0-9]aa""", "1aaa 2aa aa 3a")
+    show("""(?:)[a-z]+:\d""", "ab:1 :2 c:")
+
+    // What comes before the inner text may hold its first character: the usual way.
+    show("""(?:a...b|c)@""", "ac@cb@")
+    show("""[a-z@]+@x""", "a@b@x")
+    show(""".+@x""", "a@b@x c@x")
+
+    // The groups, from where the match starts.
+    var c = Regex.of("""([a-z]+)([0-9]+)@(\w+)\.com""").captures("to barbara39@example.com now") ?? panic("a match")
+    print($"{c.get(0) ?? panic("0")} {c.get(1) ?? panic("1")} {c.get(2) ?? panic("2")} {c.get(3) ?? panic("3")}")
+    print(Regex.of("""([a-z]+)@(\d+)""").replaceAll("ab@1 cd@ ef@23", "$2:$1"))
+
+    // Each forward read from an inner text goes to the end of the line and finds no match there:
+    // the next inner text lies where that read went, and the search goes on the usual way.
+    var long = string.withCapacity(8200)
+    for _ in 0..2000 {
+        long.write("a@x ")
+    }
+    long.write("\nb@xy")
+    show("""[a-z]+@x[^\n]*y""", read long)
+}

@@ -1,0 +1,17 @@
+[a-z]+[0-9]+@example\.com (PUT|DELETE): [27..52, 130..154] first 27..52 isMatch true
+[a-z]+[0-9]+@example\.com (PUT|DELETE): [] first none isMatch false
+\bcache\b: [0..5, 20..25, 28..33] first 0..5 isMatch true
+(?m)^\w+: error$: [0..11, 34..43] first 0..11 isMatch true
+(?i)[0-9]+ error: [0..8, 10..17, 28..36] first 0..8 isMatch true
+[a-z]+日本: [0..8, 9..16] first 0..8 isMatch true
+[a-z]*@x: [0..2, 3..6, 8..10, 11..15] first 0..2 isMatch true
+\d*@: [0..3, 4..5, 8..9] first 0..3 isMatch true
+(?:foo|ba+r)=1: [1..7, 8..13, 19..24] first 1..7 isMatch true
+[0-9]aa: [0..3, 5..8] first 0..3 isMatch true
+(?:)[a-z]+:\d: [0..4] first 0..4 isMatch true
+(?:a...b|c)@: [0..6] first 0..6 isMatch true
+[a-z@]+@x: [0..5] first 0..5 isMatch true
+.+@x: [0..9] first 0..9 isMatch true
+3..24 3..10 10..12 13..20
+1:ab cd@ 23:ef
+[a-z]+@x[^\n]*y: [8001..8005] first 8001..8005 isMatch true

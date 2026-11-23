@@ -423,11 +423,17 @@ sixteen places at a time with no branch, which the C compiler makes vector code 
 such a text runs no DFA: `-i error` takes 0.077 s, from 0.147 s, ahead of Rust's 0.086 s. The DFA's loop reads its
 table through `getUnchecked`, which reads without the check of the index in a release build and only the
 language's own module may write (1803): the address takes 0.189 s, from 0.232 s, against Rust's 0.149 s.
+The hundred-and-sixty-fifth searches from the inner text, as Rust's `regex` does: where a pattern is a
+concatenation with plain text after its first piece, the search finds that text, reads what comes before it
+backwards to where a match starts and the pattern forwards from there, when nothing before it can read the
+text's first character, so that no match can start earlier. `grep` of the address takes 0.133 s, ahead of
+Rust's 0.148 s, and `findAll` of `\bcache\b` over 100 MB 0.032 s, from 0.210 s (Rust 0.037 s). A DFA's state
+with no step is now one state, whatever came before it; made once for each way of what came before, a search
+could read past the end of a match to the end of the text.
 
 ## Next
 
-Next comes the heavy level of the stand, run at night. Then a search that starts from the inner text of a pattern
-and reads back and forth from it, as Rust's does, which is what the address is still behind on; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
+Next comes the heavy level of the stand, run at night. Then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with

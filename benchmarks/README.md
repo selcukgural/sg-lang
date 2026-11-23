@@ -44,10 +44,10 @@ memory each held, the size of each program, and the builds with checks are on th
 | wc | 100 MB | 0.088 s | 0.067 s (Rust) | 1.31 |
 | wc | 100 MB from the input | 0.088 s | 0.067 s (Rust) | 1.31 |
 | grep | `-c ERROR` | 0.046 s | 0.060 s (Zig) | 0.77 |
-| grep | `-n timeout` | 0.052 s | 0.069 s (Zig) | 0.75 |
-| grep | `-c -i error` | 0.150 s | 0.069 s (Zig) | 2.17 |
-| grep | `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.228 s | 0.129 s (Zig) | 1.77 |
-| grep | `'in [0-9]{4} ms: .*日本'` | 0.064 s | 0.072 s (Zig) | 0.89 |
+| grep | `-n timeout` | 0.051 s | 0.069 s (Zig) | 0.74 |
+| grep | `-c -i error` | 0.075 s | 0.068 s (Zig) | 1.10 |
+| grep | `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.133 s | 0.129 s (Zig) | 1.03 |
+| grep | `'in [0-9]{4} ms: .*日本'` | 0.061 s | 0.073 s (Zig) | 0.84 |
 | grep | `-v -c INFO` | 0.049 s | 0.062 s (Zig) | 0.79 |
 | json | Records, read and summed | 0.476 s | 0.552 s (Zig) | 0.86 |
 | json | Records, read and written back | 0.688 s | 0.719 s (Zig) | 0.96 |

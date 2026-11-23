@@ -30,7 +30,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [20 November 2026](2026-11-20.md) | 130–144 | Regular expressions, compression, zip, real programs, packages, and the fixes of the second review of safety. |
 | [21 November 2026](2026-11-21.md) | 145–152 | A const without calls, `copyFrom`, the normal forms of Unicode, default values of parameters, and `std` measured against Rust and Zig. |
 | [22 November 2026](2026-11-22.md) | 153–158 | Time, random numbers and the log measured against Rust and Zig; the network; an exit with an error lets its tasks go; servers measured against Rust, Zig and C; a loop of the network on each thread; a group of tasks, limits and a graceful end for a server. |
-| [23 November 2026](2026-11-23.md) | 159, 160, 161, 162, 163, 164 | A list of borrows, a reader that lends slices and a send of several pieces for a server; what the servers stand, and where they break; a slice that may be missing and a linked source; `std/http`, the server's side of HTTP/1.1; the command line, the environment and paths measured; a search in any case and the DFA's reads. |
+| [23 November 2026](2026-11-23.md) | 159, 160, 161, 162, 163, 164, 165 | A list of borrows, a reader that lends slices and a send of several pieces for a server; what the servers stand, and where they break; a slice that may be missing and a linked source; `std/http`, the server's side of HTTP/1.1; the command line, the environment and paths measured; a search in any case and the DFA's reads; a search from the inner text. |
 
 ## Every slice
 
@@ -248,3 +248,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [162](2026-11-23.md#slice-162) | `std/http`: the server's side of HTTP/1.1 | 1765–1773, 1776–1794 |
 | [163](2026-11-23.md#slice-163) | The command line, the environment and paths, measured; `Path.push` | 1795–1802 |
 | [164](2026-11-23.md#slice-164) | A regular expression that reads every byte: a search in any case, and the DFA's reads | 1803 |
+| [165](2026-11-23.md#slice-165) | A search from the inner text, as Rust's | none |

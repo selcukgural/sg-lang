@@ -199,10 +199,12 @@ backwards from there, where it starts; the groups are found after that, over the
 machine, which copies the groups of a thread once for each character it reads, as Rust's does. When the DFAs
 let go too often, Pike's machine finds where the match starts and ends first, keeping only those two places,
 and the groups are found over the match alone after it. Plain text that every match holds is looked for first, so a text without
-it is passed over at the speed of a search for text. Over 100 MB of a log, `isMatch` of
-`[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 1.27 times what Rust's `regex` takes and 1.48
-times what PCRE2 takes with its JIT, since SG reads each line from its start and Rust's from the inner text; a pattern with a rarer inner text, such as `in [0-9]{4} ms: .*日本`,
-takes less than either.
+it is passed over at the speed of a search for text. Where that text comes after the first piece of the
+pattern and nothing before it can read its first character, the search starts from it, as Rust's `regex`
+does: what comes before it is read backwards to where a match starts, and the pattern forwards from there.
+Over 100 MB of a log, `isMatch` of `[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 0.90 times
+what Rust's `regex` takes and 1.03 times what PCRE2 takes with its JIT; a pattern with a rarer inner text,
+such as `in [0-9]{4} ms: .*日本`, takes less than either.
 
 What a pattern may cost is bounded before it runs: its program has at most 100,000 steps, each repetition
 counted with every copy it writes (`x*` writes its `x` once, `x{1000}` a thousand times), so a pattern above
