@@ -2389,7 +2389,11 @@ typedef struct { uint8_t* ptr; int64_t len; int64_t cap; } sg_string;
 /* A `read string?` with nothing in it: a window of length -1. */
 #define SG_NO_STR ((sg_str){ NULL, -1 })
 static inline sg_str sg_view(const sg_string* s) { return (sg_str){ s->ptr, s->len }; }
-static inline void sg_drop_string(sg_string* s) { if (s->cap > 0) free(s->ptr); }
+/* A text of the program's own block is let go apart from where it is dropped: GCC 15 follows a
+   literal (whose `cap` is 0) through a `Result` into the drop and says `free` is called on it,
+   whatever the `cap > 0` before it says. A call more where a block is let go anyway. */
+__attribute__((noinline, unused)) static void sg_free_text(uint8_t* p) { free(p); }
+static inline void sg_drop_string(sg_string* s) { if (s->cap > 0) sg_free_text(s->ptr); }
 static inline sg_string sg_move_string(sg_string* s) { sg_string v = *s; s->cap = 0; return v; }
 static sg_string sg_clone(sg_str s) {
     if (s.len == 0) return SG_LIT("", 0);
