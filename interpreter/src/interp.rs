@@ -1294,6 +1294,11 @@ impl<V> Table<V> {
         Table { keys: Vec::new(), held: Vec::new(), index: HashMap::new() }
     }
 
+    /// A table of the same keys in the same order, holding `held`, one for each entry in order.
+    fn with_held<W>(&self, held: Vec<W>) -> Table<W> {
+        Table { keys: self.keys.clone(), held, index: self.index.clone() }
+    }
+
     fn len(&self) -> usize {
         self.keys.len()
     }
@@ -5065,6 +5070,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                 _ => self.call_expr(expr, name, args, frame),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
+                // `.clone()` made by the language: through a `T*`, the `T` is copied.
+                Callee::Clone(_) => {
+                    let mut value = strip(self.expr(recv, frame)?);
+                    while let Value::Ptr(inner) = &value {
+                        let held = inner.borrow().clone();
+                        value = strip(held);
+                    }
+                    self.cloned(&value, expr.span)
+                }
                 Callee::System(call) => self.system(*call, args, frame),
                 Callee::Atomic { op, .. } => self.atomic(*op, Some(recv), args, expr.span, frame),
                 Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
@@ -5442,6 +5456,26 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::WhenAny => {
                     let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAny` a list") };
                     self.when_any(&list, expr.span)
+                }
+                // `x.makeUnique()`: what `x` points to, lent as `ref` when `x` is its only owner and
+                // nothing looks at it; otherwise a copy, which `x` then owns alone.
+                Callee::Plain if name == "makeUnique" => {
+                    let slot = behind_borrows(self.place(recv, frame)?);
+                    let held = match &*slot.borrow() {
+                        Value::Shared(held) => held.clone(),
+                        _ => unreachable!("the checker lets `makeUnique` be called on a `shared` value only"),
+                    };
+                    // The place holds one owner and `held` is the other; the list of the values
+                    // alive (`LIVE`, for the leak report) is the one looker.
+                    if Rc::strong_count(&held) == 2 && Rc::weak_count(&held) == 1 {
+                        return Ok(Value::Borrow(held.value.clone()));
+                    }
+                    let value = held.value.borrow().clone();
+                    let copy = self.cloned(&value, expr.span)?;
+                    let fresh = Held::new(copy, false, expr.span);
+                    let lent = fresh.value.clone();
+                    *slot.borrow_mut() = Value::Shared(fresh);
+                    Ok(Value::Borrow(lent))
                 }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
@@ -6385,6 +6419,64 @@ impl<'a, 'e> Interp<'a, 'e> {
         self.call(func, Some(this), vec![other], span).map(Some)
     }
 
+    /// `.clone()` made by the language (choice 1818): a type's own `clone` where it writes one, else
+    /// a copy of every part that owns; a `shared` value is one more owner of what it points to, a
+    /// `weak` one one more looker.
+    fn cloned(&mut self, value: &Value, span: Span) -> Res<Value> {
+        stack_room(span, "cloned")?;
+        if let Value::Struct(name, _) | Value::Enum(name, ..) = value {
+            if let Some(func) = self.methods.get(&**name).and_then(|methods| methods.get("clone")).copied() {
+                return self.call(func, Some(Value::Borrow(cell(value.clone()))), Vec::new(), span);
+            }
+        }
+        Ok(match value {
+            Value::Struct(name, fields) => Value::Struct(name.clone(), Fields::plain(self.cloned_cells(&fields[..], span)?)),
+            Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, Rc::new(self.cloned_cells(fields, span)?)),
+            Value::Array(items) => Value::Array(Rc::new(self.cloned_cells(items, span)?)),
+            Value::List(items) => {
+                let items = items.borrow().clone();
+                Value::List(Rc::new(RefCell::new(self.cloned_cells(&items, span)?)))
+            }
+            Value::Map(entries) => {
+                let held: Vec<(Value, Cell)> = entries.borrow().values().cloned().collect();
+                let mut copies = Vec::with_capacity(held.len());
+                for (key, item) in &held {
+                    let item = item.borrow().clone();
+                    copies.push((self.cloned(key, span)?, cell(self.cloned(&item, span)?)));
+                }
+                let table = entries.borrow().with_held(copies);
+                Value::Map(Rc::new(RefCell::new(table)))
+            }
+            Value::Set(items) => {
+                let held: Vec<Value> = items.borrow().values().cloned().collect();
+                let mut copies = Vec::with_capacity(held.len());
+                for item in &held {
+                    copies.push(self.cloned(item, span)?);
+                }
+                let table = items.borrow().with_held(copies);
+                Value::Set(Rc::new(RefCell::new(table)))
+            }
+            Value::Ptr(inner) => {
+                let inner = inner.borrow().clone();
+                Value::Ptr(cell(self.cloned(&inner, span)?))
+            }
+            Value::Borrow(inner) => {
+                let inner = inner.borrow().clone();
+                self.cloned(&inner, span)?
+            }
+            other => other.clone(),
+        })
+    }
+
+    fn cloned_cells(&mut self, items: &[Cell], span: Span) -> Res<Vec<Cell>> {
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let value = item.borrow().clone();
+            out.push(cell(self.cloned(&value, span)?));
+        }
+        Ok(out)
+    }
+
     /// `a.equals(b)`: the struct's own `equals`, or field by field.
     fn equal(&mut self, left: &Value, right: &Value, span: Span) -> Res<bool> {
         stack_room(span, "compared")?;
@@ -6455,23 +6547,69 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// The cells of the items in order; equal items keep the order they had. The items are
     /// taken out while they are compared, so that a `compare` that fails leaves through here.
     ///
-    /// The merge sort of compiled code (`sg_sort`), step for step: a `compare` that does not
-    /// put the items in one order gives the same items in the same places in both, and
-    /// nothing panics.
+    /// The sort of compiled code (`sg_sort`), step for step, each `compare` in the same order
+    /// (choice 1337): the runs the items already make, a run strictly in the reverse order turned
+    /// round, a short one made 32 long by putting each next item in its place, then the runs
+    /// merged two by two, two already in order only copied. A `compare` that does not put the
+    /// items in one order gives the same items in the same places in both, and nothing panics.
     fn sorted(&mut self, cells: Vec<Cell>, span: Span) -> Res<Vec<Cell>> {
+        const RUN: usize = 32;
         let count = cells.len();
         let mut from = cells;
-        let mut width = 1;
-        while width < count {
+        if count < 2 {
+            return Ok(from);
+        }
+        let less = |this: &mut Self, from: &[Cell], x: usize, y: usize| -> Res<bool> {
+            let (a, b) = (from[x].borrow().clone(), from[y].borrow().clone());
+            Ok(this.compare(&a, &b, span)? == std::cmp::Ordering::Less)
+        };
+        let mut bounds = Vec::new();
+        let mut start = 0;
+        while start < count {
+            let mut end = start + 1;
+            if end < count && less(self, &from, end, start)? {
+                while end < count && less(self, &from, end, end - 1)? {
+                    end += 1;
+                }
+                from[start..end].reverse();
+            } else {
+                while end < count && !less(self, &from, end, end - 1)? {
+                    end += 1;
+                }
+            }
+            let want = (start + RUN).min(count);
+            while end < want {
+                let mut place = end;
+                while place > start && less(self, &from, end, place - 1)? {
+                    place -= 1;
+                }
+                if place != end {
+                    let item = from.remove(end);
+                    from.insert(place, item);
+                }
+                end += 1;
+            }
+            bounds.push(start);
+            start = end;
+        }
+        bounds.push(count);
+        let mut runs = bounds.len() - 1;
+        while runs > 1 {
             let mut to = Vec::with_capacity(count);
-            let mut low = 0;
-            while low < count {
-                let middle = (low + width).min(count);
-                let high = (low + 2 * width).min(count);
+            let mut merged = 0;
+            let mut r = 0;
+            while r < runs {
+                let (low, middle, high) = (bounds[r], bounds[(r + 1).min(runs)], bounds[(r + 2).min(runs)]);
+                bounds[merged] = low;
+                merged += 1;
+                if middle == high || !less(self, &from, middle, middle - 1)? {
+                    to.extend_from_slice(&from[low..high]);
+                    r += 2;
+                    continue;
+                }
                 let (mut i, mut j) = (low, middle);
                 while i < middle && j < high {
-                    let (a, b) = (from[j].borrow().clone(), from[i].borrow().clone());
-                    if self.compare(&a, &b, span)? == std::cmp::Ordering::Less {
+                    if less(self, &from, j, i)? {
                         to.push(from[j].clone());
                         j += 1;
                     } else {
@@ -6481,10 +6619,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 to.extend_from_slice(&from[i..middle]);
                 to.extend_from_slice(&from[j..high]);
-                low += 2 * width;
+                r += 2;
             }
+            bounds[merged] = count;
+            runs = merged;
             from = to;
-            width *= 2;
         }
         Ok(from)
     }

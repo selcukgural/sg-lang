@@ -168,7 +168,13 @@ The syntax is Go's.
 | `\x41`, `\x{1F600}`, `\101`, `\n`, `\t`, `\.` | One character, by its code or escaped |
 | `\Q...\E` | The text between, as it is; a repetition after it repeats its last character, as in Go |
 | `(?i)`, `(?m)`, `(?s)`, `(?U)` | Ignore case; `^` and `$` at lines; `.` takes a line break; swap greedy and lazy |
+| `(?x)` | Spaces and `#` comments to the end of a line passed over, outside a class; `\ ` and `\#` are themselves |
 | `(?i:x)`, `(?-i)` | A flag only around `x`; a flag taken off |
+
+`(?x)` lets a long pattern be written on lines of its own, as Perl's and PCRE's `x` does. Two places differ
+from Rust's `regex`: a class keeps its spaces and its `#` (`[ #]` is a space or a `#`, where Rust passes over
+both), as in Perl and PCRE; and spaces in a count, `{ 2 , 3 }`, are read only under `(?x)`, where outside it
+`{` that starts no count is a `{` of the text, as in Go.
 
 `(?i)` compares the characters as Unicode's simple case folding does: `k`, `K` and the Kelvin sign `K` are one,
 `ß` and `ẞ` are one, and `ı` and `İ` are not `i`, since no language is taken into account.

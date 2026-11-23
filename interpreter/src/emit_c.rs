@@ -941,7 +941,23 @@ static wchar_t* sg_split_command_line(const wchar_t* line, wchar_t*** words, int
 /* What a program does first on Windows: its streams in binary mode, so that `\n` is written as
    it is; no window and no report of Windows when it aborts; and the words of its command line
    from Windows' own UTF-16, as UTF-8, whatever the code page. */
+/* A stack that overflows (choice 1815): told as what it is. The thread keeps 64 KB in reserve for
+   the handler to run on. */
+static LONG CALLBACK sg_on_overflow(EXCEPTION_POINTERS* e) {
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW) return EXCEPTION_CONTINUE_SEARCH;
+    static const char said[] = "panic: stack overflow: calls are nested deeper than the stack of this thread holds\n"
+        "  a recursion that does not end, or one as deep as data nested a million levels; a loop, or a stack of the program's own on the heap, takes no room here\n";
+    DWORD written;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), said, sizeof said - 1, &written, NULL);
+    ExitProcess(1);
+}
+static void sg_guard_thread(void) {
+    ULONG room = 64 << 10;
+    SetThreadStackGuarantee(&room);
+}
 static void sg_start(int* argc, char*** argv) {
+    sg_guard_thread();
+    AddVectoredExceptionHandler(1, sg_on_overflow);
     _setmode(0, _O_BINARY);
     _setmode(1, _O_BINARY);
     _setmode(2, _O_BINARY);
@@ -975,9 +991,127 @@ static void sg_start_streams(void) {
         if (fcntl(fd, F_GETFD) == -1 && errno == EBADF && open("/dev/null", O_RDWR) != fd) abort();
     }
 }
-#define sg_start(argc, argv) sg_start_streams()
+/* A stack that overflows (choice 1815): each thread has a small stack of its own for signals
+   (`sigaltstack`), and a fault at the guard below its stack is told as what it is, where a plain
+   SIGSEGV said nothing, as Rust's runtime tells it. A fault elsewhere (in C, or past `unsafe`) is
+   left to the system: the handler gives the signal back its default and returns to fault again. */
+#include <pthread.h>
+#include <signal.h>
+static __thread uintptr_t sg_stack_low;
+/* The stack for signals `sg_guard_thread` gave this thread, if it gave one. */
+#include <sys/mman.h>
+#define SG_ALT_STACK ((size_t)64 << 10)
+static __thread void* sg_alt_stack;
+/* The lowest address of this thread's stack, and its stack for signals. */
+static void sg_guard_thread(void) {
+#if defined(__APPLE__)
+    pthread_t self = pthread_self();
+    sg_stack_low = (uintptr_t)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
+#else
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        void* base;
+        size_t size;
+        if (pthread_attr_getstack(&attr, &base, &size) == 0) sg_stack_low = (uintptr_t)base;
+        pthread_attr_destroy(&attr);
+    }
+#endif
+    /* A thread that has a stack for signals already keeps it: the address sanitizer gives each
+       thread one and lets it go itself, and so may a program of C that calls SG. */
+    stack_t alt;
+    if (sigaltstack(NULL, &alt) == 0 && !(alt.ss_flags & SS_DISABLE) && alt.ss_size >= (16 << 10)) return;
+    /* Pages of the system, as Rust's runtime takes them, not a block of `malloc`: the stack of the
+       first thread lives as long as the process, and a finder of leaks would report a block. */
+    alt.ss_size = SG_ALT_STACK;
+    alt.ss_sp = mmap(NULL, alt.ss_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    alt.ss_flags = 0;
+    if (alt.ss_sp == MAP_FAILED) return;
+    if (sigaltstack(&alt, NULL) == 0) sg_alt_stack = alt.ss_sp;
+    else munmap(alt.ss_sp, alt.ss_size);
+}
+/* The end of a thread: the stack for signals it was given here is let go. */
+static void sg_unguard_thread(void) {
+    if (!sg_alt_stack) return;
+    stack_t off = { .ss_flags = SS_DISABLE };
+    if (sigaltstack(&off, NULL) == 0) munmap(sg_alt_stack, SG_ALT_STACK);
+    sg_alt_stack = NULL;
+}
+static void sg_on_fault(int sig, siginfo_t* info, void* context) {
+    (void)context;
+    uintptr_t at = (uintptr_t)info->si_addr, low = sg_stack_low;
+    /* The guard below the stack, and a frame that a probe found past it. */
+    if (low != 0 && at < low + ((uintptr_t)64 << 10) && at + ((uintptr_t)1 << 20) >= low) {
+        static const char said[] = "panic: stack overflow: calls are nested deeper than the stack of this thread holds\n"
+            "  a recursion that does not end, or one as deep as data nested a million levels; a loop, or a stack of the program's own on the heap, takes no room here\n";
+        ssize_t written = write(2, said, sizeof said - 1);
+        (void)written;
+        _exit(1);
+    }
+    signal(sig, SIG_DFL);
+}
+static void sg_start(int* argc, char*** argv) {
+    (void)argc;
+    (void)argv;
+    sg_start_streams();
+    sg_guard_thread();
+    struct sigaction a;
+    memset(&a, 0, sizeof a);
+    a.sa_sigaction = sg_on_fault;
+    a.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&a.sa_mask);
+    sigaction(SIGSEGV, &a, NULL);
+    sigaction(SIGBUS, &a, NULL);
+}
 #else
 #define sg_start(argc, argv) ((void)0)
+#endif
+#if !SG_FREESTANDING
+/* The program's `main` runs on a thread whose stack is 1 GB (choice 1821), as the interpreter runs
+   it: the system takes a page of it when it is first touched, so a stack that is not used costs
+   nothing. Where the system gives no such thread, `main` runs where it is. */
+#ifndef SG_MAIN_STACK
+#define SG_MAIN_STACK ((size_t)1 << 30)
+#endif
+typedef int (*sg_main_fn)(int, char**);
+typedef struct { sg_main_fn f; int argc; char** argv; int code; } sg_main_call;
+/* The end of the thread `main` ran on: what a task lets go of when it ends (`sg_main_thread_end`). */
+static void sg_main_thread_end(void);
+#if defined(_WIN32)
+#include <process.h>
+static unsigned __stdcall sg_main_thread(void* given) {
+    sg_main_call* c = (sg_main_call*)given;
+    c->code = c->f(c->argc, c->argv);
+    sg_main_thread_end();
+    return 0;
+}
+__attribute__((unused)) static int sg_main_on_stack(sg_main_fn f, int argc, char** argv) {
+    sg_main_call c = { f, argc, argv, 0 };
+    uintptr_t h = _beginthreadex(NULL, (unsigned)SG_MAIN_STACK, sg_main_thread, &c, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) return f(argc, argv);
+    WaitForSingleObject((HANDLE)h, INFINITE);
+    CloseHandle((HANDLE)h);
+    return c.code;
+}
+#else
+static void* sg_main_thread(void* given) {
+    sg_main_call* c = (sg_main_call*)given;
+    c->code = c->f(c->argc, c->argv);
+    sg_main_thread_end();
+    return NULL;
+}
+__attribute__((unused)) static int sg_main_on_stack(sg_main_fn f, int argc, char** argv) {
+    sg_main_call c = { f, argc, argv, 0 };
+    pthread_attr_t attr;
+    pthread_t thread;
+    if (pthread_attr_init(&attr) != 0) return f(argc, argv);
+    int code = pthread_attr_setstacksize(&attr, SG_MAIN_STACK);
+    if (code == 0) code = pthread_create(&thread, &attr, sg_main_thread, &c);
+    pthread_attr_destroy(&attr);
+    if (code != 0) return f(argc, argv);
+    pthread_join(thread, NULL);
+    return c.code;
+}
+#endif
 #endif
 
 /* The output, as `print` and `Stdout` write it (choice 1545): a block of 64 KB of the program's
@@ -1473,10 +1607,15 @@ __attribute__((noinline, unused)) static void sg_probe_stack(size_t bytes) {
    reader/writer lock taken only one way, its condition variable and `_beginthreadex`. A lock is
    given back by the thread that took it, which a `lock` block, that never waits, makes sure of.
    A condition with a time waits on the monotonic clock (`sg_cnd_init_timed`); on Windows its
-   time is counted in milliseconds, rounded up. A thread has 8 MB of stack, as the main thread
-   has, reserved and taken as it is used. */
+   time is counted in milliseconds, rounded up. A thread has 1 GB of stack, as the main thread
+   has, reserved and taken a page at a time as it is used (choice 1821); 8 MB where the system
+   will not give that much. */
 #if SG_SYNC
-#define SG_THREAD_STACK ((size_t)8 << 20)
+/* A test that needs a small stack builds with its own `-DSG_THREAD_STACK=...`. */
+#ifndef SG_THREAD_STACK
+#define SG_THREAD_STACK ((size_t)1 << 30)
+#endif
+#define SG_THREAD_STACK_SMALL ((size_t)8 << 20)
 #if defined(_WIN32)
 #include <process.h>
 typedef SRWLOCK sg_mtx;
@@ -1511,10 +1650,25 @@ static inline int sg_cores(void) {
     return n > 0 ? (int)n : 1;
 }
 /* 0, or the error of C's library. A thread nobody joins has its handle closed at once. */
+typedef struct { sg_thread_body body; void* arg; } sg_thread_begin;
+static unsigned __stdcall sg_thread_guarded(void* given) {
+    sg_thread_begin begin = *(sg_thread_begin*)given;
+    (free)(given);
+    sg_guard_thread();
+    return begin.body(begin.arg);
+}
 static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bool detached) {
+    sg_thread_begin* begin = (malloc)(sizeof(sg_thread_begin));
+    if (!begin) return ENOMEM;
+    begin->body = body;
+    begin->arg = arg;
     errno = 0;
-    uintptr_t h = _beginthreadex(NULL, (unsigned)SG_THREAD_STACK, body, arg, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    if (!h) return errno ? errno : EAGAIN;
+    uintptr_t h = _beginthreadex(NULL, (unsigned)SG_THREAD_STACK, sg_thread_guarded, begin, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) h = _beginthreadex(NULL, (unsigned)SG_THREAD_STACK_SMALL, sg_thread_guarded, begin, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) {
+        (free)(begin);
+        return errno ? errno : EAGAIN;
+    }
     if (detached) CloseHandle((HANDLE)h);
     else *thread = (HANDLE)h;
     return 0;
@@ -1604,16 +1758,40 @@ static inline int sg_cores(void) {
 #endif
     return cores;
 }
+/* A thread starts with the guard of its stack (choice 1815): what it runs and with what. */
+typedef struct { sg_thread_body body; void* arg; } sg_thread_begin;
+static void* sg_thread_guarded(void* given) {
+    sg_thread_begin begin = *(sg_thread_begin*)given;
+    (free)(given);
+#if !SG_FREESTANDING
+    sg_guard_thread();
+#endif
+    void* out = begin.body(begin.arg);
+#if !SG_FREESTANDING
+    sg_unguard_thread();
+#endif
+    return out;
+}
 /* 0, or the error the system gave. */
 static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bool detached) {
+    sg_thread_begin* begin = (malloc)(sizeof(sg_thread_begin));
+    if (!begin) return ENOMEM;
+    begin->body = body;
+    begin->arg = arg;
     pthread_attr_t attr;
     int code = pthread_attr_init(&attr);
     if (code == 0) {
         code = pthread_attr_setstacksize(&attr, SG_THREAD_STACK);
         if (code == 0 && detached) code = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        if (code == 0) code = pthread_create(thread, &attr, body, arg);
+        if (code == 0) code = pthread_create(thread, &attr, sg_thread_guarded, begin);
+        /* A system that gives no stack of 1 GB gives the 8 MB of before. */
+        if (code == EAGAIN || code == ENOMEM) {
+            code = pthread_attr_setstacksize(&attr, SG_THREAD_STACK_SMALL);
+            if (code == 0) code = pthread_create(thread, &attr, sg_thread_guarded, begin);
+        }
         pthread_attr_destroy(&attr);
     }
+    if (code != 0) (free)(begin);
     return code;
 }
 static inline void sg_thread_join(sg_thread thread) {
@@ -2939,6 +3117,20 @@ static _Thread_local bool sg_scratch_kept = false;
 static bool sg_scratch_kept = false;
 #endif
 #endif
+/* `main` runs on a thread of its own (choice 1821), whose block for printing is let go when it ends,
+   as a task's is (`sg_task_main`); on the first thread it was kept until the process ended. */
+#if !SG_FREESTANDING
+static void sg_main_thread_end(void) {
+#if SG_THREADS
+    if (sg_scratch.cap > 0) free(sg_scratch.ptr);
+    sg_scratch = (sg_string){ (uint8_t*)"", 0, 0 };
+#if SG_COUNT
+    if (sg_scratch_kept) SG_KEPT(-1);
+    sg_scratch_kept = false;
+#endif
+#endif
+}
+#endif
 static inline void sg_scratch_back(int64_t to) {
     if (sg_scratch.len > to) sg_scratch.len = to;
 #if SG_COUNT
@@ -3365,18 +3557,59 @@ SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_st
     sg_eprint("panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, l.len, (const char*)l.ptr, r.len, (const char*)r.ptr);
     sg_die(loc);
 }
-/* Puts the items in order and keeps equal items in the order they had (a merge sort). */
+/* Puts the items in order and keeps equal items in the order they had: a merge sort of the runs
+   the items already make, as Rust's and Python's sorts are. A run in order is taken as it is, one in
+   strictly the reverse order is turned round (no two of its items are equal, so none changes
+   places with its equal), and a short one is made 32 long by putting each next item in its place;
+   then the runs are merged two by two, and two that are already in order are only copied. Items in
+   order, or in the reverse order, are read once. */
+#define SG_SORT_RUN 32
 static void sg_sort(void* items, int64_t count, size_t size, int (*compare)(const void*, const void*)) {
     if (count < 2) return;
     uint8_t* from = items;
     /* The size of an item is a multiple of its alignment. */
     size_t align = size & -size;
-    uint8_t* to = sg_alloc((size_t)count * size, align > 4096 ? 4096 : align);
-    if (!to) abort();
-    for (int64_t width = 1; width < count; width *= 2) {
-        for (int64_t low = 0; low < count; low += 2 * width) {
-            int64_t middle = low + width < count ? low + width : count;
-            int64_t high = low + 2 * width < count ? low + 2 * width : count;
+    if (align > 4096) align = 4096;
+    uint8_t* to = sg_alloc((size_t)count * size, align);
+    int64_t* bounds = malloc((size_t)(count / SG_SORT_RUN + 2) * sizeof(int64_t));
+    if (!to || !bounds) abort();
+    /* `to` is free until the merging starts: its first item holds the one being moved. */
+    uint8_t* held = to;
+    int64_t runs = 0;
+    for (int64_t start = 0; start < count;) {
+        int64_t end = start + 1;
+        if (end < count && compare(from + end * size, from + start * size) < 0) {
+            while (end < count && compare(from + end * size, from + (end - 1) * size) < 0) end++;
+            for (int64_t i = start, j = end - 1; i < j; i++, j--) {
+                memcpy(held, from + i * size, size);
+                memcpy(from + i * size, from + j * size, size);
+                memcpy(from + j * size, held, size);
+            }
+        } else {
+            while (end < count && compare(from + end * size, from + (end - 1) * size) >= 0) end++;
+        }
+        int64_t want = start + SG_SORT_RUN < count ? start + SG_SORT_RUN : count;
+        for (; end < want; end++) {
+            int64_t place = end;
+            while (place > start && compare(from + end * size, from + (place - 1) * size) < 0) place--;
+            if (place == end) continue;
+            memcpy(held, from + end * size, size);
+            memmove(from + (place + 1) * size, from + place * size, (size_t)(end - place) * size);
+            memcpy(from + place * size, held, size);
+        }
+        bounds[runs++] = start;
+        start = end;
+    }
+    bounds[runs] = count;
+    while (runs > 1) {
+        int64_t merged = 0;
+        for (int64_t r = 0; r < runs; r += 2) {
+            int64_t low = bounds[r], middle = bounds[r + 1 < runs ? r + 1 : runs], high = bounds[r + 2 < runs ? r + 2 : runs];
+            bounds[merged++] = low;
+            if (middle == high || compare(from + middle * size, from + (middle - 1) * size) >= 0) {
+                memcpy(to + low * size, from + low * size, (size_t)(high - low) * size);
+                continue;
+            }
             int64_t i = low, j = middle, k = low;
             while (i < middle && j < high) {
                 if (compare(from + j * size, from + i * size) < 0) { memcpy(to + k * size, from + j * size, size); j++; }
@@ -3386,10 +3619,13 @@ static void sg_sort(void* items, int64_t count, size_t size, int (*compare)(cons
             if (i < middle) memcpy(to + k * size, from + i * size, (size_t)(middle - i) * size);
             if (j < high) memcpy(to + k * size, from + j * size, (size_t)(high - j) * size);
         }
+        bounds[merged] = count;
+        runs = merged;
         uint8_t* swap = from; from = to; to = swap;
     }
+    free(bounds);
     if (from != (uint8_t*)items) { memcpy(items, from, (size_t)count * size); to = from; }
-    if ((align > 4096 ? 4096 : align) > 16) sg_aligned_free(to);
+    if (align > 16) sg_aligned_free(to);
     else free(to);
 }
 static void sg_quoted(sg_str s) {
@@ -4078,6 +4314,9 @@ static void sg_test_failed(sg_str text) {
 /// 1 for a `checked` one, 2 for a `locked` one. The counts are atomic, as the design asks
 /// ("Shared ownership"), and so is the list where several threads run (`SG_THREADS`); the
 /// borrows of a `checked` value are not, since such a value stays in one task (the thread rule).
+/// The program's `main` runs on a thread of a stack of 1 GB, taken as it is used (choice 1821).
+const MAIN_ON_STACK: &str = "int main(int argc, char** argv) {\n    return sg_main_on_stack(sg_main, argc, argv);\n}\n";
+
 const SHARED_RUNTIME: &str = r#"
 typedef struct { int64_t strong; int64_t weak; } __attribute__((aligned(16))) sg_rc;
 /* A borrow of a `shared checked` value in progress: it lives in the frame of the function that
@@ -4196,6 +4435,12 @@ static void* sg_rc_new(size_t size, int how, const sg_kind* kind, const char* ma
     (void)kind; (void)made;
 #endif
     return p;
+}
+/* `x.makeUnique()`: whether `p` is the only owner and nothing looks at the value, so it may be
+   changed in place. The acquire loads see every change the other owners made before letting go. */
+static inline bool sg_rc_alone(void* p) {
+    sg_rc* rc = sg_rc_of(p);
+    return __atomic_load_n(&rc->strong, __ATOMIC_ACQUIRE) == 1 && __atomic_load_n(&rc->weak, __ATOMIC_ACQUIRE) == 1;
 }
 /* `share x`: one more owner. */
 static inline void* sg_rc_share(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p)->strong, 1, __ATOMIC_RELAXED); return p; }
@@ -12037,6 +12282,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         maybe: 0,
         late: None,
         head: false,
+        hoist: None,
         exits: 0,
         ways_out: 0,
         in_test: false,
@@ -12253,7 +12499,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let main = prog.funcs.iter().find(|func| func.name == "main");
     let start = match main {
         _ if tests => format!(
-            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nint main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n",
+            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nstatic int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n{MAIN_ON_STACK}",
             prog.tests.len()
         ),
         // A library starts when it is loaded: C's constructor, which every compiler the
@@ -12311,8 +12557,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         out.push_str("#define SG_LIBRARY 1\n");
     }
     // `accept4` and the flags of `socket` are GNU's on Linux, and so are `renameat2`, `d_type`
-    // and `mkdtemp` in strict C11.
-    if emitter.made.contains("net") || emitter.made.contains("files") || emitter.made.contains("signals") {
+    // and `mkdtemp` in strict C11; and every program with a system finds its stack's guard with
+    // `pthread_getattr_np` and has a stack for signals (`sigaltstack`, choice 1815).
+    if !prog.freestanding || emitter.made.contains("net") || emitter.made.contains("files") || emitter.made.contains("signals") {
         out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
     }
     // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
@@ -13229,6 +13476,24 @@ fn holds_await(expr: &Expr) -> bool {
     found
 }
 
+/// What walking a statement towards its first `try` found (see `Emitter::hoistable`).
+enum Walk {
+    /// The `try`, with only reads before it.
+    Found(*const Expr),
+    /// Reads only, and no `try`.
+    Pure,
+    /// Something more than a read, before any `try`.
+    Stop,
+}
+
+/// Whether `expr` names one of `names`.
+fn names_in(expr: &Expr, names: &[String], found: &mut bool) {
+    if let ExprKind::Var(name) = &expr.kind {
+        *found |= names.contains(name);
+    }
+    sums::children(expr, &mut |inner| names_in(inner, names, found));
+}
+
 /// Whether computing the expression can leave the function: it holds a `try`, a `?? return`,
 /// or a `match`, whose arms may.
 fn may_leave(expr: &Expr) -> bool {
@@ -13485,7 +13750,8 @@ struct NamedLoop {
 const PROBE_FROM: u64 = 4096;
 
 /// The most bytes the values of a function may take of its stack in compiled code: what Windows
-/// on Arm unwinds (LLVM refuses a larger frame there); no stack of SG's holds more (choice 1346).
+/// on Arm unwinds (LLVM refuses a larger frame there), so a program builds on every machine or on
+/// none (choice 1346); the stacks of 1 GB (1821) would hold three such frames.
 const FRAME_LIMIT: u64 = 256 << 20;
 
 /// What `sg_probe_stack` touches beyond the values counted: what C keeps on the stack besides
@@ -13563,6 +13829,9 @@ struct Emitter<'a> {
     /// the temporaries made so far. `value` reads it and clears it; an expression hands it on
     /// to the part of itself that is computed first.
     head: bool,
+    /// The `try` of the statement being written that is computed before the rest of it, under a
+    /// name of its own (choice 1817; see `hoistable`).
+    hoist: Option<*const Expr>,
     /// How many ways out of the function were written inside expressions.
     exits: usize,
     /// How many ways out of where the program is were written at all: `return`, `try`,
@@ -15334,6 +15603,125 @@ impl<'a> Emitter<'a> {
         Ok(helper)
     }
 
+    /// The helper that makes a copy of a value for `.clone()` made by the language (choice 1818):
+    /// `static T sg_copy_<type>(T const* a)`. What owns nothing is copied as it is; a text, a list,
+    /// a table, a `T*`, and the fields and the variants that own, are copied part by part; a
+    /// `shared` value is one more owner, a `weak` one one more looker.
+    fn cloner(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        if let Ty::Nullable(inner) = ty {
+            if !is_option(ty) {
+                return self.cloner(inner, span);
+            }
+        }
+        let name = mangle(ty).ok_or_else(|| not_yet(span, &format!("`clone` of `{ty}`")))?;
+        let helper = format!("sg_copy_{name}");
+        let ctype = self.ctype(ty, span)?;
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let _ = writeln!(self.glue_protos, "static {ctype} {helper}({ctype} const* a);");
+        let mut body = String::new();
+        if !self.droppable(ty) && !self.clones_itself(ty) {
+            body.push_str("return *a;");
+        } else {
+            match ty {
+                Ty::Str => body.push_str("return sg_clone(sg_view(a));"),
+                Ty::Shared(..) => {
+                    let _ = write!(body, "return ({ctype})sg_rc_share((void*)*a);");
+                }
+                Ty::Weak(..) => {
+                    let _ = write!(body, "return ({ctype})sg_rc_weaken((void*)*a);");
+                }
+                Ty::Ptr(inner) => {
+                    let copy = self.copy_at(inner, "(*a)", span)?;
+                    let _ = write!(body, "if (!*a) return NULL; return sg_new_{name}({copy});");
+                }
+                Ty::Nullable(inner) => {
+                    let copy = self.copy_at(inner, "&a->value", span)?;
+                    let _ = write!(body, "{ctype} out = *a; if (a->has) out.value = {copy}; return out;");
+                }
+                Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "clone") => {
+                    let _ = write!(body, "return f_{}_clone(({ctype}*)a);", cname(owner));
+                }
+                Ty::Struct(owner) => {
+                    let decl: &'a StructDecl = self.structs[owner.as_str()];
+                    let _ = write!(body, "{ctype} out = *a; ");
+                    for field in &decl.fields {
+                        let field_ty = self.written(&field.ty)?;
+                        if self.droppable(&field_ty) || self.clones_itself(&field_ty) {
+                            let copy = self.copy_at(&field_ty, &format!("&a->m_{}", field.name), span)?;
+                            let _ = write!(body, "out.m_{} = {copy}; ", field.name);
+                        }
+                    }
+                    body.push_str("return out;");
+                }
+                Ty::Enum(_) | Ty::Result(..) => {
+                    let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
+                    let _ = write!(body, "{ctype} out = *a; switch (a->tag) {{");
+                    for (index, fields) in variants.iter().enumerate() {
+                        let mut case = String::new();
+                        for (field, field_ty, _) in fields {
+                            if self.droppable(field_ty) || self.clones_itself(field_ty) {
+                                let copy = self.copy_at(field_ty, &format!("&a->u.v{index}.m_{field}"), span)?;
+                                let _ = write!(case, " out.u.v{index}.m_{field} = {copy};");
+                            }
+                        }
+                        if !case.is_empty() {
+                            let _ = write!(body, " case {index}:{case} break;");
+                        }
+                    }
+                    body.push_str(" default: break; } return out;");
+                }
+                Ty::List(item) => {
+                    let copy = self.copy_at(item, "&a->ptr[i]", span)?;
+                    let _ = write!(
+                        body,
+                        "{ctype} out = {{ 0 }}; if (a->len > 0) {{ out.ptr = sg_alloc((size_t)a->len * sizeof(*out.ptr), _Alignof(__typeof__(*out.ptr))); if (!out.ptr) abort(); for (int64_t i = 0; i < a->len; i++) out.ptr[i] = {copy}; out.len = out.cap = a->len; }} return out;"
+                    );
+                }
+                Ty::Array(item, length) => {
+                    let copy = self.copy_at(item, "&a->items[i]", span)?;
+                    let _ = write!(body, "{ctype} out = *a; for (int64_t i = 0; i < {length}; i++) out.items[i] = {copy}; return out;");
+                }
+                Ty::Map(key, value) => {
+                    let key_copy = self.copy_at(key, "&a->entries[i].m_key", span)?;
+                    let value_copy = self.copy_at(value, "&a->entries[i].m_value", span)?;
+                    let _ = write!(body, "{ctype} out = {{ 0 }}; for (int64_t i = 0; i < a->len; i++) sg_put_{name}(&out, {key_copy}, {value_copy}); return out;");
+                }
+                Ty::Set(key) => {
+                    let key_copy = self.copy_at(key, "&a->entries[i].m_key", span)?;
+                    let _ = write!(body, "{ctype} out = {{ 0 }}; for (int64_t i = 0; i < a->len; i++) sg_put_{name}(&out, {key_copy}); return out;");
+                }
+                other => return Err(not_yet(span, &format!("`clone` of `{other}`"))),
+            }
+        }
+        let _ = writeln!(self.glue, "static {ctype} {helper}({ctype} const* a) {{ {body} }}");
+        Ok(helper)
+    }
+
+    /// Whether a copy of a value of this type calls a `clone` the program wrote: its own, or one of
+    /// what it holds.
+    fn clones_itself(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "clone") => true,
+            Ty::Struct(owner) => {
+                let decl: &'a StructDecl = self.structs[owner.as_str()];
+                decl.fields.iter().any(|field| self.written(&field.ty).is_ok_and(|field_ty| self.clones_itself(&field_ty)))
+            }
+            Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => self.clones_itself(inner),
+            Ty::Map(key, value) => self.clones_itself(key) || self.clones_itself(value),
+            _ => false,
+        }
+    }
+
+    /// A copy of the value at the pointer `at`, of the type `ty`: the value itself when it owns nothing.
+    fn copy_at(&mut self, ty: &Ty, at: &str, span: Span) -> Res<String> {
+        if !self.droppable(ty) && !self.clones_itself(ty) {
+            return Ok(format!("(*{at})"));
+        }
+        Ok(format!("{}({at})", self.cloner(ty, span)?))
+    }
+
     /// A pointer to a value that is only looked at: `read x`, or a value kept for the statement.
     /// The pointer a `shared` or a `weak` value is (or a `T?` of one, or a borrow of one), only
     /// looked at: `share`, `weak` and `same` do not move it. Its type, behind the borrows.
@@ -16063,12 +16451,12 @@ impl<'a> Emitter<'a> {
         // `main(List<string> args)`: the words after the program's name, looked at where the
         // system keeps them (a text of capacity 0 owns nothing), each checked to be UTF-8.
         let (head, call) = match main.params.is_empty() {
-            true => ("int main(void) {\n    sg_start(NULL, NULL);\n".to_string(), "f_main()".to_string()),
+            true => ("static int sg_main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    sg_start(NULL, NULL);\n".to_string(), "f_main()".to_string()),
             false => {
                 let list = self.ctype(&Ty::List(Box::new(Ty::Str)), main.name_span)?;
                 (
                     format!(
-                        "int main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
+                        "static int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
                          if (!args.ptr) abort();\n    \
                          for (int i = 1; i < argc; i++) {{\n        int64_t n = (int64_t)strlen(argv[i]);\n        \
                          if (sg_utf8_bad((const uint8_t*)argv[i], n) >= 0) {{ fprintf(stderr, \"error: args[%d] is not valid UTF-8\\n\", i - 1); free(args.ptr); return 1; }}\n        \
@@ -16115,10 +16503,10 @@ impl<'a> Emitter<'a> {
                 };
                 format!(
                     "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        int out_code = sg_main_failing();\n        {shown}\
-                     sg_eprint(\"error: {format}\\n\", {values});\n        sg_main_failed(out_code);\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
+                     sg_eprint(\"error: {format}\\n\", {values});\n        sg_main_failed(out_code);\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n{MAIN_ON_STACK}"
                 )
             }
-            _ => format!("{head}    {call};\n{LEAKS}    return 0;\n}}\n"),
+            _ => format!("{head}    {call};\n{LEAKS}    return 0;\n}}\n{MAIN_ON_STACK}"),
         })
     }
 
@@ -18244,7 +18632,76 @@ impl<'a> Emitter<'a> {
     /// it goes. Nothing else of the statement has been computed yet, so a `try` or a
     /// `?? return` in it can leave the function and leave nothing behind.
     fn head_value(&mut self, expr: &'a Expr, want: &Ty) -> Res<String> {
-        self.first_as(expr, want, true)
+        let found = self.hoistable(expr);
+        let saved = std::mem::replace(&mut self.hoist, found);
+        let value = self.first_as(expr, want, true);
+        self.hoist = saved;
+        value
+    }
+
+    /// A `try` inside a statement where it cannot leave the function as it stands (`args.add(try
+    /// f())`: the receiver comes first), which can be computed before the rest of the statement
+    /// and give its value under a name (choice 1817): it is reached through calls, methods and
+    /// variants alone, so it always runs, and all that is computed before it reads a variable
+    /// it does not name, or is written in the program, so running it first changes nothing.
+    /// Only the first `try` of a statement, which keeps them in their order.
+    fn hoistable(&self, root: &Expr) -> Option<*const Expr> {
+        if matches!(root.kind, ExprKind::Try { .. }) {
+            return None;
+        }
+        let mut names = Vec::new();
+        match self.before_try(root, &mut names, false) {
+            Walk::Found(at) => Some(at),
+            Walk::Pure | Walk::Stop => None,
+        }
+    }
+
+    /// `expr` walked in the order it is computed. `address`: only where it lies is taken (a
+    /// receiver, a borrow), not what it holds.
+    fn before_try(&self, expr: &Expr, names: &mut Vec<String>, address: bool) -> Walk {
+        let in_order = |this: &Self, parts: &mut dyn Iterator<Item = (&Expr, bool)>, names: &mut Vec<String>| {
+            for (part, address) in parts {
+                match this.before_try(part, names, address) {
+                    Walk::Pure => {}
+                    other => return other,
+                }
+            }
+            // What a call or a method does is more than a read.
+            Walk::Stop
+        };
+        match &expr.kind {
+            ExprKind::Try { expr: inner, .. } => {
+                let mut named = false;
+                names_in(inner, names, &mut named);
+                if named { Walk::Stop } else { Walk::Found(expr as *const Expr) }
+            }
+            ExprKind::Call { args, .. } => in_order(self, &mut args.iter().map(|arg| (arg, false)), names),
+            ExprKind::Method { recv, args, .. } => in_order(self, &mut std::iter::once((&**recv, true)).chain(args.iter().map(|arg| (arg, false))), names),
+            ExprKind::Variant { args, .. } => match in_order(self, &mut args.iter().map(|arg| (arg, false)), names) {
+                Walk::Stop if self.pure(args, names) => Walk::Pure,
+                other => other,
+            },
+            ExprKind::Borrow { expr: inner, .. } | ExprKind::Unbox(inner) | ExprKind::AsSlice(inner) => self.before_try(inner, names, true),
+            ExprKind::Load(inner) | ExprKind::Widen(_, inner) | ExprKind::Unsafe(inner) | ExprKind::Cast { expr: inner, .. } => self.before_try(inner, names, address),
+            // A field read for its value is moved out when it owns something.
+            ExprKind::Field { recv, .. } if address || !self.droppable(&expr.ty) => self.before_try(recv, names, address),
+            ExprKind::Var(name) if address || (!self.droppable(&expr.ty) && !matches!(expr.ty, Ty::Ref(_) | Ty::Read(_))) => {
+                names.push(name.clone());
+                Walk::Pure
+            }
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Const(_) | ExprKind::Constant { .. } | ExprKind::FuncRef(_) => Walk::Pure,
+            _ => Walk::Stop,
+        }
+    }
+
+    /// Whether the values a variant is made of are all reads, so that making it is one.
+    fn pure(&self, args: &[Expr], names: &mut Vec<String>) -> bool {
+        let mut taken = names.clone();
+        let pure = args.iter().all(|arg| matches!(self.before_try(arg, &mut taken, false), Walk::Pure));
+        if pure {
+            *names = taken;
+        }
+        pure
     }
 
     /// The value of the part of an expression that is computed first. `head`: whether the
@@ -20999,7 +21456,9 @@ impl<'a> Emitter<'a> {
                 self.unlent(&value, lent_option(&inner.ty).expect("just tested"), expr.span)
             }
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
-            // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
+            // A borrow of a `T*` or a `shared T` used as a borrow of the `T`: one step along the
+            // pointer. A text lent as `read string` is a view of it, not the `string` itself.
+            ExprKind::Unbox(inner) if is_text_view(&expr.ty) => self.view(inner),
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
             // The value and its first owner; a debug build notes where it was made, for the
             // leak report.
@@ -21128,6 +21587,18 @@ impl<'a> Emitter<'a> {
             }
             // `try e`: with no value the function ends here, and gives its caller `null` or the error.
             ExprKind::Try { expr: inner, kind } => {
+                // Computed first, under a name: what comes before it only reads (choice 1817).
+                if !head && self.hoist.is_some_and(|at| std::ptr::eq(at, expr)) && self.post.is_empty() {
+                    self.hoist = None;
+                    let value = self.first(expr, true)?;
+                    let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                    self.pre.push(format!("{ctype} {temp} = {value};"));
+                    if !self.droppable(&expr.ty) {
+                        return Ok(temp);
+                    }
+                    self.post.push(self.drop_of(&expr.ty, &temp));
+                    return Ok(self.move_of(&expr.ty, &temp));
+                }
                 if !head {
                     return Err(not_yet(expr.span, "`try` in this part of a statement")
                         .hint("give the value a name first: `var x = try ...`"));
@@ -21959,6 +22430,23 @@ impl<'a> Emitter<'a> {
                     self.ctype(&ty, recv.span)?;
                     Ok(self.move_of(&ty, &place))
                 }
+                // `x.makeUnique()`: the pointer `x` holds, when it is the only owner and nothing
+                // looks at the value (`sg_rc_alone`); otherwise a copy made a `shared` value of its
+                // own, put in `x` in place of the one it let go of.
+                Callee::Plain if name == "makeUnique" => {
+                    let (place, ty) = self.slot(recv)?;
+                    let Ty::Shared(inner, _) = &ty else { unreachable!("the checker lets `makeUnique` be called on a `shared` value only") };
+                    let ctype = self.ctype(&ty, recv.span)?;
+                    self.made.insert("rc_alone".to_string());
+                    let copy = self.copy_at(inner, "p", expr.span)?;
+                    let made = if self.checked { self.loc(expr.span) } else { "NULL".to_string() };
+                    let shared_name = mangle(&ty).expect("a `shared` value has a C name");
+                    let drop = self.drop_of(&ty, "p");
+                    let temp = self.temp();
+                    Ok(format!(
+                        "({{ {ctype}* {temp} = &{place}; if (!sg_rc_alone(*{temp})) {{ {ctype} p = *{temp}; *{temp} = sg_new_{shared_name}({copy}, {made}); {drop} }} *{temp}; }})"
+                    ))
+                }
                 Callee::Replace => {
                     let (place, ty) = self.slot(recv)?;
                     let new = self.value_as(&args[0], &ty)?;
@@ -22712,6 +23200,17 @@ impl<'a> Emitter<'a> {
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),
                     _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
                 },
+                // `.clone()` made by the language: a copy of the value, through a `T*` of the `T`.
+                Callee::Clone(ty) => {
+                    let mut place = self.pointer(recv)?;
+                    let mut at = recv.ty.strip_borrow();
+                    while let Ty::Ptr(inner) = at {
+                        place = format!("(*{place})");
+                        at = inner;
+                    }
+                    let helper = self.cloner(ty, expr.span)?;
+                    Ok(format!("{helper}({place})"))
+                }
                 // `.clone()` of a `shared` value is one more owner, not a copy.
                 Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => {
                     let (pointer, _) = self.counted(recv)?;

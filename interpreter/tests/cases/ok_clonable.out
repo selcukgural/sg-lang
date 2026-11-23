@@ -1,0 +1,10 @@
+n radii 2
+m radii 3
+outer 2 1 1 1 7 lbl
+outer! 3 99 2 50 70 changed
+inner inner?
+true
+2 3
+101 102
+z 1
+3

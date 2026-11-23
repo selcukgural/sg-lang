@@ -1,0 +1,313 @@
+// Single outputs at once (choice 1819, section 4 of the README): a node that gives exactly one output
+// and calls no function of the filter is worked out by following the tree of the filter, with no
+// frame. The input is handed down, not copied, so `reduce range(0; n) as $i ([]; . + [$i])` adds to
+// an array that has one holder, in place (`makeUnique`, choice 1813).
+
+// Which nodes are worked out at once; found once the filter is read, children first.
+void markSimple(ref Program p) {
+    p.simple = List<bool>.withCapacity(p.nodes.length())
+    for _ in 0..p.nodes.length() {
+        p.simple.add(false)
+    }
+    for i in 0..p.nodes.length() {
+        p.simple[i] = simpleNode(read p, i)
+    }
+}
+
+bool simpleAt(read Program p, nint node) {
+    if node < 0 {
+        return true
+    }
+    if node >= p.simple.length() {
+        return false
+    }
+    return simpleNode(p, node)
+}
+
+bool simpleNode(read Program p, nint node) {
+    var n = p.nodes[node]
+    match n.op {
+        Identity or Const or Var or GlobalVar or Format => return true
+        Field => return n.n == 0 && simpleAt(p, n.a)
+        Index => return n.n == 0 && simpleAt(p, n.a) && simpleAt(p, n.b)
+        Slice => return n.n == 0 && simpleAt(p, n.a) && simpleAt(p, n.b) && simpleAt(p, n.c)
+        Negate => return simpleAt(p, n.a)
+        Binary or And or Or or Pipe or Alternative or Bind => return simpleAt(p, n.a) && simpleAt(p, n.b)
+        If => return simpleAt(p, n.a) && simpleAt(p, n.b) && simpleAt(p, n.c)
+        Object => {
+            for i in 0..(nint)n.n * 2 {
+                if !simpleAt(p, p.lists[n.d + i]) {
+                    return false
+                }
+            }
+            return true
+        }
+        Interpolate or Native => {
+            for i in 0..(nint)n.n {
+                if !simpleAt(p, p.lists[n.d + i]) {
+                    return false
+                }
+            }
+            return true
+        }
+        // `[f]` of such an `f`, or of `.[]` of such a term piped into such an `f`: one loop.
+        Collect => return simpleAt(p, n.a) || collectedLoop(p, n.a)
+        _ => return false
+    }
+}
+
+// `.[]`, `term[]` or `term[] | f` with such a term and such an `f`.
+bool collectedLoop(read Program p, nint body) {
+    var b = p.nodes[body]
+    if b.op == Op.Iterate {
+        return b.n == 0 && simpleAt(p, b.a)
+    }
+    if b.op == Op.Pipe {
+        var first = p.nodes[b.a]
+        return first.op == Op.Iterate && first.n == 0 && simpleAt(p, first.a) && simpleAt(p, b.b)
+    }
+    return false
+}
+
+// The one output of a node marked simple, given `input` to keep or hand on.
+Result<Jv, Jv> direct(ref Machine m, read Program p, nint node, Jv input, read shared Env? env) {
+    var n = p.nodes[node]
+    match n.op {
+        Identity => return Ok(input)
+        Const => return Ok(dup(read p.constants[n.x]))
+        Var => {
+            var link = linkAt(env, n.c)
+            return Ok(dup(read link.value))
+        }
+        GlobalVar => return Ok(dup(read m.globals[n.x]))
+        Field => {
+            if n.a < 0 {
+                return fieldOf(read input, read p.texts[n.x])
+            }
+            var target = try direct(ref m, p, n.a, input, env)
+            return fieldOf(read target, read p.texts[n.x])
+        }
+        Index => {
+            var key = try direct(ref m, p, n.b, dup(read input), env)
+            if n.a < 0 {
+                return indexOf(read input, read key)
+            }
+            var target = try direct(ref m, p, n.a, input, env)
+            return indexOf(read target, read key)
+        }
+        Slice => {
+            Jv from = Jv.Null
+            if n.b >= 0 {
+                from = try direct(ref m, p, n.b, dup(read input), env)
+            }
+            Jv to = Jv.Null
+            if n.c >= 0 {
+                to = try direct(ref m, p, n.c, dup(read input), env)
+            }
+            if n.a < 0 {
+                return slice(read input, read from, read to)
+            }
+            var target = try direct(ref m, p, n.a, input, env)
+            return slice(read target, read from, read to)
+        }
+        Negate => {
+            var v = try direct(ref m, p, n.a, input, env)
+            return negate(read v)
+        }
+        Binary => {
+            // The right side first, as jq has it; the left is given the input itself.
+            var right = try direct(ref m, p, n.b, dup(read input), env)
+            var left = try direct(ref m, p, n.a, input, env)
+            if n.n == BinAdd {
+                return addOwned(left, right)
+            }
+            return binary(n.n, read left, read right)
+        }
+        And or Or => {
+            var left = try direct(ref m, p, n.a, dup(read input), env)
+            bool t = truthy(read left)
+            if n.op == Op.And && !t {
+                return Ok(Jv.False)
+            }
+            if n.op == Op.Or && t {
+                return Ok(Jv.True)
+            }
+            var right = try direct(ref m, p, n.b, input, env)
+            return Ok(jvBool(truthy(read right)))
+        }
+        Pipe => {
+            var middle = try direct(ref m, p, n.a, input, env)
+            return direct(ref m, p, n.b, middle, env)
+        }
+        // `a // b` of single outputs: `a` when it is neither `null` nor `false`, else `b`; jq 1.8's
+        // `//` catches no error.
+        Alternative => {
+            var left = try direct(ref m, p, n.a, dup(read input), env)
+            if truthy(read left) {
+                return Ok(left)
+            }
+            return direct(ref m, p, n.b, input, env)
+        }
+        // `a as $x | b`: `b` with `$x` bound, given the input of both.
+        Bind => {
+            var bound = try direct(ref m, p, n.a, dup(read input), env)
+            var inner = new shared Env { value = bound, node = -1, closure = null, parent = envOf(env) }
+            return direct(ref m, p, n.b, input, read inner)
+        }
+        If => {
+            var condition = try direct(ref m, p, n.a, dup(read input), env)
+            if truthy(read condition) {
+                return direct(ref m, p, n.b, input, env)
+            }
+            if n.c >= 0 {
+                return direct(ref m, p, n.c, input, env)
+            }
+            return Ok(input)
+        }
+        Object => {
+            var o = objectWithCapacity((nint)n.n)
+            for i in 0..(nint)n.n {
+                var key = try direct(ref m, p, p.lists[n.d + i * 2], dup(read input), env)
+                var value = try direct(ref m, p, p.lists[n.d + i * 2 + 1], dup(read input), env)
+                match read key {
+                    String(s) => objectSet(ref o, read s, value)
+                    _ => return Error(jvText($"Object keys must be strings, not {kindName(read key)}".toString()))
+                }
+            }
+            return Ok(jvObject(o))
+        }
+        Interpolate => {
+            var values = List<Jv>()
+            for i in 0..(nint)n.n {
+                nint part = p.lists[n.d + i]
+                if !isTextPiece(p, part) {
+                    var v = try direct(ref m, p, part, dup(read input), env)
+                    values.add(v)
+                }
+            }
+            Jv out = Jv.Null
+            Jv error = Jv.Null
+            if applyInterpolation(p, read n, read values, ref out, ref error) == ModeRaise {
+                return Error(error)
+            }
+            return Ok(out)
+        }
+        Format => return applyFormat((int)n.x, read input)
+        Native => {
+            var args = List<Jv>.withCapacity((nint)n.n)
+            for i in 0..(nint)n.n {
+                var v = try direct(ref m, p, p.lists[n.d + i], dup(read input), env)
+                args.add(v)
+            }
+            // `setpath` is handed the input, which it changes in place when it is the one holder.
+            if (int)n.x == NSetPath {
+                var given = args[1].replace(Jv.Null)
+                return setPathOwned(input, read args[0], 0, given)
+            }
+            if (int)n.x == NSort {
+                return sortOwned(input)
+            }
+            return native(ref m, (int)n.x, read input, read args)
+        }
+        Collect => {
+            if simpleAt(p, n.a) {
+                // One item, in a list of its size (choice 1819).
+                var one = List<Jv>.withCapacity(1)
+                var v = try direct(ref m, p, n.a, input, env)
+                one.add(v)
+                return Ok(jvArray(one))
+            }
+            return collectLoop(ref m, p, n.a, input, env)
+        }
+        _ => panic("only nodes marked simple are worked out at once")
+    }
+}
+
+// `[term[]]` or `[term[] | f]` in one loop.
+Result<Jv, Jv> collectLoop(ref Machine m, read Program p, nint body, Jv input, read shared Env? env) {
+    var b = p.nodes[body]
+    nint each = -1
+    if b.op == Op.Pipe {
+        each = b.b
+        b = p.nodes[b.a]
+    }
+    var container = input
+    if b.a >= 0 {
+        container = try direct(ref m, p, b.a, container, env)
+    }
+    var out = List<Jv>()
+    match read container {
+        Array(xs) => {
+            out = List<Jv>.withCapacity(xs.length())
+            for i in 0..xs.length() {
+                var item = dup(read xs[i])
+                if each >= 0 {
+                    item = try direct(ref m, p, each, item, env)
+                }
+                out.add(item)
+            }
+        }
+        Object(o) => {
+            out = List<Jv>.withCapacity(o.values.length())
+            for i in 0..o.values.length() {
+                var item = dup(read o.values[i])
+                if each >= 0 {
+                    item = try direct(ref m, p, each, item, env)
+                }
+                out.add(item)
+            }
+        }
+        _ => return Error(jvText($"Cannot iterate over {describe(read container)}".toString()))
+    }
+    return Ok(jvArray(out))
+}
+
+// `l + r` with `l` handed over: an array, a text or an object with no other holder grows in place.
+Result<Jv, Jv> addOwned(Jv l, Jv r) {
+    int left = kindRank(read l)
+    int right = kindRank(read r)
+    if left == 0 {
+        return Ok(r)
+    }
+    if right == 0 || left != right || left < 4 {
+        return add(read l, read r)
+    }
+    match l {
+        Array(xs) => {
+            var list = xs
+            var items = list.makeUnique()
+            match read r {
+                Array(ys) => {
+                    for i in 0..ys.length() {
+                        items.add(dup(read ys[i]))
+                    }
+                }
+                _ => {}
+            }
+            return Ok(Jv.Array(list))
+        }
+        String(s) => {
+            var holder = s
+            var text = holder.makeUnique()
+            match read r {
+                String(t) => text.write(read t)
+                _ => {}
+            }
+            return Ok(Jv.String(holder))
+        }
+        Object(o) => {
+            var members = o
+            var object = members.makeUnique()
+            match read r {
+                Object(other) => {
+                    for i in 0..other.keys.length() {
+                        objectSet(ref object, read other.keys[i], dup(read other.values[i]))
+                    }
+                }
+                _ => {}
+            }
+            return Ok(Jv.Object(members))
+        }
+        _ => panic("arrays, texts and objects only reach here")
+    }
+}

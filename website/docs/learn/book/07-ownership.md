@@ -280,7 +280,39 @@ Pasha / Pasha the cat
 Label { text = "Ownership", size = 24 } Label { text = "Ownership", size = 12 }
 ```
 
-A `List` has no `.clone()` yet.
+A struct or an enum that says `: Clonable` gets that `clone` without writing it: a copy field by field, each
+field cloned as its type clones (a `string` copied, a `List` item by item, a `shared` field one more owner).
+A type that writes its own `clone` keeps it. Lists, maps and sets clone item by item.
+
+```sg
+struct Label : Clonable, Formattable {
+    string text
+    int size
+}
+
+void main() {
+    var title = Label { text = "Ownership".clone(), size = 24 }
+    var small = title.clone()
+    small.size = 12
+    small.text.write(", short")
+    print($"{title} {small}")
+
+    var words = List<string> { "one".clone(), "two".clone() }
+    var more = words.clone()
+    more.add("three".clone())
+    print($"{words} {more}")
+}
+```
+
+It prints:
+
+```text
+Label { text = "Ownership", size = 24 } Label { text = "Ownership, short", size = 12 }
+["one", "two"] ["one", "two", "three"]
+```
+
+A field that cannot be copied, such as a `raw T` or a `Disposable` value, makes `: Clonable` an error that
+names it.
 
 ## Pointers: `T*` and `new`
 
@@ -393,6 +425,39 @@ void main() {
 ```text
 error: this field is reached through a `shared` value, which is only read and cannot be written
   a `shared` value has several owners, and none of them changes it alone; a value that is changed through several owners is a `shared checked T`, whose every access is checked against the borrows of it in progress
+```
+
+To change one all the same, `x.makeUnique()` gives a `ref T`. When `x` is the only owner and no `weak` looks at
+the value, it is the value itself, changed where it lies; otherwise `x` first gets a copy of its own (its type
+must be `Clonable`), and the other owners keep what they had. Copy on write, as Rust's `Rc::make_mut`: a value
+built up step by step through one owner is never copied.
+
+```sg
+struct Config : Clonable {
+    string host
+    int port
+}
+
+void main() {
+    var config = new shared Config { host = "localhost".clone(), port = 8080 }
+    // `config` is the only owner: it is changed where it lies.
+    var alone = config.makeUnique()
+    alone.port = 9090
+    print($"{config.host}:{config.port}")
+
+    // Another owner sees the old value: `config` gets a copy of its own first.
+    var other = share config
+    var mine = config.makeUnique()
+    mine.host = "example.org".clone()
+    print($"{config.host}:{config.port} {other.host}:{other.port} {same(config, other)}")
+}
+```
+
+It prints:
+
+```text
+localhost:9090
+example.org:9090 localhost:9090 false
 ```
 
 ## Changed through any owner: `shared checked T`

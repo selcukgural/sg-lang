@@ -1,0 +1,1191 @@
+// The filter read into a tree. The nodes lie in one list and name each other by their places. Names are
+// found while the filter is read: a variable or a filter argument by how many bindings up it is (the
+// evaluator walks as many links of its chain of bindings), a function by its definition.
+
+enum Op : byte, Copyable, Equatable {
+    Identity
+    Const
+    // `.name` of what `a` gives (`a` is -1 for `.` itself); `x` is the name's place in `texts`.
+    Field
+    Index
+    Slice
+    Iterate
+    Pipe
+    Comma
+    Negate
+    Binary
+    And
+    Or
+    Alternative
+    Try
+    If
+    Reduce
+    Foreach
+    Bind
+    Var
+    GlobalVar
+    LocalDef
+    Def
+    CallGlobal
+    CallLocal
+    Param
+    Native
+    Collect
+    Object
+    Interpolate
+    Format
+    Path
+    Limit
+    Empty
+    Input
+    Inputs
+    Range
+    Modify
+    Assign
+    // `..`: the input, then each value inside it, depth first, as `recurse(.[]?)` gives them, worked
+    // out by the machine with a stack of its own (choice 1819: Rust and Zig do).
+    Recurse
+}
+
+// `n` of a `Binary`.
+const int BinAdd = 0
+const int BinSubtract = 1
+const int BinMultiply = 2
+const int BinDivide = 3
+const int BinModulo = 4
+const int BinEqual = 5
+const int BinNotEqual = 6
+const int BinLess = 7
+const int BinLessEqual = 8
+const int BinGreater = 9
+const int BinGreaterEqual = 10
+
+// `x` of a `Format` and of an `Interpolate` (-1 for none).
+const int FormatText = 0
+const int FormatJson = 1
+const int FormatCsv = 2
+const int FormatTsv = 3
+const int FormatBase64 = 4
+const int FormatBase64Decode = 5
+const int FormatUri = 6
+
+struct Node : Copyable {
+    Op op
+    nint a
+    nint b
+    nint c
+    nint d
+    nint x
+    int n
+}
+
+// A function made by `def`: its body and how many arguments it takes.
+struct Program {
+    List<Node> nodes
+    List<Jv> constants
+    List<string> texts
+    // The arguments of calls, the members of objects and the parts of texts, each a run of node places.
+    List<nint> lists
+    // `name/arity` → the `Def` node of a function defined at the top: the prelude's, then the filter's.
+    HashMap<string, nint> globals
+    // `--arg` and `--argjson`: the name → its place in the values the evaluator is given.
+    HashMap<string, nint> globalVars
+    // For each node, whether it is worked out at once (`direct.sg`).
+    List<bool> simple
+    // The prelude's `recurse/0`, which `..` and a call of `recurse` reach unless the filter defines
+    // its own: the machine's `Recurse`. -1 while the prelude is read, where it is always that.
+    nint recurse
+}
+
+// A binding the reader sees: a variable, a function or a filter argument. Each is one link of the
+// chain of bindings the evaluator walks.
+struct Binding {
+    int kind
+    string name
+    int arity
+    nint node
+}
+
+const int BindingVar = 0
+const int BindingDef = 1
+const int BindingParam = 2
+
+struct Parser {
+    string source
+    nint at
+    List<Binding> scope
+}
+
+nint addNode(ref Program p, Op op, nint a, nint b, nint c, nint d, nint x, int n) {
+    p.nodes.add(Node { op = op, a = a, b = b, c = c, d = d, x = x, n = n })
+    return p.nodes.length() - 1
+}
+
+nint addText(ref Program p, read string text) {
+    p.texts.add(text.clone())
+    return p.texts.length() - 1
+}
+
+nint addConst(ref Program p, Jv value) {
+    p.constants.add(value)
+    return addNode(ref p, Op.Const, -1, -1, -1, -1, p.constants.length() - 1, 0)
+}
+
+// A run of node places in `lists`; its start.
+nint addList(ref Program p, read List<nint> items) {
+    nint start = p.lists.length()
+    for item in read items {
+        p.lists.add(item)
+    }
+    return start
+}
+
+bool isIdentStart(byte c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+bool isIdentByte(byte c) {
+    return isIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+bool isDigit(byte c) {
+    return c >= '0' && c <= '9'
+}
+
+void skipSpace(ref Parser r) {
+    var bytes = r.source.asBytes()
+    while r.at < bytes.length() {
+        byte c = bytes[r.at]
+        if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+            r.at += 1
+        } else if c == '#' {
+            while r.at < bytes.length() && bytes[r.at] != '\n' {
+                r.at += 1
+            }
+        } else {
+            return
+        }
+    }
+}
+
+// The byte at the next token, or 0 at the end.
+byte peekByte(ref Parser r) {
+    skipSpace(ref r)
+    if r.at < r.source.length() {
+        return r.source[r.at]
+    }
+    return 0
+}
+
+byte byteAt(read Parser r, nint at) {
+    if at < r.source.length() {
+        return r.source[at]
+    }
+    return 0
+}
+
+// Whether the text `word` comes next as a token of its own (an operator, or a keyword that a name
+// byte does not continue); taken when it does.
+bool accept(ref Parser r, read string word) {
+    skipSpace(ref r)
+    var bytes = r.source.asBytes()
+    var w = word.asBytes()
+    if r.at + w.length() > bytes.length() {
+        return false
+    }
+    for i in 0..w.length() {
+        if bytes[r.at + i] != w[i] {
+            return false
+        }
+    }
+    if isIdentByte(w[w.length() - 1]) && r.at + w.length() < bytes.length() && isIdentByte(bytes[r.at + w.length()]) {
+        return false
+    }
+    // `|` is not `|=`, `/` is not `//` or `/=`, `=` is not `==`, `<` is not `<=`.
+    nint next = r.at + w.length()
+    if next < bytes.length() {
+        byte after = bytes[next]
+        if word == "|" && after == '=' {
+            return false
+        }
+        if word == "/" && (after == '/' || after == '=') {
+            return false
+        }
+        if word == "//" && after == '=' {
+            return false
+        }
+        if (word == "=" || word == "<" || word == ">" || word == "!" || word == "+" || word == "-" || word == "*" || word == "%") && after == '=' {
+            return false
+        }
+        if word == "." && (after == '.' || isDigit(after)) {
+            return false
+        }
+    }
+    r.at += w.length()
+    return true
+}
+
+Result<void, string> expect(ref Parser r, read string word) {
+    if accept(ref r, word) {
+        return Ok()
+    }
+    return Error(syntaxError(ref r, $"expected `{word}`".toString()))
+}
+
+string syntaxError(ref Parser r, string what) {
+    skipSpace(ref r)
+    nint end = (r.at + 12).min(r.source.length())
+    string near = "the end"
+    if r.at < r.source.length() {
+        near = $"`{r.source[r.at..end]}`".toString()
+    }
+    return $"syntax error: {what} at {near}".toString()
+}
+
+bool atKeyword(ref Parser r, read string word) {
+    nint saved = r.at
+    bool found = accept(ref r, word)
+    r.at = saved
+    return found
+}
+
+// A name: letters, digits and `_`, not starting with a digit.
+string? readIdent(ref Parser r) {
+    skipSpace(ref r)
+    var bytes = r.source.asBytes()
+    if r.at >= bytes.length() || !isIdentStart(bytes[r.at]) {
+        return null
+    }
+    nint start = r.at
+    while r.at < bytes.length() && isIdentByte(bytes[r.at]) {
+        r.at += 1
+    }
+    return r.source[start..r.at].clone()
+}
+
+bool isKeyword(read string name) {
+    return name == "def" || name == "if" || name == "then" || name == "elif" || name == "else" || name == "end" ||
+        name == "as" || name == "reduce" || name == "foreach" || name == "and" || name == "or" || name == "try" ||
+        name == "catch" || name == "label" || name == "import" || name == "include" || name == "__loc__"
+}
+
+// How far up the chain of bindings the binding `kind` named `name` with `arity` is, or -1.
+nint lookup(read Parser r, int kind, read string name, int arity) {
+    nint i = r.scope.length()
+    while i > 0 {
+        i -= 1
+        var b = read r.scope[i]
+        if b.name == name && b.arity == arity && (b.kind == kind || (kind == BindingDef && b.kind == BindingParam && arity == 0)) {
+            return r.scope.length() - 1 - i
+        }
+    }
+    return -1
+}
+
+// The whole filter: definitions, then an expression, or definitions alone (then `.`).
+Result<nint, string> parseProgram(ref Parser r, ref Program p, bool prelude) {
+    while atKeyword(ref r, "def") {
+        _ = try parseDef(ref r, ref p, true)
+    }
+    skipSpace(ref r)
+    if prelude {
+        if r.at < r.source.length() {
+            return Error(syntaxError(ref r, "the prelude holds definitions only"))
+        }
+        return Ok(-1)
+    }
+    // jq refuses a filter that is only definitions, or nothing at all.
+    if r.at >= r.source.length() {
+        return Error(syntaxError(ref r, "a filter needs an expression after its definitions"))
+    }
+    var body = try parsePipe(ref r, ref p)
+    skipSpace(ref r)
+    if r.at < r.source.length() {
+        return Error(syntaxError(ref r, "unexpected text"))
+    }
+    return Ok(body)
+}
+
+// `def name: body;` or `def name(a; $b): body;`. A definition at the top goes into `globals`; one
+// inside the filter is a binding of its own, which `rest` sees.
+Result<nint, string> parseDef(ref Parser r, ref Program p, bool top) {
+    try expect(ref r, "def")
+    var name = readIdent(ref r) ?? ""
+    if name.length() == 0 || isKeyword(read name) {
+        return Error(syntaxError(ref r, "expected the name of a function"))
+    }
+    var params = List<string>()
+    var dollars = List<bool>()
+    if accept(ref r, "(") {
+        while true {
+            bool dollar = accept(ref r, "$")
+            var param = readIdent(ref r) ?? ""
+            if param.length() == 0 {
+                return Error(syntaxError(ref r, "expected the name of a parameter"))
+            }
+            params.add(param)
+            dollars.add(dollar)
+            if accept(ref r, ";") {
+                continue
+            }
+            try expect(ref r, ")")
+            break
+        }
+    }
+    try expect(ref r, ":")
+    int arity = (int)params.length()
+    nint textPlace = addText(ref p, read name)
+    nint def = addNode(ref p, Op.Def, -1, -1, -1, -1, textPlace, arity)
+    nint outer = r.scope.length()
+    if top {
+        var key = $"{name}/{arity}".toString()
+        if p.globals.contains(read key) {
+            p.globals[read key] = def
+        } else {
+            p.globals.add(key, def)
+        }
+    } else {
+        r.scope.add(Binding { kind = BindingDef, name = name.clone(), arity = arity, node = def })
+    }
+    nint afterSelf = r.scope.length()
+    for param in read params {
+        r.scope.add(Binding { kind = BindingParam, name = param.clone(), arity = 0, node = -1 })
+    }
+    // `$x` parameters: `x as $x | ...`, each bound in turn.
+    var sources = List<nint>()
+    for i in 0..params.length() {
+        if dollars[i] {
+            nint hops = lookup(read r, BindingParam, read params[i], 0)
+            sources.add(addNode(ref p, Op.Param, -1, -1, hops, -1, -1, 0))
+            r.scope.add(Binding { kind = BindingVar, name = params[i].clone(), arity = 0, node = -1 })
+        }
+    }
+    var body = try parsePipe(ref r, ref p)
+    nint k = sources.length()
+    while k > 0 {
+        k -= 1
+        body = addNode(ref p, Op.Bind, sources[k], body, -1, -1, -1, 0)
+    }
+    p.nodes[def].a = body
+    while r.scope.length() > afterSelf {
+        _ = r.scope.removeLast()
+    }
+    try expect(ref r, ";")
+    if top {
+        return Ok(def)
+    }
+    var rest = try parsePipe(ref r, ref p)
+    while r.scope.length() > outer {
+        _ = r.scope.removeLast()
+    }
+    return Ok(addNode(ref p, Op.LocalDef, def, rest, -1, -1, -1, 0))
+}
+
+// The loosest level: `def`, `Term as $x | Pipe`, and `a | b`.
+Result<nint, string> parsePipe(ref Parser r, ref Program p) {
+    if atKeyword(ref r, "def") {
+        return parseDef(ref r, ref p, false)
+    }
+    nint saved = r.at
+    nint nodes = p.nodes.length()
+    // `Term as $x | body`: a term is read, and if `as` does not follow, read again as an expression.
+    match parsePostfix(ref r, ref p) {
+        Ok(source) => {
+            if accept(ref r, "as") {
+                try expect(ref r, "$")
+                var name = readIdent(ref r) ?? ""
+                if name.length() == 0 {
+                    return Error(syntaxError(ref r, "expected a variable"))
+                }
+                try expect(ref r, "|")
+                r.scope.add(Binding { kind = BindingVar, name = name, arity = 0, node = -1 })
+                var body = parsePipe(ref r, ref p)
+                _ = r.scope.removeLast()
+                var b = try body
+                return Ok(addNode(ref p, Op.Bind, source, b, -1, -1, -1, 0))
+            }
+        }
+        Error(_) => {}
+    }
+    r.at = saved
+    while p.nodes.length() > nodes {
+        _ = p.nodes.removeLast()
+    }
+    var left = try parseComma(ref r, ref p)
+    if accept(ref r, "|") {
+        var right = try parsePipe(ref r, ref p)
+        return Ok(addNode(ref p, Op.Pipe, left, right, -1, -1, -1, 0))
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseComma(ref Parser r, ref Program p) {
+    var left = try parseAlternative(ref r, ref p)
+    while accept(ref r, ",") {
+        var right = try parseAlternative(ref r, ref p)
+        left = addNode(ref p, Op.Comma, left, right, -1, -1, -1, 0)
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseAlternative(ref Parser r, ref Program p) {
+    var left = try parseAssign(ref r, ref p)
+    if accept(ref r, "//") {
+        var right = try parseAlternative(ref r, ref p)
+        return Ok(addNode(ref p, Op.Alternative, left, right, -1, -1, -1, 0))
+    }
+    return Ok(left)
+}
+
+// `=`, `|=`, `+=` and their kin, each a call of the prelude's definitions as jq writes them.
+Result<nint, string> parseAssign(ref Parser r, ref Program p) {
+    var left = try parseOr(ref r, ref p)
+    string? op = null
+    for word in (List<string> { "|=", "+=", "-=", "*=", "/=", "%=", "//=", "=" }) {
+        if accept(ref r, read word) {
+            op = word.clone()
+            break
+        }
+    }
+    if op is null {
+        return Ok(left)
+    }
+    var right = try parseOr(ref r, ref p)
+    if op == "|=" {
+        return Ok(addNode(ref p, Op.Modify, left, right, -1, -1, -1, 0))
+    }
+    // `lhs = rhs`: worked by the evaluator, as `|=` is, so that the value it sets at each path has
+    // one holder (jq's `_assign`).
+    if op == "=" {
+        return Ok(addNode(ref p, Op.Assign, left, right, -1, -1, -1, 0))
+    }
+    // The others are the prelude's: `lhs += rhs` is `rhs as $v | lhs |= . + $v`.
+    string name = "_assign"
+    if op == "+=" {
+        name = "_modify_add"
+    } else if op == "-=" {
+        name = "_modify_subtract"
+    } else if op == "*=" {
+        name = "_modify_multiply"
+    } else if op == "/=" {
+        name = "_modify_divide"
+    } else if op == "%=" {
+        name = "_modify_modulo"
+    } else if op == "//=" {
+        name = "_modify_alternative"
+    }
+    return Ok(callGlobal(ref p, read name, read List<nint> { left, right }))
+}
+
+nint callGlobal(ref Program p, read string name, read List<nint> args) {
+    var def = p.globals.get(read $"{name}/{args.length()}".toString()) ?? panic($"the prelude defines {name}")
+    nint start = addList(ref p, args)
+    return addNode(ref p, Op.CallGlobal, -1, -1, -1, start, def, (int)args.length())
+}
+
+Result<nint, string> parseOr(ref Parser r, ref Program p) {
+    var left = try parseAnd(ref r, ref p)
+    while accept(ref r, "or") {
+        var right = try parseAnd(ref r, ref p)
+        left = addNode(ref p, Op.Or, left, right, -1, -1, -1, 0)
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseAnd(ref Parser r, ref Program p) {
+    var left = try parseCompare(ref r, ref p)
+    while accept(ref r, "and") {
+        var right = try parseCompare(ref r, ref p)
+        left = addNode(ref p, Op.And, left, right, -1, -1, -1, 0)
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseCompare(ref Parser r, ref Program p) {
+    var left = try parseAdditive(ref r, ref p)
+    int op = -1
+    if accept(ref r, "==") {
+        op = BinEqual
+    } else if accept(ref r, "!=") {
+        op = BinNotEqual
+    } else if accept(ref r, "<=") {
+        op = BinLessEqual
+    } else if accept(ref r, ">=") {
+        op = BinGreaterEqual
+    } else if accept(ref r, "<") {
+        op = BinLess
+    } else if accept(ref r, ">") {
+        op = BinGreater
+    }
+    if op < 0 {
+        return Ok(left)
+    }
+    var right = try parseAdditive(ref r, ref p)
+    return Ok(addNode(ref p, Op.Binary, left, right, -1, -1, -1, op))
+}
+
+Result<nint, string> parseAdditive(ref Parser r, ref Program p) {
+    var left = try parseMultiplicative(ref r, ref p)
+    while true {
+        int op = -1
+        if accept(ref r, "+") {
+            op = BinAdd
+        } else if accept(ref r, "-") {
+            op = BinSubtract
+        } else {
+            break
+        }
+        var right = try parseMultiplicative(ref r, ref p)
+        left = addNode(ref p, Op.Binary, left, right, -1, -1, -1, op)
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseMultiplicative(ref Parser r, ref Program p) {
+    var left = try parseNegation(ref r, ref p)
+    while true {
+        int op = -1
+        if accept(ref r, "*") {
+            op = BinMultiply
+        } else if accept(ref r, "/") {
+            op = BinDivide
+        } else if accept(ref r, "%") {
+            op = BinModulo
+        } else {
+            break
+        }
+        var right = try parseNegation(ref r, ref p)
+        left = addNode(ref p, Op.Binary, left, right, -1, -1, -1, op)
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseNegation(ref Parser r, ref Program p) {
+    if accept(ref r, "-") {
+        var inner = try parseNegation(ref r, ref p)
+        return Ok(addNode(ref p, Op.Negate, inner, -1, -1, -1, -1, 0))
+    }
+    return parsePostfix(ref r, ref p)
+}
+
+// A term and what follows it: `.name`, `."name"`, `[...]`, `?`.
+Result<nint, string> parsePostfix(ref Parser r, ref Program p) {
+    var term = try parseTerm(ref r, ref p)
+    while true {
+        skipSpace(ref r)
+        byte c = byteAt(read r, r.at)
+        if c == '?' {
+            r.at += 1
+            // After an index, only that index is made optional (jq's `INDEX_OPT`): what it
+            // indexes may still fail. After anything else, `?` is `try`.
+            var op = p.nodes[term].op
+            if (op == Op.Field || op == Op.Index || op == Op.Slice || op == Op.Iterate) && p.nodes[term].n == 0 {
+                p.nodes[term].n = 1
+            } else {
+                term = addNode(ref p, Op.Try, term, -1, -1, -1, -1, 0)
+            }
+        } else if c == '[' {
+            term = try parseBrackets(ref r, ref p, term)
+        } else if c == '.' && (isIdentStart(byteAt(read r, r.at + 1)) || byteAt(read r, r.at + 1) == '"') {
+            r.at += 1
+            term = try parseFieldAfterDot(ref r, ref p, term)
+        } else if c == '.' && byteAt(read r, r.at + 1) == '[' {
+            r.at += 1
+            term = try parseBrackets(ref r, ref p, term)
+        } else {
+            return Ok(term)
+        }
+    }
+}
+
+// After a `.`: a name or a text.
+Result<nint, string> parseFieldAfterDot(ref Parser r, ref Program p, nint target) {
+    if byteAt(read r, r.at) == '"' {
+        var key = try parseString(ref r, ref p, -1)
+        if p.nodes[key].op == Op.Const {
+            match read p.constants[p.nodes[key].x] {
+                String(s) => {
+                    var text = copyText(read s)
+                    nint textPlace = addText(ref p, read text)
+                    return Ok(addNode(ref p, Op.Field, target, -1, -1, -1, textPlace, 0))
+                }
+                _ => {}
+            }
+        }
+        return Ok(addNode(ref p, Op.Index, target, key, -1, -1, -1, 0))
+    }
+    var name = readIdent(ref r) ?? ""
+    nint textPlace = addText(ref p, read name)
+    return Ok(addNode(ref p, Op.Field, target, -1, -1, -1, textPlace, 0))
+}
+
+// `[]`, `[e]`, `[e:f]`, `[:f]`, `[e:]` after a term (`target`, -1 for `.`).
+Result<nint, string> parseBrackets(ref Parser r, ref Program p, nint target) {
+    try expect(ref r, "[")
+    if accept(ref r, "]") {
+        return Ok(addNode(ref p, Op.Iterate, target, -1, -1, -1, -1, 0))
+    }
+    nint from = -1
+    if !accept(ref r, ":") {
+        from = try parsePipe(ref r, ref p)
+        if !accept(ref r, ":") {
+            try expect(ref r, "]")
+            return Ok(addNode(ref p, Op.Index, target, from, -1, -1, -1, 0))
+        }
+    }
+    nint to = -1
+    if !accept(ref r, "]") {
+        to = try parsePipe(ref r, ref p)
+        try expect(ref r, "]")
+    }
+    return Ok(addNode(ref p, Op.Slice, target, from, to, -1, -1, 0))
+}
+
+Result<nint, string> parseTerm(ref Parser r, ref Program p) {
+    skipSpace(ref r)
+    byte c = byteAt(read r, r.at)
+    if c == '.' {
+        byte next = byteAt(read r, r.at + 1)
+        if next == '.' {
+            r.at += 2
+            // `..` is a call of `recurse`, as jq reads it: a filter may define its own.
+            return call(ref r, ref p, "recurse", read List<nint>())
+        }
+        if isDigit(next) {
+            return parseNumber(ref r, ref p)
+        }
+        r.at += 1
+        if isIdentStart(next) || next == '"' {
+            return parseFieldAfterDot(ref r, ref p, -1)
+        }
+        if next == '[' {
+            return parseBrackets(ref r, ref p, -1)
+        }
+        return Ok(addNode(ref p, Op.Identity, -1, -1, -1, -1, -1, 0))
+    }
+    if isDigit(c) {
+        return parseNumber(ref r, ref p)
+    }
+    if c == '"' {
+        return parseString(ref r, ref p, -1)
+    }
+    if c == '@' {
+        r.at += 1
+        var name = readIdent(ref r) ?? ""
+        int format = formatOf(read name)
+        if format < 0 {
+            return Error($"syntax error: {name} is not a valid format".toString())
+        }
+        if peekByte(ref r) == '"' {
+            return parseString(ref r, ref p, format)
+        }
+        return Ok(addNode(ref p, Op.Format, -1, -1, -1, -1, (nint)format, 0))
+    }
+    if c == '(' {
+        r.at += 1
+        var inner = try parsePipe(ref r, ref p)
+        try expect(ref r, ")")
+        return Ok(inner)
+    }
+    if c == '[' {
+        r.at += 1
+        if accept(ref r, "]") {
+            return Ok(addConst(ref p, jvArray(List<Jv>())))
+        }
+        var inner = try parsePipe(ref r, ref p)
+        try expect(ref r, "]")
+        return Ok(addNode(ref p, Op.Collect, inner, -1, -1, -1, -1, 0))
+    }
+    if c == '{' {
+        return parseObject(ref r, ref p)
+    }
+    if c == '$' {
+        r.at += 1
+        var name = readIdent(ref r) ?? ""
+        return variable(ref r, ref p, read name)
+    }
+    if atKeyword(ref r, "if") {
+        return parseIf(ref r, ref p)
+    }
+    if atKeyword(ref r, "try") {
+        _ = accept(ref r, "try")
+        var body = try parsePostfix(ref r, ref p)
+        if atKeyword(ref r, "catch") {
+            return Error(syntaxError(ref r, "`catch` is not in this jq"))
+        }
+        return Ok(addNode(ref p, Op.Try, body, -1, -1, -1, -1, 0))
+    }
+    if atKeyword(ref r, "reduce") || atKeyword(ref r, "foreach") {
+        return parseFold(ref r, ref p)
+    }
+    if atKeyword(ref r, "def") {
+        return parseDef(ref r, ref p, false)
+    }
+    if isIdentStart(c) {
+        nint start = r.at
+        var name = readIdent(ref r) ?? ""
+        if isKeyword(read name) {
+            r.at = start
+            return Error(syntaxError(ref r, "unexpected keyword"))
+        }
+        if name == "true" {
+            return Ok(addConst(ref p, Jv.True))
+        }
+        if name == "false" {
+            return Ok(addConst(ref p, Jv.False))
+        }
+        if name == "null" {
+            return Ok(addConst(ref p, Jv.Null))
+        }
+        var args = List<nint>()
+        if accept(ref r, "(") {
+            while true {
+                var item = try parsePipe(ref r, ref p)
+                args.add(item)
+                if accept(ref r, ";") {
+                    continue
+                }
+                try expect(ref r, ")")
+                break
+            }
+        }
+        return call(ref r, ref p, read name, read args)
+    }
+    return Error(syntaxError(ref r, "unexpected text"))
+}
+
+Result<nint, string> variable(ref Parser r, ref Program p, read string name) {
+    nint hops = lookup(read r, BindingVar, name, 0)
+    if hops >= 0 {
+        return Ok(addNode(ref p, Op.Var, -1, -1, hops, -1, -1, 0))
+    }
+    nint? global = p.globalVars.get(name)
+    if global is not null {
+        return Ok(addNode(ref p, Op.GlobalVar, -1, -1, -1, -1, global, 0))
+    }
+    return Error($"error: ${name} is not defined".toString())
+}
+
+int formatOf(read string name) {
+    if name == "text" {
+        return FormatText
+    }
+    if name == "json" {
+        return FormatJson
+    }
+    if name == "csv" {
+        return FormatCsv
+    }
+    if name == "tsv" {
+        return FormatTsv
+    }
+    if name == "base64" {
+        return FormatBase64
+    }
+    if name == "base64d" {
+        return FormatBase64Decode
+    }
+    if name == "uri" {
+        return FormatUri
+    }
+    return -1
+}
+
+// A number of the filter, its literal kept as jq keeps it.
+Result<nint, string> parseNumber(ref Parser r, ref Program p) {
+    skipSpace(ref r)
+    var bytes = r.source.asBytes()
+    nint start = r.at
+    while r.at < bytes.length() && isDigit(bytes[r.at]) {
+        r.at += 1
+    }
+    if r.at < bytes.length() && bytes[r.at] == '.' {
+        r.at += 1
+        while r.at < bytes.length() && isDigit(bytes[r.at]) {
+            r.at += 1
+        }
+    }
+    if r.at < bytes.length() && (bytes[r.at] == 'e' || bytes[r.at] == 'E') {
+        nint mark = r.at
+        r.at += 1
+        if r.at < bytes.length() && (bytes[r.at] == '+' || bytes[r.at] == '-') {
+            r.at += 1
+        }
+        if r.at >= bytes.length() || !isDigit(bytes[r.at]) {
+            r.at = mark
+        }
+        while r.at < bytes.length() && isDigit(bytes[r.at]) {
+            r.at += 1
+        }
+    }
+    var text = r.source[start..r.at]
+    // `.5` and `1.` as JSON writes them: `0.5`, `1`.
+    string json = string.withCapacity(text.length() + 2)
+    if text[0] == '.' {
+        json.write('0')
+    }
+    json.write(text)
+    if json[json.length() - 1] == '.' {
+        json = json[0..json.length() - 1].clone()
+    }
+    double value = doubleOfLiteral(read json)
+    var literal = canonicalLiteral(read json)
+    if literal is null {
+        return Ok(addConst(ref p, jvNumber(value)))
+    }
+    return Ok(addConst(ref p, jvLiteral(value, literal)))
+}
+
+// A text in quotes, with `\(...)` inside; `format` is applied to what goes inside (`@csv "..."`), -1 for none.
+Result<nint, string> parseString(ref Parser r, ref Program p, int format) {
+    try expect(ref r, "\"")
+    var parts = List<nint>()
+    string piece = string.withCapacity(16)
+    bool interpolated = false
+    while true {
+        if r.at >= r.source.length() {
+            return Error("syntax error: a text without its end")
+        }
+        byte c = r.source[r.at]
+        if c == '"' {
+            r.at += 1
+            break
+        }
+        if c != '\\' {
+            nint start = r.at
+            while r.at < r.source.length() && r.source[r.at] != '"' && r.source[r.at] != '\\' {
+                r.at += 1
+            }
+            piece.write(r.source[start..r.at])
+            continue
+        }
+        r.at += 1
+        if r.at >= r.source.length() {
+            return Error("syntax error: a text without its end")
+        }
+        byte e = r.source[r.at]
+        r.at += 1
+        if e == '(' {
+            parts.add(textPiece(ref p, piece))
+            piece = string.withCapacity(16)
+            var item = try parsePipe(ref r, ref p)
+            parts.add(item)
+            try expect(ref r, ")")
+            interpolated = true
+        } else if e == 'n' {
+            piece.write('\n')
+        } else if e == 't' {
+            piece.write('\t')
+        } else if e == 'r' {
+            piece.write('\r')
+        } else if e == 'b' {
+            piece.write('\u{8}')
+        } else if e == 'f' {
+            piece.write('\u{c}')
+        } else if e == '"' || e == '\\' || e == '/' {
+            piece.write((char)e)
+        } else if e == 'u' {
+            int code = try hex4(ref r)
+            if code >= 0xD800 && code < 0xDC00 && byteAt(read r, r.at) == '\\' && byteAt(read r, r.at + 1) == 'u' {
+                r.at += 2
+                int low = try hex4(ref r)
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+            }
+            if code >= 0xD800 && code < 0xE000 {
+                code = 0xFFFD
+            }
+            piece.write((char)code)
+        } else {
+            return Error("syntax error: an escape a text does not have")
+        }
+    }
+    if !interpolated && format < 0 {
+        return Ok(addConst(ref p, jvText(piece)))
+    }
+    parts.add(textPiece(ref p, piece))
+    nint start = addList(ref p, read parts)
+    return Ok(addNode(ref p, Op.Interpolate, -1, -1, -1, start, (nint)format, (int)parts.length()))
+}
+
+// A piece of text between the `\(...)` of a text: a `Const` marked with `n` 1, which tells it from
+// an expression that is a constant (`"\(null)"`).
+nint textPiece(ref Program p, string piece) {
+    nint node = addConst(ref p, jvText(piece))
+    p.nodes[node].n = 1
+    return node
+}
+
+bool isTextPiece(read Program p, nint node) {
+    return p.nodes[node].op == Op.Const && p.nodes[node].n == 1
+}
+
+Result<int, string> hex4(ref Parser r) {
+    int code = 0
+    for _ in 0..4 {
+        byte h = byteAt(read r, r.at)
+        int digit = 0
+        if h >= '0' && h <= '9' {
+            digit = h - '0'
+        } else if h >= 'a' && h <= 'f' {
+            digit = h - 'a' + 10
+        } else if h >= 'A' && h <= 'F' {
+            digit = h - 'A' + 10
+        } else {
+            return Error("syntax error: `\\u` without four hex digits")
+        }
+        code = code * 16 + digit
+        r.at += 1
+    }
+    return Ok(code)
+}
+
+// `{a: f, "b": g, $x, c, (k): v, "\(k)": v}`: two places in `lists` for each member, its key (a
+// node) and its value.
+Result<nint, string> parseObject(ref Parser r, ref Program p) {
+    try expect(ref r, "{")
+    var parts = List<nint>()
+    if !accept(ref r, "}") {
+        while true {
+            skipSpace(ref r)
+            byte c = byteAt(read r, r.at)
+            nint key = -1
+            nint value = -1
+            if c == '$' {
+                r.at += 1
+                var name = readIdent(ref r) ?? ""
+                if peekByte(ref r) == ':' {
+                    // `{$x: v}`: the key is the value of `$x`.
+                    key = try variable(ref r, ref p, read name)
+                } else {
+                    key = addConst(ref p, jvText(name.clone()))
+                    value = try variable(ref r, ref p, read name)
+                }
+            } else if c == '"' {
+                key = try parseString(ref r, ref p, -1)
+            } else if c == '(' {
+                r.at += 1
+                key = try parsePipe(ref r, ref p)
+                try expect(ref r, ")")
+            } else if c == '@' {
+                key = try parseTerm(ref r, ref p)
+            } else {
+                var name = readIdent(ref r) ?? ""
+                if name.length() == 0 {
+                    return Error(syntaxError(ref r, "expected the name of a member"))
+                }
+                key = addConst(ref p, jvText(name))
+            }
+            if value < 0 {
+                if accept(ref r, ":") {
+                    value = try parseObjectValue(ref r, ref p)
+                } else {
+                    // `{a}` and `{"a"}` are `{a: .a}`.
+                    if p.nodes[key].op != Op.Const {
+                        return Error(syntaxError(ref r, "expected `:`"))
+                    }
+                    match read p.constants[p.nodes[key].x] {
+                        String(s) => {
+                            var text = copyText(read s)
+                            nint textPlace = addText(ref p, read text)
+                            value = addNode(ref p, Op.Field, -1, -1, -1, -1, textPlace, 0)
+                        }
+                        _ => return Error(syntaxError(ref r, "expected `:`"))
+                    }
+                }
+            }
+            // A key written as a constant that is not a text is refused when the filter is read.
+            if p.nodes[key].op == Op.Const {
+                match read p.constants[p.nodes[key].x] {
+                    String(_) => {}
+                    _ => return Error($"error: Cannot use {describe(read p.constants[p.nodes[key].x])} as object key".toString())
+                }
+            }
+            parts.add(key)
+            parts.add(value)
+            if accept(ref r, ",") {
+                continue
+            }
+            try expect(ref r, "}")
+            break
+        }
+    }
+    nint start = addList(ref p, read parts)
+    return Ok(addNode(ref p, Op.Object, -1, -1, -1, start, -1, (int)(parts.length() / 2)))
+}
+
+// The value of a member: an expression up to `,` or `}`, joined by `|`, but no `as` or `def`
+// outside brackets, as jq 1.8 reads it (`{a: 1 + 1}`, `{a: .b // 1}`).
+Result<nint, string> parseObjectValue(ref Parser r, ref Program p) {
+    if atKeyword(ref r, "def") {
+        return Error(syntaxError(ref r, "unexpected def"))
+    }
+    var left = try parseAlternative(ref r, ref p)
+    if accept(ref r, "|") {
+        var right = try parseObjectValue(ref r, ref p)
+        return Ok(addNode(ref p, Op.Pipe, left, right, -1, -1, -1, 0))
+    }
+    return Ok(left)
+}
+
+Result<nint, string> parseIf(ref Parser r, ref Program p) {
+    try expect(ref r, "if")
+    return parseIfRest(ref r, ref p)
+}
+
+// After `if` or `elif`: an `elif` is an `if` of its own in the `else`, ended by the same `end`.
+Result<nint, string> parseIfRest(ref Parser r, ref Program p) {
+    var condition = try parsePipe(ref r, ref p)
+    try expect(ref r, "then")
+    var then = try parsePipe(ref r, ref p)
+    nint otherwise = -1
+    if accept(ref r, "elif") {
+        otherwise = try parseIfRest(ref r, ref p)
+        return Ok(addNode(ref p, Op.If, condition, then, otherwise, -1, -1, 0))
+    }
+    if accept(ref r, "else") {
+        otherwise = try parsePipe(ref r, ref p)
+    }
+    try expect(ref r, "end")
+    return Ok(addNode(ref p, Op.If, condition, then, otherwise, -1, -1, 0))
+}
+
+// `reduce SOURCE as $x (INIT; UPDATE)` and `foreach SOURCE as $x (INIT; UPDATE; EXTRACT)`.
+Result<nint, string> parseFold(ref Parser r, ref Program p) {
+    bool isReduce = accept(ref r, "reduce")
+    if !isReduce {
+        try expect(ref r, "foreach")
+    }
+    var source = try parsePostfix(ref r, ref p)
+    try expect(ref r, "as")
+    try expect(ref r, "$")
+    var name = readIdent(ref r) ?? ""
+    try expect(ref r, "(")
+    var init = try parsePipe(ref r, ref p)
+    try expect(ref r, ";")
+    r.scope.add(Binding { kind = BindingVar, name = name, arity = 0, node = -1 })
+    var update = parsePipe(ref r, ref p)
+    nint extract = -1
+    bool more = false
+    if update is Ok(_) && !isReduce && accept(ref r, ";") {
+        more = true
+    }
+    if more {
+        match parsePipe(ref r, ref p) {
+            Ok(e) => extract = e
+            Error(e) => {
+                _ = r.scope.removeLast()
+                return Error(e)
+            }
+        }
+    }
+    _ = r.scope.removeLast()
+    var u = try update
+    try expect(ref r, ")")
+    if isReduce {
+        return Ok(addNode(ref p, Op.Reduce, source, init, u, -1, -1, 0))
+    }
+    return Ok(addNode(ref p, Op.Foreach, source, init, u, extract, -1, 0))
+}
+
+// A call of `name` with `args`: a function or argument in scope, a function of the top, a form the
+// evaluator knows, or a native function.
+Result<nint, string> call(ref Parser r, ref Program p, read string name, read List<nint> args) {
+    int arity = (int)args.length()
+    nint hops = lookup(read r, BindingDef, name, arity)
+    if hops >= 0 {
+        var b = read r.scope[r.scope.length() - 1 - hops]
+        if b.kind == BindingParam {
+            return Ok(addNode(ref p, Op.Param, -1, -1, hops, -1, -1, 0))
+        }
+        nint start = addList(ref p, args)
+        return Ok(addNode(ref p, Op.CallLocal, -1, -1, hops, start, b.node, arity))
+    }
+    nint? global = p.globals.get(read $"{name}/{arity}".toString())
+    if arity == 0 && name == "recurse" && (p.recurse < 0 || (global ?? -1) == p.recurse) {
+        return Ok(addNode(ref p, Op.Recurse, -1, -1, -1, -1, -1, 0))
+    }
+    if global is not null {
+        nint start = addList(ref p, args)
+        return Ok(addNode(ref p, Op.CallGlobal, -1, -1, -1, start, global, arity))
+    }
+    if arity == 0 && name == "empty" {
+        return Ok(addNode(ref p, Op.Empty, -1, -1, -1, -1, -1, 0))
+    }
+    if arity == 1 && name == "path" {
+        return Ok(addNode(ref p, Op.Path, args[0], -1, -1, -1, -1, 0))
+    }
+    if arity == 2 && name == "limit" {
+        return Ok(addNode(ref p, Op.Limit, args[0], args[1], -1, -1, -1, 0))
+    }
+    if arity == 0 && name == "input" {
+        return Ok(addNode(ref p, Op.Input, -1, -1, -1, -1, -1, 0))
+    }
+    if arity == 0 && name == "inputs" {
+        return Ok(addNode(ref p, Op.Inputs, -1, -1, -1, -1, -1, 0))
+    }
+    if (arity == 2 || arity == 3) && name == "range" {
+        nint start = addList(ref p, args)
+        return Ok(addNode(ref p, Op.Range, -1, -1, -1, start, -1, arity))
+    }
+    int native = nativeOf(name, arity)
+    if native >= 0 {
+        nint start = addList(ref p, args)
+        return Ok(addNode(ref p, Op.Native, -1, -1, -1, start, (nint)native, arity))
+    }
+    return Error($"error: {name}/{arity} is not defined".toString())
+}
+
+// The prelude: jq's own definitions of the functions it writes in jq (its `builtin.jq`), for those of
+// them this jq has.
+const string Prelude = """
+def _assign(paths; $value): reduce path(paths) as $p (.; setpath($p; $value));
+def _modify_add(paths; $v): paths |= . + $v;
+def _modify_subtract(paths; $v): paths |= . - $v;
+def _modify_multiply(paths; $v): paths |= . * $v;
+def _modify_divide(paths; $v): paths |= . / $v;
+def _modify_modulo(paths; $v): paths |= . % $v;
+def _modify_alternative(paths; $v): paths |= (. // $v);
+def not: if . then false else true end;
+def select(f): if f then . else empty end;
+def recurse(f): def r: ., (f | r); r;
+def recurse: recurse(.[]?);
+def map(f): [.[] | f];
+def first(f): limit(1; f);
+def isempty(g): first((g | false), true);
+def map_values(f): .[] |= f;
+def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}];
+def from_entries: reduce .[] as $x ({}; .[$x | .key // .Key // .name // .Name] = ($x | if has("value") then .value else .Value end));
+def with_entries(f): to_entries | map(f) | from_entries;
+def add: reduce .[] as $x (null; . + $x);
+def add(f): reduce f as $x (null; . + $x);
+def any(g; cond): isempty(first(g | cond or empty)) | not;
+def all(g; cond): isempty(first(g | cond and empty));
+def any(f): any(.[]; f);
+def all(f): all(.[]; f);
+def any: any(.);
+def all: all(.);
+def range($n): range(0; $n);
+def first: .[0];
+def last: .[-1];
+def last(f): reduce f as $x ([]; [$x]) | .[];
+def sort_by(f): _sort_by_impl(map([f]));
+def group_by(f): _group_by_impl(map([f]));
+def unique_by(f): [group_by(f)[] | .[0]];
+def min_by(f): _min_by_impl(map([f]));
+def max_by(f): _max_by_impl(map([f]));
+def values: select(. != null);
+def nulls: select(. == null);
+def booleans: select(type == "boolean");
+def numbers: select(type == "number");
+def strings: select(type == "string");
+def arrays: select(type == "array");
+def objects: select(type == "object");
+def iterables: select(type | . == "array" or . == "object");
+def scalars: select(type | . != "array" and . != "object");
+def in(xs): . as $x | xs | has($x);
+def paths: path(..) | select(length > 0);
+def paths(node_filter): . as $dot | paths | select(. as $p | $dot | getpath($p) | node_filter);
+def reverse: [.[length - 1 - range(0; length)]];
+def del(f): delpaths([path(f)]);
+def join($x): reduce .[] as $i (null; (if . == null then "" else . + $x end) + ($i | if . == null then "" elif type == "boolean" or type == "number" then tojson else . end)) // "";
+"""

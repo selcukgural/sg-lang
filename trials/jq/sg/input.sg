@@ -1,0 +1,691 @@
+// The input: the files named, or the standard input, read in pieces of 64 KB as one stream of values.
+// The bytes are checked as UTF-8 and a bad sequence becomes U+FFFD, by jq's rule. `std/json`'s
+// `JsonReader` gives the tokens, and each value is built from them on a stack of its own, so a
+// number keeps the text it was written with, a name given twice keeps its last value at its first
+// place, and nothing is read twice; a token longer than what is kept waits until it has doubled.
+
+const nint InputBlock = 65536
+
+struct Reader {
+    List<string> names
+    nint nextName
+    bool fromStdin
+    // The file being read, when the input is files.
+    StreamReader? file
+    bool sourceDone
+    bool atSourceStart
+    // Bytes read and not yet given to `text`: what follows the last space or mark of JSON, which a
+    // value may go on past.
+    List<byte> unread
+    List<byte> block
+    // The text read and checked, and the reader of its tokens.
+    string text
+    JsonReader json
+    // The arrays and objects of the value being built, from the outermost.
+    List<Building> building
+    // Levels open as jq counts them: one for an array, two for an object.
+    int levels
+    // A token ran past the end of `text`: it is read again once `text` holds this much after it.
+    nint waitFor
+    // The last token needs more of the input before it is read again.
+    bool needMore
+    bool lastReadShort
+    // Files that could not be opened; jq's main loop stops after the next value once one is missed.
+    int missing
+    bool missedOne
+    // A file named `-` is the standard input.
+    bool stdinOpen
+    // A byte that is not UTF-8 was written as a marker (`appendChecked`).
+    bool marked
+    // `-n` with `-s`: the first `input` is every value, as one array.
+    bool slurp
+}
+
+Reader reader(List<string> names) {
+    bool fromStdin = names.length() == 0
+    return Reader {
+        names = names, nextName = 0, fromStdin = fromStdin, file = null, sourceDone = false,
+        atSourceStart = true, unread = List<byte>(), block = List<byte>.repeat(0, InputBlock), text = string.withCapacity(InputBlock * 2),
+        json = JsonReader(JsonOptions { maxDepth = 1_000_000 }), building = List<Building>(), levels = 0,
+        waitFor = 0, needMore = false, lastReadShort = false, missing = 0, missedOne = false, stdinOpen = false, marked = false, slurp = false,
+    }
+}
+
+// An array or an object being built: its items, or its members and the name of the next.
+struct Building {
+    bool isObject
+    List<Jv> items
+    JvObject members
+    string name
+}
+
+// A list made whole that grew past its size gives back the room, up to this many items: the
+// copy costs less than the room it keeps (choice 1819).
+const nint FitUpTo = 4096
+
+// The items in a list of their size, when they are few; `List` has no way to give back room.
+List<Jv> fittedItems(List<Jv> items) {
+    nint n = items.length()
+    if n > FitUpTo || n == 0 {
+        return items
+    }
+    var c = List<Jv>.withCapacity(n)
+    var from = items
+    for i in 0..n {
+        c.add(from[i].replace(Jv.Null))
+    }
+    return c
+}
+
+JvObject fitted(JvObject o) {
+    nint n = o.keys.length()
+    if n > FitUpTo || n == 0 {
+        return o
+    }
+    var from = o
+    var c = objectWithCapacity(n)
+    for i in 0..n {
+        c.keys.add(from.keys[i].replace(""))
+        c.values.add(from.values[i].replace(Jv.Null))
+    }
+    c.places = from.places.replace(HashMap<string, nint>())
+    return c
+}
+
+// jq reads 10,000 levels and refuses one more, counting an object as two.
+const int DepthLimit = 10000
+
+// The next value of the stream, `null` at its end, or why it does not read.
+Result<Jv?, string> nextInput(ref Reader r) {
+    if r.slurp {
+        r.slurp = false
+        var all = List<Jv>()
+        while true {
+            var v = try nextValue(ref r)
+            if v is null {
+                break
+            }
+            all.add(v)
+        }
+        return Ok(jvArray(all))
+    }
+    return nextValue(ref r)
+}
+
+Result<Jv?, string> nextValue(ref Reader r) {
+    while true {
+        if !r.needMore {
+            nint pending = r.text.length() - r.json.position()
+            match r.json.next(read r.text, !r.sourceDone) {
+                Ok(token) => {
+                    if token == JsonToken.End {
+                        if r.sourceDone {
+                            return Ok(null)
+                        }
+                        r.waitFor = 0
+                        r.needMore = true
+                    } else {
+                        var done = try take(ref r, token)
+                        if done is not null {
+                            return Ok(done)
+                        }
+                    }
+                }
+                Error(e) => {
+                    if e.kind == JsonErrorKind.UnexpectedEnd && !r.sourceDone {
+                        // Read again once what is kept after the token has doubled, or the input paused.
+                        r.waitFor = pending * 2
+                        r.needMore = true
+                    } else {
+                        return Error($"{e}".toString())
+                    }
+                }
+            }
+            continue
+        }
+        if r.sourceDone {
+            r.needMore = false
+            continue
+        }
+        try readMore(ref r)
+        nint kept = r.text.length() - r.json.position()
+        if kept >= r.waitFor || r.lastReadShort || r.sourceDone {
+            r.needMore = false
+        }
+    }
+}
+
+Result<Jv?, string> open(ref Reader r, bool isObject) {
+    // jq looks at the depth only when an array or an object opens: what is open, names waiting for
+    // their values among it, must be below 10,000.
+    if r.levels >= DepthLimit {
+        return Error("Exceeds depth limit for parsing")
+    }
+    r.levels += 1
+    r.building.add(Building { isObject = isObject, items = List<Jv>(), members = emptyObject(), name = "" })
+    return Ok(null)
+}
+
+// A token taken into the value being built; the value once it is whole.
+Result<Jv?, string> take(ref Reader r, JsonToken token) {
+    Jv value = Jv.Null
+    match token {
+        End => return Ok(null)
+        BeginArray => return open(ref r, false)
+        BeginObject => return open(ref r, true)
+        Name(name) => {
+            // jq counts the name of a member as a level while its value is read.
+            r.levels += 1
+            var text = name
+            if r.marked && hasMarker(read text) {
+                text = restored(read text)
+            }
+            r.building[r.building.length() - 1].name = text
+            return Ok(null)
+        }
+        EndArray or EndObject => {
+            var b = r.building.removeLast() ?? panic("an array or an object is open")
+            r.levels -= 1
+            if b.isObject {
+                value = jvObject(fitted(b.members))
+            } else {
+                value = jvArray(fittedItems(b.items))
+            }
+        }
+        String(s) => {
+            var text = s
+            if r.marked && hasMarker(read text) {
+                text = restored(read text)
+            }
+            value = Jv.String(new shared text)
+        }
+        Number(text) => value = numberFromLiteral(read text)
+        True => value = Jv.True
+        False => value = Jv.False
+        Null => value = Jv.Null
+    }
+    if r.building.length() == 0 {
+        return Ok(value)
+    }
+    nint top = r.building.length() - 1
+    if r.building[top].isObject {
+        r.levels -= 1
+        var name = r.building[top].name.replace("")
+        objectSet(ref r.building[top].members, read name, value)
+    } else {
+        r.building[top].items.add(value)
+    }
+    return Ok(null)
+}
+
+// More of the input into `text`.
+Result<void, string> readMore(ref Reader r) {
+    // What was read is let go once it is most of the text.
+    nint at = r.json.position()
+    if at > 0 && at >= r.text.length() / 2 {
+        string rest = string.withCapacity((r.text.length() - at) * 2 + InputBlock)
+        rest.write(r.text[at..r.text.length()])
+        r.text = rest
+        r.json.rebase(at)
+    }
+    nint count = 0
+    while true {
+        if r.fromStdin || r.stdinOpen {
+            match Stdin.readSome(ref r.block) {
+                Ok(n) => count = n
+                Error(cause) => return Error($"Could not read the input: {cause}".toString())
+            }
+            if count == 0 && r.stdinOpen {
+                r.stdinOpen = false
+                continue
+            }
+            if count == 0 {
+                r.sourceDone = true
+            }
+            break
+        }
+        if r.file is null {
+            if r.nextName >= r.names.length() {
+                r.sourceDone = true
+                break
+            }
+            var name = r.names[r.nextName].clone()
+            r.nextName += 1
+            if name == "-" {
+                r.stdinOpen = true
+                continue
+            }
+            match File.openText(read name) {
+                Ok(f) => r.file = f
+                Error(cause) => {
+                    printError($"jq: error: Could not open {name}: {cause}")
+                    r.missing += 1
+                    r.missedOne = true
+                    continue
+                }
+            }
+        }
+        var file = r.file.take() ?? panic("a file is open")
+        match file.readSome(ref r.block) {
+            Ok(n) => count = n
+            Error(cause) => return Error($"Could not read the input: {cause}".toString())
+        }
+        if count == 0 {
+            continue
+        }
+        r.file = file
+        break
+    }
+    r.lastReadShort = count < InputBlock
+    // What was held back has no space or mark of JSON in it: only the bytes just read are looked at.
+    nint held = r.unread.length()
+    if count > 0 {
+        nint from = 0
+        if r.atSourceStart {
+            r.atSourceStart = false
+            if count >= 3 && r.block[0] == 0xEF && r.block[1] == 0xBB && r.block[2] == 0xBF {
+                from = 3
+            } else if count < 3 && r.block[0] == 0xEF && (count == 1 || r.block[1] == 0xBB) {
+                // The start of a byte order mark and then the end: jq reads nothing, and no error.
+                r.sourceDone = true
+                return Ok()
+            }
+        }
+        r.unread.addAll(r.block[from..count])
+    }
+    // Only up to the last space or mark of JSON: a number, a word or a character may go on in the next piece.
+    nint cut = r.unread.length()
+    if !r.sourceDone {
+        while cut > held && !endsToken(r.unread[cut - 1]) {
+            cut -= 1
+        }
+        if cut == held {
+            cut = 0
+        }
+    }
+    if cut > 0 {
+        if appendChecked(ref r.text, r.unread[0..cut]) {
+            r.marked = true
+        }
+        var rest = List<byte>.withCapacity(r.unread.length() - cut + InputBlock)
+        rest.addAll(r.unread[cut..r.unread.length()])
+        r.unread = rest
+    }
+    return Ok()
+}
+
+bool endsToken(byte c) {
+    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '[' || c == ']' || c == '{' || c == '}' || c == ',' || c == ':' || c == '"'
+}
+
+// `bytes` added to `text`: as they are when they are UTF-8. A byte that is not is written as a
+// character of its own, U+10FF00 and the byte, so that `JsonReader` reads the text around it; a
+// text that holds one is turned back into its bytes and repaired as jq repairs it, once its escapes
+// are read (`restored`): a sequence cut short by the end of the text swallows the rest of it.
+// Gives whether a byte was so written.
+bool appendChecked(ref string text, read byte[] bytes) {
+    nint at = 0
+    bool marked = false
+    while at < bytes.length() {
+        match string.fromUtf8(bytes[at..bytes.length()]) {
+            Ok(view) => {
+                text.write(view)
+                return marked
+            }
+            Error(e) => {
+                nint bad = at + e.position
+                match string.fromUtf8(bytes[at..bad]) {
+                    Ok(good) => text.write(good)
+                    Error(_) => {}
+                }
+                text.write((char)(MarkerBase + (int)bytes[bad]))
+                marked = true
+                at = bad + 1
+            }
+        }
+    }
+    return marked
+}
+
+const int MarkerBase = 0x10FF00
+
+// A text of the input that holds markers, as jq reads it: the bytes they stand for put back, and
+// the whole decoded by jq's rule.
+string restored(read string s) {
+    var b = s.asBytes()
+    var original = List<byte>.withCapacity(b.length())
+    nint i = 0
+    while i < b.length() {
+        // U+10FF00 to U+10FFFF: F4 8F BC..BF xx.
+        if b[i] == 0xF4 && i + 3 < b.length() && b[i + 1] == 0x8F && (b[i + 2] & 0xFC) == 0xBC {
+            original.add((byte)(((b[i + 2] & 0x03) << 6) | (b[i + 3] & 0x3F)))
+            i += 4
+        } else {
+            original.add(b[i])
+            i += 1
+        }
+    }
+    return repairUtf8(read original)
+}
+
+bool hasMarker(read string s) {
+    var b = s.asBytes()
+    for i in 0..b.length() {
+        if b[i] == 0xF4 && i + 2 < b.length() && b[i + 1] == 0x8F && (b[i + 2] & 0xFC) == 0xBC {
+            return true
+        }
+    }
+    return false
+}
+
+// The bytes as text, each bad sequence one U+FFFD, as jq's `jvp_utf8_next` reads them: a lead byte
+// gives the length; a sequence the bytes end inside is one; a byte in it that does not continue ends
+// it there and is read again; an overlong form, a surrogate or a value past U+10FFFF is one for the
+// whole sequence.
+string repairUtf8(read byte[] bytes) {
+    string out = string.withCapacity(bytes.length() + 16)
+    nint i = 0
+    nint n = bytes.length()
+    while i < n {
+        int first = bytes[i]
+        if first < 0x80 {
+            out.write((char)first)
+            i += 1
+            continue
+        }
+        int length = 0
+        int code = 0
+        if first >= 0xC2 && first <= 0xDF {
+            length = 2
+            code = first & 0x1F
+        } else if first >= 0xE0 && first <= 0xEF {
+            length = 3
+            code = first & 0x0F
+        } else if first >= 0xF0 && first <= 0xF4 {
+            length = 4
+            code = first & 0x07
+        }
+        if length == 0 {
+            out.write('\u{FFFD}')
+            i += 1
+            continue
+        }
+        if i + (nint)length > n {
+            out.write('\u{FFFD}')
+            i = n
+            continue
+        }
+        bool bad = false
+        nint used = (nint)length
+        for j in 1..(nint)length {
+            int c = bytes[i + j]
+            if c & 0xC0 != 0x80 {
+                bad = true
+                used = j
+                break
+            }
+            code = (code << 6) | (c & 0x3F)
+        }
+        if !bad {
+            int least = 0x80
+            if length == 3 {
+                least = 0x800
+            } else if length == 4 {
+                least = 0x10000
+            }
+            if code < least || (code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF {
+                bad = true
+            }
+        }
+        if bad {
+            out.write('\u{FFFD}')
+        } else {
+            out.write((char)code)
+        }
+        i += used
+    }
+    return out
+}
+
+// A number of the input: its `double`, and its literal where the `double` writes another text.
+Jv numberFromLiteral(read string text) {
+    var bytes = text.asBytes()
+    // A whole number of up to 15 digits is written the same either way.
+    if bytes.length() <= 15 {
+        bool plain = true
+        long n = 0
+        nint start = 0
+        if bytes[0] == '-' {
+            start = 1
+        }
+        for i in start..bytes.length() {
+            byte c = bytes[i]
+            if c < '0' || c > '9' {
+                plain = false
+                break
+            }
+            n = n * 10 + (long)(c - '0')
+        }
+        // A zero keeps its literal: jq's negation of it is the literal without a sign.
+        if plain && n != 0 {
+            if start == 1 {
+                n = -n
+            }
+            return Jv.Exact((double)n)
+        }
+    }
+    double d = doubleOfLiteral(text)
+    if writtenAsDouble(bytes) {
+        return Jv.Exact(d)
+    }
+    var literal = canonicalLiteral(text)
+    if literal is null {
+        return jvNumber(d)
+    }
+    // A literal the `double` writes the same is kept as `Exact`, without its text: compared with
+    // another literal, it is written out again (`literalText`), so `0.1` and `0.10000000000000000001`
+    // are still two numbers. A zero keeps its text: its negation is the literal without a sign.
+    string shortest = string.withCapacity(24)
+    writeDouble(ref shortest, d)
+    if shortest == literal && d != 0.0 {
+        return Jv.Exact(d)
+    }
+    return jvLiteral(d, literal)
+}
+
+// Whether a number with a point and no exponent is written by its `double` as it is, so that no
+// literal is kept: at most 15 digits that count (a `double` gives such digits back), no 0 at the end
+// of the fraction, a whole part that is `0` only alone, and at least 0.0001, where the writing of a
+// `double` turns to an exponent.
+bool writtenAsDouble(read byte[] b) {
+    nint i = 0
+    if i < b.length() && b[i] == '-' {
+        i += 1
+    }
+    nint start = i
+    nint point = -1
+    nint digits = 0
+    bool leading = true
+    nint zerosAfterPoint = 0
+    while i < b.length() {
+        byte c = b[i]
+        if c == '.' {
+            point = i
+        } else if c >= '0' && c <= '9' {
+            if c != '0' || !leading {
+                leading = false
+                digits += 1
+            } else if point >= 0 {
+                zerosAfterPoint += 1
+            }
+        } else {
+            return false
+        }
+        i += 1
+    }
+    if point < 0 || digits == 0 || digits > 15 || b[b.length() - 1] == '0' || b[b.length() - 1] == '.' {
+        return false
+    }
+    // `0.5` and `12.5`, not `012.5`; at least 0.0001.
+    if b[start] == '0' && point != start + 1 {
+        return false
+    }
+    if b[start] == '0' && zerosAfterPoint > 3 {
+        return false
+    }
+    return true
+}
+
+// `tonumber` of a text, as jq 1.8 reads it with decNumber: a JSON number, and also a `+`, leading
+// zeros, `.5` and `1.`, `nan` and `Infinity`; its literal kept as decNumber writes it.
+Jv? numberFromText(read string s) {
+    var b = s.asBytes()
+    if b.length() == 0 {
+        return null
+    }
+    string lower = s.toLower()
+    nint signAt = 0
+    bool negative = false
+    if b[0] == '+' || b[0] == '-' {
+        negative = b[0] == '-'
+        signAt = 1
+    }
+    var word = lower[signAt..lower.length()]
+    if word == "nan" {
+        return jvNumber(double.NaN)
+    }
+    if word == "infinity" || word == "inf" {
+        if negative {
+            return jvNumber(-double.Infinity)
+        }
+        return jvNumber(double.Infinity)
+    }
+    // Digits, a point and digits (either side may be empty, not both), an exponent.
+    string json = string.withCapacity(b.length() + 2)
+    if negative {
+        json.write('-')
+    }
+    nint i = signAt
+    nint digits = 0
+    while i < b.length() && isDigit(b[i]) {
+        i += 1
+        digits += 1
+    }
+    var whole = s[signAt..i]
+    string fraction = ""
+    if i < b.length() && b[i] == '.' {
+        nint start = i + 1
+        i += 1
+        while i < b.length() && isDigit(b[i]) {
+            i += 1
+            digits += 1
+        }
+        fraction = s[start..i].clone()
+    }
+    if digits == 0 {
+        return null
+    }
+    if whole.length() == 0 {
+        json.write('0')
+    } else {
+        json.write(whole)
+    }
+    if fraction.length() > 0 {
+        json.write('.')
+        json.write(read fraction)
+    }
+    if i < b.length() && (b[i] == 'e' || b[i] == 'E') {
+        nint start = i
+        i += 1
+        if i < b.length() && (b[i] == '+' || b[i] == '-') {
+            i += 1
+        }
+        nint expDigits = 0
+        while i < b.length() && isDigit(b[i]) {
+            i += 1
+            expDigits += 1
+        }
+        if expDigits == 0 {
+            return null
+        }
+        json.write(s[start..i])
+    }
+    if i != b.length() {
+        return null
+    }
+    // Leading zeros are no part of decNumber's form.
+    return numberFromLiteral(read json)
+}
+
+// `fromjson` and `--argjson`: the one value a text holds.
+Result<Jv, string> parseOne(read string s) {
+    var r = reader(List<string>())
+    r.text = s.clone()
+    r.sourceDone = true
+    var first = try nextInput(ref r)
+    if first is null {
+        return Error("Expected JSON value")
+    }
+    var second = try nextInput(ref r)
+    if second is not null {
+        return Error("Unexpected extra JSON values")
+    }
+    return Ok(first)
+}
+
+// The `double` of a literal as jq 1.8 finds it: rounded first to 17 significant digits, half to
+// even, as decNumber gives it to `strtod`; `128218505994187403` is `128218505994187400`.
+double doubleOfLiteral(read string text) {
+    var parts = decimalOf(text)
+    if parts is null || parts.coefficient.length() <= 17 {
+        return double.parse(text) ?? 0.0
+    }
+    var c = parts.coefficient.asBytes()
+    string digits = string.withCapacity(20)
+    for i in 0..17 {
+        digits.write((char)c[i])
+    }
+    // Half to even: above half rounds up, below down, and exactly half to an even last digit.
+    int first = c[17] - '0'
+    bool restZero = true
+    for i in 18..c.length() {
+        if c[i] != '0' {
+            restZero = false
+            break
+        }
+    }
+    bool up = first > 5 || (first == 5 && (!restZero || (c[16] - '0') % 2 == 1))
+    long exponent = parts.exponent + (long)c.length() - 17
+    if up {
+        // Add one to the last digit, carrying.
+        var d = digits.asBytes()
+        string carried = string.withCapacity(20)
+        int carry = 1
+        var reversed = List<char>()
+        nint i = 17
+        while i > 0 {
+            i -= 1
+            int v = (d[i] - '0') + carry
+            carry = v / 10
+            reversed.add((char)('0' + v % 10))
+        }
+        // `99...9` and one more is one digit longer, at the same exponent.
+        if carry > 0 {
+            reversed.add('1')
+        }
+        nint j = reversed.length()
+        while j > 0 {
+            j -= 1
+            carried.write(reversed[j])
+        }
+        digits = carried
+    }
+    string rounded = string.withCapacity(32)
+    if parts.negative {
+        rounded.write('-')
+    }
+    rounded.write(read digits)
+    rounded.write('e')
+    rounded.write(exponent)
+    return double.parse(read rounded) ?? 0.0
+}

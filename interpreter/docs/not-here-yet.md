@@ -165,7 +165,10 @@
 - **Found writing the site (1402), in compiled code**: three things the interpreter runs and `sg build`
   refuses with "not in the C back end yet" and a hint to name the value first: `try` inside a larger
   expression (`print((try command.output()).trim())`), a text and then a value that lends with `ref` in one
-  `$"..."` (`$"{pause} {path} {random.nextInt(1, 7)}"`), and a `$"..."` inside another.
+  `$"..."` (`$"{pause} {path} {random.nextInt(1, 7)}"`), and a `$"..."` inside another. Since the
+  hundred-and-sixty-sixth slice (choice 1817) a `try` reached through calls and methods with only reads
+  before it is computed first (`args.add(try f())`, `b.put(2, try word(i))`); one after an index, a call or
+  a value moved is still refused, as running it first would change what happens.
 - The names of an `is` inside a `!` around a whole chain (`if !(r is Ok(v) && v > 0) { return }` and then
   `v`, 295), and a note that names the `break` which keeps a variable a `T?` after a `while` (289). An `is`
   with names on a value that owns memory, made by a call after the first `&&` or `||`, in compiled code
@@ -174,7 +177,7 @@
   for how it starts (choices 243, 248), a constant as an end of a range (`int.MaxValue`), a range open at
   one end (`5..=`), `..=` outside a pattern (254, 255). A pattern of an `or` inside the parentheses that the
   ones before it already take is not caught (256).
-- Interfaces of your own (`interface`, `where`) and the other built-in one (`Clonable`). `Disposable` and
+- Interfaces of your own (`interface`, `where`). `Disposable` and
   `Closable` on an enum. A `Disposable` value that holds a `raw T` going to another task. `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).

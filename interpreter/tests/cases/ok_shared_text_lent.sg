@@ -1,0 +1,25 @@
+// A `shared string`, and one a variant holds, lent where a `read string` goes: compiled code
+// lends the text where it lies (found by the trial of jq).
+enum Value {
+    Text(shared string text)
+    Nothing
+}
+
+int size(read string s) {
+    return (int)s.length()
+}
+
+int sizeOf(read Value v) {
+    match v {
+        Text(s) => return size(read s)
+        Nothing => return 0
+    }
+}
+
+void main() {
+    string t = "hello"
+    var v = Value.Text(new shared t)
+    print(sizeOf(read v))
+    shared string direct = new shared "abc"
+    print(size(read direct))
+}

@@ -1,0 +1,1816 @@
+// What jq does to values: indexing, arithmetic, paths, and the functions it writes in C.
+
+const int NLength = 0
+const int NUtf8ByteLength = 1
+const int NKeys = 2
+const int NKeysUnsorted = 3
+const int NHas = 4
+const int NType = 5
+const int NToString = 6
+const int NToJson = 7
+const int NFromJson = 8
+const int NToNumber = 9
+const int NSort = 10
+const int NMin = 11
+const int NMax = 12
+const int NReverse = 13
+const int NFloor = 14
+const int NSqrt = 15
+const int NAsciiDowncase = 16
+const int NAsciiUpcase = 17
+const int NSplit = 18
+const int NJoin = 19
+const int NTest = 20
+const int NStartsWith = 22
+const int NEndsWith = 23
+const int NLtrimstr = 24
+const int NRtrimstr = 25
+const int NGetPath = 26
+const int NSetPath = 27
+const int NDeletePaths = 28
+const int NSortByImpl = 29
+const int NGroupByImpl = 30
+const int NMinByImpl = 31
+const int NMaxByImpl = 32
+const int NError = 33
+const int NInfinite = 35
+const int NNan = 36
+const int NUnique = 37
+
+int nativeOf(read string name, int arity) {
+    if arity == 0 {
+        if name == "length" {
+            return NLength
+        }
+        if name == "utf8bytelength" {
+            return NUtf8ByteLength
+        }
+        if name == "keys" {
+            return NKeys
+        }
+        if name == "keys_unsorted" {
+            return NKeysUnsorted
+        }
+        if name == "type" {
+            return NType
+        }
+        if name == "tostring" {
+            return NToString
+        }
+        if name == "tojson" {
+            return NToJson
+        }
+        if name == "fromjson" {
+            return NFromJson
+        }
+        if name == "tonumber" {
+            return NToNumber
+        }
+        if name == "sort" {
+            return NSort
+        }
+        if name == "min" {
+            return NMin
+        }
+        if name == "max" {
+            return NMax
+        }
+        if name == "floor" {
+            return NFloor
+        }
+        if name == "sqrt" {
+            return NSqrt
+        }
+        if name == "ascii_downcase" {
+            return NAsciiDowncase
+        }
+        if name == "ascii_upcase" {
+            return NAsciiUpcase
+        }
+        if name == "error" {
+            return NError
+        }
+        if name == "infinite" {
+            return NInfinite
+        }
+        if name == "nan" {
+            return NNan
+        }
+        if name == "unique" {
+            return NUnique
+        }
+        return -1
+    }
+    if arity == 1 {
+        if name == "has" {
+            return NHas
+        }
+        if name == "split" {
+            return NSplit
+        }
+        if name == "test" {
+            return NTest
+        }
+        if name == "startswith" {
+            return NStartsWith
+        }
+        if name == "endswith" {
+            return NEndsWith
+        }
+        if name == "ltrimstr" {
+            return NLtrimstr
+        }
+        if name == "rtrimstr" {
+            return NRtrimstr
+        }
+        if name == "getpath" {
+            return NGetPath
+        }
+        if name == "delpaths" {
+            return NDeletePaths
+        }
+        if name == "_sort_by_impl" {
+            return NSortByImpl
+        }
+        if name == "_group_by_impl" {
+            return NGroupByImpl
+        }
+        if name == "_min_by_impl" {
+            return NMinByImpl
+        }
+        if name == "_max_by_impl" {
+            return NMaxByImpl
+        }
+        if name == "error" {
+            return NError
+        }
+        return -1
+    }
+    if arity == 2 {
+        if name == "setpath" {
+            return NSetPath
+        }
+        if name == "test" {
+            return NTest
+        }
+    }
+    return -1
+}
+
+// A value in an error, as jq shows it: its kind and its JSON, cut at 11 bytes.
+string describe(read Jv v) {
+    return $"{kindName(v)} ({truncated(v)})".toString()
+}
+
+string truncated(read Jv v) {
+    var text = toJson(v)
+    if text.length() <= 11 {
+        return text
+    }
+    nint end = 10
+    while end > 0 && text[end] & 0xC0 == 0x80 {
+        end -= 1
+    }
+    return $"{text[0..end]}...".toString()
+}
+
+Result<Jv, Jv> fail(string message) {
+    return Error(jvText(message))
+}
+
+Result<Jv, Jv> fieldOf(read Jv v, read string name) {
+    match v {
+        Object(o) => {
+            var at = objectFind(read o, name)
+            if at is null {
+                return Ok(Jv.Null)
+            }
+            return Ok(dup(read o.values[at]))
+        }
+        Null => return Ok(Jv.Null)
+        _ => {
+            string quoted = string.withCapacity(name.length() + 2)
+            writeString(ref quoted, name)
+            return fail($"Cannot index {kindName(v)} with {quoted}".toString())
+        }
+    }
+}
+
+// The place `d` stands for in a list of `count`: from the end when negative; `null` outside.
+nint? placeIn(double d, nint count) {
+    // jq cuts the fraction off toward zero: `.[-1.5]` is `.[-1]`.
+    double index = d.truncate()
+    if index < 0.0 {
+        index += (double)count
+    }
+    if index < 0.0 || index >= (double)count {
+        return null
+    }
+    return (nint)index
+}
+
+Result<Jv, Jv> indexOf(read Jv v, read Jv key) {
+    match key {
+        String(name) => return fieldOf(v, read name)
+        Number(_) or Exact(_) or Literal(_) => {
+            double d = numberOf(read key)
+            match v {
+                Array(xs) => {
+                    if d.isNaN() {
+                        return Ok(Jv.Null)
+                    }
+                    var at = placeIn(d, xs.length())
+                    if at is null {
+                        return Ok(Jv.Null)
+                    }
+                    return Ok(dup(read xs[at]))
+                }
+                Null => return Ok(Jv.Null)
+                _ => return fail($"Cannot index {kindName(v)} with number".toString())
+            }
+        }
+        Object(o) => {
+            match v {
+                Null => return Ok(Jv.Null)
+                Array(_) or String(_) => {}
+                _ => return fail($"Cannot index {kindName(v)} with object".toString())
+            }
+            var start = objectFind(read o, "start")
+            var end = objectFind(read o, "end")
+            if start is null || end is null {
+                return fail($"Cannot index {kindName(v)} with object".toString())
+            }
+            return slice(v, read o.values[start], read o.values[end])
+        }
+        Null => return fail($"Cannot index {kindName(v)} with null (null)".toString())
+        Array(needle) => {
+            match v {
+                Null => return Ok(Jv.Null)
+                Array(xs) => {
+                    // The places where the items of `needle` come in that order (jq's `_indices`).
+                    var places = List<Jv>()
+                    nint k = needle.length()
+                    if k > 0 && k <= xs.length() {
+                        for i in 0..xs.length() - k + 1 {
+                            bool all = true
+                            for j in 0..k {
+                                if !equalValues(read xs[i + j], read needle[j]) {
+                                    all = false
+                                    break
+                                }
+                            }
+                            if all {
+                                places.add(jvNumber((double)i))
+                            }
+                        }
+                    }
+                    return Ok(jvArray(places))
+                }
+                _ => return fail($"Cannot index {kindName(v)} with array".toString())
+            }
+        }
+        _ => return fail($"Cannot index {kindName(v)} with {kindName(key)}".toString())
+    }
+}
+
+// The bounds of a slice of `count` items: jq rounds the start down and the end up.
+Result<nint[2], Jv> sliceBounds(read Jv from, read Jv to, nint count) {
+    double start = 0.0
+    double end = (double)count
+    match from {
+        Number(_) or Exact(_) or Literal(_) => {
+            double d = numberOf(read from)
+            start = d
+        }
+        Null => {}
+        _ => return Error(jvText("Start and end indices of an array slice must be numbers"))
+    }
+    match to {
+        Number(_) or Exact(_) or Literal(_) => {
+            double d = numberOf(read to)
+            end = d
+        }
+        Null => {}
+        _ => return Error(jvText("Start and end indices of an array slice must be numbers"))
+    }
+    if start < 0.0 {
+        start += (double)count
+    }
+    if end < 0.0 {
+        end += (double)count
+    }
+    if start < 0.0 {
+        start = 0.0
+    }
+    if start > (double)count {
+        start = (double)count
+    }
+    if end > (double)count {
+        end = (double)count
+    }
+    if end < start {
+        end = start
+    }
+    nint s = (nint)start.floor()
+    nint e = (nint)end.ceil()
+    if e > count {
+        e = count
+    }
+    return Ok(nint[2] { s, e })
+}
+
+Result<Jv, Jv> slice(read Jv v, read Jv from, read Jv to) {
+    match v {
+        Null => return Ok(Jv.Null)
+        Array(xs) => {
+            var b = try sliceBounds(from, to, xs.length())
+            var c = List<Jv>.withCapacity(b[1] - b[0])
+            for i in b[0]..b[1] {
+                c.add(dup(read xs[i]))
+            }
+            return Ok(jvArray(c))
+        }
+        String(s) => {
+            // Counted in characters.
+            var starts = List<nint>()
+            var bytes = s.asBytes()
+            for i in 0..bytes.length() {
+                if bytes[i] & 0xC0 != 0x80 {
+                    starts.add(i)
+                }
+            }
+            nint count = starts.length()
+            var b = try sliceBounds(from, to, count)
+            nint first = bytes.length()
+            if b[0] < count {
+                first = starts[b[0]]
+            }
+            nint last = bytes.length()
+            if b[1] < count {
+                last = starts[b[1]]
+            }
+            return Ok(jvText(s[first..last].clone()))
+        }
+        _ => return fail($"Cannot index {kindName(v)} with object".toString())
+    }
+}
+
+Result<Jv, Jv> negate(read Jv v) {
+    match v {
+        Number(d) => return Ok(jvNumber(-d))
+        Exact(d) => return Ok(Jv.Exact(-d))
+        Literal(n) => {
+            // jq writes the negation of a literal zero without its sign: `-(0.0)` is `0.0`.
+            if isZeroLiteral(read n.text) {
+                if n.text[0] == '-' {
+                    return Ok(jvLiteral(0.0, n.text[1..n.text.length()].clone()))
+                }
+                return Ok(Jv.Literal(share n))
+            }
+            if n.text.length() > 0 && n.text[0] == '-' {
+                return Ok(jvLiteral(-n.value, n.text[1..n.text.length()].clone()))
+            }
+            return Ok(jvLiteral(-n.value, $"-{n.text}".toString()))
+        }
+        _ => return fail($"{describe(v)} cannot be negated".toString())
+    }
+}
+
+// The `double` of a number, 0 for any other value.
+double numberOf(read Jv v) {
+    match v {
+        Number(d) or Exact(d) => return d
+        Literal(n) => return n.value
+        _ => return 0.0
+    }
+}
+
+// `l op r`, as jq computes it.
+Result<Jv, Jv> binary(int op, read Jv l, read Jv r) {
+    if op == BinEqual || op == BinNotEqual {
+        bool equal = equalValues(l, r)
+        var deep = tooDeep()
+        if deep is not null {
+            return Error(deep)
+        }
+        return Ok(jvBool(equal == (op == BinEqual)))
+    }
+    if op >= BinEqual {
+        int c = compareValues(l, r)
+        var deep = tooDeep()
+        if deep is not null {
+            return Error(deep)
+        }
+        bool b = false
+        if op == BinLess {
+            b = c < 0
+        } else if op == BinLessEqual {
+            b = c <= 0
+        } else if op == BinGreater {
+            b = c > 0
+        } else {
+            b = c >= 0
+        }
+        return Ok(jvBool(b))
+    }
+    if op == BinAdd {
+        return add(l, r)
+    }
+    if op == BinSubtract {
+        return subtract(l, r)
+    }
+    if op == BinMultiply {
+        return multiply(l, r)
+    }
+    if op == BinDivide {
+        return divide(l, r)
+    }
+    return modulo(l, r)
+}
+
+Result<Jv, Jv> add(read Jv l, read Jv r) {
+    match l {
+        Null => return Ok(dup(r))
+        _ => {}
+    }
+    match r {
+        Null => return Ok(dup(l))
+        _ => {}
+    }
+    match l {
+        Number(_) or Exact(_) or Literal(_) => {
+            double a = numberOf(read l)
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    return Ok(jvNumber(a + b))
+                }
+                _ => {}
+            }
+        }
+        String(a) => {
+            match r {
+                String(b) => {
+                    string c = string.withCapacity(a.length() + b.length())
+                    c.write(read a)
+                    c.write(read b)
+                    return Ok(jvText(c))
+                }
+                _ => {}
+            }
+        }
+        Array(a) => {
+            match r {
+                Array(b) => {
+                    var c = arrayCopy(read a, b.length())
+                    for i in 0..b.length() {
+                        c.add(dup(read b[i]))
+                    }
+                    return Ok(jvArray(c))
+                }
+                _ => {}
+            }
+        }
+        Object(a) => {
+            match r {
+                Object(b) => {
+                    var c = objectCopy(read a)
+                    for i in 0..b.keys.length() {
+                        objectSet(ref c, read b.keys[i], dup(read b.values[i]))
+                    }
+                    return Ok(jvObject(c))
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"{describe(l)} and {describe(r)} cannot be added".toString())
+}
+
+Result<Jv, Jv> subtract(read Jv l, read Jv r) {
+    var result = subtractOnce(l, r)
+    var deep = tooDeep()
+    if deep is not null {
+        return Error(deep)
+    }
+    return result
+}
+
+Result<Jv, Jv> subtractOnce(read Jv l, read Jv r) {
+    match l {
+        Number(_) or Exact(_) or Literal(_) => {
+            double a = numberOf(read l)
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    return Ok(jvNumber(a - b))
+                }
+                _ => {}
+            }
+        }
+        Array(a) => {
+            match r {
+                Array(b) => {
+                    var c = List<Jv>.withCapacity(a.length())
+                    for i in 0..a.length() {
+                        bool found = false
+                        for j in 0..b.length() {
+                            if equalValues(read a[i], read b[j]) {
+                                found = true
+                                break
+                            }
+                        }
+                        if !found {
+                            c.add(dup(read a[i]))
+                        }
+                    }
+                    return Ok(jvArray(c))
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"{describe(l)} and {describe(r)} cannot be subtracted".toString())
+}
+
+Result<Jv, Jv> multiply(read Jv l, read Jv r) {
+    match l {
+        Number(_) or Exact(_) or Literal(_) => {
+            double a = numberOf(read l)
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    return Ok(jvNumber(a * b))
+                }
+                String(_) => return repeatText(r, a)
+                _ => {}
+            }
+        }
+        String(_) => {
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    return repeatText(l, b)
+                }
+                _ => {}
+            }
+        }
+        Object(_) => {
+            match r {
+                Object(_) => return Ok(deepMerge(l, r))
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"{describe(l)} and {describe(r)} cannot be multiplied".toString())
+}
+
+// A text repeated: jq 1.8 gives `null` for a count below 0, and repeats a fraction rounded down.
+Result<Jv, Jv> repeatText(read Jv text, double count) {
+    if count < 0.0 || count.isNaN() {
+        return Ok(Jv.Null)
+    }
+    match text {
+        String(s) => {
+            nint n = (nint)count.floor()
+            string out = string.withCapacity(s.length() * n)
+            for _ in 0..n {
+                out.write(read s)
+            }
+            return Ok(jvText(out))
+        }
+        _ => return Ok(Jv.Null)
+    }
+}
+
+Jv deepMerge(read Jv l, read Jv r) {
+    match l {
+        Object(a) => {
+            match r {
+                Object(b) => {
+                    var c = objectCopy(read a)
+                    for i in 0..b.keys.length() {
+                        var at = objectFind(read c, read b.keys[i])
+                        if at is not null {
+                            var merged = deepMergeOrRight(read c.values[at], read b.values[i])
+                            c.values[at] = merged
+                        } else {
+                            objectSet(ref c, read b.keys[i], dup(read b.values[i]))
+                        }
+                    }
+                    return jvObject(c)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return dup(r)
+}
+
+Jv deepMergeOrRight(read Jv l, read Jv r) {
+    bool both = false
+    match l {
+        Object(_) => {
+            match r {
+                Object(_) => both = true
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    if both {
+        return deepMerge(l, r)
+    }
+    return dup(r)
+}
+
+Result<Jv, Jv> divide(read Jv l, read Jv r) {
+    match l {
+        Number(_) or Exact(_) or Literal(_) => {
+            double a = numberOf(read l)
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    if b == 0.0 {
+                        return fail($"{describe(l)} and {describe(r)} cannot be divided because the divisor is zero".toString())
+                    }
+                    return Ok(jvNumber(a / b))
+                }
+                _ => {}
+            }
+        }
+        String(a) => {
+            match r {
+                String(b) => return Ok(splitText(read a, read b))
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"{describe(l)} and {describe(r)} cannot be divided".toString())
+}
+
+Result<Jv, Jv> modulo(read Jv l, read Jv r) {
+    match l {
+        Number(_) or Exact(_) or Literal(_) => {
+            double a = numberOf(read l)
+            match r {
+                Number(_) or Exact(_) or Literal(_) => {
+                    double b = numberOf(read r)
+                    if a.isNaN() || b.isNaN() {
+                        return Ok(jvNumber(double.NaN))
+                    }
+                    long x = a.saturatingToLong()
+                    long y = b.saturatingToLong()
+                    if y == 0 {
+                        return fail($"{describe(l)} and {describe(r)} cannot be divided because the divisor is zero".toString())
+                    }
+                    // jq takes the remainder of the magnitudes and keeps the sign of the left.
+                    ulong m = x.unsignedAbs() % y.unsignedAbs()
+                    double result = (double)m
+                    if x < 0 {
+                        result = -result
+                    }
+                    return Ok(jvNumber(result))
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"{describe(l)} and {describe(r)} cannot be divided".toString())
+}
+
+Jv splitText(read string s, read string separator) {
+    var parts = List<Jv>()
+    if s.length() == 0 {
+        return jvArray(parts)
+    }
+    if separator.length() == 0 {
+        // Each character.
+        var bytes = s.asBytes()
+        nint start = 0
+        for i in 1..bytes.length() + 1 {
+            if i == bytes.length() || bytes[i] & 0xC0 != 0x80 {
+                parts.add(jvText(s[start..i].clone()))
+                start = i
+            }
+        }
+        return jvArray(parts)
+    }
+    nint at = 0
+    while true {
+        var rest = s[at..s.length()]
+        var found = rest.indexOf(separator)
+        if found is null {
+            parts.add(jvText(rest.clone()))
+            break
+        }
+        parts.add(jvText(s[at..at + found].clone()))
+        at += found + separator.length()
+    }
+    return jvArray(parts)
+}
+
+nint characterCount(read string s) {
+    nint count = 0
+    var bytes = s.asBytes()
+    for i in 0..bytes.length() {
+        if bytes[i] & 0xC0 != 0x80 {
+            count += 1
+        }
+    }
+    return count
+}
+
+// A native function on `value` with `args`: the result in `value` and `ModeDeliver`, or `ModeRaise`
+// with the error.
+int applyNative(ref Machine m, read Program p, int id, ref Jv value, ref Jv path, bool tracking, read List<Jv> args, ref Jv error) {
+    if tracking && id != NGetPath && id != NError {
+        error = jvText("Invalid path expression with the result of a function")
+        return ModeRaise
+    }
+    if id == NGetPath && tracking {
+        match getPath(read value, read args[0], 0) {
+            Ok(v) => {
+                path = pathJoin(read path, read args[0])
+                value = v
+                return ModeDeliver
+            }
+            Error(e) => {
+                error = e
+                return ModeRaise
+            }
+        }
+    }
+    // `sort` is handed the value: an array with no other holder is sorted where it lies.
+    if id == NSort {
+        var sorted = sortOwned(value.replace(Jv.Null))
+        match sorted {
+            Ok(v) => {
+                value = v
+                return ModeDeliver
+            }
+            Error(e) => {
+                error = e
+                return ModeRaise
+            }
+        }
+    }
+    var result = native(ref m, id, read value, args)
+    match result {
+        Ok(v) => {
+            value = v
+            return ModeDeliver
+        }
+        Error(e) => {
+            error = e
+            return ModeRaise
+        }
+    }
+}
+
+// `sort` of a value handed over: an array with one holder is sorted where it lies, as the
+// update of `reduce` grows one (choice 1813); any other is copied first by `makeUnique`.
+Result<Jv, Jv> sortOwned(Jv v) {
+    match read v {
+        Array(_) => {}
+        _ => return fail($"{describe(read v)} cannot be sorted, as it is not an array".toString())
+    }
+    match v {
+        Array(xs) => {
+            var holder = xs
+            var items = holder.makeUnique()
+            items.sort()
+            var deep = tooDeep()
+            if deep is not null {
+                return Error(deep)
+            }
+            return Ok(Jv.Array(holder))
+        }
+        _ => panic("an array, tested above")
+    }
+}
+
+Result<Jv, Jv> native(ref Machine m, int id, read Jv v, read List<Jv> args) {
+    var result = nativeOnce(ref m, id, v, args)
+    var deep = tooDeep()
+    if deep is not null {
+        return Error(deep)
+    }
+    return result
+}
+
+Result<Jv, Jv> nativeOnce(ref Machine m, int id, read Jv v, read List<Jv> args) {
+    if id == NLength {
+        match v {
+            Null => return Ok(jvNumber(0.0))
+            Number(d) => return Ok(jvNumber(d.abs()))
+            Exact(d) => return Ok(Jv.Exact(d.abs()))
+            Literal(n) => {
+                if n.text.length() > 0 && n.text[0] == '-' {
+                    return Ok(jvLiteral(-n.value, n.text[1..n.text.length()].clone()))
+                }
+                return Ok(Jv.Literal(share n))
+            }
+            String(s) => return Ok(jvNumber((double)characterCount(read s)))
+            Array(xs) => return Ok(jvNumber((double)xs.length()))
+            Object(o) => return Ok(jvNumber((double)o.keys.length()))
+            _ => return fail($"{describe(v)} has no length".toString())
+        }
+    }
+    if id == NUtf8ByteLength {
+        match v {
+            String(s) => return Ok(jvNumber((double)s.length()))
+            _ => return fail($"{describe(v)} only strings have UTF-8 byte length".toString())
+        }
+    }
+    if id == NKeys || id == NKeysUnsorted {
+        match v {
+            Object(o) => {
+                var c = List<Jv>.withCapacity(o.keys.length())
+                if id == NKeys {
+                    for key in sortedKeys(read o) {
+                        c.add(jvText(key))
+                    }
+                } else {
+                    for i in 0..o.keys.length() {
+                        c.add(jvText(o.keys[i].clone()))
+                    }
+                }
+                return Ok(jvArray(c))
+            }
+            Array(xs) => {
+                var c = List<Jv>.withCapacity(xs.length())
+                for i in 0..xs.length() {
+                    c.add(jvNumber((double)i))
+                }
+                return Ok(jvArray(c))
+            }
+            _ => return fail($"{describe(v)} has no keys".toString())
+        }
+    }
+    if id == NHas {
+        match v {
+            Object(o) => {
+                match read args[0] {
+                    String(k) => return Ok(jvBool(objectFind(read o, read k) is not null))
+                    _ => {}
+                }
+            }
+            Array(xs) => {
+                match read args[0] {
+                    Number(_) or Exact(_) or Literal(_) => {
+                        double d = numberOf(read args[0])
+                        return Ok(jvBool(d >= 0.0 && d < (double)xs.length()))
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        match v {
+            Null => return Ok(Jv.False)
+            _ => {}
+        }
+        return fail($"Cannot check whether {kindName(v)} has a {kindName(read args[0])} key".toString())
+    }
+    if id == NType {
+        return Ok(jvText(kindName(v)))
+    }
+    if id == NToString {
+        match v {
+            String(_) => return Ok(dup(v))
+            _ => return Ok(jvText(toJson(v)))
+        }
+    }
+    if id == NToJson {
+        return Ok(jvText(toJson(v)))
+    }
+    if id == NFromJson {
+        match v {
+            String(s) => {
+                match parseOne(read s) {
+                    Ok(parsed) => return Ok(parsed)
+                    Error(e) => return fail($"{e} (while parsing '{s}')".toString())
+                }
+            }
+            _ => return fail($"{describe(v)} cannot be parsed as JSON".toString())
+        }
+    }
+    if id == NToNumber {
+        match v {
+            Number(_) or Exact(_) or Literal(_) => {
+                return Ok(dup(v))
+            }
+            String(s) => {
+                var parsed = numberFromText(read s)
+                if parsed is not null {
+                    return Ok(parsed)
+                }
+                return fail($"Cannot parse '{s}' as JSON".toString())
+            }
+            _ => return fail($"{describe(v)} cannot be parsed as a number".toString())
+        }
+    }
+    // `unique`: sorted, and each run of equal items once (jq's `unique`, which compares the items
+    // themselves, not each in an array of its own as `unique_by(.)` does).
+    if id == NUnique {
+        match v {
+            Array(xs) => {
+                var sorted = List<Sorted>.withCapacity(xs.length())
+                for i in 0..xs.length() {
+                    sorted.add(Sorted { value = dup(read xs[i]) })
+                }
+                sorted.sort()
+                var c = List<Jv>.withCapacity(xs.length())
+                for i in 0..sorted.length() {
+                    if i == 0 || compareValues(read sorted[i].value, read sorted[i - 1].value) != 0 {
+                        c.add(dup(read sorted[i].value))
+                    }
+                }
+                return Ok(jvArray(c))
+            }
+            _ => return fail($"{describe(v)} cannot be sorted, as it is not an array".toString())
+        }
+    }
+    if id == NSort || id == NMin || id == NMax {
+        match v {
+            Array(xs) => {
+                if id == NSort {
+                    var sorted = List<Sorted>.withCapacity(xs.length())
+                    for i in 0..xs.length() {
+                        sorted.add(Sorted { value = dup(read xs[i]) })
+                    }
+                    sorted.sort()
+                    var c = List<Jv>.withCapacity(xs.length())
+                    for i in 0..sorted.length() {
+                        c.add(sorted[i].value.replace(Jv.Null))
+                    }
+                    return Ok(jvArray(c))
+                }
+                if xs.length() == 0 {
+                    return Ok(Jv.Null)
+                }
+                nint best = 0
+                for i in 1..xs.length() {
+                    int c = compareValues(read xs[i], read xs[best])
+                    if (id == NMin && c < 0) || (id == NMax && c >= 0) {
+                        best = i
+                    }
+                }
+                return Ok(dup(read xs[best]))
+            }
+            _ => return fail($"{describe(v)} cannot be sorted, as it is not an array".toString())
+        }
+    }
+    if id == NReverse {
+        match v {
+            Array(xs) => {
+                var c = List<Jv>.withCapacity(xs.length())
+                nint i = xs.length()
+                while i > 0 {
+                    i -= 1
+                    c.add(dup(read xs[i]))
+                }
+                return Ok(jvArray(c))
+            }
+            String(s) => {
+                var bytes = s.asBytes()
+                string out = string.withCapacity(s.length())
+                nint end = bytes.length()
+                while end > 0 {
+                    nint start = end - 1
+                    while start > 0 && bytes[start] & 0xC0 == 0x80 {
+                        start -= 1
+                    }
+                    out.write(s[start..end])
+                    end = start
+                }
+                return Ok(jvText(out))
+            }
+            Null => return Ok(jvArray(List<Jv>()))
+            _ => return fail($"Cannot reverse {describe(v)}".toString())
+        }
+    }
+    if id == NFloor || id == NSqrt {
+        match v {
+            Number(_) or Exact(_) or Literal(_) => {
+                double d = numberOf(read v)
+                if id == NFloor {
+                    return Ok(jvNumber(d.floor()))
+                }
+                return Ok(jvNumber(d.sqrt()))
+            }
+            _ => return fail($"{describe(v)} number required".toString())
+        }
+    }
+    if id == NAsciiDowncase || id == NAsciiUpcase {
+        match v {
+            String(s) => {
+                var bytes = s.asBytes()
+                string out = string.withCapacity(s.length())
+                nint start = 0
+                for i in 0..bytes.length() {
+                    byte c = bytes[i]
+                    bool change = (id == NAsciiDowncase && c >= 'A' && c <= 'Z') || (id == NAsciiUpcase && c >= 'a' && c <= 'z')
+                    if change {
+                        out.write(s[start..i])
+                        if id == NAsciiDowncase {
+                            out.write((char)(c + 32))
+                        } else {
+                            out.write((char)(c - 32))
+                        }
+                        start = i + 1
+                    }
+                }
+                out.write(s[start..bytes.length()])
+                return Ok(jvText(out))
+            }
+            _ => return fail($"{describe(v)} cannot be case-converted".toString())
+        }
+    }
+    if id == NSplit {
+        match v {
+            String(s) => {
+                match read args[0] {
+                    String(sep) => return Ok(splitText(read s, read sep))
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        return fail("split input and separator must be strings")
+    }
+    if id == NJoin {
+        return join(v, read args[0])
+    }
+    if id == NTest {
+        return test(ref m, v, args)
+    }
+    if id == NStartsWith || id == NEndsWith {
+        match v {
+            String(s) => {
+                match read args[0] {
+                    String(t) => {
+                        if id == NStartsWith {
+                            return Ok(jvBool(textStartsWith(read s, read t)))
+                        }
+                        return Ok(jvBool(textEndsWith(read s, read t)))
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        if id == NStartsWith {
+            return fail("startswith() requires string inputs")
+        }
+        return fail("endswith() requires string inputs")
+    }
+    if id == NLtrimstr || id == NRtrimstr {
+        match v {
+            String(s) => {
+                match read args[0] {
+                    String(t) => {
+                        if id == NLtrimstr && textStartsWith(read s, read t) {
+                            return Ok(jvText(s[t.length()..s.length()].clone()))
+                        }
+                        if id == NRtrimstr && textEndsWith(read s, read t) && t.length() <= s.length() {
+                            return Ok(jvText(s[0..s.length() - t.length()].clone()))
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        match v {
+            String(_) => {
+                match read args[0] {
+                    String(_) => return Ok(dup(v))
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        return fail("startswith() requires string inputs")
+    }
+    if id == NGetPath {
+        return getPath(v, read args[0], 0)
+    }
+    if id == NSetPath {
+        return setPath(v, read args[0], 0, dup(read args[1]))
+    }
+    if id == NDeletePaths {
+        match read args[0] {
+            Array(paths) => {
+                var list = List<Jv>()
+                for i in 0..paths.length() {
+                    list.add(dup(read paths[i]))
+                }
+                return deletePaths(v, read list)
+            }
+            _ => return fail("Paths must be specified as an array")
+        }
+    }
+    if id == NSortByImpl || id == NGroupByImpl || id == NMinByImpl || id == NMaxByImpl {
+        return byKeys(id, v, read args[0])
+    }
+    if id == NError {
+        if args.length() == 0 {
+            return Error(dup(v))
+        }
+        return Error(dup(read args[0]))
+    }
+    if id == NInfinite {
+        return Ok(jvNumber(double.Infinity))
+    }
+    if id == NNan {
+        return Ok(jvNumber(double.NaN))
+    }
+    return fail("an unknown native function")
+}
+
+Result<Jv, Jv> join(read Jv v, read Jv separator) {
+    match v {
+        Array(xs) => {
+            match separator {
+                String(sep) => {
+                    string out = string.withCapacity(64)
+                    for i in 0..xs.length() {
+                        if i > 0 {
+                            out.write(read sep)
+                        }
+                        match read xs[i] {
+                            Null => {}
+                            String(s) => out.write(read s)
+                            Number(_) or Exact(_) or Literal(_) or True or False => out.write(toJson(read xs[i]))
+                            _ => {
+                                var sofar = jvText(out.clone())
+                                return fail($"{describe(read sofar)} and {describe(read xs[i])} cannot be added".toString())
+                            }
+                        }
+                    }
+                    return Ok(jvText(out))
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"Cannot iterate over {describe(v)}".toString())
+}
+
+// `test(re)`, `test(re; flags)` and `test([re, flags])`, as jq 1.8 reads them with Oniguruma's
+// Perl syntax: `^` is the start of the text and `$` its end or the place before a last new line;
+// `i` folds case, `x` passes over spaces and comments, `p` lets `.` match a new line, `n` counts no
+// empty match, and `g`, `l` and `s` change nothing a test sees.
+Result<Jv, Jv> test(ref Machine m, read Jv v, read List<Jv> given) {
+    var args = List<Jv>()
+    match read given[0] {
+        Array(parts) => {
+            if parts.length() == 0 {
+                return fail("array not a string or array")
+            }
+            for i in 0..parts.length() {
+                args.add(dup(read parts[i]))
+            }
+        }
+        _ => {
+            for i in 0..given.length() {
+                args.add(dup(read given[i]))
+            }
+        }
+    }
+    string source = ""
+    match read args[0] {
+        String(s) => source = copyText(read s)
+        _ => return fail($"{describe(read args[0])} cannot be matched, as it is not a string".toString())
+    }
+    string prefix = ""
+    bool nonEmpty = false
+    if args.length() > 1 {
+        match read args[1] {
+            String(flags) => {
+                var bytes = flags.asBytes()
+                for i in 0..bytes.length() {
+                    byte f = bytes[i]
+                    if f == 'i' {
+                        prefix.write("(?i)")
+                    } else if f == 'x' {
+                        prefix.write("(?x)")
+                    } else if f == 'p' {
+                        prefix.write("(?s)")
+                    } else if f == 'n' {
+                        nonEmpty = true
+                    } else if f != 'g' && f != 'l' && f != 's' {
+                        return fail($"{flags} is not a valid modifier string".toString())
+                    }
+                }
+            }
+            Null => {}
+            _ => return fail($"{describe(read args[1])} is not a string".toString())
+        }
+    }
+    var perl = perlEnds(read source)
+    string pattern = $"{prefix}{perl}".toString()
+    match v {
+        String(text) => {
+            nint? at = m.regexPlaces.get(read pattern)
+            if at is null {
+                match Regex.compile(read pattern) {
+                    Ok(r) => {
+                        m.regexes.add(r)
+                        m.regexPlaces.add(pattern.clone(), m.regexes.length() - 1)
+                        at = m.regexes.length() - 1
+                    }
+                    Error(e) => return fail($"{source} (at offset {e.column}) is not a valid regex".toString())
+                }
+            }
+            nint place = at ?? 0
+            if matchesPerl(read m.regexes[place], read text, nonEmpty, endsWithDollar(read perl)) {
+                return Ok(Jv.True)
+            }
+            return Ok(Jv.False)
+        }
+        _ => return fail($"{describe(v)} cannot be matched, as it is not a string".toString())
+    }
+}
+
+// The pattern with Perl's `\Z` outside a class written `$`: the end, or before a last new line,
+// which `matchesPerl` gives both; in a class, the letter `Z`.
+string perlEnds(read string pattern) {
+    var b = pattern.asBytes()
+    string out = string.withCapacity(pattern.length())
+    bool inClass = false
+    nint from = 0
+    nint i = 0
+    while i < b.length() {
+        byte c = b[i]
+        if c == '\\' && i + 1 < b.length() {
+            if b[i + 1] == 'Z' {
+                // In a class it is the letter, as Oniguruma reads it.
+                out.write(pattern[from..i])
+                if inClass {
+                    out.write('Z')
+                } else {
+                    out.write('$')
+                }
+                from = i + 2
+            }
+            i += 2
+            continue
+        }
+        if c == '[' {
+            inClass = true
+        } else if c == ']' {
+            inClass = false
+        }
+        i += 1
+    }
+    out.write(pattern[from..b.length()])
+    return out
+}
+
+// Whether a pattern has a `$` outside a class that is not escaped.
+bool endsWithDollar(read string pattern) {
+    var b = pattern.asBytes()
+    bool inClass = false
+    nint i = 0
+    while i < b.length() {
+        byte c = b[i]
+        if c == '\\' {
+            i += 2
+            continue
+        }
+        if c == '[' {
+            inClass = true
+        } else if c == ']' {
+            inClass = false
+        } else if c == '$' && !inClass {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+// A match as Perl's `$` finds it: at the end, or before a last new line; with `nonEmpty`, only a
+// match of at least one character counts.
+bool matchesPerl(read Regex r, read string text, bool nonEmpty, bool dollar) {
+    if matchesIn(r, text, nonEmpty) {
+        return true
+    }
+    if dollar && text.length() > 0 && text[text.length() - 1] == '\n' {
+        return matchesIn(r, text[0..text.length() - 1], nonEmpty)
+    }
+    return false
+}
+
+bool matchesIn(read Regex r, read string text, bool nonEmpty) {
+    if !nonEmpty {
+        return r.isMatch(text)
+    }
+    for found in r.findAll(text) {
+        if found.end > found.start {
+            return true
+        }
+    }
+    return false
+}
+
+// `_sort_by_impl`, `_group_by_impl`, `_min_by_impl`, `_max_by_impl`: the input sorted, grouped or
+// searched by the keys `map([f])` gave.
+Result<Jv, Jv> byKeys(int id, read Jv v, read Jv keys) {
+    match v {
+        Array(xs) => {
+            match keys {
+                Array(ks) => {
+                    if id == NMinByImpl || id == NMaxByImpl {
+                        if xs.length() == 0 {
+                            return Ok(Jv.Null)
+                        }
+                        nint best = 0
+                        for i in 1..xs.length() {
+                            int c = compareValues(read ks[i], read ks[best])
+                            if (id == NMinByImpl && c < 0) || (id == NMaxByImpl && c >= 0) {
+                                best = i
+                            }
+                        }
+                        return Ok(dup(read xs[best]))
+                    }
+                    var pairs = List<Keyed>.withCapacity(xs.length())
+                    for i in 0..xs.length() {
+                        pairs.add(Keyed { key = dup(read ks[i]), value = dup(read xs[i]) })
+                    }
+                    pairs.sort()
+                    if id == NSortByImpl {
+                        var c = List<Jv>.withCapacity(pairs.length())
+                        for i in 0..pairs.length() {
+                            c.add(pairs[i].value.replace(Jv.Null))
+                        }
+                        return Ok(jvArray(c))
+                    }
+                    var groups = List<Jv>()
+                    var group = List<Jv>()
+                    for i in 0..pairs.length() {
+                        if i > 0 && compareValues(read pairs[i].key, read pairs[i - 1].key) != 0 {
+                            groups.add(jvArray(group))
+                            group = List<Jv>()
+                        }
+                        group.add(pairs[i].value.replace(Jv.Null))
+                    }
+                    if group.length() > 0 {
+                        groups.add(jvArray(group))
+                    }
+                    return Ok(jvArray(groups))
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return fail($"Cannot index {kindName(v)} with number".toString())
+}
+
+// The value at `path` from its `at`-th key: `null` where the way ends at a `null`.
+Result<Jv, Jv> getPath(read Jv v, read Jv path, nint at) {
+    match path {
+        Array(keys) => {
+            if at >= keys.length() {
+                return Ok(dup(v))
+            }
+            match v {
+                Null => return Ok(Jv.Null)
+                _ => {}
+            }
+            var next = try indexOf(v, read keys[at])
+            return getPath(read next, path, at + 1)
+        }
+        _ => return fail("Path must be specified as an array")
+    }
+}
+
+// The value with what is at `path` (from its `at`-th key) made `value`; missing objects and arrays
+// are made on the way, as jq makes them.
+Result<Jv, Jv> setPath(read Jv v, read Jv path, nint at, Jv value) {
+    match path {
+        Array(keys) => {
+            if at >= keys.length() {
+                return Ok(value)
+            }
+            var key = read keys[at]
+            match key {
+                String(name) => {
+                    match v {
+                        Object(o) => {
+                            var c = objectCopy(read o)
+                            var place = objectFind(read c, read name)
+                            Jv inner = Jv.Null
+                            if place is not null {
+                                inner = dup(read c.values[place])
+                            }
+                            var updated = try setPath(read inner, path, at + 1, value)
+                            objectSet(ref c, read name, updated)
+                            return Ok(jvObject(c))
+                        }
+                        Null => {
+                            var c = emptyObject()
+                            var updated = try setPath(read Jv.Null, path, at + 1, value)
+                            objectSet(ref c, read name, updated)
+                            return Ok(jvObject(c))
+                        }
+                        _ => return fail($"Cannot index {kindName(v)} with \"{name}\"".toString())
+                    }
+                }
+                Number(_) or Exact(_) or Literal(_) => {
+                    double d = numberOf(read key)
+                    var c = List<Jv>()
+                    match v {
+                        Array(xs) => c = arrayCopy(read xs, 1)
+                        Null => {}
+                        _ => return fail($"Cannot index {kindName(v)} with number".toString())
+                    }
+                    double index = d.floor()
+                    if index < 0.0 {
+                        index += (double)c.length()
+                        if index < 0.0 {
+                            return fail("Out of bounds negative array index")
+                        }
+                    }
+                    if index > 536870911.0 {
+                        return fail("Array index too large")
+                    }
+                    nint place = (nint)index
+                    while c.length() <= place {
+                        c.add(Jv.Null)
+                    }
+                    var inner = c[place].replace(Jv.Null)
+                    c[place] = try setPath(read inner, path, at + 1, value)
+                    return Ok(jvArray(c))
+                }
+                Object(_) => {
+                    // A slice: the items it covers become the value, which must be an array.
+                    match v {
+                        Array(xs) => {
+                            var current = try indexOf(v, key)
+                            var updated = try setPath(read current, path, at + 1, value)
+                            match read updated {
+                                Array(ys) => {
+                                    match key {
+                                        Object(o) => {
+                                            var start = objectFind(read o, "start") ?? 0
+                                            var end = objectFind(read o, "end") ?? 0
+                                            var b = try sliceBounds(read o.values[start], read o.values[end], xs.length())
+                                            var c = List<Jv>()
+                                            for i in 0..b[0] {
+                                                c.add(dup(read xs[i]))
+                                            }
+                                            for i in 0..ys.length() {
+                                                c.add(dup(read ys[i]))
+                                            }
+                                            for i in b[1]..xs.length() {
+                                                c.add(dup(read xs[i]))
+                                            }
+                                            return Ok(jvArray(c))
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => return fail("A slice of an array can only be assigned another array")
+                            }
+                        }
+                        Null => return setPath(read jvArray(List<Jv>()), path, at, value)
+                        _ => {}
+                    }
+                    return fail($"Cannot update field at object index of {kindName(v)}".toString())
+                }
+                _ => return fail($"Cannot index {kindName(v)} with {kindName(key)}".toString())
+            }
+        }
+        _ => return fail("Path must be specified as an array")
+    }
+}
+
+// `setPath` of a value handed over: an object or an array with no other holder is changed in place
+// on the way down (`makeUnique`), so setting one member of a large object costs one member.
+Result<Jv, Jv> setPathOwned(Jv v, read Jv path, nint at, Jv value) {
+    match path {
+        Array(keys) => {
+            if at >= keys.length() {
+                return Ok(value)
+            }
+            int kind = kindRank(read v)
+            match read keys[at] {
+                String(name) => {
+                    if kind == 0 {
+                        var c = emptyObject()
+                        var made = try setPathOwned(Jv.Null, path, at + 1, value)
+                        objectSet(ref c, read name, made)
+                        return Ok(jvObject(c))
+                    }
+                    if kind != 6 {
+                        return setPath(read v, path, at, value)
+                    }
+                    match v {
+                        Object(o) => {
+                            var holder = o
+                            var members = holder.makeUnique()
+                            var place = objectFind(read members, read name)
+                            if place is not null {
+                                var inner = members.values[place].replace(Jv.Null)
+                                members.values[place] = try setPathOwned(inner, path, at + 1, value)
+                            } else {
+                                var made = try setPathOwned(Jv.Null, path, at + 1, value)
+                                objectSet(ref members, read name, made)
+                            }
+                            return Ok(Jv.Object(holder))
+                        }
+                        _ => panic("an object, as `kindRank` said")
+                    }
+                }
+                Number(_) or Exact(_) or Literal(_) => {
+                    double d = numberOf(read keys[at])
+                    if kind != 5 {
+                        return setPath(read v, path, at, value)
+                    }
+                    match v {
+                        Array(xs) => {
+                            double index = d.floor()
+                            var holder = xs
+                            var items = holder.makeUnique()
+                            if index < 0.0 {
+                                index += (double)items.length()
+                                if index < 0.0 {
+                                    return fail("Out of bounds negative array index")
+                                }
+                            }
+                            if index > 536870911.0 {
+                                return fail("Array index too large")
+                            }
+                            nint place = (nint)index
+                            while items.length() <= place {
+                                items.add(Jv.Null)
+                            }
+                            var inner = items[place].replace(Jv.Null)
+                            items[place] = try setPathOwned(inner, path, at + 1, value)
+                            return Ok(Jv.Array(holder))
+                        }
+                        _ => panic("an array, as `kindRank` said")
+                    }
+                }
+                _ => return setPath(read v, path, at, value)
+            }
+        }
+        _ => return fail("Path must be specified as an array")
+    }
+}
+
+// The value with each of `paths` taken away; the longest and the last first, so that taking one
+// does not move another, as jq does.
+Result<Jv, Jv> deletePaths(read Jv v, read List<Jv> paths) {
+    var sorted = List<Sorted>.withCapacity(paths.length())
+    for i in 0..paths.length() {
+        sorted.add(Sorted { value = dup(read paths[i]) })
+    }
+    sorted.sort()
+    var result = dup(v)
+    nint i = sorted.length()
+    while i > 0 {
+        i -= 1
+        result = try deletePath(read result, read sorted[i].value, 0)
+    }
+    return Ok(result)
+}
+
+Result<Jv, Jv> deletePath(read Jv v, read Jv path, nint at) {
+    match path {
+        Array(keys) => {
+            if keys.length() == 0 {
+                return Ok(Jv.Null)
+            }
+            match v {
+                Null => return Ok(Jv.Null)
+                _ => {}
+            }
+            var key = read keys[at]
+            if at + 1 < keys.length() {
+                var inner = try indexOf(v, key)
+                match read inner {
+                    Null => return Ok(dup(v))
+                    _ => {}
+                }
+                var updated = try deletePath(read inner, path, at + 1)
+                var one = List<Jv>()
+                one.add(dup(key))
+                return setPath(v, read jvArray(one), 0, updated)
+            }
+            match key {
+                String(name) => {
+                    match v {
+                        Object(o) => {
+                            var c = objectCopy(read o)
+                            objectRemove(ref c, read name)
+                            return Ok(jvObject(c))
+                        }
+                        _ => return fail($"Cannot delete field at object index of {kindName(v)}".toString())
+                    }
+                }
+                Number(_) or Exact(_) or Literal(_) => {
+                    double d = numberOf(read key)
+                    match v {
+                        Array(xs) => {
+                            var place = placeIn(d, xs.length())
+                            if place is null {
+                                return Ok(dup(v))
+                            }
+                            var c = List<Jv>.withCapacity(xs.length())
+                            for i in 0..xs.length() {
+                                if i != place {
+                                    c.add(dup(read xs[i]))
+                                }
+                            }
+                            return Ok(jvArray(c))
+                        }
+                        _ => return fail($"Cannot delete field at index of {kindName(v)}".toString())
+                    }
+                }
+                Object(o) => {
+                    match v {
+                        Array(xs) => {
+                            var start = objectFind(read o, "start") ?? 0
+                            var end = objectFind(read o, "end") ?? 0
+                            var b = try sliceBounds(read o.values[start], read o.values[end], xs.length())
+                            var c = List<Jv>()
+                            for i in 0..xs.length() {
+                                if i < b[0] || i >= b[1] {
+                                    c.add(dup(read xs[i]))
+                                }
+                            }
+                            return Ok(jvArray(c))
+                        }
+                        _ => return fail($"Cannot delete slice of {kindName(v)}".toString())
+                    }
+                }
+                _ => return fail($"Cannot delete field of {kindName(v)}".toString())
+            }
+        }
+        _ => return fail("Path must be specified as an array")
+    }
+}
+
+// The formats `@text`, `@json`, `@csv`, `@tsv`, `@base64`, `@base64d` and `@uri`.
+Result<Jv, Jv> applyFormat(int format, read Jv v) {
+    if format == FormatText {
+        return Ok(jvText(toText(v)))
+    }
+    if format == FormatJson {
+        return Ok(jvText(toJson(v)))
+    }
+    if format == FormatCsv || format == FormatTsv {
+        match v {
+            Array(xs) => {
+                string out = string.withCapacity(64)
+                for i in 0..xs.length() {
+                    if i > 0 {
+                        if format == FormatCsv {
+                            out.write(',')
+                        } else {
+                            out.write('\t')
+                        }
+                    }
+                    match read xs[i] {
+                        Null => {}
+                        True => out.write("true")
+                        False => out.write("false")
+                        Number(_) or Exact(_) or Literal(_) => {
+                            out.write(toJson(read xs[i]))
+                        }
+                        String(s) => {
+                            if format == FormatCsv {
+                                out.write('"')
+                                out.write(s.replaceAll("\"", "\"\""))
+                                out.write('"')
+                            } else {
+                                out.write(tsvEscaped(read s))
+                            }
+                        }
+                        _ => {
+                            if format == FormatCsv {
+                                return fail($"{describe(read xs[i])} is not valid in a csv row".toString())
+                            }
+                            return fail($"{describe(read xs[i])} is not valid in a tsv row".toString())
+                        }
+                    }
+                }
+                return Ok(jvText(out))
+            }
+            _ => {
+                if format == FormatCsv {
+                    return fail($"{describe(v)} cannot be csv-formatted, only an array can be".toString())
+                }
+                return fail($"{describe(v)} cannot be tsv-formatted, only an array can be".toString())
+            }
+        }
+    }
+    var text = toText(v)
+    if format == FormatBase64 {
+        return Ok(jvText(Base64.encode(read text.asBytes())))
+    }
+    if format == FormatBase64Decode {
+        // As jq decodes it: six bits a character up to the first `=` or the end, padding or not;
+        // the bytes as text, bad UTF-8 repaired.
+        var bytes = List<byte>.withCapacity(text.length())
+        var t = text.asBytes()
+        int bits = 0
+        int count = 0
+        for i in 0..t.length() {
+            byte c = t[i]
+            int six = -1
+            if c >= 'A' && c <= 'Z' {
+                six = c - 'A'
+            } else if c >= 'a' && c <= 'z' {
+                six = c - 'a' + 26
+            } else if c >= '0' && c <= '9' {
+                six = c - '0' + 52
+            } else if c == '+' {
+                six = 62
+            } else if c == '/' {
+                six = 63
+            } else if c == '=' {
+                break
+            } else {
+                return fail($"{describe(v)} is not valid base64 data".toString())
+            }
+            bits = ((bits << 6) | six) & 0xFFFF
+            count += 6
+            if count >= 8 {
+                count -= 8
+                bytes.add((byte)((bits >> count) & 0xFF))
+            }
+        }
+        // A character alone at the end gives six bits, which make no byte.
+        if count == 6 {
+            return fail($"{describe(v)} trailing base64 byte found".toString())
+        }
+        return Ok(jvText(repairUtf8(read bytes)))
+    }
+    // `@uri`: every byte but the unreserved ones written as `%XX`.
+    string out = string.withCapacity(text.length())
+    var bytes = text.asBytes()
+    for i in 0..bytes.length() {
+        byte c = bytes[i]
+        if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
+            out.write((char)c)
+        } else {
+            out.write($"%{c:X2}")
+        }
+    }
+    return Ok(jvText(out))
+}
+
+string tsvEscaped(read string s) {
+    string out = string.withCapacity(s.length())
+    var bytes = s.asBytes()
+    nint start = 0
+    for i in 0..bytes.length() {
+        byte c = bytes[i]
+        string? escape = null
+        if c == '\\' {
+            escape = "\\\\"
+        } else if c == '\t' {
+            escape = "\\t"
+        } else if c == '\n' {
+            escape = "\\n"
+        } else if c == '\r' {
+            escape = "\\r"
+        }
+        if escape is not null {
+            out.write(s[start..i])
+            out.write(read escape)
+            start = i + 1
+        }
+    }
+    out.write(s[start..bytes.length()])
+    return out
+}
+
+// Whether a literal stands for zero: only zeros among its digits before an exponent.
+bool isZeroLiteral(read string literal) {
+    var bytes = literal.asBytes()
+    for i in 0..bytes.length() {
+        byte c = bytes[i]
+        if c == 'E' || c == 'e' {
+            return true
+        }
+        if c >= '1' && c <= '9' {
+            return false
+        }
+    }
+    return true
+}

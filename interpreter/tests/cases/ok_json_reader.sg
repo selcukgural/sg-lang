@@ -1,0 +1,94 @@
+// `JsonReader` (choice 1814): the tokens of JSON values one after another, a number as it is
+// written, a name given twice, and a text fed a few bytes at a time with `more`.
+string show(read JsonToken t) {
+    match t {
+        BeginArray => return "["
+        EndArray => return "]"
+        BeginObject => return "{"
+        EndObject => return "}"
+        Name(n) => return $"name:{n}".toString()
+        String(s) => return $"str:{s}".toString()
+        Number(s) => return $"num:{s}".toString()
+        True => return "true"
+        False => return "false"
+        Null => return "null"
+        End => return "END"
+    }
+}
+
+void all(read string text) {
+    var r = JsonReader()
+    string out = ""
+    while true {
+        match r.next(read text) {
+            Ok(t) => {
+                out.write($"{show(read t)} ")
+                if t == JsonToken.End {
+                    break
+                }
+            }
+            Error(e) => {
+                out.write($"ERR({e})")
+                break
+            }
+        }
+    }
+    print($"[{text}] => {out}")
+}
+
+// Fed a few bytes at a time, with `more`.
+void pieces(read string whole, nint step) {
+    var r = JsonReader()
+    string text = ""
+    nint fed = 0
+    string out = ""
+    while true {
+        bool more = fed < whole.length()
+        match r.next(read text, more) {
+            Ok(t) => {
+                if t == JsonToken.End {
+                    if !more {
+                        break
+                    }
+                    nint to = (fed + step).min(whole.length())
+                    text.write(whole[fed..to])
+                    fed = to
+                    continue
+                }
+                out.write($"{show(read t)} ")
+            }
+            Error(e) => {
+                if e.kind == JsonErrorKind.UnexpectedEnd && more {
+                    nint to = (fed + step).min(whole.length())
+                    text.write(whole[fed..to])
+                    fed = to
+                    continue
+                }
+                out.write($"ERR({e})")
+                break
+            }
+        }
+    }
+    print($"pieces {step}: {out}")
+}
+
+void main() {
+    all("{}{}[]1 2\"a\"\"b\"")
+    all("{\"a\":[1,2.50,{\"b\":\"x\"}],\"a\":-0, \"c\":1e400}")
+    all("12 truefalse")
+    all("[1,]")
+    all("{\"a\" 1}")
+    all("[1 2]")
+    all("  ")
+    all("[[[")
+    pieces("{\"key\": [12345, 678.9e10, true, null, \"text with \\\"escapes\\\"\"]} 42 \"z\"", 3)
+    pieces("{\"key\": [12345, 678.9e10, true, null, \"text with \\\"escapes\\\"\"]} 42 \"z\"", 1)
+    var r = JsonReader(JsonOptions { maxDepth = 2 })
+    string deep = "[[[1]]]"
+    for _ in 0..4 {
+        match r.next(read deep) {
+            Ok(t) => print(show(read t))
+            Error(e) => print($"ERR({e})")
+        }
+    }
+}

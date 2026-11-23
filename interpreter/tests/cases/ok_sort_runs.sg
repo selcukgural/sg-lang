@@ -1,0 +1,106 @@
+// `sort` finds the runs the items already make (in order, or strictly in the reverse order) and
+// merges them; it stays stable. Each pattern is checked here to be in order with equal keys in
+// the order they had, and the interpreter, which sorts with Rust's sort, prints the same.
+
+struct Item : Comparable {
+    int key
+    int at
+
+    int compare(read this, read Item other) {
+        return this.key.compare(other.key)
+    }
+}
+
+ulong next(ref ulong state) {
+    state = state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+    return state >> 33
+}
+
+List<Item> made(int pattern, int n, ref ulong state) {
+    var items = List<Item>.withCapacity((nint)n)
+    for i in 0..n {
+        int key = 0
+        if pattern == 0 {
+            key = (int)(next(ref state) % 1000000)
+        } else if pattern == 1 {
+            key = i
+        } else if pattern == 2 {
+            key = n - i
+        } else if pattern == 3 {
+            // In the reverse order, with equal keys side by side: not strictly, so not turned round whole.
+            key = (n - i) / 3
+        } else if pattern == 4 {
+            key = i % 50
+        } else if pattern == 5 {
+            key = 7
+        } else if pattern == 6 {
+            key = (int)(next(ref state) % 4)
+        } else if pattern == 7 {
+            // Runs of 40 going up, then down, then up.
+            key = i % 40
+            if (i / 40) % 2 == 1 {
+                key = 40 - i % 40
+            }
+        } else {
+            // In order but for a few swapped.
+            key = i
+            if next(ref state) % 100 == 0 {
+                key = (int)(next(ref state) % (ulong)(n + 1))
+            }
+        }
+        items.add(Item { key = key, at = i })
+    }
+    return items
+}
+
+// Whether the items are in order, and equal keys in the order they were made; and a sum of where
+// each went, the same however the items were sorted, if sorted stably.
+ulong verified(read List<Item> items, read string what) {
+    ulong sum = 0
+    for i in 0..items.length() {
+        if i > 0 {
+            var a = items[i - 1]
+            var b = items[i]
+            if a.key > b.key || (a.key == b.key && a.at > b.at) {
+                print($"{what}: wrong at {i}")
+                return 0
+            }
+        }
+        sum = sum.wrappingMultiply(31).wrappingAdd((ulong)items[i].at)
+    }
+    return sum
+}
+
+void main() {
+    ulong state = 42
+    ulong all = 0
+    for pattern in 0..9 {
+        for n in 0..200 {
+            var items = made(pattern, n, ref state)
+            items.sort()
+            all = all.wrappingMultiply(17).wrappingAdd(0) ^ verified(read items, read $"pattern {pattern}, {n} items".toString())
+        }
+        for n in (List<int> { 1000, 4097, 20000 }) {
+            var items = made(pattern, n, ref state)
+            items.sort()
+            ulong sum = verified(read items, read $"pattern {pattern}, {n} items".toString())
+            print($"pattern {pattern}, {n}: {sum}")
+        }
+    }
+    print($"all small: {all}")
+
+    // Numbers and texts, sorted by their own order.
+    var numbers = List<int>()
+    var words = List<string>()
+    for _ in 0..5000 {
+        numbers.add((int)(next(ref state) % 100) - 50)
+        words.add($"w{(next(ref state) % 300)}".toString())
+    }
+    numbers.sort()
+    words.sort()
+    bool inOrder = true
+    for i in 1..numbers.length() {
+        inOrder = inOrder && numbers[i - 1] <= numbers[i] && words[i - 1] <= words[i]
+    }
+    print($"{inOrder} {numbers[0]} {numbers[4999]} {words[0]} {words[4999]}")
+}

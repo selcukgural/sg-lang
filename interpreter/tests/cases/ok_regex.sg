@@ -109,7 +109,7 @@ void main() {
     // A pattern made when the program runs, and why one is not a regular expression.
     var bad = List<string> {
         "(a", "a)", "[a", "[z-a]", """\q""", "a\\", "*a", "a**", "a{1001}", "a{3,2}", "(?<>a)",
-        "(?<n>a)(?<n>b)", "(?x)", "(?=a)", "(?<!a)", """\p{Xx}""", "[[:foo:]]", """\p{Greek}""",
+        "(?<n>a)(?<n>b)", "(?q)", "(?=a)", "(?<!a)", """\p{Xx}""", "[[:foo:]]", """\p{Greek}""",
         "((a{1000}){1000}){1000}"
     }
     for pattern in bad {

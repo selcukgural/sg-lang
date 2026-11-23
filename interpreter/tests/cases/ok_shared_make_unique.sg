@@ -1,0 +1,40 @@
+// `x.makeUnique()` (choice 1813): the value itself, as `ref`, when `x` is its only owner and
+// nothing looks at it; otherwise a copy, which `x` owns alone from then on.
+struct Box : Clonable {
+    List<int> items
+    string name
+}
+
+void grow(ref shared List<int> xs, int n) {
+    for i in 0..n {
+        var items = xs.makeUnique()
+        items.add(i)
+    }
+}
+
+void main(List<string> args) {
+    var a = new shared List<int> { 1, 2 }
+    var view = a.makeUnique()
+    view.add(3)
+    print($"alone, changed in place: {a.length()}")
+
+    var b = share a
+    var mine = a.makeUnique()
+    mine.add(4)
+    print($"shared, copied: a {a.length()} b {b.length()} same {same(a, b)}")
+
+    var c = new shared Box { items = List<int> { 1 }, name = "x" }
+    var looker = weak c
+    var box = c.makeUnique()
+    box.name.write("y")
+    var back = share looker
+    print($"weak looker kept the old: {back?.name ?? "gone"} new {c.name}")
+
+    var big = new shared List<int>()
+    int n = 100000
+    if args.length() > 0 {
+        n = int.parse(read args[0]) ?? n
+    }
+    grow(ref big, n)
+    print($"grown {big.length()}")
+}

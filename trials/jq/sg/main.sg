@@ -1,0 +1,249 @@
+// `jq`: a filter run over a stream of JSON values (choices 1804-1812). What it does and how it is held
+// to jq 1.8.2 is in `trials/jq/README.md`.
+//
+//     jq [-c] [-r] [-n] [-s] [-e] [-S] [--tab] [--indent n] [--arg name text] [--argjson name json] FILTER [FILE...]
+//
+// The exit code is jq's: 2 for a wrong use or a file that cannot be read, 3 for a filter that does not
+// read, 5 for an error, and with `-e` 1 when the last output is `false` or `null` and 4 when there was none.
+
+void usage(string why) {
+    printError($"jq: error: {why}")
+    printError("Use jq --help for help with command-line options,")
+    exit(2)
+}
+
+void main(List<string> args) {
+    var layout = Layout { indent = 2, tab = false, sortKeys = false }
+    var settings = Settings { rawOutput = false, exitStatus = false }
+    bool nullInput = false
+    bool slurp = false
+    bool compact = false
+    string? filter = null
+    var files = List<string>()
+    var globalNames = List<string>()
+    var globalValues = List<Jv>()
+    nint i = 0
+    while i < args.length() {
+        var a = read args[i]
+        i += 1
+        // Only `--word` and `-` with letters are options: `-1`, `-.a`, `-(1,2)` and `- - 1` are
+        // filters, as jq takes them.
+        bool option = a.length() >= 2 && a[0] == '-' && (a[1] == '-' || (a[1] >= 'a' && a[1] <= 'z') || (a[1] >= 'A' && a[1] <= 'Z'))
+        // jq reads options before and after the filter and the files.
+        if !option {
+            if filter is null {
+                filter = a.clone()
+            } else {
+                files.add(a.clone())
+            }
+            continue
+        }
+        if a == "--tab" {
+            layout.tab = true
+            layout.indent = 1
+            compact = false
+        } else if a == "--indent" {
+            if i >= args.length() {
+                usage("--indent takes one parameter")
+            }
+            var n = int.parse(read args[i]) ?? -2
+            i += 1
+            if n < -1 || n > 7 {
+                usage("--indent takes a number between -1 and 7")
+            }
+            // `--indent -1` is a tab, as jq has it; the last of `-c`, `--tab` and `--indent` holds.
+            layout.tab = n == -1
+            layout.indent = n.max(1)
+            if n == 0 {
+                layout.indent = 0
+            }
+            compact = false
+        } else if a == "--arg" || a == "--argjson" {
+            if i + 1 >= args.length() {
+                usage($"{a} takes two parameters (e.g. {a} varname value)".toString())
+            }
+            var name = args[i].clone()
+            var text = args[i + 1].clone()
+            i += 2
+            if a == "--arg" {
+                globalValues.add(jvText(text))
+            } else {
+                match parseOne(read text) {
+                    Ok(v) => globalValues.add(v)
+                    Error(_) => usage($"Invalid JSON text passed to --argjson".toString())
+                }
+            }
+            globalNames.add(name)
+        } else if a == "--compact-output" {
+            compact = true
+        } else if a == "--raw-output" {
+            settings.rawOutput = true
+        } else if a == "--null-input" {
+            nullInput = true
+        } else if a == "--slurp" {
+            slurp = true
+        } else if a == "--exit-status" {
+            settings.exitStatus = true
+        } else if a == "--sort-keys" {
+            layout.sortKeys = true
+        } else if a.length() > 1 && a[1] != '-' {
+            for j in 1..a.length() {
+                byte c = a[j]
+                if c == 'c' {
+                    compact = true
+                } else if c == 'r' {
+                    settings.rawOutput = true
+                } else if c == 'n' {
+                    nullInput = true
+                } else if c == 's' {
+                    slurp = true
+                } else if c == 'e' {
+                    settings.exitStatus = true
+                } else if c == 'S' {
+                    layout.sortKeys = true
+                } else if c != 'M' {
+                    usage($"Unknown arguments: {a}".toString())
+                }
+            }
+        } else {
+            usage($"Unknown arguments: {a}".toString())
+        }
+    }
+    // With no filter, jq 1.8 takes `.`.
+    if filter is null {
+        filter = "."
+    }
+    if compact {
+        layout.indent = -1
+        layout.tab = false
+    }
+
+    var program = Program {
+        nodes = List<Node>(), constants = List<Jv>(), texts = List<string>(), lists = List<nint>(),
+        globals = HashMap<string, nint>(), globalVars = HashMap<string, nint>(), simple = List<bool>(),
+        recurse = -1,
+    }
+    for g in 0..globalNames.length() {
+        program.globalVars.add(globalNames[g].clone(), g)
+    }
+    var prelude = Parser { source = Prelude, at = 0, scope = List<Binding>() }
+    match parseProgram(ref prelude, ref program, true) {
+        Ok(_) => {}
+        Error(e) => panic($"the prelude reads: {e}")
+    }
+    program.recurse = program.globals.get("recurse/0") ?? panic("the prelude defines recurse")
+    var parser = Parser { source = filter ?? "", at = 0, scope = List<Binding>() }
+    nint root = 0
+    match parseProgram(ref parser, ref program, false) {
+        Ok(r) => root = r
+        Error(e) => {
+            printError($"jq: {e}")
+            printError("jq: 1 compile error")
+            exit(3)
+        }
+    }
+
+    markSimple(ref program)
+    var m = Machine {
+        forks = List<Fork>(), globals = globalValues,
+        out = Output { buffer = string.withCapacity(OutputBlock + 4096), layout = layout, flushes = true },
+        settings = settings, reader = reader(files), anyOutput = false, lastTruthy = false,
+        regexPlaces = HashMap<string, nint>(), regexes = List<Regex>(),
+    }
+    // jq's codes: 0 an output, -1 a last output `false` or `null` with `-e`, -4 no output, 5 an error.
+    int ret = -4
+    // Of every input: -1 no output yet, 0 the last was `false` or `null`, 1 it was another.
+    int lastResult = -1
+    if nullInput {
+        // With `-s` too, `input` gives every value at once, as one array.
+        m.reader.slurp = slurp
+        ret = process(ref m, read program, root, Jv.Null, ref lastResult)
+    } else if slurp {
+        var all = List<Jv>()
+        bool failed = false
+        while true {
+            match nextInput(ref m.reader) {
+                Ok(v) => {
+                    if v is null {
+                        break
+                    }
+                    all.add(v)
+                }
+                Error(e) => {
+                    printError($"jq: error (at <stdin>:0): {e}")
+                    failed = true
+                    break
+                }
+            }
+        }
+        if failed {
+            ret = 5
+        } else {
+            ret = process(ref m, read program, root, jvArray(all), ref lastResult)
+        }
+    } else {
+        while true {
+            match nextInput(ref m.reader) {
+                Ok(v) => {
+                    if v is null {
+                        break
+                    }
+                    ret = process(ref m, read program, root, v, ref lastResult)
+                    // Once a file could not be opened, jq's loop stops after the value it was reading.
+                    if m.reader.missedOne {
+                        break
+                    }
+                }
+                Error(e) => {
+                    printError($"jq: error (at <stdin>:0): {e}")
+                    ret = 5
+                    break
+                }
+            }
+        }
+    }
+    flush(ref m.out)
+    if m.reader.missing > 0 {
+        ret = 2
+    }
+    if settings.exitStatus {
+        if ret != -4 {
+            exit((byte)ret.abs())
+        }
+        if lastResult == -1 {
+            exit(4)
+        }
+        if lastResult == 0 {
+            exit(1)
+        }
+        exit(0)
+    }
+    if ret > 0 {
+        exit((byte)ret)
+    }
+}
+
+// The filter run on one input, as jq's `process`.
+int process(ref Machine m, read Program p, nint root, Jv input, ref int lastResult) {
+    m.anyOutput = false
+    var failure = run(ref m, p, root, input)
+    int ret = -4
+    if m.anyOutput {
+        if m.settings.exitStatus && !m.lastTruthy {
+            ret = -1
+        } else {
+            ret = 0
+        }
+        if m.lastTruthy {
+            lastResult = 1
+        } else {
+            lastResult = 0
+        }
+    }
+    if failure is not null {
+        flush(ref m.out)
+        printError($"jq: error (at <stdin>:0): {failure}")
+        ret = 5
+    }
+    return ret
+}

@@ -198,6 +198,7 @@ compiler writes the code for each interface from the fields, unless you write a 
 | Interface | What it gives | What it asks for |
 |---|---|---|
 | `Copyable` | The value is copied where another would be moved | Every field is `Copyable` (numbers, `bool`, `char`, other `Copyable` types) |
+| `Clonable` | `.clone()`, a copy that owns its own memory, and `makeUnique` on a `shared` value of it | Every field can be cloned (not a `raw T`, a `Disposable` value or a borrow), or your own `T clone(read this)` |
 | `Formattable` | `print`, `$"{value}"` and the writers take it | Every field is `Formattable`, or your own `void format(read this, ref Formatter f)` |
 | `Equatable` | `==` and `!=`, `indexOf` and `contains` on a list | Every field is `Equatable`, or your own `bool equals(read this, read T other)` |
 | `Hashable` | The type can be a key of a `HashMap` and an item of a `HashSet` | The type is `Equatable` too, and every field is `Hashable` |

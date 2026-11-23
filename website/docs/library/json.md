@@ -168,6 +168,98 @@ It prints:
 (0, 3)
 ```
 
+## Tokens one after another
+
+`JsonReader` gives the tokens of JSON values written one after another, as jq and JSON Lines have them, for
+a program that builds values of its own. It leaves to the program what `Json.parse` decides: a number comes
+as it is written (`1.50`, `1e400`, twenty digits), and a name given twice comes twice. `next` gives a
+`JsonToken`: `BeginArray`, `EndArray`, `BeginObject`, `EndObject`, `Name(text)`, `String(text)`,
+`Number(text)`, `True`, `False`, `Null`, and `End` when only spaces are left. `depth()` says how many arrays
+and objects are open, `position()` where the next token is looked for.
+
+The reader keeps where it is and what is open, not the text, so the text may grow between two calls. With
+`more`, a token that reaches the end of the text is `UnexpectedEnd` and the reader is left as it was, to be
+called again once more is read; `rebase(n)` tells it the first `n` bytes it went past were let go. What is
+refused is what `Json.parse` refuses, nested to the `maxDepth` of the `JsonOptions` given to `create`.
+
+```sg
+string show(read JsonToken token) {
+    match token {
+        BeginArray => return "["
+        EndArray => return "]"
+        BeginObject => return "{"
+        EndObject => return "}"
+        Name(name) => return $"name {name}".toString()
+        String(text) => return $"text {text}".toString()
+        Number(written) => return $"number {written}".toString()
+        True => return "true"
+        False => return "false"
+        Null => return "null"
+        End => return "the end"
+    }
+}
+
+void main() {
+    // Two values one after another, a name given twice, and numbers no `double` holds as written.
+    var text = "{\"id\": 1.50, \"id\": 2} [1e400, 12345678901234567890]"
+    var reader = JsonReader()
+    while true {
+        match reader.next(read text) {
+            Ok(token) => {
+                print($"{reader.depth()}: {show(read token)}")
+                if token == JsonToken.End {
+                    break
+                }
+            }
+            Error(e) => {
+                print(e)
+                break
+            }
+        }
+    }
+
+    // A text that grows: with `more`, a token cut at the end is `UnexpectedEnd`, and the reader
+    // waits where it was.
+    var growing = JsonReader()
+    var piece = "[tr"
+    for _ in 0..2 {
+        match growing.next(read piece, true) {
+            Ok(token) => print(show(read token))
+            Error(e) => print(e)
+        }
+    }
+    piece.write("ue]")
+    for _ in 0..2 {
+        match growing.next(read piece, true) {
+            Ok(token) => print(show(read token))
+            Error(e) => print(e)
+        }
+    }
+}
+```
+
+It prints:
+
+```text
+1: {
+1: name id
+1: number 1.50
+1: name id
+1: number 2
+0: }
+1: [
+1: number 1e400
+1: number 12345678901234567890
+0: ]
+0: the end
+[
+line 1, column 4: the text ends before the value
+true
+]
+```
+
+The `jq` of the trials (`trials/jq/sg`) reads its input this way, 64 KB at a time.
+
 ## When the text is not JSON
 
 `Json.parse` gives a `JsonError`: `e.line` and `e.column`, counted from 1, the column in characters, and
@@ -224,8 +316,8 @@ as `\u001b`). Other characters stay as they are, in UTF-8. Writing a `Number` th
 panic, since no JSON reader would take it.
 
 The reader is tested with every parsing case of [JSONTestSuite](https://github.com/nst/JSONTestSuite). It is
-about 1.15 times as slow as cJSON on a document of 34 MB. There is no reader of a stream yet: the whole text
-is read first, and the values take more room than the text: about 10 to 30 bytes for each byte of it (a
+about 1.15 times as slow as cJSON on a document of 34 MB. `Json.parse` reads the whole text first, and the
+values take more room than the text (`JsonReader`, above, reads a stream): about 10 to 30 bytes for each byte of it (a
 `JsonValue` takes 32 bytes, and each array and each object with members is a block of its own), so 10 MB of
 zeros in an array take about 170 MB, as a tree of values does in Go or Rust too. A program that reads JSON from outside bounds
 the length of the text before it reads it.

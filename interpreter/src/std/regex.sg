@@ -12,7 +12,9 @@
 // `(?P<name>...)`, `^` `$` `\A` `\z` `\b` `\B`, `\d` `\w` `\s` and their opposites `\D` `\W` `\S`
 // (ASCII only, 1471), `\p{L}` `\pL` `\p{Lu}` `\PL` `\p{^L}` by the general category of Unicode
 // (1475, 1476), `[[:alpha:]]` and the other classes of POSIX, `\Q...\E`, and the flags `(?i)`
-// `(?m)` `(?s)` `(?U)`, alone or around a group (`(?i:...)`), `-` taking one off. Positions are
+// `(?m)` `(?s)` `(?U)` `(?x)`, alone or around a group (`(?i:...)`), `-` taking one off; under
+// `(?x)` a space and a `#` comment to the end of the line are passed over outside a class
+// (choice 1822), as Rust's `regex` and PCRE pass them. Positions are
 // in bytes; the text is matched character by character.
 
 // The most a counted repetition may count: `a{1000}` (as Go).
@@ -63,6 +65,7 @@ const int RegexFold = 1
 const int RegexMultiLine = 2
 const int RegexDotAll = 4
 const int RegexUngreedy = 8
+const int RegexExtended = 16
 
 // Every general category: bit `i` is the variant `i` of `UnicodeCategory`, the surrogates last.
 const int RegexAllCategories = 0x3FFFFFFF
@@ -93,7 +96,7 @@ public enum RegexErrorKind : Equatable, Formattable {
     InvalidGroupName
     // A name given to two groups.
     DuplicateGroupName(string name)
-    // `(?` followed by flags that do not exist: `(?x)`.
+    // `(?` followed by flags that do not exist: `(?q)`.
     InvalidFlags
     // `(?=`, `(?!`, `(?<=`, `(?<!`: a look ahead or behind, which no pattern here has.
     LookAround
@@ -117,7 +120,7 @@ public enum RegexErrorKind : Equatable, Formattable {
             InvalidRepeatCount => f.write($"invalid repeat count: at most {RegexRepeatLimit}, and the second not below the first")
             InvalidGroupName => f.write("invalid group name: letters, digits and _")
             DuplicateGroupName(name) => f.write($"duplicate group name '{name}'")
-            InvalidFlags => f.write("invalid flags: i, m, s and U")
+            InvalidFlags => f.write("invalid flags: i, m, s, U and x")
             LookAround => f.write("look-around is not supported: a match never looks ahead or behind")
             UnknownClass(name) => f.write($"unknown class '{name}'")
             TooDeep => f.write($"groups nested deeper than {RegexDepthLimit}")
@@ -636,8 +639,28 @@ Result<nint, RegexError> regexAlternation(ref RegexParser p, read string pattern
     return Ok(regexJoin(ref p, RegexAlternate, read branches))
 }
 
+// Under `(?x)`: the spaces and the `#` comments at `at`, passed over.
+void regexSkipExtended(read string pattern, ref nint at, int flags) {
+    if flags & RegexExtended == 0 {
+        return
+    }
+    while at < pattern.length() {
+        byte c = pattern[at]
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C {
+            at += 1
+        } else if c == '#' {
+            while at < pattern.length() && pattern[at] != '\n' {
+                at += 1
+            }
+        } else {
+            return
+        }
+    }
+}
+
 Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string pattern, ref nint at, ref int flags, int depth) {
     var items = List<nint>()
+    regexSkipExtended(pattern, ref at, flags)
     while at < pattern.length() && pattern[at] != '|' && pattern[at] != ')' {
         if at + 1 < pattern.length() && pattern[at] == '\\' && pattern[at + 1] == 'Q' {
             // A literal for each character of the text; a repetition after it repeats its last
@@ -645,7 +668,7 @@ Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string patte
             var quoted = regexQuoted(ref p, pattern, ref at, flags)
             var last = quoted.removeLast()
             if last is null {
-                if !try regexRepeatAt(pattern, at) {
+                if !try regexRepeatAt(pattern, at, flags) {
                     continue
                 }
                 last = items.removeLast()
@@ -662,6 +685,7 @@ Result<nint, RegexError> regexConcatenation(ref RegexParser p, read string patte
         if item is not null {
             items.add(item)
         }
+        regexSkipExtended(pattern, ref at, flags)
     }
     return Ok(regexJoin(ref p, RegexConcat, read items))
 }
@@ -684,7 +708,7 @@ List<nint> regexQuoted(ref RegexParser p, read string pattern, ref nint at, int 
 }
 
 // Whether a repetition starts at `at`.
-Result<bool, RegexError> regexRepeatAt(read string pattern, nint at) {
+Result<bool, RegexError> regexRepeatAt(read string pattern, nint at, int flags) {
     if at >= pattern.length() {
         return Ok(false)
     }
@@ -696,7 +720,7 @@ Result<bool, RegexError> regexRepeatAt(read string pattern, nint at) {
         return Ok(false)
     }
     nint probe = at
-    var counted = try regexCounted(pattern, ref probe)
+    var counted = try regexCounted(pattern, ref probe, flags)
     return Ok(counted is not null)
 }
 
@@ -714,6 +738,7 @@ Result<nint?, RegexError> regexRepetition(ref RegexParser p, read string pattern
 Result<nint, RegexError> regexRepeats(ref RegexParser p, read string pattern, ref nint at, int flags, nint atom) {
     nint node = atom
     bool repeated = false
+    regexSkipExtended(pattern, ref at, flags)
     while at < pattern.length() {
         nint opAt = at
         byte c = pattern[at]
@@ -728,7 +753,7 @@ Result<nint, RegexError> regexRepeats(ref RegexParser p, read string pattern, re
             max = 1
             at += 1
         } else if c == '{' {
-            var counted = try regexCounted(pattern, ref at)
+            var counted = try regexCounted(pattern, ref at, flags)
             if counted is null {
                 break
             }
@@ -742,6 +767,7 @@ Result<nint, RegexError> regexRepeats(ref RegexParser p, read string pattern, re
         }
         repeated = true
         bool greedy = true
+        regexSkipExtended(pattern, ref at, flags)
         if at < pattern.length() && pattern[at] == '?' {
             greedy = false
             at += 1
@@ -755,17 +781,21 @@ Result<nint, RegexError> regexRepeats(ref RegexParser p, read string pattern, re
 }
 
 // `{n}`, `{n,}` or `{n,m}` at `at`, read; `null`, with `at` where it was, when the `{` starts no
-// count, and is then a `{` of the text (as Go).
-Result<RegexCount?, RegexError> regexCounted(read string pattern, ref nint at) {
+// count, and is then a `{` of the text (as Go). Under `(?x)` spaces may stand around the numbers
+// and the comma, `{ 2 , 3 }`, as Rust's `regex` has it.
+Result<RegexCount?, RegexError> regexCounted(read string pattern, ref nint at, int flags) {
     nint start = at
     nint i = at + 1
+    regexSkipExtended(pattern, ref i, flags)
     int min = regexNumber(pattern, ref i)
     if min < 0 {
         return Ok(null)
     }
+    regexSkipExtended(pattern, ref i, flags)
     int max = min
     if i < pattern.length() && pattern[i] == ',' {
         i += 1
+        regexSkipExtended(pattern, ref i, flags)
         if i < pattern.length() && pattern[i] == '}' {
             max = -1
         } else {
@@ -773,6 +803,7 @@ Result<RegexCount?, RegexError> regexCounted(read string pattern, ref nint at) {
             if max < 0 {
                 return Ok(null)
             }
+            regexSkipExtended(pattern, ref i, flags)
         }
     }
     if i >= pattern.length() || pattern[i] != '}' {
@@ -836,7 +867,7 @@ Result<nint?, RegexError> regexAtom(ref RegexParser p, read string pattern, ref 
     }
     if c == '{' {
         nint probe = at
-        var counted = try regexCounted(pattern, ref probe)
+        var counted = try regexCounted(pattern, ref probe, flags)
         if counted is not null {
             return Error(regexErrorAt(pattern, at, RegexErrorKind.MissingRepeatArgument))
         }
@@ -925,6 +956,8 @@ Result<nint?, RegexError> regexGroup(ref RegexParser p, read string pattern, ref
                     bit = RegexDotAll
                 } else if f == 'U' {
                     bit = RegexUngreedy
+                } else if f == 'x' {
+                    bit = RegexExtended
                 }
                 if bit != 0 {
                     letters = true
@@ -1148,8 +1181,9 @@ Result<int, RegexError> regexCharEscape(read string pattern, ref nint at) {
         }
         return Ok(code)
     }
-    // Any punctuation of ASCII stands for itself.
-    if e < 0x80 && !e.isAsciiAlphanumeric() && !e.isAsciiWhitespace() && e >= 0x21 && e != 0x7F {
+    // Any punctuation of ASCII stands for itself, and so does a space, which `(?x)` would pass over
+    // unescaped (as Rust's `regex` takes `\ `).
+    if (e < 0x80 && !e.isAsciiAlphanumeric() && !e.isAsciiWhitespace() && e >= 0x21 && e != 0x7F) || e == ' ' {
         return Ok(e)
     }
     return Error(regexErrorAt(pattern, start, RegexErrorKind.InvalidEscape))

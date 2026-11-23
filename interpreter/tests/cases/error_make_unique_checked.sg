@@ -1,0 +1,6 @@
+// A `shared checked` value is changed where it is; `makeUnique` is for a plain `shared` one.
+void main() {
+    var counts = new shared checked List<int> { 1 }
+    var items = counts.makeUnique()
+    items.add(2)
+}

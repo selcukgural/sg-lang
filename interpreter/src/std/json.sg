@@ -478,6 +478,12 @@ public struct Json {
     }
 }
 
+// What may follow a number or a word at the top of a text of values: a space or the start of
+// another value. `12` is one number, and `1,2` and `truefalse` are errors, as jq reads them.
+bool jsonEndsWord(byte c) {
+    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '[' || c == '{' || c == '"'
+}
+
 // What went wrong, at a byte of the text; made a `JsonError` with its line and column at the end.
 struct JsonFault {
     nint position
@@ -1023,4 +1029,261 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
             target.write('}')
         }
     }
+}
+
+// A token of a text of JSON, as `JsonReader.next` gives them.
+public enum JsonToken : Equatable {
+    BeginArray
+    EndArray
+    BeginObject
+    EndObject
+    // The name of a member, before its value; the `:` after it is read with it.
+    Name(string text)
+    String(string text)
+    // A number as it is written: `-0`, `1.50`, `1e400`, a whole number of any length. What it
+    // stands for, and whether a `double` holds it, is the program's to decide.
+    Number(string text)
+    True
+    False
+    Null
+    // Only spaces are left in the text.
+    End
+}
+
+// What a `JsonReader` reads next.
+const int JsonReadTop = 0
+const int JsonReadArrayFirst = 1
+const int JsonReadArrayNext = 2
+const int JsonReadArrayValue = 3
+const int JsonReadObjectFirst = 4
+const int JsonReadObjectNext = 5
+const int JsonReadObjectName = 6
+const int JsonReadObjectValue = 7
+
+// A reader of the tokens of JSON values written one after another, as jq and JSON Lines have them
+// (choice 1814), for a program that builds values of its own: the text of each number as it is
+// written, a name given twice, and a number beyond a `double` are the program's to decide. It
+// keeps where it is and the arrays and objects open, not the text, so the text may grow between
+// two calls: with `more`, a token that reaches the end of the text is `UnexpectedEnd` and the
+// reader is left as it was, to be called again once the text holds more. The text is read as RFC
+// 8259 writes it, nested to the `maxDepth` of the options (128 unless said).
+public struct JsonReader {
+    List<byte> open
+    int expect
+    nint at
+    int limit
+
+    public JsonReader create(JsonOptions options = JsonOptions {}) {
+        options.check()
+        return JsonReader { open = List<byte>(), expect = JsonReadTop, at = 0, limit = options.maxDepth }
+    }
+
+    // The byte of the text the next token is looked for from.
+    public nint position(read this) {
+        return this.at
+    }
+
+    // How many arrays and objects are open.
+    public nint depth(read this) {
+        return this.open.length()
+    }
+
+    // The text the next call is given lacks the first `removed` bytes of the last one, which the
+    // reader has gone past: what was read is let go.
+    public void rebase(ref this, nint removed) {
+        if removed > this.at {
+            panic($"JsonReader.rebase({removed}) takes away bytes the reader has not read: it is at {this.at}")
+        }
+        this.at -= removed
+    }
+
+    // The next token of `text`, from where the last one ended; `End` when only spaces are left.
+    // With `more`, the text may go on: a token that reaches its end is `UnexpectedEnd` and nothing
+    // is changed. An error is placed in `text`, and the reader stays where it was.
+    public Result<JsonToken, JsonError> next(ref this, read string text, bool more = false) {
+        var bytes = text.asBytes()
+        nint position = this.at
+        int expect = this.expect
+        jsonSkipSpaces(bytes, ref position)
+        // After a value: its `,`, or the end of its array or object.
+        if expect == JsonReadArrayNext || expect == JsonReadObjectNext {
+            if position >= bytes.length() {
+                return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedEnd))
+            }
+            byte c = bytes[position]
+            bool array = expect == JsonReadArrayNext
+            if c == ',' {
+                position += 1
+                jsonSkipSpaces(bytes, ref position)
+                if array {
+                    expect = JsonReadArrayValue
+                } else {
+                    expect = JsonReadObjectName
+                }
+            } else if (array && c == ']') || (!array && c == '}') {
+                _ = this.open.removeLast()
+                this.at = position + 1
+                this.afterValue()
+                if array {
+                    return Ok(JsonToken.EndArray)
+                }
+                return Ok(JsonToken.EndObject)
+            } else {
+                return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position))))
+            }
+        }
+        if position >= bytes.length() {
+            if expect == JsonReadTop {
+                this.at = position
+                return Ok(JsonToken.End)
+            }
+            return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedEnd))
+        }
+        byte c = bytes[position]
+        if expect == JsonReadArrayFirst && c == ']' {
+            _ = this.open.removeLast()
+            this.at = position + 1
+            this.afterValue()
+            return Ok(JsonToken.EndArray)
+        }
+        if expect == JsonReadObjectFirst && c == '}' {
+            _ = this.open.removeLast()
+            this.at = position + 1
+            this.afterValue()
+            return Ok(JsonToken.EndObject)
+        }
+        if expect == JsonReadObjectFirst || expect == JsonReadObjectName {
+            if c != '"' {
+                return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position))))
+            }
+            match jsonString(text, bytes, ref position) {
+                Ok(name) => {
+                    jsonSkipSpaces(bytes, ref position)
+                    if position >= bytes.length() {
+                        return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedEnd))
+                    }
+                    if bytes[position] != ':' {
+                        return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position))))
+                    }
+                    this.at = position + 1
+                    this.expect = JsonReadObjectValue
+                    return Ok(JsonToken.Name(name))
+                }
+                Error(fault) => return Error(jsonErrorAt(text, fault.position, fault.kind))
+            }
+        }
+        // A value.
+        if c == '[' || c == '{' {
+            if this.open.length() >= (nint)this.limit {
+                return Error(jsonErrorAt(text, position, JsonErrorKind.TooDeep(this.limit)))
+            }
+            this.open.add(c)
+            this.at = position + 1
+            if c == '[' {
+                this.expect = JsonReadArrayFirst
+                return Ok(JsonToken.BeginArray)
+            }
+            this.expect = JsonReadObjectFirst
+            return Ok(JsonToken.BeginObject)
+        }
+        if c == '"' {
+            match jsonString(text, bytes, ref position) {
+                Ok(value) => {
+                    this.at = position
+                    this.afterValue()
+                    return Ok(JsonToken.String(value))
+                }
+                Error(fault) => return Error(jsonErrorAt(text, fault.position, fault.kind))
+            }
+        }
+        nint start = position
+        JsonToken token = JsonToken.Null
+        if c == '-' || (c >= '0' && c <= '9') {
+            match jsonScanNumber(bytes, ref position) {
+                Ok => {}
+                Error(fault) => return Error(jsonErrorAt(text, fault.position, fault.kind))
+            }
+            token = JsonToken.Number(text[start..position].clone())
+        } else {
+            string word = "null"
+            if c == 't' {
+                word = "true"
+                token = JsonToken.True
+            } else if c == 'f' {
+                word = "false"
+                token = JsonToken.False
+            } else if c != 'n' {
+                return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position))))
+            }
+            match jsonWord(bytes, ref position, read word) {
+                Ok => {}
+                Error(fault) => return Error(jsonErrorAt(text, fault.position, fault.kind))
+            }
+        }
+        // A number or a word that reaches the end of a text that goes on may go on with it.
+        if more && position >= bytes.length() {
+            return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedEnd))
+        }
+        // At the top, a value follows a space or starts another: `12` is one number, `1,2` and
+        // `truefalse` are errors.
+        if expect == JsonReadTop && position < bytes.length() && !jsonEndsWord(bytes[position]) {
+            return Error(jsonErrorAt(text, position, JsonErrorKind.UnexpectedCharacter(jsonCharAt(bytes, position))))
+        }
+        this.at = position
+        this.afterValue()
+        return Ok(token)
+    }
+
+    void afterValue(ref this) {
+        var last = this.open.get(this.open.length() - 1)
+        if last is null {
+            this.expect = JsonReadTop
+        } else if last == '[' {
+            this.expect = JsonReadArrayNext
+        } else {
+            this.expect = JsonReadObjectNext
+        }
+    }
+}
+
+// Past a number as RFC 8259 writes it, from its first byte; the fault of one that is not.
+Result<void, JsonFault> jsonScanNumber(read byte[] bytes, ref nint position) {
+    if bytes[position] == '-' {
+        position += 1
+    }
+    if !jsonIsDigit(bytes, position) {
+        return Error(jsonBadNumber(bytes, position))
+    }
+    if bytes[position] == '0' {
+        position += 1
+        if jsonIsDigit(bytes, position) {
+            return Error(jsonFault(position, JsonErrorKind.InvalidNumber))
+        }
+    } else {
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    if position < bytes.length() && bytes[position] == '.' {
+        position += 1
+        if !jsonIsDigit(bytes, position) {
+            return Error(jsonBadNumber(bytes, position))
+        }
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    if position < bytes.length() && (bytes[position] == 'e' || bytes[position] == 'E') {
+        position += 1
+        if position < bytes.length() && (bytes[position] == '+' || bytes[position] == '-') {
+            position += 1
+        }
+        if !jsonIsDigit(bytes, position) {
+            return Error(jsonBadNumber(bytes, position))
+        }
+        while jsonIsDigit(bytes, position) {
+            position += 1
+        }
+    }
+    return Ok()
 }

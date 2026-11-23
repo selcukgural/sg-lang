@@ -1,0 +1,14 @@
+// `: Clonable` field by field needs every field to be cloned: `Point` is neither `Clonable` nor `Copyable`.
+struct Point {
+    int x
+}
+
+struct Shape : Clonable {
+    List<Point> points
+}
+
+void main() {
+    var s = Shape { points = List<Point>() }
+    var t = s.clone()
+    print(t.points.length())
+}

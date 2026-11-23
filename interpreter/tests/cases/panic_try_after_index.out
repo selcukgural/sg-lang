@@ -1,0 +1,5 @@
+panic: index 3 is out of range: the length is 0
+  --> panic_try_after_index.sg:12:5
+ 12 |     lists[3].add(try word(1))
+    |     ^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`

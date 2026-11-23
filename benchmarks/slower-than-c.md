@@ -108,6 +108,29 @@ says what is slower, by how much and against what, the choice that measured it, 
   few bytes with stores of a fixed size in place of `memcpy` was tried and gained nothing. The log's line is
   made in a text and written by `fwrite` under a lock, Zig's straight from its buffer.
 
+## The trials
+
+- **`jq`: a call of a function of the filter** (choice 1819, slice 166): the machine of SG's `jq` makes
+  each call of a `def` with a frame of `shared` values on the heap, and its continuation with them; a `def`
+  ten million deep in tail position takes 1.23 s against Rust's 0.40 s and Zig's 0.43 s, a million deep
+  0.20 s against 0.09 s, and a million `.[$k] = $i` 0.64 s against 0.37 s. The machines are the same
+  algorithm; Rust's and Zig's frames are cheaper to make and let go. What would fix it: frames kept in a
+  list of the machine's own and reused, a count changed without an atomic where a frame never leaves its
+  thread.
+- **`jq`: reading numbers** (slice 166): `[.. | numbers] | add` over 100 MB of numbers takes SG 3.05 s,
+  Zig 0.98 s (Rust 3.37 s); reading alone is 1.62 s against 0.51 s. Each number read is rounded to 17
+  digits, made a `double` and its literal made canonical at once; Zig keeps the text and works out the
+  `double` the first time it is wanted. That is a way of working the other two do not have (choice 1819
+  asks that all three have it, or none), so it is put to the author.
+- **`jq`: ten million lines written** (`-n -c 'range(10000000)'`): 0.66 s against Rust's 0.40 s and Zig's
+  0.46 s. SG finds a number's shortest digits by writing it into a text of its own, one allocation for
+  each number; Zig writes them with Ryu into a buffer on the stack, and Rust writes a whole number as an
+  integer before anything else, a way of working the other two do not have (1819), put to the author with
+  Zig's `double` worked out late.
+- **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
+  331 MB): the text is read whole into the reader's buffer and then copied into the value; Zig unescapes
+  it from the buffer into the value once.
+
 ## Compiled code
 
 - **Bytes read one index at a time** (`hash`, choice 136): `data[at] | data[at + 1] << 8 | ...` checks

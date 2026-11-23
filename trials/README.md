@@ -15,6 +15,7 @@ that keep it fair, in [How it is measured](../benchmarks/method.md). This folder
 |---|---|---|
 | [wc](wc) | The lines, words and bytes of files, read in pieces of 64 KB | 133 |
 | [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v` | 133 |
+| [jq](jq) | The jq people use, held byte for byte to jq 1.8.2, on records, lines and numbers of JSON and on inputs that break things (choices 1804-1822); jq and jaq measured beside it | 166 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
 and their tables are in [The library against Rust and Zig](../benchmarks/library.md):
@@ -37,7 +38,7 @@ Servers are measured in [server](server) (choices 1698-1707): a store that speak
 and an HTTP server, each in SG, Rust, Zig and C, under one load written in C, on Linux, with their tables in
 [Servers against Rust, Zig and C](../benchmarks/server.md).
 
-Still to come, in this order: a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
+Still to come, in this order: a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 
 ## How they are written (1525-1532)
@@ -51,13 +52,20 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   calendar and its ISO 8601 are written by hand (1667). SG uses only what comes with the language.
 - The three give the same output, byte for byte, on the same input; their errors are worded each in its
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
-  megabyte and holds them to what Rust and Zig print.
+  megabyte and holds them to what Rust and Zig print; `the_trial_of_jq` holds `jq` to what jq 1.8.2
+  prints. A trial written in several files has its SG version as a folder, `sg/`, built whole.
+- The trials are ruthless: each pushes the language as far as the world will (a text of 100 MB, ten
+  million members, 10,000 levels and one more, bad UTF-8 of each kind, numbers past a `double`, a million
+  calls deep, a file cut off), and no case is left out because SG is weak there (choice 1809).
+- Each language is written its own way, as its programmers write it; what is a way of working, an
+  algorithm, goes into all three or into none (choice 1819).
 - Nothing large is kept here: [`inputs/text.sg`](inputs/text.sg) makes lines of a log from a seed, the
   same bytes on every machine, [`inputs/json.sg`](inputs/json.sg) the documents of `std/json`, and
   [`inputs/bytes.sg`](inputs/bytes.sg) the bytes that do not compress of `std/compression` and
   `std/encoding`, [`inputs/unicode.sg`](inputs/unicode.sg) the text in many writings of `std/unicode`,
   [`inputs/time.sg`](inputs/time.sg) the moments in RFC 3339 of `std/time`, and
-  [`inputs/address.sg`](inputs/address.sg) the v4 and v6 addresses with their ports of `std/net`.
+  [`inputs/address.sg`](inputs/address.sg) the v4 and v6 addresses with their ports of `std/net`; the
+  inputs of `jq` that break things are written by `measure.py` itself.
   The gzip, the archives, the Base64 and the NFD that the programs read are made by Python's `gzip`,
   `zipfile`, `base64` and `unicodedata`, which none of the programs measured is.
 - Where each language may lawfully write other bytes (compressed data, an archive), the program writes

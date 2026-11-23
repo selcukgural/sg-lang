@@ -23,9 +23,9 @@ type Res<T> = Result<T, Diag>;
 /// The types of what goes over a text: they have names in messages, not yet in a program.
 const TEXT_ITERATORS: &[&str] = &["Chars", "Split", "SplitWhitespace", "Lines"];
 
-const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Iterator"];
+const INTERFACES_NOT_YET: &[&str] = &["Iterator"];
 
-const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable", "Disposable", "Closable"];
+const INTERFACES: &[&str] = &["Copyable", "Clonable", "Formattable", "Equatable", "Hashable", "Comparable", "Disposable", "Closable"];
 
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
@@ -76,6 +76,9 @@ struct Names {
     kinds: HashMap<String, TypeKind>,
     /// Types written with `: Hashable`: they can be the key of a `HashMap`.
     keys: HashSet<String>,
+    /// Types written with `: Clonable`: `.clone()` makes a copy of them, field by field unless
+    /// they write their own `clone` (choice 1818).
+    clonable: HashSet<String>,
     /// Types that carry a borrow, each with the name of its source: `struct Token<from source>`.
     carriers: HashMap<String, String>,
     /// The files of the program: a name is looked up from the file it is written in.
@@ -271,6 +274,7 @@ fn std_makers(short: &str) -> &'static str {
         "Json" => "nothing is made: the function is called on the type, `Json.parse(text)`",
         "JsonObject" => "`JsonObject()`, then `o.add(\"name\", value)`",
         "JsonError" => "`Json.parse(text)` gives one for a text that is not JSON",
+        "JsonReader" => "`JsonReader()`, then `reader.next(read text)` gives the tokens of the text one after another",
         "Regex" => "`Regex.of(\"pattern\")` for a pattern written in the program, `Regex.compile(pattern)` for one made when it runs",
         "Match" => "`regex.find(text)` gives one, and `regex.findAll(text)` a list of them",
         "Captures" => "`regex.captures(text)` gives one",
@@ -437,7 +441,8 @@ fn gives_only(name: &str, callee: &Callee) -> bool {
         Callee::Join | Callee::WithCapacity | Callee::ListRepeat | Callee::ListWithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Net(NetCall::Port | NetCall::Reader) => true,
-        Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
+        Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next" | "makeUnique"),
+        Callee::Clone(_) => true,
         _ => false,
     }
 }
@@ -1061,6 +1066,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 "Formattable" => formattable.insert(name.clone()),
                 "Equatable" => equatable.insert(name.clone()),
                 "Hashable" => names.keys.insert(name.clone()),
+                "Clonable" => names.clonable.insert(name.clone()),
                 "Comparable" => comparable.insert(name.clone()),
                 "Disposable" | "Closable" if prog.enums.iter().any(|decl| decl.name == *name) => {
                     return Err(Diag::error(*span, format!("an enum cannot be `{interface}` for now: a struct can"))
@@ -1078,13 +1084,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 }
                 _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
                     return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
-                        .note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`"));
+                        .note("interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`"));
                 }
                 _ => {
                     let diag = Diag::error(*span, format!("there is no interface named `{interface}`"));
                     return Err(match nearest(interface, INTERFACES.iter().copied()) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the interpreter yet"),
+                        None => diag.note("interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the interpreter yet"),
                     });
                 }
             };
@@ -1252,7 +1258,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
 
     // What a type promises after `:` must hold for everything it carries.
-    let sets = Promised { copyable: &copyable, formattable: &formattable, equatable: &equatable, keys: &names.keys, comparable: &comparable };
+    let sets = Promised { copyable: &copyable, formattable: &formattable, equatable: &equatable, keys: &names.keys, comparable: &comparable, clonable: &names.clonable };
     for decl in &prog.structs {
         let info = &structs[&decl.name];
         let fields = || decl.fields.iter().zip(&info.fields);
@@ -3742,6 +3748,7 @@ fn type_methods<'t>(
 
 /// The types that said each interface after `:`.
 struct Promised<'s> {
+    clonable: &'s HashSet<String>,
     copyable: &'s HashSet<String>,
     formattable: &'s HashSet<String>,
     equatable: &'s HashSet<String>,
@@ -3786,6 +3793,18 @@ where
             None => all_have(name, fields(), "Equatable", sets.equatable)?,
         }
     }
+    if sets.clonable.contains(name) {
+        match own("clone") {
+            Some(func) => {
+                let sig = &methods["clone"];
+                if sig.this != Some(This::Read) || !sig.params.is_empty() || sig.ret != this_ty {
+                    return Err(Diag::error(func.name_span, "this is not the `clone` that `Clonable` asks for")
+                        .hint(format!("`{name} clone(read this)`, or no `clone` at all: then it is made field by field")));
+                }
+            }
+            None => all_clonable(name, fields(), sets)?,
+        }
+    }
     if sets.keys.contains(name) {
         if !sets.equatable.contains(name) {
             return Err(Diag::error(name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
@@ -3813,6 +3832,42 @@ where
     Ok(())
 }
 
+
+/// Whether `.clone()` makes a copy of a value of this type (choice 1818): numbers, `bool`, `char`,
+/// text, the types written `: Clonable` or `: Copyable`, a `shared` or `weak` value (one more
+/// owner or looker, not a copy of what it points to), and a `T*`, a `T?`, a collection or an
+/// array of those.
+fn can_clone(ty: &Ty, clonable: &HashSet<String>, copyable: &HashSet<String>) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str => true,
+        Ty::Struct(name) | Ty::Enum(name) => clonable.contains(name) || ty.is_copyable(copyable),
+        Ty::Shared(..) | Ty::Weak(..) => true,
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => can_clone(inner, clonable, copyable),
+        Ty::Map(key, value) => can_clone(key, clonable, copyable) && can_clone(value, clonable, copyable),
+        Ty::Result(ok, error) => can_clone(ok, clonable, copyable) && can_clone(error, clonable, copyable),
+        Ty::Void => true,
+        _ => false,
+    }
+}
+
+/// `: Clonable` without a `clone` of its own is made field by field, so every field can be cloned.
+fn all_clonable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, sets: &Promised) -> Res<()> {
+    for (field, (_, ty)) in fields {
+        if can_clone(ty, sets.clonable, sets.copyable) {
+            continue;
+        }
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Clonable` field by field: `{}` is a `{ty}`, which `clone` cannot copy", field.name));
+        return Err(match lacking(ty, sets.clonable) {
+            Some(inner) if !matches!(ty, Ty::Read(_) | Ty::Ref(_)) => diag.hint(format!("make `{inner}` `Clonable` too")),
+            _ => match ty {
+                Ty::Read(_) | Ty::Ref(_) => diag.note("a borrow is not copied: the copy would borrow from what the original does"),
+                Ty::Atomic(_) => diag.note("a copy of an atomic value would be a second value, which the tasks that change the first never change"),
+                _ => diag.note("a task, a stream, a process and the like have one owner; they are not copied"),
+            },
+        });
+    }
+    Ok(())
+}
 
 /// `: Copyable` holds only if everything the type carries can be copied.
 fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, copyable: &HashSet<String>) -> Res<()> {
@@ -13065,6 +13120,71 @@ impl<'a> Checker<'a> {
                 return Ok(recv_ty.strip_borrow().clone());
             }
         }
+        // `x.makeUnique()` of a `shared T` (choice 1813): `ref T`, the value itself when `x` is its
+        // only owner and nothing looks at it, otherwise a copy that `x` owns alone from then on.
+        if name == "makeUnique" {
+            if let Ty::Shared(inner, checked) = recv_ty.strip_borrow() {
+                let text = &self.src[recv.span.start..recv.span.end];
+                if !args.is_empty() {
+                    return Err(Diag::error(span, format!("`makeUnique` takes 0 argument(s), {} given", args.len())));
+                }
+                if *checked || matches!(**inner, Ty::Locked(_)) {
+                    return Err(Diag::error(name_span, format!("`makeUnique` is for a `shared` value, which is only read; a `{}` is changed where it is", recv_ty.strip_borrow()))
+                        .hint(format!("`ref {text} as v {{ ... }}`")));
+                }
+                if !is_place {
+                    return Err(Diag::error(recv.span, "`makeUnique` needs a variable or a field: it may put a copy there")
+                        .hint(format!("give the value a name first: `var value = {text}`")));
+                }
+                if !can_clone(inner, &self.names.clonable, self.copyable) {
+                    let diag = Diag::error(name_span, format!("`makeUnique` copies the value when it has other owners, and a `{inner}` cannot be cloned"));
+                    return Err(match lacking(inner, &self.names.clonable) {
+                        Some(lacks) => diag.hint(format!("make `{lacks}` `Clonable`")),
+                        None => diag,
+                    });
+                }
+                if let Some(diag) = self.readonly(recv) {
+                    return Err(diag.note("`makeUnique` may put a copy in its place"));
+                }
+                if !writable {
+                    return Err(Diag::error(recv.span, "this is reached through a `read` borrow, and `makeUnique` may put a copy in its place")
+                        .hint("lend it as `ref` instead of `read`"));
+                }
+                self.not_locked(recv, Access::Write)?;
+                *callee = Callee::Plain;
+                return Ok(Ty::Ref(inner.clone()));
+            }
+        }
+        // `.clone()` of a `Clonable` type without a `clone` of its own, and of a collection of what
+        // can be cloned, is made by the language: a copy, field by field and item by item (1818).
+        if name == "clone" {
+            let mut target = recv_ty.strip_borrow();
+            while let Ty::Ptr(inner) | Ty::Read(inner) | Ty::Ref(inner) = target {
+                target = inner;
+            }
+            let made = match target {
+                Ty::Struct(owner) | Ty::Enum(owner) => {
+                    let own = self.structs.get(owner).is_some_and(|info| info.methods.contains_key("clone")) || self.enums.get(owner).is_some_and(|info| info.methods.contains_key("clone"));
+                    !own && (self.names.clonable.contains(owner) || target.is_copyable(self.copyable))
+                }
+                Ty::List(_) | Ty::Set(_) | Ty::Map(..) => true,
+                _ => false,
+            };
+            if made {
+                if !args.is_empty() {
+                    return Err(Diag::error(span, format!("`clone` takes 0 argument(s), {} given", args.len())));
+                }
+                if !can_clone(target, &self.names.clonable, self.copyable) {
+                    let diag = Diag::error(name_span, format!("a `{target}` cannot be cloned: what it holds cannot be copied"));
+                    return Err(match lacking(target, &self.names.clonable) {
+                        Some(inner) => diag.hint(format!("make `{inner}` `Clonable`: `{} : Clonable`", inner.rsplit('.').next().unwrap_or(inner))),
+                        None => diag.note("a task, a stream, a process and the like have one owner; they are not copied"),
+                    });
+                }
+                *callee = Callee::Clone(target.clone());
+                return Ok(target.clone());
+            }
+        }
         // Like field access, a method call looks through pointers and borrows.
         let mut borrowed = false;
         let mut shared = false;
@@ -13860,6 +13980,9 @@ impl<'a> Checker<'a> {
             Ty::Char => self.coerce(arg, found, &Ty::Char),
             Ty::Int(IntTy::Byte) if bytes => self.coerce(arg, found.clone(), &Ty::Int(IntTy::Byte)),
             Ty::Str => self.coerce(arg, found, &text),
+            // A `shared string` lent with `read` is looked at where it lies, as a parameter takes it
+            // (choice 1816).
+            Ty::Shared(inner, _) if **inner == Ty::Str => self.coerce(arg, found, &text),
             Ty::Int(IntTy::Byte) => Err(Diag::error(arg.span, format!("`{method}` looks for a `char` or a `read string`, found `byte`"))
                 .hint("the character of an ASCII byte: `(char)b`")),
             _ => Err(Diag::error(arg.span, format!("`{method}` looks for a `char` or a `read string`, found `{found}`"))),

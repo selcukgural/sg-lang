@@ -31,6 +31,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [21 November 2026](2026-11-21.md) | 145–152 | A const without calls, `copyFrom`, the normal forms of Unicode, default values of parameters, and `std` measured against Rust and Zig. |
 | [22 November 2026](2026-11-22.md) | 153–158 | Time, random numbers and the log measured against Rust and Zig; the network; an exit with an error lets its tasks go; servers measured against Rust, Zig and C; a loop of the network on each thread; a group of tasks, limits and a graceful end for a server. |
 | [23 November 2026](2026-11-23.md) | 159, 160, 161, 162, 163, 164, 165 | A list of borrows, a reader that lends slices and a send of several pieces for a server; what the servers stand, and where they break; a slice that may be missing and a linked source; `std/http`, the server's side of HTTP/1.1; the command line, the environment and paths measured; a search in any case and the DFA's reads; a search from the inner text. |
+| [24 November 2026](2026-11-24.md) | 166 | A `jq` of JSON in SG, Rust and Zig, held to jq 1.8.2; a reader of JSON's tokens, `Clonable` and `makeUnique`, `try` in an argument of compiled code, `(?x)`, and a stack of 1 GB that says when it overflows. |
 
 ## Every slice
 
@@ -249,3 +250,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [163](2026-11-23.md#slice-163) | The command line, the environment and paths, measured; `Path.push` | 1795–1802 |
 | [164](2026-11-23.md#slice-164) | A regular expression that reads every byte: a search in any case, and the DFA's reads | 1803 |
 | [165](2026-11-23.md#slice-165) | A search from the inner text, as Rust's | none |
+| [166](2026-11-24.md#slice-166) | A `jq` of JSON; a reader of JSON's tokens; `Clonable` and `makeUnique`; `try` in an argument; `(?x)`; a stack of 1 GB that says when it overflows | 1804–1826 |

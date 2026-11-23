@@ -1,0 +1,85 @@
+// `try` inside a call's argument, where what comes before it only reads (choice 1817): compiled
+// code computes it first, under a name, and a way out leaves nothing behind.
+
+Result<int, string> number(int x) {
+    if x > 2 {
+        return Error($"{x} is too big".toString())
+    }
+    return Ok(x * 10)
+}
+
+Result<string, string> word(int x) {
+    if x > 2 {
+        return Error($"no word for {x}".toString())
+    }
+    return Ok($"word {x}".toString())
+}
+
+struct Bag {
+    List<string> words
+    int count
+
+    void put(ref this, int weight, string w) {
+        this.words.add(w)
+        this.count += weight
+    }
+}
+
+Result<int, string> numbers(int upTo) {
+    var xs = List<int>()
+    for i in 0..upTo {
+        xs.add(try number(i))
+    }
+    print(xs)
+    return Ok((int)xs.length())
+}
+
+Result<int, string> words(int upTo) {
+    var names = List<string> { "first" }
+    var held = "kept until the end"
+    var seen = HashMap<string, int>()
+    for i in 0..upTo {
+        names.add(try word(i))
+        seen.add(try word(i), i)
+    }
+    print($"{names} {seen.length()} {held}")
+    return Ok((int)names.length())
+}
+
+Result<int, string> bag(int upTo) {
+    var b = Bag { words = List<string>(), count = 0 }
+    for i in 0..upTo {
+        b.put(2, try word(i))
+    }
+    print($"{b.words} {b.count}")
+    return Ok(b.count)
+}
+
+// A receiver reached through a field.
+Result<int, string> nested(int upTo) {
+    var b = Bag { words = List<string>(), count = 0 }
+    for i in 0..upTo {
+        b.words.add(try word(i))
+        b.put(1, try word(i))
+    }
+    print($"{b.words} {b.count}")
+    return Ok(b.count)
+}
+
+void show(Result<int, string> r) {
+    match r {
+        Ok(n) => print($"ok {n}")
+        Error(e) => print($"error: {e}")
+    }
+}
+
+void main() {
+    show(numbers(3))
+    show(numbers(5))
+    show(words(3))
+    show(words(4))
+    show(bag(2))
+    show(bag(9))
+    show(nested(2))
+    show(nested(3))
+}

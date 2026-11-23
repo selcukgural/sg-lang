@@ -1,0 +1,10 @@
+// `makeUnique` may put a copy in the variable, so it is not called through a `read` borrow.
+void grow(read shared List<int> xs) {
+    var items = xs.makeUnique()
+    items.add(1)
+}
+
+void main() {
+    var xs = new shared List<int>()
+    grow(read xs)
+}

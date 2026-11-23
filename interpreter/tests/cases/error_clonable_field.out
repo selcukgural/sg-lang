@@ -1,0 +1,5 @@
+error: `Shape` cannot be `Clonable` field by field: `points` is a `List<Point>`, which `clone` cannot copy
+  --> error_clonable_field.sg:7:5
+ 7 |     List<Point> points
+   |     ^^^^^^^^^^^
+  hint: make `Point` `Clonable` too

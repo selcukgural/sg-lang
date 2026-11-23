@@ -460,6 +460,9 @@ pub enum This {
 pub enum Callee {
     /// A top-level function, a built-in function or a built-in method.
     Plain,
+    /// `.clone()` made by the language, of a `Clonable` type or a collection: a copy of the
+    /// value of this type, field by field and item by item (choice 1818).
+    Clone(Ty),
     /// A function of a struct that has no `this`: `Stack.create()`, `Stack()`.
     Static { owner: String, name: String },
     /// A method of a struct, called on a value. `whole`: the method takes the value that

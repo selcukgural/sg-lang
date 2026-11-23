@@ -1,0 +1,4 @@
+alone, changed in place: 3
+shared, copied: a 4 b 3 same false
+weak looker kept the old: gone new xy
+grown 100000

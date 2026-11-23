@@ -1,0 +1,376 @@
+// Numbers as jq 1.8 writes them. A number computed is a `double`, written with the fewest digits that
+// read back the same, laid out as jq's `jvp_dtoa_fmt` lays them out. A number read and not changed
+// keeps its literal, written as decNumber's to-scientific-string writes it, and two literals are
+// compared exactly.
+
+// The digits of a `double` and where its decimal point is: the value is 0.d1d2d3... × 10^point.
+struct Digits {
+    string digits
+    int point
+}
+
+// The fewest digits of `d`, which is finite and not 0, from SG's own writing of it (JavaScript's
+// layout: `1e+21`, `1.5e-7`, `0.000001`, `123.25`).
+Digits shortestDigits(double d) {
+    string text = $"{d.abs()}".toString()
+    var bytes = text.asBytes()
+    string digits = string.withCapacity(24)
+    int point = 0
+    bool seenPoint = false
+    int exponent = 0
+    nint i = 0
+    while i < bytes.length() {
+        byte c = bytes[i]
+        if c == '.' {
+            seenPoint = true
+        } else if c == 'e' {
+            var rest = text[i + 1..text.length()]
+            exponent = int.parse(read rest) ?? panic("the exponent of a number written by SG")
+            break
+        } else {
+            if digits.length() == 0 && c == '0' {
+                // A leading zero: one place fewer before the point.
+                if seenPoint {
+                    point -= 1
+                }
+            } else {
+                digits.write((char)c)
+                if !seenPoint {
+                    point += 1
+                }
+            }
+        }
+        i += 1
+    }
+    // Zeros at the end say nothing: `100000` is 1 with the point after six places.
+    nint end = digits.length()
+    while end > 1 && digits[end - 1] == '0' {
+        end -= 1
+    }
+    if end < digits.length() {
+        digits = digits[0..end].clone()
+    }
+    return Digits { digits = digits, point = point + exponent }
+}
+
+// A computed number as jq writes it: NaN as `null`, the infinities as the largest `double`.
+void writeDouble(ref string out, double value) {
+    double d = value
+    if d.isNaN() {
+        out.write("null")
+        return
+    }
+    if !d.isFinite() {
+        if d < 0.0 {
+            d = -double.MaxValue
+        } else {
+            d = double.MaxValue
+        }
+    }
+    if d == 0.0 {
+        if d.isSignNegative() {
+            out.write("-0")
+        } else {
+            out.write("0")
+        }
+        return
+    }
+    if d < 0.0 {
+        out.write('-')
+    }
+    var found = shortestDigits(d)
+    var digits = found.digits.asBytes()
+    int count = (int)digits.length()
+    int point = found.point
+    if point <= -4 || point > count + 15 {
+        out.write((char)digits[0])
+        if count > 1 {
+            out.write('.')
+            for i in 1..count {
+                out.write((char)digits[i])
+            }
+        }
+        out.write('e')
+        int e = point - 1
+        if e < 0 {
+            out.write('-')
+            e = -e
+        } else {
+            out.write('+')
+        }
+        if e < 10 {
+            out.write('0')
+        }
+        out.write(e)
+    } else if point <= 0 {
+        out.write("0.")
+        for _ in 0..-point {
+            out.write('0')
+        }
+        out.write(read found.digits)
+    } else {
+        for i in 0..count {
+            out.write((char)digits[i])
+            if i + 1 == point && i + 1 < count {
+                out.write('.')
+            }
+        }
+        for _ in count..point {
+            out.write('0')
+        }
+    }
+}
+
+// A number written as decimal digits, a sign and an exponent: the value is ±coefficient × 10^exponent.
+struct Decimal {
+    bool negative
+    string coefficient
+    long exponent
+}
+
+const long LiteralTiny = -1_147_483_646
+
+// The parts of a JSON number's literal; `null` when its exponent is past what decNumber holds.
+Decimal? decimalOf(read string literal) {
+    var bytes = literal.asBytes()
+    nint i = 0
+    bool negative = false
+    if i < bytes.length() && bytes[i] == '-' {
+        negative = true
+        i += 1
+    }
+    string coefficient = string.withCapacity(bytes.length())
+    long fraction = 0
+    bool inFraction = false
+    while i < bytes.length() && bytes[i] != 'e' && bytes[i] != 'E' {
+        byte c = bytes[i]
+        if c == '.' {
+            inFraction = true
+        } else {
+            if coefficient.length() > 0 || c != '0' {
+                coefficient.write((char)c)
+            }
+            if inFraction {
+                fraction += 1
+            }
+        }
+        i += 1
+    }
+    long exponent = 0
+    if i < bytes.length() {
+        i += 1
+        bool minus = false
+        if bytes[i] == '+' {
+            i += 1
+        } else if bytes[i] == '-' {
+            minus = true
+            i += 1
+        }
+        bool huge = false
+        while i < bytes.length() {
+            if exponent > 10_000_000_000 {
+                huge = true
+            } else {
+                exponent = exponent * 10 + (long)(bytes[i] - '0')
+            }
+            i += 1
+        }
+        // An exponent past any limit: an infinity, or a zero at the smallest exponent.
+        if huge && !minus {
+            return null
+        }
+        if huge {
+            return Decimal { negative = negative, coefficient = "0", exponent = LiteralTiny }
+        }
+        if minus {
+            exponent = -exponent
+        }
+    }
+    if coefficient.length() == 0 {
+        coefficient.write('0')
+    }
+    exponent -= fraction
+    long adjusted = exponent + (long)coefficient.length() - 1
+    // decNumber as jq sets it up: past an adjusted exponent of 999,999,999 there is no literal (the
+    // number is an infinity); below -999,999,999 a number goes on, with fewer digits, down to an
+    // exponent of -1,147,483,646, and is 0 there below it.
+    if adjusted > 999_999_999 {
+        return null
+    }
+    if exponent < LiteralTiny {
+        coefficient = roundedAway(read coefficient, LiteralTiny - exponent)
+        exponent = LiteralTiny
+    }
+    return Decimal { negative = negative, coefficient = coefficient, exponent = exponent }
+}
+
+// The digits of `coefficient` with its last `drop` taken away, rounded half up, as jq's decNumber
+// rounds a number below its smallest exponent: `15` with one dropped is `2`, `99` is `10`.
+string roundedAway(read string coefficient, long drop) {
+    var c = coefficient.asBytes()
+    long count = (long)c.length()
+    if drop > count {
+        return "0"
+    }
+    nint keep = (nint)(count - drop)
+    string kept = coefficient[0..keep].clone()
+    bool up = c[keep] >= '5'
+    if kept.length() == 0 {
+        if up {
+            return "1"
+        }
+        return "0"
+    }
+    if !up {
+        return kept
+    }
+    // One more in the last place, carried.
+    var digits = List<byte>()
+    for b in kept.asBytes() {
+        digits.add(b)
+    }
+    nint i = digits.length()
+    while i > 0 {
+        i -= 1
+        if digits[i] == '9' {
+            digits[i] = '0'
+        } else {
+            digits[i] = digits[i] + 1
+            break
+        }
+    }
+    string out = string.withCapacity(digits.length() + 1)
+    if digits[0] == '0' {
+        out.write('1')
+    }
+    for d in digits {
+        out.write((char)d)
+    }
+    return out
+}
+
+// The literal as decNumber's to-scientific-string writes it: `1.5e3` → `1.5E+3`, `0.00001` stays,
+// `1e-7` → `1E-7`; `null` when decNumber cannot hold it, and the number is then its `double`.
+string? canonicalLiteral(read string literal) {
+    var parts = decimalOf(literal)
+    if parts is null {
+        return null
+    }
+    string out = string.withCapacity(literal.length() + 4)
+    if parts.negative {
+        out.write('-')
+    }
+    var c = parts.coefficient.asBytes()
+    long count = (long)c.length()
+    long exponent = parts.exponent
+    long adjusted = exponent + count - 1
+    if exponent <= 0 && adjusted >= -6 {
+        if exponent == 0 {
+            out.write(read parts.coefficient)
+        } else {
+            long point = count + exponent
+            if point > 0 {
+                for i in 0..c.length() {
+                    if (long)i == point {
+                        out.write('.')
+                    }
+                    out.write((char)c[i])
+                }
+            } else {
+                out.write("0.")
+                for _ in 0..-point {
+                    out.write('0')
+                }
+                out.write(read parts.coefficient)
+            }
+        }
+    } else {
+        out.write((char)c[0])
+        if count > 1 {
+            out.write('.')
+            for i in 1..c.length() {
+                out.write((char)c[i])
+            }
+        }
+        out.write('E')
+        if adjusted >= 0 {
+            out.write('+')
+        }
+        out.write(adjusted)
+    }
+    return out
+}
+
+// Two literals compared by their values, exactly: `1.0` and `1` are equal, and
+// `100000000000000000001` is larger than `100000000000000000000`.
+int compareLiterals(read string a, read string b) {
+    var x = decimalOf(a) ?? panic("a literal is kept only when decNumber holds it")
+    var y = decimalOf(b) ?? panic("a literal is kept only when decNumber holds it")
+    bool xZero = x.coefficient == "0"
+    bool yZero = y.coefficient == "0"
+    if xZero && yZero {
+        return 0
+    }
+    int sx = 1
+    if xZero {
+        sx = 0
+    } else if x.negative {
+        sx = -1
+    }
+    int sy = 1
+    if yZero {
+        sy = 0
+    } else if y.negative {
+        sy = -1
+    }
+    if sx != sy {
+        if sx < sy {
+            return -1
+        }
+        return 1
+    }
+    int magnitude = compareMagnitudes(read x, read y)
+    return magnitude * sx
+}
+
+// |x| against |y|, neither 0.
+int compareMagnitudes(read Decimal x, read Decimal y) {
+    var a = x.coefficient.asBytes()
+    var b = y.coefficient.asBytes()
+    // Zeros at the end of a coefficient move into the exponent.
+    nint ea = a.length()
+    while ea > 1 && a[ea - 1] == '0' {
+        ea -= 1
+    }
+    nint eb = b.length()
+    while eb > 1 && b[eb - 1] == '0' {
+        eb -= 1
+    }
+    long adjustedA = x.exponent + (long)a.length() - 1
+    long adjustedB = y.exponent + (long)b.length() - 1
+    if adjustedA != adjustedB {
+        if adjustedA < adjustedB {
+            return -1
+        }
+        return 1
+    }
+    nint n = ea.max(eb)
+    for i in 0..n {
+        byte da = '0'
+        if i < ea {
+            da = a[i]
+        }
+        byte db = '0'
+        if i < eb {
+            db = b[i]
+        }
+        if da != db {
+            if da < db {
+                return -1
+            }
+            return 1
+        }
+    }
+    return 0
+}
+

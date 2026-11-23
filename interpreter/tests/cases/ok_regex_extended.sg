@@ -1,0 +1,35 @@
+// `(?x)`, choice 1822: spaces and `#` comments to the end of a line are passed over outside a class,
+// as Rust's `regex` and PCRE have it; `\ ` and `\#` are themselves, and a class keeps its spaces.
+
+void show(read string pattern, read string text) {
+    match Regex.compile(read pattern) {
+        Ok(re) => print($"{pattern} on \"{text}\": {re.findAll(read text)}")
+        Error(e) => print($"{pattern}: {e}")
+    }
+}
+
+void main() {
+    show("(?x) a b c", "abc a b c")
+    show("(?x) a +", "aaa a")
+    show("(?x) a {2}", "aaa")
+    show("(?x) [ ]+ x", "a  x")
+    show("(?x) a\\ b", "a b ab")
+    show("(?x) a \\# b", "a#b")
+    show("(?x) a [#] b", "a#b")
+    show("(?x) a # comment\n b", "ab")
+    show("(?x) a # comment to the end", "a")
+    show("(?x)(?<year> \\d{4} ) - (?<month> \\d\\d )", "2026-11 2026 - 11")
+    show("(?x: a b ) c d", "ab c d abcd")
+    show("(?x) a (?-x: b c ) d", "a b c d abcd")
+    show("(?xi) e r r o r", "ERROR error")
+    show("(?x)\n  ^ \\w+   # a word\n  @ example \\. com $\n", "who@example.com")
+    show("(?x)", "ab")
+    show("(?x) \\Q a b \\E", " a b ab")
+    // Spaces in a count and before the `?` of a lazy one, as Rust's `regex` reads them.
+    show("(?x) a{ 2 }", "aa")
+    show("(?x) a{2 , 3}", "aaa")
+    show("(?x) a { 2, }", "aaaa")
+    show("(?x) a{2} ?", "aaa")
+    show("(?x) a+ ? b", "aab")
+    show("a{ 2 }", "a{ 2 }")
+}

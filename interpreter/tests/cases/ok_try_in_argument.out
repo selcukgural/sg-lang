@@ -1,0 +1,13 @@
+[0, 10, 20]
+ok 3
+error: 3 is too big
+["first", "word 0", "word 1", "word 2"] 3 kept until the end
+ok 4
+error: no word for 3
+["word 0", "word 1"] 4
+ok 4
+error: no word for 3
+["word 0", "word 0", "word 1", "word 1"] 2
+ok 2
+["word 0", "word 0", "word 1", "word 1", "word 2", "word 2"] 3
+ok 3

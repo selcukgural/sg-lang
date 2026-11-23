@@ -1,0 +1,5 @@
+error: this is not the `clone` that `Clonable` asks for
+  --> error_clonable_own_clone.sg:5:13
+ 5 |     Counter clone(read this, int extra) {
+   |             ^^^^^
+  hint: `Counter clone(read this)`, or no `clone` at all: then it is made field by field

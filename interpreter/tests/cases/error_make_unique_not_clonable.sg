@@ -1,0 +1,10 @@
+// `makeUnique` copies the value when it has other owners, so the value must be one `clone` copies.
+struct Job {
+    string name
+}
+
+void main() {
+    var jobs = new shared List<Job>()
+    var items = jobs.makeUnique()
+    items.add(Job { name = "a" })
+}

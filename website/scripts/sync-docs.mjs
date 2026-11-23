@@ -29,7 +29,7 @@ const pages = [
   benchmark('README.md', 'index.md', 'Benchmarks', 'How fast SG is against C, Rust and Zig, and how it is measured.', 0),
   benchmark('against-c.md', 'against-c.md', 'SG against C', 'Sixty programs written in SG and in C by hand, built by the same C compiler.', 1),
   benchmark('against-c-windows.md', 'against-c-windows.md', 'SG against C on Windows', 'The same programs on Windows 11 on Arm.', 2),
-  benchmark('programs.md', 'programs.md', 'Programs against Rust and Zig', 'wc and grep written in SG, Rust and Zig.', 3),
+  benchmark('programs.md', 'programs.md', 'Programs against Rust and Zig', 'wc, grep and jq written in SG, Rust and Zig.', 3),
   benchmark('library.md', 'library.md', 'The library against Rust and Zig', 'The modules of std against Rust crates and the Zig library.', 4),
   benchmark('server.md', 'server.md', 'Servers against Rust, Zig and C', 'A store that speaks Redis\'s protocol and an HTTP server, on Linux, under load and idle, and where they break.', 5),
   benchmark('robustness.md', 'robustness.md', 'What the servers stand', 'The servers against clients that reset, close half, trickle, do not read, send garbage, and SIGTERM.', 6),

@@ -88,7 +88,7 @@ a{1001}: column 2: invalid repeat count: at most 1000, and the second not below 
 a{3,2}: column 2: invalid repeat count: at most 1000, and the second not below the first
 (?<>a): column 4: invalid group name: letters, digits and _
 (?<n>a)(?<n>b): column 11: duplicate group name 'n'
-(?x): column 1: invalid flags: i, m, s and U
+(?q): column 1: invalid flags: i, m, s, U and x
 (?=a): column 1: look-around is not supported: a match never looks ahead or behind
 (?<!a): column 1: look-around is not supported: a match never looks ahead or behind
 \p{Xx}: column 1: unknown class 'Xx'

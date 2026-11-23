@@ -1,0 +1,21 @@
+[package]
+name = "jq"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# `arbitrary_precision` keeps each number's literal, as jq 1.8 keeps it (written back as decNumber
+# writes it, compared exactly). `preserve_order` keeps the members of an object in the order they
+# came, a name given twice keeping its first place, as jq does. `float_roundtrip` reads a number to
+# the nearest double, as SG and Zig do (choice 1634). `unbounded_depth` lifts `serde_json`'s limit of
+# 128 levels: jq reads 10,000, and the program's reader refuses 10,001 itself.
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order", "float_roundtrip", "unbounded_depth"] }
+# The traits `serde_json` reads through: the program's own value is built straight from its tokens by
+# a `DeserializeSeed`, with no `serde_json::Value` in between.
+serde = "1"
+# `test(re)` reads its pattern with the regular expressions people use in Rust (jq's are Oniguruma's).
+regex = "1"
+# An object keeping the order its names came in: the standard library has no such map. It is the map
+# `serde_json`'s `preserve_order` is built on, so nothing more is compiled for it.
+indexmap = "2"

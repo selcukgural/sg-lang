@@ -1,0 +1,13 @@
+// A `clone` of the type's own must be the one `Clonable` asks for.
+struct Counter : Clonable {
+    int n
+
+    Counter clone(read this, int extra) {
+        return Counter { n = this.n + extra }
+    }
+}
+
+void main() {
+    var c = Counter { n = 1 }
+    print(c.n)
+}

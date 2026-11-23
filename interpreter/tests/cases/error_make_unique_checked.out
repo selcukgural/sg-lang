@@ -1,0 +1,5 @@
+error: `makeUnique` is for a `shared` value, which is only read; a `shared checked List<int>` is changed where it is
+  --> error_make_unique_checked.sg:4:24
+ 4 |     var items = counts.makeUnique()
+   |                        ^^^^^^^^^^
+  hint: `ref counts as v { ... }`

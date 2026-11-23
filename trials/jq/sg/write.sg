@@ -1,0 +1,182 @@
+// Values written as jq 1.8 writes them: two spaces a level by default, `--indent n`, `--tab`, `-c` on one
+// line, `-S` with the names of every object sorted. What is written gathers in a block of 64 KB of the
+// program's own, given to the standard output when it is full.
+
+struct Layout : Copyable {
+    // Spaces a level; -1 writes one line with no spaces (`-c`).
+    int indent
+    bool tab
+    bool sortKeys
+}
+
+struct Output {
+    string buffer
+    Layout layout
+    // Whether the block goes to the standard output when it is full; a text made by `tojson` stays.
+    bool flushes
+}
+
+const nint OutputBlock = 65536
+
+void flush(ref Output o) {
+    if o.buffer.length() == 0 {
+        return
+    }
+    match Stdout.write(read o.buffer) {
+        Ok => {}
+        Error(cause) => {
+            printError($"jq: error: cannot write: {cause}")
+            exit(2)
+        }
+    }
+    o.buffer.clear()
+}
+
+void flushIfFull(ref Output o) {
+    if o.flushes && o.buffer.length() >= OutputBlock {
+        flush(ref o)
+    }
+}
+
+const char[16] HexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
+
+// A text in quotes, escaped as jq escapes it: `"`, `\`, the short escapes, every other byte below
+// 0x20 and 0x7F as `\u00XX`; nothing else.
+void writeString(ref string out, read string s) {
+    var bytes = s.asBytes()
+    out.write('"')
+    nint start = 0
+    for i in 0..bytes.length() {
+        byte c = bytes[i]
+        if c >= 0x20 && c != '"' && c != '\\' && c != 0x7F {
+            continue
+        }
+        if start < i {
+            out.write(s[start..i])
+        }
+        start = i + 1
+        if c == '"' {
+            out.write("\\\"")
+        } else if c == '\\' {
+            out.write("\\\\")
+        } else if c == '\n' {
+            out.write("\\n")
+        } else if c == '\t' {
+            out.write("\\t")
+        } else if c == '\r' {
+            out.write("\\r")
+        } else if c == 0x08 {
+            out.write("\\b")
+        } else if c == 0x0C {
+            out.write("\\f")
+        } else {
+            out.write("\\u00")
+            out.write(HexDigits[(int)(c >> 4)])
+            out.write(HexDigits[(int)(c & 0x0F)])
+        }
+    }
+    if start < bytes.length() {
+        out.write(s[start..bytes.length()])
+    }
+    out.write('"')
+}
+
+void writeBreak(ref Output o, int level) {
+    if o.layout.indent < 0 {
+        return
+    }
+    o.buffer.write('\n')
+    if o.layout.tab {
+        for _ in 0..level {
+            o.buffer.write('\t')
+        }
+    } else {
+        for _ in 0..level * o.layout.indent {
+            o.buffer.write(' ')
+        }
+    }
+}
+
+// How deep jq writes a value: what lies deeper is written `<skipped: too deep>`.
+const int WriteDepthLimit = 10000
+
+void writeValue(ref Output o, read Jv v, int level) {
+    if level > WriteDepthLimit {
+        o.buffer.write("<skipped: too deep>")
+        return
+    }
+    match v {
+        Null => o.buffer.write("null")
+        False => o.buffer.write("false")
+        True => o.buffer.write("true")
+        Number(d) or Exact(d) => writeDouble(ref o.buffer, d)
+        Literal(n) => o.buffer.write(read n.text)
+        String(s) => writeString(ref o.buffer, read s)
+        Array(xs) => {
+            if xs.length() == 0 {
+                o.buffer.write("[]")
+                return
+            }
+            o.buffer.write('[')
+            for i in 0..xs.length() {
+                if i > 0 {
+                    o.buffer.write(',')
+                }
+                writeBreak(ref o, level + 1)
+                writeValue(ref o, read xs[i], level + 1)
+                flushIfFull(ref o)
+            }
+            writeBreak(ref o, level)
+            o.buffer.write(']')
+        }
+        Object(m) => {
+            if m.keys.length() == 0 {
+                o.buffer.write("{}")
+                return
+            }
+            o.buffer.write('{')
+            if o.layout.sortKeys {
+                var keys = sortedKeys(read m)
+                for i in 0..keys.length() {
+                    var at = objectFind(read m, read keys[i]) ?? panic("a name of the object")
+                    writeMember(ref o, read keys[i], read m.values[at], i, level)
+                }
+            } else {
+                for i in 0..m.keys.length() {
+                    writeMember(ref o, read m.keys[i], read m.values[i], i, level)
+                }
+            }
+            writeBreak(ref o, level)
+            o.buffer.write('}')
+        }
+    }
+}
+
+void writeMember(ref Output o, read string name, read Jv value, nint i, int level) {
+    if i > 0 {
+        o.buffer.write(',')
+    }
+    writeBreak(ref o, level + 1)
+    writeString(ref o.buffer, name)
+    o.buffer.write(':')
+    if o.layout.indent >= 0 {
+        o.buffer.write(' ')
+    }
+    writeValue(ref o, value, level + 1)
+    flushIfFull(ref o)
+}
+
+// The value on one line, as `tojson` and `tostring` give it.
+string toJson(read Jv v) {
+    var o = Output { buffer = string.withCapacity(64), layout = Layout { indent = -1, tab = false, sortKeys = false }, flushes = false }
+    writeValue(ref o, v, 0)
+    return o.buffer
+}
+
+// `tostring`: a text as it is, anything else as JSON.
+string toText(read Jv v) {
+    match v {
+        String(s) => return copyText(read s)
+        _ => return toJson(v)
+    }
+}

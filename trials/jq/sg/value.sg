@@ -1,0 +1,523 @@
+// The values of jq: null, false, true, a number, a text, an array and an object. Texts, arrays and
+// objects are shared by a count of their holders, so a value handed on is not copied. A number keeps,
+// beside its `double`, the text it was written with when it was read and not changed (its literal, in
+// the form decNumber writes it), as jq 1.8 does.
+
+// An object: its names in the order they came, and a table of their places once there are more
+// than `ObjectIndexAfter`.
+struct JvObject : Clonable {
+    List<string> keys
+    List<Jv> values
+    HashMap<string, nint> places
+}
+
+const nint ObjectIndexAfter = 16
+
+enum Jv : Clonable, Comparable {
+    Null
+    False
+    True
+    // A number computed.
+    Number(double value)
+    // A number read (in the input or the filter) and not changed, which its `double` writes as
+    // it was written.
+    Exact(double value)
+    // A number read and not changed, with its literal (choice 1805): one value is 16 bytes, as
+    // Rust's and Zig's are.
+    Literal(shared NumberText number)
+    String(shared string text)
+    Array(shared List<Jv> items)
+    Object(shared JvObject members)
+
+    // jq's order, so that an array held once is sorted where it lies.
+    int compare(read this, read Jv other) {
+        return compareValues(read this, read other)
+    }
+}
+
+// One more holder of the same value.
+Jv dup(read Jv v) {
+    match v {
+        Null => return Jv.Null
+        False => return Jv.False
+        True => return Jv.True
+        Number(d) => return Jv.Number(d)
+        Exact(d) => return Jv.Exact(d)
+        Literal(n) => return Jv.Literal(share n)
+        String(s) => return Jv.String(share s)
+        Array(xs) => return Jv.Array(share xs)
+        Object(o) => return Jv.Object(share o)
+    }
+}
+
+Jv jvBool(bool b) {
+    if b {
+        return Jv.True
+    }
+    return Jv.False
+}
+
+Jv jvNumber(double d) {
+    return Jv.Number(d)
+}
+
+// A number read, with its literal as decNumber writes it.
+Jv jvLiteral(double d, string text) {
+    return Jv.Literal(new shared NumberText { value = d, text = text })
+}
+
+// The literal of a number read and its `double`.
+struct NumberText : Clonable {
+    double value
+    string text
+}
+
+Jv jvText(string s) {
+    return Jv.String(new shared s)
+}
+
+Jv jvArray(List<Jv> items) {
+    return Jv.Array(new shared items)
+}
+
+Jv jvObject(JvObject o) {
+    return Jv.Object(new shared o)
+}
+
+JvObject emptyObject() {
+    return JvObject { keys = List<string>(), values = List<Jv>(), places = HashMap<string, nint>() }
+}
+
+JvObject objectWithCapacity(nint n) {
+    return JvObject { keys = List<string>.withCapacity(n), values = List<Jv>.withCapacity(n), places = HashMap<string, nint>() }
+}
+
+// Whether jq takes the value for true: all but `null` and `false`.
+bool truthy(read Jv v) {
+    match v {
+        Null => return false
+        False => return false
+        _ => return true
+    }
+}
+
+// The kind's place in jq's order of kinds.
+int kindRank(read Jv v) {
+    match v {
+        Null => return 0
+        False => return 1
+        True => return 2
+        Number(_) or Exact(_) or Literal(_) => {
+            return 3
+        }
+        String(_) => return 4
+        Array(_) => return 5
+        Object(_) => return 6
+    }
+}
+
+string kindName(read Jv v) {
+    match v {
+        Null => return "null"
+        False => return "boolean"
+        True => return "boolean"
+        Number(_) or Exact(_) or Literal(_) => {
+            return "number"
+        }
+        String(_) => return "string"
+        Array(_) => return "array"
+        Object(_) => return "object"
+    }
+}
+
+// The place of `name` in the object, or `null`.
+nint? objectFind(read JvObject o, read string name) {
+    if o.keys.length() > ObjectIndexAfter {
+        return o.places.get(name)
+    }
+    for i in 0..o.keys.length() {
+        if o.keys[i] == name {
+            return i
+        }
+    }
+    return null
+}
+
+// The member named `name` set to `value`: in its place when it is there, at the end when not.
+void objectSet(ref JvObject o, read string name, Jv value) {
+    var at = objectFind(read o, name)
+    if at is not null {
+        o.values[at] = value
+        return
+    }
+    o.keys.add(name.clone())
+    o.values.add(value)
+    nint count = o.keys.length()
+    if count == ObjectIndexAfter + 1 {
+        for i in 0..count {
+            o.places.add(o.keys[i].clone(), i)
+        }
+    } else if count > ObjectIndexAfter + 1 {
+        o.places.add(name.clone(), count - 1)
+    }
+}
+
+// The object without the member named `name`; the others keep their order.
+void objectRemove(ref JvObject o, read string name) {
+    var at = objectFind(read o, name)
+    if at is null {
+        return
+    }
+    var keys = List<string>.withCapacity(o.keys.length())
+    var values = List<Jv>.withCapacity(o.values.length())
+    for i in 0..o.keys.length() {
+        if i != at {
+            keys.add(o.keys[i].clone())
+            values.add(dup(read o.values[i]))
+        }
+    }
+    var places = HashMap<string, nint>()
+    if keys.length() > ObjectIndexAfter {
+        for i in 0..keys.length() {
+            places.add(keys[i].clone(), i)
+        }
+    }
+    o.keys = keys
+    o.values = values
+    o.places = places
+}
+
+// A copy of the object that may be changed: the members are new holders of the same values.
+JvObject objectCopy(read JvObject o) {
+    var c = objectWithCapacity(o.keys.length() + 1)
+    for i in 0..o.keys.length() {
+        c.keys.add(o.keys[i].clone())
+        c.values.add(dup(read o.values[i]))
+    }
+    if c.keys.length() > ObjectIndexAfter {
+        for i in 0..c.keys.length() {
+            c.places.add(c.keys[i].clone(), i)
+        }
+    }
+    return c
+}
+
+List<Jv> arrayCopy(read List<Jv> xs, nint extra) {
+    var c = List<Jv>.withCapacity(xs.length() + extra)
+    for i in 0..xs.length() {
+        c.add(dup(read xs[i]))
+    }
+    return c
+}
+
+// The names of the object in the order of their bytes, as jq's `keys` gives them.
+List<string> sortedKeys(read JvObject o) {
+    var keys = List<string>.withCapacity(o.keys.length())
+    for i in 0..o.keys.length() {
+        keys.add(o.keys[i].clone())
+    }
+    keys.sort()
+    return keys
+}
+
+int compareBytes(read string a, read string b) {
+    var x = a.asBytes()
+    var y = b.asBytes()
+    nint n = x.length().min(y.length())
+    for i in 0..n {
+        if x[i] != y[i] {
+            if x[i] < y[i] {
+                return -1
+            }
+            return 1
+        }
+    }
+    if x.length() < y.length() {
+        return -1
+    }
+    if x.length() > y.length() {
+        return 1
+    }
+    return 0
+}
+
+int compareNumbers(read Jv x, read Jv y) {
+    bool lx = isLiteral(x)
+    bool ly = isLiteral(y)
+    // Two numbers read are compared exactly when one keeps its text; one read without its text
+    // is what its `double` writes.
+    if isRead(x) && isRead(y) && (lx || ly) {
+        return compareLiterals(read literalText(x), read literalText(y))
+    }
+    double a = numberOf(x)
+    double b = numberOf(y)
+    // jq puts NaN below every number, and does not take it for equal to itself.
+    if a.isNaN() {
+        return -1
+    }
+    if b.isNaN() {
+        return 1
+    }
+    if a < b {
+        return -1
+    }
+    if a == b {
+        // A literal is finite however large: `1E+999999999` is below the infinity it rounds to.
+        if !a.isFinite() && lx != ly {
+            int finiteFirst = 1
+            if a > 0.0 {
+                finiteFirst = -1
+            }
+            if lx {
+                return finiteFirst
+            }
+            return -finiteFirst
+        }
+        return 0
+    }
+    return 1
+}
+
+// How deep jq compares: an array or an object entered past this many levels is an error,
+// "Equality check too deep" for `==` and "Comparison too deep" for the order. The error is kept
+// here by the comparison and raised by what called it (`tooDeep`).
+const int CompareDepthLimit = 10000
+static atomic int CompareTooDeep = atomic 0
+const int DeepEquality = 1
+const int DeepOrder = 2
+
+// The error a comparison left, if any, taken.
+Jv? tooDeep() {
+    int kind = CompareTooDeep.exchange(0)
+    if kind == DeepEquality {
+        return jvText("Equality check too deep")
+    }
+    if kind == DeepOrder {
+        return jvText("Comparison too deep")
+    }
+    return null
+}
+
+bool isLiteral(read Jv v) {
+    match v {
+        Literal(_) => return true
+        _ => return false
+    }
+}
+
+// Read and not changed since: a literal, with its text or without.
+bool isRead(read Jv v) {
+    match v {
+        Exact(_) or Literal(_) => return true
+        _ => return false
+    }
+}
+
+// The literal of a number read: its text, or the `double`'s own, which is the literal when no
+// text was kept.
+string literalText(read Jv v) {
+    match v {
+        Literal(n) => return n.text.clone()
+        _ => {
+            string text = string.withCapacity(24)
+            writeDouble(ref text, numberOf(v))
+            return text
+        }
+    }
+}
+
+// jq's order: null < false < true < numbers < texts < arrays < objects; texts by their bytes, arrays
+// item by item, objects by their sorted names and then by the values in that order.
+int compareValues(read Jv a, read Jv b) {
+    return compareAt(a, b, 1)
+}
+
+int compareAt(read Jv a, read Jv b, int depth) {
+    int ra = kindRank(a)
+    int rb = kindRank(b)
+    if ra != rb {
+        if ra < rb {
+            return -1
+        }
+        return 1
+    }
+    // As jq 1.8.2 counts, the outermost value at 1 (found by measuring jq itself): the items of two
+    // arrays are compared only below the limit, so two empty arrays are equal at any depth; an
+    // object is looked at only below it, and its sorted names are two arrays one level further
+    // in, then its values. There is no shortcut for a value held twice.
+    match a {
+        Number(_) or Exact(_) or Literal(_) => return compareNumbers(a, b)
+        String(s) => {
+            match b {
+                String(t) => return compareBytes(read s, read t)
+                _ => return 0
+            }
+        }
+        Array(xs) => {
+            match b {
+                Array(ys) => {
+                    nint n = xs.length().min(ys.length())
+                    if n > 0 && depth > CompareDepthLimit {
+                        CompareTooDeep.store(DeepOrder)
+                        return 0
+                    }
+                    for i in 0..n {
+                        int c = compareAt(read xs[i], read ys[i], depth + 1)
+                        if c != 0 {
+                            return c
+                        }
+                    }
+                    if xs.length() < ys.length() {
+                        return -1
+                    }
+                    if xs.length() > ys.length() {
+                        return 1
+                    }
+                    return 0
+                }
+                _ => return 0
+            }
+        }
+        Object(o) => {
+            match b {
+                Object(p) => {
+                    if depth > CompareDepthLimit {
+                        CompareTooDeep.store(DeepOrder)
+                        return 0
+                    }
+                    // The sorted names are compared as an array of their own, one level further in.
+                    var ka = sortedKeys(read o)
+                    var kb = sortedKeys(read p)
+                    nint n = ka.length().min(kb.length())
+                    if n > 0 && depth + 1 > CompareDepthLimit {
+                        CompareTooDeep.store(DeepOrder)
+                        return 0
+                    }
+                    for i in 0..n {
+                        int c = compareBytes(read ka[i], read kb[i])
+                        if c != 0 {
+                            return c
+                        }
+                    }
+                    if ka.length() != kb.length() {
+                        if ka.length() < kb.length() {
+                            return -1
+                        }
+                        return 1
+                    }
+                    for i in 0..ka.length() {
+                        var x = objectFind(read o, read ka[i]) ?? panic("a name of the object")
+                        var y = objectFind(read p, read kb[i]) ?? panic("a name of the object")
+                        int c = compareAt(read o.values[x], read p.values[y], depth + 1)
+                        if c != 0 {
+                            return c
+                        }
+                    }
+                    return 0
+                }
+                _ => return 0
+            }
+        }
+        _ => return 0
+    }
+}
+
+// `==`: equal by jq's order, but a value is equal to itself at once, however deep (an array or an
+// object held twice), and the names of an object are no level of their own.
+bool equalValues(read Jv a, read Jv b) {
+    return equalAt(a, b, 1)
+}
+
+bool equalAt(read Jv a, read Jv b, int depth) {
+    int ra = kindRank(a)
+    if ra != kindRank(b) {
+        return false
+    }
+    match a {
+        Array(xs) => {
+            match b {
+                Array(ys) => {
+                    if same(xs, ys) {
+                        return true
+                    }
+                    if depth > CompareDepthLimit {
+                        CompareTooDeep.store(DeepEquality)
+                        return false
+                    }
+                    if xs.length() != ys.length() {
+                        return false
+                    }
+                    for i in 0..xs.length() {
+                        if !equalAt(read xs[i], read ys[i], depth + 1) {
+                            return false
+                        }
+                    }
+                    return true
+                }
+                _ => return false
+            }
+        }
+        Object(o) => {
+            match b {
+                Object(p) => {
+                    if same(o, p) {
+                        return true
+                    }
+                    if depth > CompareDepthLimit {
+                        CompareTooDeep.store(DeepEquality)
+                        return false
+                    }
+                    if o.keys.length() != p.keys.length() {
+                        return false
+                    }
+                    for i in 0..o.keys.length() {
+                        var at = objectFind(read p, read o.keys[i])
+                        if at is null {
+                            return false
+                        }
+                        if !equalAt(read o.values[i], read p.values[at], depth + 1) {
+                            return false
+                        }
+                    }
+                    return true
+                }
+                _ => return false
+            }
+        }
+        _ => return compareAt(a, b, depth) == 0
+    }
+}
+
+// An item with the key it is sorted by: `sort_by`, `group_by` and their kin sort these.
+struct Keyed : Comparable {
+    Jv key
+    Jv value
+
+    int compare(read this, read Keyed other) {
+        return compareValues(read this.key, read other.key)
+    }
+}
+
+// A value sorted by jq's order.
+struct Sorted : Comparable {
+    Jv value
+
+    int compare(read this, read Sorted other) {
+        return compareValues(read this.value, read other.value)
+    }
+}
+
+// A text of its own with the bytes of `s`.
+string copyText(read string s) {
+    return s.clone()
+}
+
+// `startsWith` and `endsWith` of texts that may be shared: the methods of `string` take a `read string`
+// and a `shared string` is not lent as one to them, where a function's parameter takes it.
+bool textStartsWith(read string s, read string t) {
+    return s.startsWith(t)
+}
+
+bool textEndsWith(read string s, read string t) {
+    return s.endsWith(t)
+}

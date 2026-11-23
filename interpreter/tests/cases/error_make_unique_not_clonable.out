@@ -1,0 +1,5 @@
+error: `makeUnique` copies the value when it has other owners, and a `List<Job>` cannot be cloned
+  --> error_make_unique_not_clonable.sg:8:22
+ 8 |     var items = jobs.makeUnique()
+   |                      ^^^^^^^^^^
+  hint: make `Job` `Clonable`

@@ -76,7 +76,7 @@ deadlock. In the interpreter a task runs on a thread of its own when it is waite
 same on every run; the counter of the syntax draft and the two files of the examples run as the design wrote
 them.
 
-All of it is compiled too: a task is a thread of the system with a stack of 8 MB, a `locked` value has a
+All of it is compiled too: a task is a thread of the system with a stack of 8 MB (1 GB since the hundred-and-sixty-sixth slice), a `locked` value has a
 mutex in front of its counts, the output stays whole and a panic names its task as in the interpreter, and
 every program with tasks runs clean under the thread sanitizer. Four tasks adding to a locked total take the
 time of the same program in C with threads and a mutex.
@@ -430,10 +430,23 @@ text's first character, so that no match can start earlier. `grep` of the addres
 Rust's 0.148 s, and `findAll` of `\bcache\b` over 100 MB 0.032 s, from 0.210 s (Rust 0.037 s). A DFA's state
 with no step is now one state, whatever came before it; made once for each way of what came before, a search
 could read past the end of a match to the end of the text.
+The hundred-and-sixty-sixth writes a `jq` of JSON in SG, Rust and Zig, held byte for byte to jq 1.8.2 by
+44 cases and suites of 3,681 and 6,128 more, and measured beside jq and jaq: SG is ahead of jq in every
+case and of Rust in all but five, and behind Zig by 20 to 30% where records are read (1 GB written back:
+SG 10.8 s and 6.1 GB, Zig 8.4 s and 5.8 GB, Rust 21.4 s and 10.3 GB, jq 33.7 s and 11.9 GB). What the trial
+asked of the language was built in the slice: `JsonReader`, the tokens of JSON one after another (1814);
+`: Clonable`, decided long before and never built (1818); `makeUnique`, a `shared` value changed in
+place when it has one owner (1813), without which adding to an array a million times did not end; a
+stack of 1 GB for `main` and each task, and a stack that overflows told as a panic on every system (1815,
+1821); `try` in an argument of compiled code where only reads come before it (1817); `(?x)` in `Regex`
+(1822). And what it found: `sort` now merges the runs the items already make (ten million in order: 1.2 s
+→ 0.11 s), in the interpreter step for step.
 
 ## Next
 
-Next comes the heavy level of the stand, run at night. Then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
+Next comes slice 167: what the language walks (`drop`, `clone`, `==`, `compare`, `hash`, writing, the JSON
+writer) walked with a loop, so no value however deep overflows a stack (1820). Then the heavy level of
+the stand, run at night, the other trials looked at as `jq` was (1812), a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with

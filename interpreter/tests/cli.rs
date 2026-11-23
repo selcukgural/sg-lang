@@ -510,6 +510,60 @@ fn builds_a_program() {
     assert!(err.starts_with("error: cannot read missing.sg"), "{err}");
 }
 
+/// Calls nested past the stack, in `main` and in a task: compiled code has a stack of 1 GB
+/// (choice 1821) and says so when it is full, where it ended with a SIGSEGV (choice 1815).
+#[test]
+fn a_stack_that_overflows_is_told() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("a_stack_that_overflows_is_told");
+    // `+ 1` after the call, so that it is no tail call a C compiler turns into a loop.
+    let down = "int down(int n) {\n    return down(n + 1) + 1\n}\n\n";
+    write(&dir, "deep.sg", &format!("{down}void main() {{\n    print(down(0))\n}}\n"));
+    write(&dir, "task.sg", &format!("{down}int work() {{\n    return down(0)\n}}\n\nvoid main() {{\n    var task = Task.run(work)\n    print(task.wait())\n}}\n"));
+    // A million calls deep fit, where 8 MB held about a hundred thousand.
+    write(&dir, "fits.sg", "int sum(int n) {\n    if n == 0 {\n        return 0\n    }\n    return sum(n - 1) + 1\n}\n\nvoid main() {\n    print(sum(1000000))\n}\n");
+    for stem in ["deep", "task"] {
+        assert_eq!(ran(&sg(&dir, &["build", &format!("{stem}.sg")])).0, 0);
+        let (code, out, err) = ran(&Command::new(program(&dir, stem)).output().unwrap());
+        assert_eq!((code, out.as_str()), (1, ""), "{stem}: {err}");
+        assert!(err.starts_with("panic: stack overflow: calls are nested deeper than the stack of this thread holds"), "{stem}: {err}");
+    }
+    assert_eq!(ran(&sg(&dir, &["build", "fits.sg"])).0, 0);
+    assert_eq!(ran(&Command::new(program(&dir, "fits")).output().unwrap()), (0, "1000000\n".into(), String::new()));
+}
+
+/// A `try` inside a statement is computed first, under a name, only where all that comes before
+/// it reads (choice 1817); elsewhere compiled code asks for a name, as before.
+#[test]
+fn a_try_is_computed_first_only_after_reads() {
+    let dir = work("a_try_is_computed_first_only_after_reads");
+    let head = "Result<string, string> word(int x) {\n    return Ok(\"w\")\n}\n\nint mark() {\n    return 1\n}\n\nResult<int, string> fill(ref List<string> given) {\n    var xs = List<string>()\n    var lists = List<List<string>>()\n    var n = 1\n    var s = \"owned\"\n    var m = HashMap<int, string>()\n    print($\"{xs.length()} {lists.length()} {n} {s} {given.length()} {m.length()}\")\n";
+    let tail = "    return Ok(0)\n}\n\nvoid main() {\n    var g = List<string>()\n    _ = fill(ref g)\n}\n";
+    let cases = [
+        ("xs.add(try word(n))", true),
+        ("given.add(try word(n))", true),
+        ("m.add(7, try word(n))", true),
+        // An index may panic, a call does something, a value is moved, `n` is named by the `try`.
+        ("lists[0].add(try word(n))", false),
+        ("m.add(mark(), try word(n))", false),
+        ("lists.add(List<string> { s, try word(n) })", false),
+        ("xs.add(try word(n + 0 * (int)xs.length()))", false),
+    ];
+    for (i, (line, compiled)) in cases.iter().enumerate() {
+        let file = format!("case{i}.sg");
+        write(&dir, &file, &format!("{head}    {line}\n{tail}"));
+        let (code, _, err) = ran(&sg(&dir, &["emit-c", &file]));
+        if *compiled {
+            assert_eq!((code, err.as_str()), (0, ""), "{line}");
+        } else {
+            assert_eq!(code, 1, "{line}");
+            assert!(err.contains("is not in the C back end yet"), "{line}: {err}");
+        }
+    }
+}
+
 #[test]
 fn builds_a_library() {
     if !has_compiler() {
@@ -1112,6 +1166,70 @@ fn the_trials() {
     // The lines of the last case: 660, each with its number.
     assert_eq!(printed[4].lines().count(), 660);
     assert!(printed[4].lines().all(|line| line.split_once(':').is_some_and(|(n, _)| n.parse::<u32>().is_ok())));
+}
+
+/// The trial of `jq` (choices 1804-1822): `trials/jq/sg`, a folder of files, built and run on the
+/// megabyte of records, lines and numbers `trials/inputs/json.sg` makes from seed 7, and on inputs
+/// that break things. What it prints and its exit code are jq 1.8.2's, taken from jq itself (the
+/// standard error is each one's own, as the trial's README says); interpreted, it gives what it
+/// gives compiled, the standard error too.
+#[test]
+fn the_trial_of_jq() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_jq");
+    let maker = program(&dir, "json-input").to_string_lossy().into_owned();
+    let maker_source = trials.join("inputs").join("json.sg").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &maker_source, "--release", "-o", &maker])), (0, String::new(), String::new()));
+    for kind in ["records", "lines", "numbers"] {
+        let made = Command::new(&maker).args([kind, "1", "7"]).current_dir(&dir).stdin(Stdio::null()).finished();
+        assert!(made.status.success());
+        std::fs::write(dir.join(format!("{kind}.json")), &made.stdout).unwrap();
+    }
+    let mut deep = b"[".repeat(10001);
+    deep.push(b'1');
+    deep.extend(b"]".repeat(10001));
+    std::fs::write(dir.join("deep.json"), deep).unwrap();
+    std::fs::write(dir.join("bad.json"), b"\"a\xc3b\" \"\xed\xa0\x80f\" \"ok\xe4\" \"\\ud800\"\n").unwrap();
+    std::fs::write(dir.join("nums.json"), b"[1e1000, -0, 1.10, 100000000000000000001, 0.10000000000000000001, 15e-1147483647, 0.1]\n").unwrap();
+    std::fs::write(dir.join("mid.json"), b"{\"a\":1}\n{\"a\":\"x\"}\n{\"a\":3}\n").unwrap();
+    let source = trials.join("jq").join("sg").to_string_lossy().into_owned();
+    let built = program(&dir, "jq").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    // The arguments, whether the interpreter runs it too, the exit code and what is printed.
+    let cases: [(&[&str], bool, i32, &str); 15] = [
+        (&["-c", "[.[] | select(.active and .score > 5000)] | length", "records.json"], true, 0, "667\n"),
+        (&["-c", "group_by(.address.city) | map({c: .[0].address.city, n: length}) | .[0:3]", "records.json"], false, 0, "[{\"c\":\"Ankara\",\"n\":346},{\"c\":\"Kraków\",\"n\":319},{\"c\":\"Lyon\",\"n\":368}]\n"),
+        (&["-r", ".[0:2][] | [.id, .name, .score] | @csv", "records.json"], false, 0, "7919,\"dennis278\",8417.856\n15838,\"linus688\",9524.804\n"),
+        (&["-n", "-c", "reduce inputs as $r (0; . + $r.id)", "lines.json"], true, 0, "29132638932\n"),
+        (&["-c", "[.. | numbers] | add", "numbers.json"], false, 0, "-33436.19407786794\n"),
+        (&["-c", "sort_by(.balance) | .[0].id, .[-1].id", "records.json"], false, 0, "467221\n14911477\n"),
+        (&["-c", "reduce .[] as $r ({}; .[$r.address.city] += 1) | to_entries | max_by(.value)", "records.json"], false, 0, "{\"key\":\"Lyon\",\"value\":368}\n"),
+        // 10,001 levels are one too many; bad UTF-8 is repaired, a lone surrogate escaped stops it.
+        (&["-c", "length", "deep.json"], true, 5, ""),
+        (&["-c", "., length", "bad.json"], true, 5, "\"a\u{FFFD}b\"\n3\n\"\u{FFFD}f\"\n2\n\"ok\u{FFFD}\"\n3\n"),
+        // Literals kept as written, numbers computed as doubles, the order of literals exact.
+        (&["-c", "., map(. + 0), (.[4] > .[6]), (map(-.) | .[1])", "nums.json"], true, 0,
+         "[1E+1000,-0,1.10,100000000000000000001,0.10000000000000000001,2E-1147483646,0.1]\n[1.7976931348623157e+308,0,1.1,1e+20,0.1,0,0.1]\ntrue\n0\n"),
+        // An error in the middle: the others are worked, and the last input decides the exit code.
+        (&["-c", ".a + 1", "mid.json"], true, 0, "2\n4\n"),
+        (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | (. == .), ([.] | length)"], true, 0, "true\n1\n"),
+        // Compared 10,001 deep: past the interpreter's 5,000 nested calls, so compiled only.
+        (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | [., [.]] | sort | length"], false, 5, ""),
+        (&[".", "missing.json"], true, 2, ""),
+        (&[".["], true, 3, ""),
+    ];
+    for (args, interpreted, code, out) in cases {
+        let compiled = ran(&Command::new(&built).args(args).current_dir(&dir).stdin(Stdio::null()).finished());
+        assert_eq!((compiled.0, compiled.1.as_str()), (code, out), "{args:?}: {}", compiled.2);
+        if interpreted {
+            let mut words = vec![source.as_str()];
+            words.extend_from_slice(args);
+            assert_eq!(ran(&sg(&dir, &words)), compiled, "{args:?}: interpreted and compiled");
+        }
+    }
 }
 
 /// The trial of `std`'s JSON (1553, 1634): `trials/std/json` in SG, interpreted and compiled, on

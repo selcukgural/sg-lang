@@ -128,7 +128,7 @@ in [Working with C](./11-c.md).
   machines, so building for another one (below) takes LLVM's Clang, named in `CC`.
 - **Windows**: the C compiler is LLVM's Clang with the Build Tools of Visual Studio, and `CC` may name another
   Clang. A program gets `.exe`, carries C's library inside it so it needs nothing installed, reads and writes
-  text as UTF-8, takes long paths, and has 8 MB of stack for `main`, as on the other systems. A debug build
+  text as UTF-8, takes long paths, and has 1 GB of stack for `main` and each task, as on the other systems. A debug build
   writes the file a debugger reads (`main.pdb`). Windows has no `rpath`, so `sg build` copies the DLLs it
   linked from the `-L` folders beside the program. C's `long` is 32 bits there, which is why SG writes it
   `CLong`. In an `if` on `OperatingSystem.isWindows()`, a function of C of the other system is not linked, so

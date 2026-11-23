@@ -1,0 +1,26 @@
+(?x) a b c on "abc a b c": [0..3]
+(?x) a + on "aaa a": [0..3, 4..5]
+(?x) a {2} on "aaa": [0..2]
+(?x) [ ]+ x on "a  x": [1..4]
+(?x) a\ b on "a b ab": [0..3]
+(?x) a \# b on "a#b": [0..3]
+(?x) a [#] b on "a#b": [0..3]
+(?x) a # comment
+ b on "ab": [0..2]
+(?x) a # comment to the end on "a": [0..1]
+(?x)(?<year> \d{4} ) - (?<month> \d\d ) on "2026-11 2026 - 11": [0..7]
+(?x: a b ) c d on "ab c d abcd": [0..6]
+(?x) a (?-x: b c ) d on "a b c d abcd": [0..7]
+(?xi) e r r o r on "ERROR error": [0..5, 6..11]
+(?x)
+  ^ \w+   # a word
+  @ example \. com $
+ on "who@example.com": [0..15]
+(?x) on "ab": [0..0, 1..1, 2..2]
+(?x) \Q a b \E on " a b ab": [0..5]
+(?x) a{ 2 } on "aa": [0..2]
+(?x) a{2 , 3} on "aaa": [0..3]
+(?x) a { 2, } on "aaaa": [0..4]
+(?x) a{2} ? on "aaa": [0..2]
+(?x) a+ ? b on "aab": [0..3]
+a{ 2 } on "a{ 2 }": [0..6]

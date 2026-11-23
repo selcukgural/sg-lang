@@ -16,7 +16,7 @@ and the background reading behind them.
 | [design](https://github.com/selcukgural/sg-lang/blob/main/design/README.md) | The language itself, on paper, and [every choice made while building it](https://github.com/selcukgural/sg-lang/blob/main/design/decisions/README.md), slice by slice |
 | [interpreter](https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests, and the programs measured against C; [its documents](https://github.com/selcukgural/sg-lang/blob/main/interpreter/docs/README.md) |
 | [benchmarks](https://github.com/selcukgural/sg-lang/blob/main/benchmarks/README.md) | The measurements: SG against C, Rust and Zig, where it is still slower, and how it is measured |
-| [trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) | Programs people write (`grep`, `wc`, ...) and the modules of the library in SG, Rust and Zig, measured against each other |
+| [trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) | Programs people write (`grep`, `wc`, `jq`, ...) and the modules of the library in SG, Rust and Zig, measured against each other |
 | [topics](https://github.com/selcukgural/sg-lang/tree/main/topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
 | [sources](https://github.com/selcukgural/sg-lang/blob/main/sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
 | [website](https://github.com/selcukgural/sg-lang/blob/main/website/README.md) | This site, built with Docusaurus |

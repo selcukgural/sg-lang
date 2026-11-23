@@ -185,10 +185,13 @@ fn warnings(stem: &str) -> Vec<String> {
 }
 
 /// gcc's warnings that are not true of the program they are listed with, and why.
-const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 4] = [
+const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 5] = [
     // `free` on the bytes of a constant text (`"y"`): a text is freed only when its capacity is
-    // above 0, and a constant's is 0 (`SG_LIT`); gcc warns on the `free` behind the test.
+    // above 0, and a constant's is 0 (`SG_LIT`); gcc warns on the `free` behind the test. In
+    // `ok_with` since `main` runs on a thread of its own (choice 1821), which changed what gcc
+    // puts inline.
     ("ok_disposable", "free-nonheap-object"),
+    ("ok_with", "free-nonheap-object"),
     // A borrow of a `shared checked` value puts its guard, on the stack, on the value's list,
     // and takes it off again (`sg_unlend`) before the block ends; gcc does not follow it off.
     ("ok_folders", "dangling-pointer"),
@@ -761,8 +764,9 @@ fn compiled() {
     let done = in_parallel(&files, |path| {
         let mut done = Done::default();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Deep recursion is caught by the interpreter's own count of calls; compiled code has
-        // no such count yet (the stack depth question of the design is open).
+        // Deep recursion is caught by the interpreter's own count of calls; compiled code runs on
+        // until its stack of 1 GB is full and then says so, without naming the call (choices 1815
+        // and 1821, tested in `cli.rs`).
         // So is a value nested too deep for the interpreter's stack: compiled code makes it on
         // the stack, which ends at its guard page. (An array too big for the memory, of
         // `panic_array_no_memory`, is refused by `sg build`: no stack holds it, choice 1346.)
@@ -2624,7 +2628,9 @@ fn large_frames_touch_their_stack() {
         let c_file = work.join(format!("frames{size}.c"));
         std::fs::write(&c_file, code).unwrap();
         let binary = program_at(&work, &format!("frames{size}"));
-        let cc = c_command().args(["-std=c11", "-O2", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+        // Each task's stack is 8 MB here, as it was before stacks of 1 GB (choice 1821): no frame
+        // may be larger than 256 MB (choice 1346), so only a small stack can be jumped over.
+        let cc = c_command().args(["-std=c11", "-O2", "-DSG_THREAD_STACK=((size_t)8<<20)", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
         assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
         let run = std::process::Command::new(&binary).output().unwrap();
         let said = String::from_utf8_lossy(&run.stdout).into_owned();

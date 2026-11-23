@@ -1,0 +1,13 @@
+// A `shared string` lent with `read` where a method of `string` looks for a text (choice 1816).
+void main() {
+    shared string prefix = new shared "ab"
+    shared string inner = new shared "c,d"
+    string text = "abc,d"
+    print(text.startsWith(read prefix))
+    print(text.endsWith(read inner))
+    print(text.contains(read inner))
+    print(text.indexOf(read inner) ?? -1)
+    for part in text.split(read inner) {
+        print(part)
+    }
+}

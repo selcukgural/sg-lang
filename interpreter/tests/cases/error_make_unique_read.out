@@ -1,0 +1,5 @@
+error: this is reached through a `read` borrow, and `makeUnique` may put a copy in its place
+  --> error_make_unique_read.sg:3:17
+ 3 |     var items = xs.makeUnique()
+   |                 ^^
+  hint: lend it as `ref` instead of `read`

@@ -39,8 +39,11 @@ sanitizer), and the functions that make the rules of safety tried with mutants; 
 a test that shows it.
 
 Now it is tried on programs people write: each is written in SG, in Rust and in Zig, the three are measured
-against each other, and each difference is a choice that is fixed and measured again. `grep` and `wc` are
-the first; the
+against each other, and each difference is a choice that is fixed and measured again. `grep` and `wc` were
+the first; `jq` came next, held byte for byte to jq 1.8.2 and pushed as far as the world will (a text of
+100 MB, ten million members, 10,001 levels, bad UTF-8, numbers past a `double`), and it brought the
+language a reader of JSON's tokens, `Clonable`, copy on write for `shared` values and a stack of 1 GB that
+says when it overflows. The
 [trials](https://github.com/selcukgural/sg-lang/blob/main/trials/README.md) keep the programs, and
 [Benchmarks](./benchmarks/index.md) their numbers.
 

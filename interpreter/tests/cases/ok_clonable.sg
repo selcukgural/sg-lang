@@ -1,0 +1,103 @@
+// `Clonable` (choice 1818): `.clone()` copies field by field, item by item, through a `T*`;
+// a `shared` value is one more owner, a type's own `clone` is called for its fields too,
+// and a `Copyable` type is cloned as it is copied.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+struct Node : Clonable {
+    string name
+    List<string> tags
+    HashMap<string, int> counts
+    HashSet<string> seen
+    Node*? next
+    shared List<int> common
+    int? maybe
+    string? label
+    Point at
+    int[3] small
+    Shape shape
+}
+
+enum Shape : Clonable {
+    Circle(string name, List<int> radii)
+    Square(int side)
+    Empty
+}
+
+// A type with a `clone` of its own: `Clonable` uses it.
+struct Counter : Clonable {
+    int n
+
+    Counter clone(read this) {
+        return Counter { n = this.n + 100 }
+    }
+}
+
+struct Holder : Clonable {
+    Counter c
+    List<Counter> cs
+}
+
+void main() {
+    var counts = HashMap<string, int>()
+    counts.add("a", 1)
+    var seen = HashSet<string>()
+    _ = seen.add("x")
+    var inner = Node {
+        name = "inner", tags = List<string> { "t" }, counts = HashMap<string, int>(), seen = HashSet<string>(), next = null,
+        common = new shared List<int> { 9 }, maybe = null, label = null, at = Point { x = 0, y = 0 }, small = int[3] { 1, 2, 3 }, shape = Shape.Empty,
+    }
+    var shared1 = new shared List<int> { 1, 2 }
+    var n = Node {
+        name = "outer", tags = List<string> { "a", "b" }, counts = counts, seen = seen, next = new inner,
+        common = share shared1, maybe = 5, label = "lbl", at = Point { x = 1, y = 2 }, small = int[3] { 7, 8, 9 },
+        shape = Shape.Circle("c", List<int> { 3, 4 }),
+    }
+    var m = n.clone()
+    m.name.write("!")
+    m.tags.add("c")
+    m.counts["a"] = 99
+    _ = m.seen.add("y")
+    m.at.x = 50
+    m.small[0] = 70
+    m.label = "changed"
+    match ref m.shape {
+        Circle(_, radii) => radii.add(5)
+        _ => {}
+    }
+    match read n.shape {
+        Circle(_, radii) => print($"n radii {radii.length()}")
+        _ => {}
+    }
+    match read m.shape {
+        Circle(_, radii) => print($"m radii {radii.length()}")
+        _ => {}
+    }
+    var nn = m.next.take()
+    if nn is not null {
+        nn.name.write("?")
+    }
+    m.next = nn
+    print($"{n.name} {n.tags.length()} {n.counts["a"]} {n.seen.length()} {n.at.x} {n.small[0]} {n.label ?? "-"}")
+    print($"{m.name} {m.tags.length()} {m.counts["a"]} {m.seen.length()} {m.at.x} {m.small[0]} {m.label ?? "-"}")
+    print($"{n.next?.name ?? "-"} {m.next?.name ?? "-"}")
+    print(same(n.common, m.common))
+    var list = List<string> { "p", "q" }
+    var list2 = list.clone()
+    list2.add("r")
+    print($"{list.length()} {list2.length()}")
+    var h = Holder { c = Counter { n = 1 }, cs = List<Counter> { Counter { n = 2 } } }
+    var h2 = h.clone()
+    print($"{h2.c.n} {h2.cs[0].n}")
+    var sh = Shape.Circle("z", List<int> { 1 })
+    var sh2 = sh.clone()
+    match sh2 {
+        Circle(name, radii) => print($"{name} {radii.length()}")
+        _ => {}
+    }
+    var boxed = new Point { x = 3, y = 4 }
+    var unboxed = boxed.clone()
+    print(unboxed.x)
+}

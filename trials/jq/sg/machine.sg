@@ -1,0 +1,1556 @@
+// The evaluator: a loop over the tree with stacks of its own on the heap, never the machine's. What is
+// left to do with a value is a chain of frames (a continuation), shared and never changed, so a point
+// to come back to keeps the chain it had. The points to come back to, for the outputs still to come
+// (`,`, `.[]`, `range`, `inputs`), are a stack of forks; marks on it end `try`, `//`, `[...]`, `reduce`,
+// `foreach`, `limit` and `|=`. A call is a jump with a new chain of bindings and the same continuation,
+// so a call in tail position takes no room.
+
+// A link of the chain of bindings: a variable, a function defined inside the filter, or a filter
+// argument with the bindings it was written in.
+struct Env {
+    Jv value
+    nint node
+    shared Env? closure
+    shared Env? parent
+}
+
+// What is done with the next value.
+const int KDone = 0
+const int KPipe = 1
+const int KField = 2
+const int KIndexKey = 3
+const int KIndexApply = 4
+const int KSliceFrom = 5
+const int KSliceTo = 6
+const int KSliceApply = 7
+const int KIterate = 8
+const int KNegate = 9
+const int KBinRight = 10
+const int KBinLeft = 11
+const int KAndLeft = 12
+const int KAndRight = 13
+const int KOrLeft = 14
+const int KOrRight = 15
+const int KAltCheck = 16
+const int KTryExit = 17
+const int KIf = 18
+const int KReduceStart = 19
+const int KReduceItem = 20
+const int KReduceSet = 21
+const int KForeachStart = 22
+const int KForeachItem = 23
+const int KForeachSet = 24
+const int KBind = 25
+const int KCollect = 26
+const int KObjectKey = 27
+const int KObjectValue = 28
+const int KInterpolate = 29
+const int KNativeArg = 30
+const int KPathOut = 31
+const int KLimitN = 32
+const int KLimitCount = 33
+const int KModifyPath = 34
+const int KModifyGot = 35
+const int KRangeArg = 36
+const int KAssignValue = 37
+
+struct Cont : Clonable {
+    int kind
+    nint node
+    nint index
+    // The input the frame came with, or the value it keeps (the right side of an operator, a part
+    // built so far).
+    Jv value
+    // The path of that input, when paths are followed; a key, for some frames.
+    Jv path
+    Jv extra
+    bool tracking
+    shared Env? env
+    shared Cont? next
+}
+
+const int FResume = 0
+const int FIterate = 1
+const int FRange = 2
+const int FInputs = 3
+const int FCollect = 4
+const int FReduce = 5
+const int FForeach = 6
+const int FTry = 7
+const int FReactivate = 8
+const int FAlternative = 9
+const int FLimit = 10
+const int FModify = 11
+const int FFirst = 12
+const int FModifyApply = 13
+const int FAssign = 14
+const int FRecurse = 15
+
+struct Fork {
+    int kind
+    nint node
+    nint index
+    long count
+    Jv value
+    Jv path
+    bool tracking
+    shared Env? env
+    shared Cont? k
+    List<Jv> items
+    List<Jv> more
+    // For `..`: the place reached in each array or object of `items`.
+    List<nint> places
+    bool active
+    bool found
+    double from
+    double upto
+    double step
+}
+
+// What the program was asked to do with each output.
+struct Settings : Copyable {
+    bool rawOutput
+    bool exitStatus
+}
+
+struct Machine {
+    List<Fork> forks
+    List<Jv> globals
+    Output out
+    Settings settings
+    Reader reader
+    // For `-e`: whether there was an output, and whether the last was true.
+    bool anyOutput
+    bool lastTruthy
+    // The texts of the regular expressions of `test`, and each compiled once.
+    HashMap<string, nint> regexPlaces
+    List<Regex> regexes
+}
+
+Fork fork(int kind) {
+    return Fork {
+        kind = kind, node = -1, index = 0, count = 0, value = Jv.Null, path = Jv.Null, tracking = false,
+        env = null, k = null, items = List<Jv>(), more = List<Jv>(), places = List<nint>(), active = true, found = false,
+        from = 0.0, upto = 0.0, step = 0.0,
+    }
+}
+
+shared Cont frame(int kind, nint node, nint index, Jv value, Jv path, bool tracking, read shared Env? env, read shared Cont k) {
+    shared Env? e = null
+    if env is not null {
+        e = share env
+    }
+    return new shared Cont { kind = kind, node = node, index = index, value = value, path = path, extra = Jv.Null, tracking = tracking, env = e, next = share k }
+}
+
+shared Cont nextOf(read shared Cont c) {
+    var n = share c.next
+    if n is null {
+        panic("the last frame has no next")
+    }
+    return n
+}
+
+shared Env? envOf(read shared Env? e) {
+    if e is null {
+        return null
+    }
+    return share e
+}
+
+// The link `hops` up the chain.
+shared Env linkAt(read shared Env? env, nint hops) {
+    var e = envOf(read env)
+    for _ in 0..hops {
+        if e is null {
+            panic("a binding the reader found is on the chain")
+        }
+        e = share e.parent
+    }
+    if e is null {
+        panic("a binding the reader found is on the chain")
+    }
+    return e
+}
+
+Jv pathWith(read Jv path, Jv key) {
+    match path {
+        Array(xs) => {
+            var c = arrayCopy(read xs, 1)
+            c.add(key)
+            return jvArray(c)
+        }
+        _ => {
+            var c = List<Jv>()
+            c.add(key)
+            return jvArray(c)
+        }
+    }
+}
+
+Jv pathJoin(read Jv path, read Jv more) {
+    var c = List<Jv>()
+    match path {
+        Array(xs) => c = arrayCopy(read xs, 0)
+        _ => {}
+    }
+    match more {
+        Array(ys) => {
+            for i in 0..ys.length() {
+                c.add(dup(read ys[i]))
+            }
+        }
+        _ => {}
+    }
+    return jvArray(c)
+}
+
+const int ModeEval = 0
+const int ModeDeliver = 1
+const int ModeBacktrack = 2
+const int ModeRaise = 3
+const int ModeModify = 4
+
+// Runs the filter at `root` on one input, writing its outputs; the message of an error nothing
+// caught, or `null`.
+string? run(ref Machine m, read Program p, nint root, Jv input) {
+    nint node = root
+    var value = input
+    Jv path = Jv.Null
+    bool tracking = false
+    shared Env? env = null
+    var k = new shared Cont { kind = KDone, node = -1, index = 0, value = Jv.Null, path = Jv.Null, extra = Jv.Null, tracking = false, env = null, next = null }
+    Jv error = Jv.Null
+    int mode = ModeEval
+    nint modifying = -1
+    while true {
+        if mode == ModeEval {
+            // A node with one output and no call is worked out at once, given the input itself.
+            if !tracking && p.simple[node] {
+                match direct(ref m, p, node, value.replace(Jv.Null), read env) {
+                    Ok(v) => {
+                        value = v
+                        mode = ModeDeliver
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+                continue
+            }
+            var n = p.nodes[node]
+            match n.op {
+                Identity => mode = ModeDeliver
+                Const => {
+                    // jq keeps the path when the constant is the value already there (`path(null)`,
+                    // `.a | true` where `.a` is `true`): they are the same `null`, `true` or `false`.
+                    if tracking && sameAtom(read value, read p.constants[n.x]) {
+                        mode = ModeDeliver
+                    } else if tracking {
+                        error = invalidPath(read p.constants[n.x])
+                        mode = ModeRaise
+                    } else {
+                        value = dup(read p.constants[n.x])
+                        mode = ModeDeliver
+                    }
+                }
+                Field => {
+                    if n.a >= 0 {
+                        k = frame(KField, node, 0, Jv.Null, Jv.Null, false, read env, read k)
+                        node = n.a
+                    } else {
+                        match fieldOf(read value, read p.texts[n.x]) {
+                            Ok(v) => {
+                                if tracking {
+                                    path = pathWith(read path, jvText(p.texts[n.x].clone()))
+                                }
+                                value = v
+                                mode = ModeDeliver
+                            }
+                            Error(e) => {
+                                error = e
+                                mode = failed(n.n)
+                            }
+                        }
+                    }
+                }
+                Index => {
+                    k = frame(KIndexKey, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    node = n.b
+                    tracking = false
+                }
+                Slice => {
+                    // The start first, then the end, as jq evaluates them: the start varies slowest.
+                    k = frame(KSliceFrom, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    if n.b >= 0 {
+                        node = n.b
+                        tracking = false
+                    } else {
+                        value = Jv.Null
+                        tracking = false
+                        mode = ModeDeliver
+                    }
+                }
+                Iterate => {
+                    if n.a >= 0 {
+                        k = frame(KIterate, node, 0, Jv.Null, Jv.Null, false, read env, read k)
+                        node = n.a
+                    } else {
+                        mode = iterate(ref m, ref value, ref path, tracking, ref k, ref error)
+                        if mode == ModeRaise {
+                            mode = failed(n.n)
+                        }
+                    }
+                }
+                Pipe => {
+                    k = frame(KPipe, n.b, 0, Jv.Null, Jv.Null, false, read env, read k)
+                    node = n.a
+                }
+                // The input first; what is inside it comes from the fork, one value each time.
+                Recurse => {
+                    if hasItems(read value) {
+                        var f = fork(FRecurse)
+                        f.items.add(dup(read value))
+                        f.places.add(0)
+                        if tracking {
+                            f.more.add(dup(read path))
+                        }
+                        f.tracking = tracking
+                        f.k = share k
+                        m.forks.add(f)
+                    }
+                    mode = ModeDeliver
+                }
+                Comma => {
+                    var f = fork(FResume)
+                    f.node = n.b
+                    f.value = dup(read value)
+                    f.path = dup(read path)
+                    f.tracking = tracking
+                    f.env = envOf(read env)
+                    f.k = share k
+                    m.forks.add(f)
+                    node = n.a
+                }
+                Negate => {
+                    k = frame(KNegate, node, 0, Jv.Null, Jv.Null, tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Binary => {
+                    k = frame(KBinRight, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    node = n.b
+                    tracking = false
+                }
+                And => {
+                    k = frame(KAndLeft, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Or => {
+                    k = frame(KOrLeft, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Alternative => {
+                    var f = fork(FAlternative)
+                    f.node = n.b
+                    f.value = dup(read value)
+                    f.path = dup(read path)
+                    f.tracking = tracking
+                    f.env = envOf(read env)
+                    f.k = share k
+                    m.forks.add(f)
+                    k = frame(KAltCheck, node, m.forks.length() - 1, Jv.Null, Jv.Null, false, read env, read k)
+                    node = n.a
+                }
+                Try => {
+                    m.forks.add(fork(FTry))
+                    k = frame(KTryExit, node, m.forks.length() - 1, Jv.Null, Jv.Null, false, read env, read k)
+                    node = n.a
+                }
+                If => {
+                    k = frame(KIf, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Reduce => {
+                    k = frame(KReduceStart, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    node = n.b
+                    tracking = false
+                }
+                Foreach => {
+                    k = frame(KForeachStart, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    node = n.b
+                    tracking = false
+                }
+                Bind => {
+                    k = frame(KBind, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Var => {
+                    if tracking {
+                        error = jvText("Invalid path expression with result of a variable")
+                        mode = ModeRaise
+                    } else {
+                        var link = linkAt(read env, n.c)
+                        value = dup(read link.value)
+                        mode = ModeDeliver
+                    }
+                }
+                GlobalVar => {
+                    if tracking {
+                        error = jvText("Invalid path expression with result of a variable")
+                        mode = ModeRaise
+                    } else {
+                        value = dup(read m.globals[n.x])
+                        mode = ModeDeliver
+                    }
+                }
+                LocalDef => {
+                    env = new shared Env { value = Jv.Null, node = n.a, closure = null, parent = envOf(read env) }
+                    node = n.b
+                }
+                CallGlobal => {
+                    var def = p.nodes[n.x]
+                    shared Env? callee = null
+                    for i in 0..(nint)n.n {
+                        callee = new shared Env { value = Jv.Null, node = p.lists[n.d + i], closure = envOf(read env), parent = envOf(read callee) }
+                    }
+                    env = callee
+                    node = def.a
+                }
+                CallLocal => {
+                    var def = p.nodes[n.x]
+                    shared Env? callee = linkAt(read env, n.c)
+                    for i in 0..(nint)n.n {
+                        callee = new shared Env { value = Jv.Null, node = p.lists[n.d + i], closure = envOf(read env), parent = envOf(read callee) }
+                    }
+                    env = callee
+                    node = def.a
+                }
+                Param => {
+                    var link = linkAt(read env, n.c)
+                    node = link.node
+                    env = envOf(read link.closure)
+                }
+                Native => {
+                    if n.n == 0 {
+                        mode = applyNative(ref m, read p, (int)n.x, ref value, ref path, tracking, read List<Jv>(), ref error)
+                    } else {
+                        // jq's functions written in C take their last argument as the outer loop.
+                        k = frame(KNativeArg, node, (nint)n.n - 1, dup(read value), dup(read path), tracking, read env, read k)
+                        k = withExtra(read k, jvArray(List<Jv>()))
+                        node = p.lists[n.d + (nint)n.n - 1]
+                        tracking = false
+                    }
+                }
+                Range => {
+                    k = frame(KRangeArg, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    k = withExtra(read k, jvArray(List<Jv>()))
+                    node = p.lists[n.d]
+                    tracking = false
+                }
+                Collect => {
+                    var f = fork(FCollect)
+                    f.k = share k
+                    f.tracking = tracking
+                    m.forks.add(f)
+                    k = frame(KCollect, node, m.forks.length() - 1, Jv.Null, Jv.Null, false, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Object => {
+                    if n.n == 0 {
+                        if tracking {
+                            error = jvText("Invalid path expression with result {}")
+                            mode = ModeRaise
+                        } else {
+                            value = jvObject(emptyObject())
+                            mode = ModeDeliver
+                        }
+                    } else {
+                        k = frame(KObjectKey, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                        k = withExtra(read k, jvObject(emptyObject()))
+                        node = p.lists[n.d]
+                        tracking = false
+                    }
+                }
+                Interpolate => {
+                    // The parts are evaluated from the last, which varies slowest, as jq has it.
+                    nint last = lastExpressionPart(read p, read n, (nint)n.n)
+                    if last < 0 {
+                        mode = applyInterpolation(read p, read n, read List<Jv>(), ref value, ref error)
+                    } else {
+                        k = frame(KInterpolate, node, last, dup(read value), Jv.Null, tracking, read env, read k)
+                        k = withExtra(read k, jvArray(List<Jv>()))
+                        node = p.lists[n.d + last]
+                        tracking = false
+                    }
+                }
+                Format => {
+                    if tracking {
+                        error = jvText("Invalid path expression with the result of a format")
+                        mode = ModeRaise
+                    } else {
+                        match applyFormat((int)n.x, read value) {
+                            Ok(v) => {
+                                value = v
+                                mode = ModeDeliver
+                            }
+                            Error(e) => {
+                                error = e
+                                mode = ModeRaise
+                            }
+                        }
+                    }
+                }
+                Path => {
+                    k = frame(KPathOut, node, 0, Jv.Null, dup(read path), tracking, read env, read k)
+                    tracking = true
+                    path = jvArray(List<Jv>())
+                    node = n.a
+                }
+                Limit => {
+                    k = frame(KLimitN, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    node = n.a
+                    tracking = false
+                }
+                Empty => mode = ModeBacktrack
+                Input => {
+                    match nextInput(ref m.reader) {
+                        Ok(v) => {
+                            if v is null {
+                                error = jvText("No more inputs")
+                                mode = ModeRaise
+                            } else {
+                                value = v
+                                path = Jv.Null
+                                tracking = false
+                                mode = ModeDeliver
+                            }
+                        }
+                        Error(e) => {
+                            error = jvText(e)
+                            mode = ModeRaise
+                        }
+                    }
+                }
+                Inputs => {
+                    var f = fork(FInputs)
+                    f.k = share k
+                    m.forks.add(f)
+                    mode = ModeBacktrack
+                }
+                Modify => {
+                    var f = fork(FModify)
+                    f.node = node
+                    f.value = dup(read value)
+                    f.path = dup(read path)
+                    f.tracking = tracking
+                    f.env = envOf(read env)
+                    f.k = share k
+                    m.forks.add(f)
+                    k = frame(KModifyPath, node, m.forks.length() - 1, Jv.Null, Jv.Null, false, read env, read k)
+                    tracking = true
+                    path = jvArray(List<Jv>())
+                    node = n.a
+                }
+                Assign => {
+                    // The value first, with the input of both; then the paths, on the input.
+                    k = frame(KAssignValue, node, 0, dup(read value), dup(read path), tracking, read env, read k)
+                    node = n.b
+                    tracking = false
+                }
+                Def => panic("a definition is not evaluated")
+            }
+        } else if mode == ModeDeliver {
+            int kind = k.kind
+            if kind == KDone {
+                emit(ref m, read value)
+                mode = ModeBacktrack
+                continue
+            }
+            var n = p.nodes[k.node]
+            if kind == KPipe {
+                node = k.node
+                env = envOf(read k.env)
+                k = nextOf(read k)
+                mode = ModeEval
+            } else if kind == KField {
+                match fieldOf(read value, read p.texts[n.x]) {
+                    Ok(v) => {
+                        if tracking {
+                            path = pathWith(read path, jvText(p.texts[n.x].clone()))
+                        }
+                        value = v
+                        k = nextOf(read k)
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = failed(n.n)
+                    }
+                }
+            } else if kind == KIterate {
+                k = nextOf(read k)
+                mode = iterate(ref m, ref value, ref path, tracking, ref k, ref error)
+                if mode == ModeRaise {
+                    mode = failed(n.n)
+                }
+            } else if kind == KIndexKey {
+                // The key came; now the term it indexes, with the input of both.
+                var key = value
+                value = dup(read k.value)
+                path = dup(read k.path)
+                tracking = k.tracking
+                env = envOf(read k.env)
+                var applied = frame(KIndexApply, k.node, 0, key, Jv.Null, false, read env, read nextOf(read k))
+                k = applied
+                if n.a >= 0 {
+                    node = n.a
+                    mode = ModeEval
+                }
+            } else if kind == KIndexApply {
+                match indexOf(read value, read k.value) {
+                    Ok(v) => {
+                        if tracking {
+                            path = pathWith(read path, dup(read k.value))
+                        }
+                        value = v
+                        k = nextOf(read k)
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = failed(n.n)
+                    }
+                }
+            } else if kind == KSliceFrom {
+                var from = value.replace(Jv.Null)
+                value = dup(read k.value)
+                env = envOf(read k.env)
+                var next = frame(KSliceTo, k.node, 0, dup(read k.value), dup(read k.path), k.tracking, read env, read nextOf(read k))
+                k = withExtra(read next, from)
+                if n.c >= 0 {
+                    node = n.c
+                    mode = ModeEval
+                } else {
+                    value = Jv.Null
+                }
+            } else if kind == KSliceTo {
+                var to = value.replace(Jv.Null)
+                value = dup(read k.value)
+                path = dup(read k.path)
+                tracking = k.tracking
+                env = envOf(read k.env)
+                var key = sliceKey(dup(read k.extra), to)
+                k = frame(KIndexApply, k.node, 0, key, Jv.Null, false, read env, read nextOf(read k))
+                if n.a >= 0 {
+                    node = n.a
+                    mode = ModeEval
+                }
+            } else if kind == KNegate {
+                bool wasTracking = k.tracking
+                match negate(read value) {
+                    Ok(v) => {
+                        if wasTracking {
+                            error = invalidPath(read v)
+                            mode = ModeRaise
+                        } else {
+                            value = v
+                            k = nextOf(read k)
+                        }
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+            } else if kind == KBinRight {
+                var right = value
+                value = dup(read k.value)
+                env = envOf(read k.env)
+                k = frame(KBinLeft, k.node, 0, right, Jv.Null, k.tracking, read env, read nextOf(read k))
+                node = n.a
+                mode = ModeEval
+            } else if kind == KBinLeft {
+                match binary(n.n, read value, read k.value) {
+                    Ok(v) => {
+                        if k.tracking {
+                            error = invalidPath(read v)
+                            mode = ModeRaise
+                        } else {
+                            value = v
+                            k = nextOf(read k)
+                        }
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+            } else if kind == KAndLeft || kind == KOrLeft {
+                bool t = truthy(read value)
+                if k.tracking {
+                    error = jvText("Invalid path expression with result of `and` or `or`")
+                    mode = ModeRaise
+                } else if kind == KAndLeft && !t {
+                    value = Jv.False
+                    k = nextOf(read k)
+                } else if kind == KOrLeft && t {
+                    value = Jv.True
+                    k = nextOf(read k)
+                } else {
+                    value = dup(read k.value)
+                    env = envOf(read k.env)
+                    int right = KAndRight
+                    if kind == KOrLeft {
+                        right = KOrRight
+                    }
+                    k = frame(right, k.node, 0, Jv.Null, Jv.Null, false, read env, read nextOf(read k))
+                    node = n.b
+                    mode = ModeEval
+                }
+            } else if kind == KAndRight || kind == KOrRight {
+                value = jvBool(truthy(read value))
+                k = nextOf(read k)
+            } else if kind == KAltCheck {
+                nint h = k.index
+                if truthy(read value) {
+                    m.forks[h].found = true
+                    m.forks[h].active = false
+                    var r = fork(FReactivate)
+                    r.index = h
+                    m.forks.add(r)
+                    k = nextOf(read k)
+                } else {
+                    mode = ModeBacktrack
+                }
+            } else if kind == KTryExit {
+                nint h = k.index
+                m.forks[h].active = false
+                var r = fork(FReactivate)
+                r.index = h
+                m.forks.add(r)
+                k = nextOf(read k)
+            } else if kind == KIf {
+                bool t = truthy(read value)
+                value = takeInput(ref k)
+                path = dup(read k.path)
+                tracking = k.tracking
+                env = envOf(read k.env)
+                k = nextOf(read k)
+                if t {
+                    node = n.b
+                    mode = ModeEval
+                } else if n.c >= 0 {
+                    node = n.c
+                    mode = ModeEval
+                }
+            } else if kind == KReduceStart || kind == KForeachStart {
+                var f = fork(FReduce)
+                if kind == KForeachStart {
+                    f.kind = FForeach
+                }
+                f.value = value
+                f.k = nextOf(read k)
+                f.tracking = k.tracking
+                m.forks.add(f)
+                nint h = m.forks.length() - 1
+                int item = KReduceItem
+                if kind == KForeachStart {
+                    item = KForeachItem
+                }
+                value = dup(read k.value)
+                env = envOf(read k.env)
+                k = frame(item, k.node, h, Jv.Null, Jv.Null, false, read env, read k)
+                node = n.a
+                tracking = false
+                mode = ModeEval
+            } else if kind == KReduceItem || kind == KForeachItem {
+                nint h = k.index
+                var item = value
+                var state = m.forks[h].value.replace(Jv.Null)
+                env = new shared Env { value = item, node = -1, closure = null, parent = envOf(read k.env) }
+                // The update of `reduce` worked out at once is handed the state, its only holder.
+                if kind == KReduceItem && p.simple[n.c] {
+                    match direct(ref m, p, n.c, state, read env) {
+                        Ok(v) => {
+                            m.forks[h].value = v
+                            mode = ModeBacktrack
+                        }
+                        Error(e) => {
+                            error = e
+                            mode = ModeRaise
+                        }
+                    }
+                    value = Jv.Null
+                    continue
+                }
+                if kind == KReduceItem {
+                    k = frame(KReduceSet, k.node, h, Jv.Null, Jv.Null, false, read env, read k)
+                } else {
+                    k = frame(KForeachSet, k.node, h, Jv.Null, Jv.Null, false, read env, read k)
+                }
+                value = state
+                node = n.c
+                mode = ModeEval
+            } else if kind == KReduceSet {
+                m.forks[k.index].value = value.replace(Jv.Null)
+                mode = ModeBacktrack
+            } else if kind == KForeachSet {
+                nint h = k.index
+                m.forks[h].value = dup(read value)
+                env = envOf(read k.env)
+                var outer = share m.forks[h].k
+                if outer is null {
+                    panic("a foreach keeps where its outputs go")
+                }
+                k = outer
+                if n.d >= 0 {
+                    node = n.d
+                    mode = ModeEval
+                }
+            } else if kind == KBind {
+                env = new shared Env { value = value, node = -1, closure = null, parent = envOf(read k.env) }
+                value = takeInput(ref k)
+                path = dup(read k.path)
+                tracking = k.tracking
+                k = nextOf(read k)
+                node = n.b
+                mode = ModeEval
+            } else if kind == KCollect {
+                m.forks[k.index].items.add(value.replace(Jv.Null))
+                mode = ModeBacktrack
+            } else if kind == KObjectKey {
+                // A key came: a text, then its value.
+                match read value {
+                    String(_) => {
+                        var key = value.replace(Jv.Null)
+                        value = dup(read k.value)
+                        env = envOf(read k.env)
+                        var next = frame(KObjectValue, k.node, k.index, dup(read k.value), key, k.tracking, read env, read nextOf(read k))
+                        k = withExtra(read next, dup(read k.extra))
+                        node = p.lists[n.d + k.index * 2 + 1]
+                        mode = ModeEval
+                    }
+                    _ => {
+                        error = jvText($"Object keys must be strings, not {kindName(read value)}".toString())
+                        mode = ModeRaise
+                    }
+                }
+            } else if kind == KObjectValue {
+                var built = objectAdding(read k.extra, read k.path, value.replace(Jv.Null))
+                nint i = k.index + 1
+                if i < (nint)n.n {
+                    value = dup(read k.value)
+                    env = envOf(read k.env)
+                    var next = frame(KObjectKey, k.node, i, dup(read k.value), Jv.Null, k.tracking, read env, read nextOf(read k))
+                    k = withExtra(read next, built)
+                    node = p.lists[n.d + i * 2]
+                    mode = ModeEval
+                } else if k.tracking {
+                    error = invalidPath(read built)
+                    mode = ModeRaise
+                } else {
+                    value = built
+                    k = nextOf(read k)
+                }
+            } else if kind == KInterpolate {
+                // The values of the parts from this one on, in order.
+                var parts = List<Jv>()
+                parts.add(value.replace(Jv.Null))
+                match read k.extra {
+                    Array(xs) => {
+                        for i in 0..xs.length() {
+                            parts.add(dup(read xs[i]))
+                        }
+                    }
+                    _ => {}
+                }
+                nint before = previousExpressionPart(read p, read n, k.index)
+                if before < 0 {
+                    bool wasTracking = k.tracking
+                    k = nextOf(read k)
+                    mode = applyInterpolation(read p, read n, read parts, ref value, ref error)
+                    if mode == ModeDeliver && wasTracking {
+                        error = invalidPath(read value)
+                        mode = ModeRaise
+                    }
+                } else {
+                    value = dup(read k.value)
+                    env = envOf(read k.env)
+                    var next = frame(KInterpolate, k.node, before, dup(read k.value), Jv.Null, k.tracking, read env, read nextOf(read k))
+                    k = withExtra(read next, jvArray(parts))
+                    node = p.lists[n.d + before]
+                    mode = ModeEval
+                }
+            } else if kind == KNativeArg || kind == KRangeArg {
+                // The arguments so far, in order: `range` gets them first to last, a function of
+                // C last to first.
+                var args = List<Jv>()
+                var got = value.replace(Jv.Null)
+                if kind == KNativeArg {
+                    args.add(got)
+                    appendItems(ref args, read k.extra)
+                } else {
+                    appendItems(ref args, read k.extra)
+                    args.add(got)
+                }
+                nint i = k.index
+                bool more = false
+                nint nextArg = 0
+                if kind == KRangeArg && i + 1 < (nint)n.n {
+                    more = true
+                    nextArg = i + 1
+                } else if kind == KNativeArg && i > 0 {
+                    more = true
+                    nextArg = i - 1
+                }
+                if more {
+                    value = dup(read k.value)
+                    env = envOf(read k.env)
+                    var next = frame(kind, k.node, nextArg, dup(read k.value), dup(read k.path), k.tracking, read env, read nextOf(read k))
+                    k = withExtra(read next, jvArray(args))
+                    node = p.lists[n.d + nextArg]
+                    mode = ModeEval
+                } else if kind == KRangeArg {
+                    k = nextOf(read k)
+                    mode = startRange(ref m, read args, ref value, ref k, ref error)
+                    tracking = false
+                } else {
+                    value = dup(read k.value)
+                    path = dup(read k.path)
+                    tracking = k.tracking
+                    k = nextOf(read k)
+                    mode = applyNative(ref m, read p, (int)n.x, ref value, ref path, tracking, read args, ref error)
+                }
+            } else if kind == KPathOut {
+                if k.tracking {
+                    error = jvText("Invalid path expression with result of path(...)")
+                    mode = ModeRaise
+                } else {
+                    value = path.replace(Jv.Null)
+                    path = dup(read k.path)
+                    tracking = false
+                    k = nextOf(read k)
+                }
+            } else if kind == KLimitN {
+                match read value {
+                    Number(_) or Exact(_) or Literal(_) => {
+                        double count = numberOf(read value)
+                        if count < 0.0 {
+                            error = jvText("limit doesn't support negative count")
+                            mode = ModeRaise
+                        } else if count < 1.0 {
+                            mode = ModeBacktrack
+                        } else {
+                            var f = fork(FLimit)
+                            f.from = count
+                            m.forks.add(f)
+                            nint h = m.forks.length() - 1
+                            value = dup(read k.value)
+                            path = dup(read k.path)
+                            tracking = k.tracking
+                            env = envOf(read k.env)
+                            k = frame(KLimitCount, k.node, h, Jv.Null, Jv.Null, false, read env, read nextOf(read k))
+                            node = n.b
+                            mode = ModeEval
+                        }
+                    }
+                    _ => {
+                        error = jvText("Invalid limit: not a number")
+                        mode = ModeRaise
+                    }
+                }
+            } else if kind == KLimitCount {
+                nint h = k.index
+                m.forks[h].count += 1
+                if (double)m.forks[h].count >= m.forks[h].from {
+                    while m.forks.length() > h {
+                        _ = m.forks.removeLast()
+                    }
+                }
+                k = nextOf(read k)
+            } else if kind == KAssignValue {
+                var given = value.replace(Jv.Null)
+                var f = fork(FAssign)
+                f.value = takeInput(ref k)
+                f.more.add(given)
+                f.tracking = k.tracking
+                f.k = nextOf(read k)
+                m.forks.add(f)
+                nint h = m.forks.length() - 1
+                value = dup(read m.forks[h].value)
+                env = envOf(read k.env)
+                k = frame(KModifyPath, k.node, h, Jv.Null, Jv.Null, false, read env, read k)
+                tracking = true
+                path = jvArray(List<Jv>())
+                node = n.a
+                mode = ModeEval
+            } else if kind == KModifyPath {
+                m.forks[k.index].items.add(path.replace(Jv.Null))
+                mode = ModeBacktrack
+            } else if kind == KModifyGot {
+                // The first output of the update: set at the path, and on to the next path.
+                nint h = k.index
+                nint i = (nint)m.forks[h].count
+                var set = setPathOwned(m.forks[h].value.replace(Jv.Null), read m.forks[h].items[i], 0, value.replace(Jv.Null))
+                match set {
+                    Ok(v) => {
+                        while m.forks.length() > h + 1 {
+                            _ = m.forks.removeLast()
+                        }
+                        m.forks[h].value = v
+                        m.forks[h].count += 1
+                        modifying = h
+                        mode = ModeModify
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+            }
+        } else if mode == ModeBacktrack {
+            if m.forks.length() == 0 {
+                return null
+            }
+            nint top = m.forks.length() - 1
+            int kind = m.forks[top].kind
+            if kind == FResume {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                node = f.node
+                value = f.value
+                path = f.path
+                tracking = f.tracking
+                env = f.env
+                k = f.k ?? panic("a fork keeps where it goes")
+                mode = ModeEval
+            } else if kind == FRecurse {
+                mode = recurseNext(ref m, top, ref value, ref path, ref tracking, ref k)
+            } else if kind == FIterate {
+                var f = read m.forks[top]
+                nint i = f.index
+                k = forkK(read f)
+                tracking = f.tracking
+                match read f.value {
+                    Array(xs) => {
+                        value = dup(read xs[i])
+                        if tracking {
+                            path = pathWith(read f.path, jvNumber((double)i))
+                        }
+                        if i + 1 < xs.length() {
+                            m.forks[top].index = i + 1
+                        } else {
+                            _ = m.forks.removeLast()
+                        }
+                    }
+                    Object(o) => {
+                        value = dup(read o.values[i])
+                        if tracking {
+                            path = pathWith(read f.path, jvText(o.keys[i].clone()))
+                        }
+                        if i + 1 < o.keys.length() {
+                            m.forks[top].index = i + 1
+                        } else {
+                            _ = m.forks.removeLast()
+                        }
+                    }
+                    _ => panic("only arrays and objects are gone over")
+                }
+                mode = ModeDeliver
+            } else if kind == FRange {
+                double current = m.forks[top].from
+                if rangeGoesOn(current, m.forks[top].upto, m.forks[top].step, m.forks[top].found) {
+                    m.forks[top].from = current + m.forks[top].step
+                    k = forkK(read m.forks[top])
+                    value = jvNumber(current)
+                    tracking = false
+                    mode = ModeDeliver
+                } else {
+                    _ = m.forks.removeLast()
+                }
+            } else if kind == FInputs {
+                match nextInput(ref m.reader) {
+                    Ok(v) => {
+                        if v is null {
+                            _ = m.forks.removeLast()
+                        } else {
+                            k = forkK(read m.forks[top])
+                            value = v
+                            tracking = false
+                            mode = ModeDeliver
+                        }
+                    }
+                    Error(e) => {
+                        _ = m.forks.removeLast()
+                        error = jvText(e)
+                        mode = ModeRaise
+                    }
+                }
+            } else if kind == FCollect {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                k = f.k ?? panic("a fork keeps where it goes")
+                // Made whole: the room it grew by is given back (choice 1819).
+                value = jvArray(fittedItems(f.items))
+                if f.tracking {
+                    error = invalidPath(read value)
+                    mode = ModeRaise
+                } else {
+                    tracking = false
+                    mode = ModeDeliver
+                }
+            } else if kind == FReduce {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                k = f.k ?? panic("a fork keeps where it goes")
+                value = f.value
+                if f.tracking {
+                    error = invalidPath(read value)
+                    mode = ModeRaise
+                } else {
+                    tracking = false
+                    mode = ModeDeliver
+                }
+            } else if kind == FAlternative {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                if !f.found {
+                    node = f.node
+                    value = f.value
+                    path = f.path
+                    tracking = f.tracking
+                    env = f.env
+                    k = f.k ?? panic("a fork keeps where it goes")
+                    mode = ModeEval
+                }
+            } else if kind == FReactivate {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                m.forks[f.index].active = true
+            } else if kind == FAssign {
+                // Every path is known: the value is set at each, in order, on the one holder of the input.
+                var f = m.forks.removeLast() ?? panic("a fork")
+                k = f.k ?? panic("a fork keeps where it goes")
+                var state = f.value
+                bool failed = false
+                for i in 0..f.items.length() {
+                    match setPathOwned(state, read f.items[i], 0, dup(read f.more[0])) {
+                        Ok(v) => state = v
+                        Error(e) => {
+                            error = e
+                            failed = true
+                            state = Jv.Null
+                            break
+                        }
+                    }
+                }
+                if failed {
+                    mode = ModeRaise
+                } else if f.tracking {
+                    error = invalidPath(read state)
+                    mode = ModeRaise
+                } else {
+                    value = state
+                    tracking = false
+                    mode = ModeDeliver
+                }
+            } else if kind == FModify {
+                // Every path is known: the update is run at each, in order.
+                m.forks[top].count = 0
+                m.forks[top].kind = FModifyApply
+                modifying = top
+                mode = ModeModify
+            } else if kind == FFirst {
+                // The update gave nothing at this path: it is taken away, at the end, as jq 1.8 does.
+                var f = m.forks.removeLast() ?? panic("a fork")
+                nint h = f.index
+                nint i = (nint)m.forks[h].count
+                var deleted = dup(read m.forks[h].items[i])
+                m.forks[h].more.add(deleted)
+                m.forks[h].count += 1
+                modifying = h
+                mode = ModeModify
+            } else {
+                // `foreach`, `try` and `limit` leave nothing more to do.
+                _ = m.forks.removeLast()
+            }
+        } else if mode == ModeModify {
+            nint h = modifying
+            nint i = (nint)m.forks[h].count
+            if i < m.forks[h].items.length() {
+                var current = getPath(read m.forks[h].value, read m.forks[h].items[i], 0)
+                match current {
+                    Ok(v) => {
+                        var mark = fork(FFirst)
+                        mark.index = h
+                        m.forks.add(mark)
+                        nint at = m.forks[h].node
+                        env = envOf(read m.forks[h].env)
+                        k = frame(KModifyGot, at, h, Jv.Null, Jv.Null, false, read env, read forkK(read m.forks[h]))
+                        value = v
+                        tracking = false
+                        node = p.nodes[at].b
+                        mode = ModeEval
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+            } else {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                k = f.k ?? panic("a fork keeps where it goes")
+                match deletePaths(read f.value, read f.more) {
+                    Ok(v) => {
+                        value = v
+                        if f.tracking {
+                            error = invalidPath(read value)
+                            mode = ModeRaise
+                        } else {
+                            tracking = false
+                            mode = ModeDeliver
+                        }
+                    }
+                    Error(e) => {
+                        error = e
+                        mode = ModeRaise
+                    }
+                }
+            }
+        } else {
+            // An error: back to the nearest `try` it happened inside of, or out. jq 1.8's `//` catches none.
+            bool caught = false
+            while m.forks.length() > 0 {
+                var f = m.forks.removeLast() ?? panic("a fork")
+                if f.kind == FTry && f.active {
+                    caught = true
+                    mode = ModeBacktrack
+                    break
+                }
+            }
+            if !caught {
+                return errorMessage(read error)
+            }
+        }
+    }
+}
+
+void appendItems(ref List<Jv> args, read Jv items) {
+    match items {
+        Array(xs) => {
+            for i in 0..xs.length() {
+                args.add(dup(read xs[i]))
+            }
+        }
+        _ => {}
+    }
+}
+
+bool sameAtom(read Jv a, read Jv b) {
+    int ra = kindRank(a)
+    return ra <= 2 && ra == kindRank(b)
+}
+
+// An index that fails: nothing more when it was made optional with `?`, an error otherwise.
+int failed(int optional) {
+    if optional == 1 {
+        return ModeBacktrack
+    }
+    return ModeRaise
+}
+
+// The input a frame keeps, taken out of it when nothing else holds the frame, copied otherwise:
+// a value handed on this way keeps one holder.
+Jv takeInput(ref shared Cont k) {
+    var frame = k.makeUnique()
+    return frame.value.replace(Jv.Null)
+}
+
+shared Cont forkK(read Fork f) {
+    var k = share f.k
+    if k is null {
+        panic("a fork keeps where its outputs go")
+    }
+    return k
+}
+
+shared Cont withExtra(read shared Cont c, Jv extra) {
+    shared Env? e = null
+    var env = read c.env
+    if env is not null {
+        e = share env
+    }
+    var next = share c.next
+    return new shared Cont { kind = c.kind, node = c.node, index = c.index, value = dup(read c.value), path = dup(read c.path), extra = extra, tracking = c.tracking, env = e, next = next }
+}
+
+// `.[]` of `value`: the first item delivered, a fork kept for the others.
+int iterate(ref Machine m, ref Jv value, ref Jv path, bool tracking, ref shared Cont k, ref Jv error) {
+    nint count = 0
+    match read value {
+        Array(xs) => count = xs.length()
+        Object(o) => count = o.keys.length()
+        _ => {
+            error = jvText($"Cannot iterate over {describe(read value)}".toString())
+            return ModeRaise
+        }
+    }
+    if count == 0 {
+        return ModeBacktrack
+    }
+    var container = value.replace(Jv.Null)
+    var first = Jv.Null
+    var firstPath = Jv.Null
+    match read container {
+        Array(xs) => {
+            first = dup(read xs[0])
+            if tracking {
+                firstPath = pathWith(read path, jvNumber(0.0))
+            }
+        }
+        Object(o) => {
+            first = dup(read o.values[0])
+            if tracking {
+                firstPath = pathWith(read path, jvText(o.keys[0].clone()))
+            }
+        }
+        _ => {}
+    }
+    if count > 1 {
+        var f = fork(FIterate)
+        f.index = 1
+        f.value = container
+        f.path = dup(read path)
+        f.tracking = tracking
+        f.k = share k
+        m.forks.add(f)
+    }
+    value = first
+    if tracking {
+        path = firstPath
+    }
+    return ModeDeliver
+}
+
+// `range(a; b)` and `range(a; b; by)`: the first output is `a` as it is (its literal kept); a fork
+// keeps the next. jq writes the first in C, going on until the value reaches `b` (so a `nan` end
+// never ends it), the second in jq, going on while `. < b` (or `. > b`), and empty for a `by` of 0.
+int startRange(ref Machine m, read List<Jv> args, ref Jv value, ref shared Cont k, ref Jv error) {
+    var numbers = List<double>()
+    for i in 0..args.length() {
+        match read args[i] {
+            Number(_) or Exact(_) or Literal(_) => {
+                double d = numberOf(read args[i])
+                numbers.add(d)
+            }
+            _ => {
+                error = jvText("Range bounds must be numeric")
+                return ModeRaise
+            }
+        }
+    }
+    double from = numbers[0]
+    double step = 1.0
+    if numbers.length() == 3 {
+        step = numbers[2]
+    }
+    if !rangeGoesOn(from, numbers[1], step, numbers.length() == 3) {
+        return ModeBacktrack
+    }
+    var f = fork(FRange)
+    f.from = from + step
+    f.upto = numbers[1]
+    f.step = step
+    f.found = numbers.length() == 3
+    f.k = share k
+    m.forks.add(f)
+    value = dup(read args[0])
+    return ModeDeliver
+}
+
+bool rangeGoesOn(double current, double upto, double step, bool byStep) {
+    if !byStep {
+        return !(current >= upto)
+    }
+    if step > 0.0 {
+        return current < upto
+    }
+    if step < 0.0 {
+        return current > upto
+    }
+    return false
+}
+
+nint lastExpressionPart(read Program p, read Node n, nint count) {
+    nint i = count
+    while i > 0 {
+        i -= 1
+        if !isTextPiece(p, p.lists[n.d + i]) {
+            return i
+        }
+    }
+    return -1
+}
+
+nint previousExpressionPart(read Program p, read Node n, nint before) {
+    nint i = before
+    while i > 0 {
+        i -= 1
+        if !isTextPiece(p, p.lists[n.d + i]) {
+            return i
+        }
+    }
+    return -1
+}
+
+// The text of an interpolation, from its parts: `values` are the values of its expression parts, in order.
+int applyInterpolation(read Program p, read Node n, read List<Jv> values, ref Jv value, ref Jv error) {
+    string out = string.withCapacity(32)
+    nint next = 0
+    for i in 0..(nint)n.n {
+        var part = p.nodes[p.lists[n.d + i]]
+        if isTextPiece(p, p.lists[n.d + i]) {
+            match read p.constants[part.x] {
+                String(s) => out.write(read s)
+                _ => {}
+            }
+        } else {
+            var v = read values[next]
+            next += 1
+            if n.x < 0 {
+                out.write(toText(v))
+            } else {
+                match applyFormat((int)n.x, v) {
+                    Ok(formatted) => {
+                        match read formatted {
+                            String(s) => out.write(read s)
+                            _ => {}
+                        }
+                    }
+                    Error(e) => {
+                        error = e
+                        return ModeRaise
+                    }
+                }
+            }
+        }
+    }
+    value = jvText(out)
+    return ModeDeliver
+}
+
+// The key of a slice, as jq's paths write it: `{"start": from, "end": to}`.
+Jv sliceKey(Jv from, Jv to) {
+    var o = emptyObject()
+    objectSet(ref o, "start", from)
+    objectSet(ref o, "end", to)
+    return jvObject(o)
+}
+
+Jv objectAdding(read Jv partial, read Jv key, Jv value) {
+    match partial {
+        Object(o) => {
+            var c = objectCopy(read o)
+            match key {
+                String(s) => objectSet(ref c, read s, value)
+                _ => {}
+            }
+            return jvObject(c)
+        }
+        _ => panic("an object is built")
+    }
+}
+
+void emit(ref Machine m, read Jv value) {
+    m.anyOutput = true
+    m.lastTruthy = truthy(value)
+    if m.settings.rawOutput {
+        match value {
+            String(s) => {
+                m.out.buffer.write(read s)
+                m.out.buffer.write('\n')
+                flushIfFull(ref m.out)
+                return
+            }
+            _ => {}
+        }
+    }
+    writeValue(ref m.out, value, 0)
+    m.out.buffer.write('\n')
+    flushIfFull(ref m.out)
+}
+
+Jv invalidPath(read Jv v) {
+    return jvText($"Invalid path expression with result {truncated(v)}".toString())
+}
+
+string errorMessage(read Jv error) {
+    match error {
+        String(s) => return copyText(read s)
+        _ => return $"{truncated(error)} (not a string)".toString()
+    }
+}
+
+// Whether a value is an array or an object with something in it.
+bool hasItems(read Jv v) {
+    match v {
+        Array(xs) => return xs.length() > 0
+        Object(o) => return o.keys.length() > 0
+        _ => return false
+    }
+}
+
+// The next value of `..` from the fork at `top`, depth first: the next item of the innermost array
+// or object not yet gone through, which is entered next when it has items. `ModeDeliver` with the
+// value, or `ModeBacktrack` with the fork gone once nothing is left.
+int recurseNext(ref Machine m, nint top, ref Jv value, ref Jv path, ref bool tracking, ref shared Cont k) {
+    while m.forks[top].items.length() > 0 {
+        nint depth = m.forks[top].items.length() - 1
+        nint i = m.forks[top].places[depth]
+        Jv item = Jv.Null
+        Jv key = Jv.Null
+        bool going = false
+        match read m.forks[top].items[depth] {
+            Array(xs) => {
+                if i < xs.length() {
+                    item = dup(read xs[i])
+                    key = jvNumber((double)i)
+                    going = true
+                }
+            }
+            Object(o) => {
+                if i < o.keys.length() {
+                    item = dup(read o.values[i])
+                    key = jvText(o.keys[i].clone())
+                    going = true
+                }
+            }
+            _ => {}
+        }
+        if !going {
+            _ = m.forks[top].items.removeLast()
+            _ = m.forks[top].places.removeLast()
+            if m.forks[top].tracking {
+                _ = m.forks[top].more.removeLast()
+            }
+            continue
+        }
+        m.forks[top].places[depth] = i + 1
+        tracking = m.forks[top].tracking
+        if tracking {
+            path = pathWith(read m.forks[top].more[depth], key)
+        }
+        if hasItems(read item) {
+            m.forks[top].items.add(dup(read item))
+            m.forks[top].places.add(0)
+            if tracking {
+                m.forks[top].more.add(dup(read path))
+            }
+        }
+        k = forkK(read m.forks[top])
+        value = item
+        return ModeDeliver
+    }
+    _ = m.forks.removeLast()
+    return ModeBacktrack
+}

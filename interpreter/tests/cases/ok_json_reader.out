@@ -1,0 +1,14 @@
+[{}{}[]1 2"a""b"] => { } { } [ ] num:1 num:2 str:a str:b END 
+[{"a":[1,2.50,{"b":"x"}],"a":-0, "c":1e400}] => { name:a [ num:1 num:2.50 { name:b str:x } ] name:a num:-0 name:c num:1e400 } END 
+[12 truefalse] => num:12 ERR(line 1, column 8: unexpected character 'f')
+[[1,]] => [ num:1 ERR(line 1, column 4: unexpected character ']')
+[{"a" 1}] => { ERR(line 1, column 6: unexpected character '1')
+[[1 2]] => [ num:1 ERR(line 1, column 4: unexpected character '2')
+[  ] => END 
+[[[[] => [ [ [ ERR(line 1, column 4: the text ends before the value)
+pieces 3: { name:key [ num:12345 num:678.9e10 true null str:text with "escapes" ] } num:42 str:z 
+pieces 1: { name:key [ num:12345 num:678.9e10 true null str:text with "escapes" ] } num:42 str:z 
+[
+[
+ERR(line 1, column 3: nested deeper than 2)
+ERR(line 1, column 3: nested deeper than 2)

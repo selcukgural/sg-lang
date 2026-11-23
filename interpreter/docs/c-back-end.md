@@ -89,7 +89,7 @@ report) were written in the checker and the interpreter; since the fifty-sixth t
 `shared checked` one has the borrows of it in progress there as well, and a debug build keeps the values
 that are alive in a list for the leak report (347-355). The fifty-seventh slice (tasks, `locked` and
 `lock`) was written in the checker and the interpreter, and since the fifty-eighth it is compiled: a task
-is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in front of its counts, and a
+is a thread of the system with a stack of 1 GB, taken as it is used (choice 1821), a `locked` value has a mutex in front of its counts, and a
 `lock` block takes its values in the order of their addresses and gives them back on every way out
 (371-383). The fifty-ninth slice (async functions, `await` and `Task.delay`, 384-402) and the sixtieth
 (cancellation and async input and output, 403-416) were written in the checker and the interpreter; since

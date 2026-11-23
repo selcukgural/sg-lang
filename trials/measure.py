@@ -47,6 +47,7 @@ than 0 stops it too, so that a program that gave up early is never counted fast 
 
 import argparse
 import functools
+import hashlib
 import os
 import shutil
 import subprocess
@@ -86,6 +87,7 @@ JSON_INPUTS = {
     "small-records": ("records", 2, "records-2.json"),
     "small-lines": ("lines", 2, "lines-2.ndjson"),
     "small-numbers": ("numbers", 2, "numbers-2.json"),
+    "records-1g": ("records", 1000, "records-1000.json"),
 }
 JSON_SEED = 1
 
@@ -113,6 +115,21 @@ OTHER_INPUTS = {
     "small-time": "time-2.txt",
     "addresses": "addresses-10000000.txt",
     "small-addresses": "addresses-1000.txt",
+    # The hostile inputs of `jq` (1808), made here by Python.
+    "jq-string": "jq-string-100.json",
+    "jq-object": "jq-object-10000000.json",
+    "jq-deep": "jq-deep-10000.json",
+    "jq-deeper": "jq-deep-10001.json",
+    "jq-deep-objects": "jq-deep-objects-5000.json",
+    "jq-bad-utf8": "jq-bad-utf8.json",
+    "jq-surrogate": "jq-surrogate.json",
+    "jq-nul": "jq-nul.json",
+    "jq-bom": "jq-bom.json",
+    "jq-crlf": "jq-crlf.ndjson",
+    "jq-numbers": "jq-numbers.json",
+    "jq-cut": "records-1000-cut.json",
+    "jq-midstream": "jq-midstream.ndjson",
+    "jq-quirks": "jq-quirks.txt",
 }
 UNICODE_SEED = 1
 TIME_SEED = 1
@@ -170,6 +187,8 @@ def other_input(placeholder):
         with open(path, "wb") as f:
             count = "10000000" if placeholder == "addresses" else "1000"
             subprocess.run([maker, count, str(ADDRESS_SEED)], stdout=f, check=True)
+    elif placeholder.startswith("jq-"):
+        path.write_bytes(jq_input(placeholder))
     elif placeholder in ("unicode-nfd", "small-unicode-nfd"):
         import unicodedata
         source = other_input(placeholder.removesuffix("-nfd"))
@@ -188,6 +207,48 @@ def other_input(placeholder):
         count = 100000 if placeholder == "many" else 1000
         write_zip(path, [(f"dir-{i // 1000:03d}/file-{i:06d}.txt", f"entry {i}\n".encode()) for i in range(count)])
     return path
+
+
+def jq_input(placeholder):
+    """The bytes of a hostile input of `jq` (choice 1808)."""
+    if placeholder == "jq-string":
+        # One text of 100 MB, with letters past ASCII and escapes along it.
+        body = ("lorem ipsum dolor sit amet, café 日本 " * 3000000)[:100_000_000]
+        return b'"' + body.encode() + b' \\"end\\" \\u00e9"' + b"\n"
+    if placeholder == "jq-object":
+        return b"{" + b",".join(b'"k%d":%d' % (i, i) for i in range(10_000_000)) + b"}\n"
+    if placeholder == "jq-deep":
+        return b"[" * 10000 + b"1" + b"]" * 10000 + b"\n"
+    if placeholder == "jq-deeper":
+        return b"[" * 10001 + b"1" + b"]" * 10001 + b"\n"
+    if placeholder == "jq-deep-objects":
+        return b'{"a":' * 5000 + b"1" + b"}" * 5000 + b"\n"
+    if placeholder == "jq-bad-utf8":
+        # Each kind of bad UTF-8 inside a text, and around escapes.
+        kinds = [b"a\xc3b", b"\xe2\x82c", b"\xf0\x9f\x98d", b"\xc0\xafe", b"\xed\xa0\x80f", b"\xff",
+                 b"a\xe2\x82", b"\xf4\x90\x80\x80", b"\xe0\x80\x80", b"\xe4\\n", b"ok\xe4", b"\xe4\xb8\xad"]
+        return b"\n".join(b'"' + k + b'"' for k in kinds) + b"\n"
+    if placeholder == "jq-surrogate":
+        return b'"a" "\\ud800" "b"\n'
+    if placeholder == "jq-nul":
+        return b'"a\\u0000b" {"\\u0000":0}\n'
+    if placeholder == "jq-bom":
+        return b"\xef\xbb\xbf" + b'{"a":1}\n'
+    if placeholder == "jq-crlf":
+        return b'{"a":1}\r\n{"a":2}\r\n[3]\r\n'
+    if placeholder == "jq-numbers":
+        return (b"[1e1000, -1e1000, -0, 0.0, 1e-400, 18446744073709551617, 100000000000000000001, "
+                b"123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789, "
+                b"0.1, 0.10000000000000000001, 1.5e3, 1.10, 2.0, 1e999999999, 1e-999999999999, 128218505994187403]\n")
+    if placeholder == "jq-cut":
+        source = json_input("records-1g").read_bytes()
+        # Cut inside the last record, past its first member.
+        return source[:len(source) - 200]
+    if placeholder == "jq-midstream":
+        return b'{"a":1}\n{"a":2}\n{"a":"three"}\n{"a":4}\n'
+    if placeholder == "jq-quirks":
+        return b"01 .5 nan\n"
+    raise KeyError(placeholder)
 
 
 def json_input(placeholder):
@@ -233,6 +294,56 @@ TRIALS_CASES = {
             ("an address and a method", ["-c", r"[a-z]+[0-9]+@example\.com (PUT|DELETE)", "{text}"], None),
             ("a range and Unicode", ["in [0-9]{4} ms: .*日本", "{text}"], None),
             ("inverted", ["-v", "-c", "INFO", "{text}"], None),
+        ],
+    },
+    "jq": {
+        "check": [
+            ("records, compact", ["-c", ".[0:3]", "{small-records}"], None),
+            ("select and an object", ["-c", ".[] | select(.active and .score > 5000) | {id, name, city: .address.city}", "{small-records}"], None),
+            ("group_by", ["-c", "group_by(.address.city) | map({city: .[0].address.city, n: length, avg: (map(.score) | add / length)})", "{small-records}"], None),
+            ("csv, raw", ["-r", ".[] | [.id, .name, .score] | @csv", "{small-records}"], None),
+            ("a record a line", ["-c", "select((.tags | length) > 2) | .tags", "{small-lines}"], None),
+            ("the input, slurped", ["-c", "-s", "map(.id) | length"], "{small-lines}"),
+            ("inputs", ["-n", "-c", "reduce inputs as $r (0; . + $r.id)"], "{small-lines}"),
+            ("arguments", ["-c", "--arg", "x", "late", "--argjson", "y", "[1]", "[$x, $y]"], "{jq-crlf}"),
+            ("indent and sorted names", ["--indent", "3", "-S", ".[0]", "{small-records}"], None),
+            ("tab", ["--tab", ".[1].address", "{small-records}"], None),
+            ("-e", ["-e", ".[0].note"], "{small-records}"),
+            ("a missing file", [".", "{jq-crlf}", "missing.json"], None),
+            ("a filter that does not read", [".[", "{jq-crlf}"], None),
+            ("an error at a value", [".a", "{jq-numbers}"], None),
+            ("an error in the middle", ["-c", ".a + 1", "{jq-midstream}"], None),
+            ("10,000 levels", ["-c", "[paths] | length", "{jq-deep}"], None),
+            ("10,001 levels", ["-c", "length", "{jq-deeper}"], None),
+            ("5,000 objects deep", ["-c", "tojson | length", "{jq-deep-objects}"], None),
+            ("bad UTF-8", ["-c", "., length"], "{jq-bad-utf8}"),
+            ("a high surrogate alone", ["-c", "."], "{jq-surrogate}"),
+            ("a zero character", ["-c", ".", "{jq-nul}"], None),
+            ("a byte order mark", ["-c", ".", "{jq-bom}"], None),
+            ("lines ended with CR LF", ["-c", ".", "{jq-crlf}"], None),
+            ("numbers past a double", ["-c", ".[], (map(. + 0)), sort, (.[0] < .[1])", "{jq-numbers}"], None),
+            ("jq's quirks, refused", ["-c", "."], "{jq-quirks}", "quirk"),
+            ("deep comparison", ["-n", "-c", "reduce range(10001) as $i (0; [.]) | [. == ., ([.] | [sort?] | length)]"], None),
+        ],
+        "measure": [
+            ("records, written back", [".", "{records}"], None),
+            ("select and an object", ["-c", ".[] | select(.active and .score > 5000) | {id, name, city: .address.city}", "{records}"], None),
+            ("group_by", ["-c", "group_by(.address.city) | map({city: .[0].address.city, n: length, avg: (map(.score) | add / length)})", "{records}"], None),
+            ("sort_by", ["-c", "sort_by(.balance) | .[0].id, .[-1].id", "{records}"], None),
+            ("csv, raw", ["-r", ".[] | [.id, .name, .score] | @csv", "{records}"], None),
+            ("counted by city", ["-c", "reduce .[] as $r ({}; .[$r.address.city] += 1)", "{records}"], None),
+            ("every number added", ["-c", "[.. | numbers] | add", "{numbers}"], None),
+            ("a record a line", ["-c", "select((.tags | length) > 2) | .tags", "{lines}"], None),
+            ("1 GB written back", ["-c", ".", "{records-1g}"], None),
+            ("ten million lines out", ["-n", "-c", "range(10000000)"], None),
+            ("a text of 100 MB", ["-c", "length", "{jq-string}"], None),
+            ("an object of ten million", ["-c", "length", "{jq-object}"], None),
+            ("ten million sorted", ["-n", "-c", "[range(10000000)] | sort | length"], None),
+            ("added to, a million times", ["-n", "-c", "reduce range(1000000) as $i ([]; . + [$i]) | length"], None),
+            ("set by name, a million times", ["-n", "-c", "reduce range(1000000) as $i ({}; .[$i | tostring] = $i) | length"], None),
+            ("a def a million deep", ["-n", "-c", "def f: if . < 1000000 then (. + 1 | f) + 0 else . end; 0 | f"], None),
+            ("a def ten million in tail", ["-n", "-c", "def f: if . < 10000000 then . + 1 | f else . end; 0 | f"], None),
+            ("nested ten million deep", ["-n", "-c", "reduce range(10000000) as $i (0; [.]) | length"], None),
         ],
     },
     "std/json": {
@@ -542,6 +653,9 @@ def build(trial):
     full = trial
     trial = Path(trial).name
     sg_source = folder / "sg" / f"{trial}.sg"
+    # A trial written in several files is the folder `sg/`.
+    if not sg_source.exists():
+        sg_source = folder / "sg"
     built = {}
     built["SG"] = out / f"{trial}-sg"
     run([SG, "build", sg_source, "--release", "-o", built["SG"]])
@@ -570,7 +684,48 @@ def build(trial):
             fresh_copy(prefix / "bin" / trial, built[name])
         else:
             run(["zig", "build-exe", zig / f"{trial}.zig", "-O", mode, f"-femit-bin={built[name]}", *cache])
+    # The tools people use, measured beside the three for reference (1810): jq itself, the output
+    # every build is held to, and jaq, which is not the same algorithm and not always the same output.
+    if full in REFERENCES:
+        for name, path in REFERENCES[full]().items():
+            built[name] = path
     return built
+
+
+def jq_references():
+    jaq = OUT / "jaq" / "bin" / "jaq"
+    if not jaq.exists():
+        run(["cargo", "install", "jaq", "--version", JAQ_VERSION, "--locked", "--root", OUT / "jaq"])
+    jq = shutil.which("jq")
+    version = run([jq, "--version"]).stdout.strip() if jq else ""
+    if version != "jq-1.8.2":
+        sys.exit(f"  jq 1.8.2 is needed for the trial of jq; found {version or 'none'}")
+    # jaq 3.2.0 panics before it starts when a variable of the environment is not UTF-8 (it reads
+    # them with `std::env::vars`, for `$ENV`), as `SG_TRIAL_BYTES` is; it runs without them.
+    NEEDS_UTF8_ENVIRONMENT.add(str(jaq))
+    return {"jq 1.8.2": Path(jq), "jaq": jaq}
+
+
+# The programs run with only the variables of the environment that are UTF-8.
+NEEDS_UTF8_ENVIRONMENT = set()
+
+
+def UTF8_ENVIRONMENT():
+    out = {}
+    for name, value in os.environb.items():
+        try:
+            out[name.decode()] = value.decode()
+        except UnicodeDecodeError:
+            pass
+    return out
+
+
+JAQ_VERSION = "3.2.0"
+REFERENCES = {"jq": jq_references}
+# References whose output is not held to the others: their runs are measured, and a case where one
+# writes another output or exit code is marked in the table.
+LOOSE = {"jaq"}
+REFERENCE_NAMES = {"jq 1.8.2", "jaq"}
 
 
 def expand(words, trial):
@@ -596,7 +751,8 @@ def run_once(program, args, stdin_path, capture, errors=None):
     # A file, not a pipe, so that a program writing much to both cannot wait on the other.
     stderr = tempfile.TemporaryFile() if errors is not None else subprocess.DEVNULL
     start = time.perf_counter()
-    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr)
+    env = UTF8_ENVIRONMENT() if str(program) in NEEDS_UTF8_ENVIRONMENT else None
+    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr, env=env)
     hung = []
     watch = threading.Timer(HUNG_SECONDS, report_hung, (process, [program, *args], hung))
     watch.start()
@@ -730,6 +886,10 @@ def check(trial, built, cases, notes):
             code, output = run_once(path, args, stdin_path, True, errors)[:2]
             if kind == ["own"]:
                 output = b""
+            elif kind == ["quirk"]:
+                # jq takes what the three refuse (its quirks, in `trials/jq/README.md`).
+                if build == "jq 1.8.2":
+                    continue
             elif kind:
                 said, note = verify(kind[0], args, errors[0])
                 wrong = said.startswith(b"malformed") if kind[0] == "log" else \
@@ -740,13 +900,19 @@ def check(trial, built, cases, notes):
                 output += said
                 if note is not None:
                     notes.setdefault(name, {})[build] = note
-            results[build] = (code, output)
+            # The output is held as its SHA-256 and its length, so that a case of 1 GB is not
+            # kept once for each build.
+            results[build] = (code, hashlib.sha256(output).digest(), len(output))
         first = next(iter(results.values()))
         for build, result in results.items():
+            if build in LOOSE:
+                if result != first:
+                    notes.setdefault("loose", {}).setdefault(build, []).append(name)
+                continue
             if result != first:
                 ok = False
                 print(f"  DIFFERENT {trial} / {name}: {build} gives exit {result[0]} and "
-                      f"{len(result[1])} bytes, SG gives exit {first[0]} and {len(first[1])} bytes")
+                      f"{result[2]} bytes, SG gives exit {first[0]} and {first[2]} bytes")
     print(f"  {trial}: {len(cases)} cases, {'the same output from every build' if ok else 'NOT the same'}")
     return ok
 
@@ -763,8 +929,13 @@ def measure(trial, built, cases, runs):
             best_time, best_peak = None, None
             # One run to warm up, then `runs`; a run that fails stops the measuring, so that a
             # program that gave up early is never counted fast (1685).
+            failed = False
             for run in range(runs + 1):
                 code, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
+                if code != 0 and build in LOOSE | REFERENCE_NAMES:
+                    # A reference that fails a case is shown so, not counted.
+                    failed = True
+                    break
                 if code != 0:
                     sys.exit(f"  FAILED {trial} / {name}: {build} gave exit {code}")
                 if errors:
@@ -773,7 +944,10 @@ def measure(trial, built, cases, runs):
                     continue
                 best_time = seconds if best_time is None else min(best_time, seconds)
                 best_peak = peak if best_peak is None else min(best_peak, peak)
-            row[build] = (best_time, best_peak)
+            row[build] = (None, None) if failed else (best_time, best_peak)
+            # A line as each build is done, so that a long run is seen going on (and where it hangs).
+            done = "fails" if failed else f"{best_time:.3f} s, {best_peak / 1048576:.1f} MB"
+            print(f"  {trial} / {name}: {build} {done}", file=sys.stderr, flush=True)
         rows.append((name, row))
     return rows
 
@@ -806,18 +980,20 @@ def report(trial, built, rows, notes):
     print("|---|" + "---|" * len(builds))
     for name, row in rows:
         if trial in NO_TIME:
-            cells = [f"{row[b][1] / 1048576:.2f} MB" for b in builds]
+            cells = [f"{row[b][1] / 1048576:.2f} MB" if row[b][1] is not None else "fails" for b in builds]
         else:
-            cells = [f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB" for b in builds]
+            cells = [f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB" if row[b][0] is not None else "fails" for b in builds]
         print(f"| {name} | " + " | ".join(cells) + " |")
-    sizes = {b: stripped_size(p) for b, p in built.items()}
-    print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" for b in builds) + " |")
+    sizes = {b: stripped_size(p) for b, p in built.items() if b not in REFERENCE_NAMES}
+    print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" if b in sizes else "—" for b in builds) + " |")
     left_out = RUST_LEFT_OUT.get(trial, {})
     counts = {"SG": lines(folder / "sg", ".sg"), "Zig": lines(folder / "zig", ".zig")}
     for b in builds:
         if b.startswith("Rust"):
             counts[b] = lines(folder / "rust", ".rs", left_out.get(b, frozenset()))
-    print("| Lines | " + " | ".join(str(counts.get(b, counts[b.split()[0]])) for b in builds) + " |")
+    print("| Lines | " + " | ".join("—" if b in REFERENCE_NAMES else str(counts.get(b, counts[b.split()[0]])) for b in builds) + " |")
+    for build, cases in notes.get("loose", {}).items():
+        print(f"\n{build} writes another output or exit code in: " + ", ".join(cases))
     measured = [name for name, _ in rows]
     for name in measured:
         if name in notes:
