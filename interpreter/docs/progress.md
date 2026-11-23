@@ -441,6 +441,10 @@ stack of 1 GB for `main` and each task, and a stack that overflows told as a pan
 1821); `try` in an argument of compiled code where only reads come before it (1817); `(?x)` in `Regex`
 (1822). And what it found: `sort` now merges the runs the items already make (ten million in order: 1.2 s
 → 0.11 s), in the interpreter step for step.
+After it, the interpreter's bound on nested calls follows its stack of 1 GB, as compiled code's does, in
+place of the 5,000 calls it had (1823): a call took it 36 KB of stack, and with the rare arms of the walk
+put apart and its errors boxed it takes about 2.5 KB, so about 380,000 calls fit, and `jq`'s comparison
+10,001 deep runs in the interpreter too. A `JsonToken` is `Formattable` (1826).
 
 ## Next
 

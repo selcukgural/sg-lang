@@ -1,0 +1,17 @@
+BeginArray
+BeginObject
+Name("id")
+Number("1.50")
+Name("a\"b")
+BeginArray
+True
+False
+Null
+String("x\ny\u{1}ş")
+EndArray
+EndObject
+Number("-0")
+Number("1e400")
+EndArray
+End
+in a line: Name("id"), BeginObject

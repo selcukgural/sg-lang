@@ -23,9 +23,6 @@ use crate::raw::{self, RawPtr};
 use crate::sys::{clock, command_of, local_offset, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
-/// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
-pub const MAX_DEPTH: usize = 5000;
-
 type Cell = Rc<RefCell<Value>>;
 
 #[derive(Clone, Debug)]
@@ -402,7 +399,7 @@ impl Sched {
                 std::panic::resume_unwind(crash);
             }
             if let Some(stop) = state.stop.take() {
-                return Err(Unwind::Stop(stop));
+                return Err(Unwind::Stop(Box::new(stop)));
             }
         } else if state.ending {
             ending();
@@ -644,7 +641,7 @@ impl Sched {
             }
             Err(Unwind::Abandon) => 0,
             Err(Unwind::Stop(stop)) => {
-                state.stop = Some(stop);
+                state.stop = Some(*stop);
                 0
             }
             Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
@@ -2042,7 +2039,9 @@ impl From<Diag> for Stop {
 /// `match` can leave from inside an expression with `return`, `break` or `continue`; these
 /// travel up to the call or the loop they belong to.
 enum Unwind {
-    Stop(Stop),
+    /// Boxed, so that every `Res` the interpreter passes back is small: a deep recursion of the
+    /// program holds one in each frame of the walk (choice 1823).
+    Stop(Box<Stop>),
     Return(Value),
     /// A `break` or a `continue` in an arm of a `match` inside an expression, with the loop
     /// it names, if it names one.
@@ -2055,13 +2054,13 @@ enum Unwind {
 impl From<Diag> for Unwind {
     fn from(diag: Diag) -> Unwind {
         ending();
-        Unwind::Stop(Stop::Diag(diag))
+        Unwind::Stop(Box::new(Stop::Diag(diag)))
     }
 }
 
 impl From<Stop> for Unwind {
     fn from(stop: Stop) -> Unwind {
-        Unwind::Stop(stop)
+        Unwind::Stop(Box::new(stop))
     }
 }
 
@@ -2260,7 +2259,7 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let io = shared(out, world, ffi, sources);
     let consts = Consts::given(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         // A fault of the interpreter itself still ends the tasks that wait, so that the scope
         // does not wait for their threads forever; then it goes on as the fault it is.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_main(&mut interp)));
@@ -2290,7 +2289,7 @@ fn run_main(interp: &mut Interp) -> Result<(), Stop> {
         // `Result<void, E> main()` ended with `Error(cause)`: the cause is written out.
         Ok(Value::Enum(_, 1, fields)) => {
             let cause = fields[0].borrow().clone();
-            interp.show(&cause, false, main.name_span).and_then(|text| Err(Unwind::Stop(Stop::Failed(text))))
+            interp.show(&cause, false, main.name_span).and_then(|text| Err(Unwind::Stop(Box::new(Stop::Failed(text)))))
         }
         other => other,
     };
@@ -2302,7 +2301,7 @@ fn run_main(interp: &mut Interp) -> Result<(), Stop> {
             Some(report) => Err(Stop::Diag(report)),
             None => Ok(()),
         },
-        Err(Unwind::Stop(stop)) => Err(stop),
+        Err(Unwind::Stop(stop)) => Err(*stop),
         Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop; fiber 0 is not abandoned"),
     }
 }
@@ -2326,7 +2325,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let io = shared(out, world, ffi, sources);
     let consts = Consts::given(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_each_test(&mut interp, prog, sources)));
         interp.end_fibers();
         result.unwrap_or_else(|crash| std::panic::resume_unwind(crash))
@@ -2339,7 +2338,6 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
         // Nothing is shared between tests: each starts with variables of its own, and with
         // statics not used yet, as each compiled test runs in a process of its own.
         interp.consts.drop_statics();
-        interp.depth = 0;
         interp.io.test_err.borrow_mut().clear();
         open_streams();
         let first = LIVE.with(|live| live.borrow().next);
@@ -2374,7 +2372,7 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
         let ended = match ended {
             Ok(Value::Enum(name, 1, fields)) => Ok(Value::Enum(name, 1, fields)),
             Ok(value) => match interp.leaked(first, "the test") {
-                Some(report) => Err(Unwind::Stop(Stop::Diag(report))),
+                Some(report) => Err(Unwind::Stop(Box::new(Stop::Diag(report)))),
                 None => Ok(value),
             },
             other => other,
@@ -2385,13 +2383,15 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
                 let cause = fields[0].borrow().clone();
                 match interp.show(&cause, false, test.name_span) {
                     Ok(text) => Some(format!("error: {text}\n")),
-                    Err(Unwind::Stop(stop)) => return Err(stop),
+                    Err(Unwind::Stop(stop)) => return Err(*stop),
                     Err(_) => unreachable!("writing a value does not leave a loop or a function"),
                 }
             }
             Ok(_) => None,
-            Err(Unwind::Stop(Stop::Diag(diag))) => Some(diag.render_in(sources)),
-            Err(Unwind::Stop(stop)) => return Err(stop),
+            Err(Unwind::Stop(stop)) => match *stop {
+                Stop::Diag(diag) => Some(diag.render_in(sources)),
+                stop => return Err(stop),
+            },
             Err(_) => unreachable!("`break` and `continue` end at their loop"),
         };
         let reason = reason.map(|reason| format!("{}{reason}", interp.io.test_err.borrow()));
@@ -2412,7 +2412,7 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
         };
         match interp.write_line(&line) {
             Ok(()) => {}
-            Err(Unwind::Stop(stop)) => return Err(stop),
+            Err(Unwind::Stop(stop)) => return Err(*stop),
             Err(_) => unreachable!("writing a line does not leave a loop or a function"),
         }
     }
@@ -2422,7 +2422,7 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
     };
     match interp.write_line(&summary) {
         Ok(()) => Ok((passed, failed)),
-        Err(Unwind::Stop(stop)) => Err(stop),
+        Err(Unwind::Stop(stop)) => Err(*stop),
         Err(_) => unreachable!("writing a line does not leave a loop or a function"),
     }
 }
@@ -2441,7 +2441,6 @@ struct Interp<'a, 'e> {
     scope: &'a std::thread::Scope<'a, 'e>,
     /// The fiber this runs on.
     me: usize,
-    depth: usize,
     /// Running the test command: `exit` fails the test instead of ending the program.
     in_test: bool,
     /// The borrows of `shared checked` values in progress, the latest last. Each part of the
@@ -2614,7 +2613,7 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         let mut found = BTreeMap::new();
         for decl in decls {
             let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
@@ -2622,12 +2621,13 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
                 Ok(slot) => {
                     found.insert(decl.name.clone(), const_of(&slot.borrow()));
                 }
-                Err(Unwind::Stop(Stop::Diag(_))) if consts.steps.as_ref().is_some_and(|left| left.get() == 0) => {
+                Err(Unwind::Stop(stop)) if matches!(*stop, Stop::Diag(_)) && consts.steps.as_ref().is_some_and(|left| left.get() == 0) => {
                     ENDING.with(|ending| ending.set(false));
                     return Err(Diag::error(decl.init.span, format!("checking this takes more than {} steps", group_digits(CONST_STEPS)))
                         .note("what the language's own module checks when the program is compiled takes at most that many steps, so that every machine finds the same"));
                 }
-                Err(Unwind::Stop(Stop::Diag(mut diag))) => {
+                Err(Unwind::Stop(stop)) if matches!(*stop, Stop::Diag(_)) => {
+                    let Stop::Diag(mut diag) = *stop else { unreachable!() };
                     ENDING.with(|ending| ending.set(false));
                     if diag.kind == crate::diag::Kind::Panic {
                         diag.kind = crate::diag::Kind::Error;
@@ -2659,15 +2659,22 @@ pub(crate) fn mark_stack() {
     STACK_BASE.set(std::hint::black_box(&here) as *const u8 as usize);
 }
 
+/// Whether no more than `STACK_SPARE` of the stack of this thread is left; never on a thread
+/// that did not mark where its stack begins.
+#[inline(always)]
+fn stack_spent() -> bool {
+    let base = STACK_BASE.get();
+    let here = 0u8;
+    let used = base.saturating_sub(std::hint::black_box(&here) as *const u8 as usize);
+    base != 0 && used > crate::STACK_BYTES - STACK_SPARE
+}
+
 /// The values the interpreter writes, compares and copies are walked by recursion, as deep as
 /// they are nested (a list of a million links). Before the stack runs out that is a panic of
 /// the program, as deep recursion of its own is, not a fault of the interpreter. The stack
 /// grows down on every machine the interpreter runs on.
 fn stack_room(span: Span, what: &str) -> Res<()> {
-    let base = STACK_BASE.get();
-    let here = 0u8;
-    let used = base.saturating_sub(std::hint::black_box(&here) as *const u8 as usize);
-    match base != 0 && used > crate::STACK_BYTES - STACK_SPARE {
+    match stack_spent() {
         true => Err(Diag::panic(span, format!("stack overflow: the value is nested too deep to be {what} here"))
             .note("the interpreter walks a value by recursion; a loop of the program can walk it one link at a time")
             .into()),
@@ -2691,6 +2698,10 @@ pub(crate) fn group_digits(count: u64) -> String {
 /// How many atomic operations a fiber does before the turn goes to the next one that is ready;
 /// `Atomic.spinLoop()` gives it at once.
 const ATOMICS_PER_TURN: u64 = 64;
+
+/// The functions `call_expr` makes itself; every other plain call is of a function of the
+/// program.
+const BUILT_IN_CALLS: [&str; 6] = ["print", "printError", "panic", "exit", "assert", "same"];
 
 /// Where the first file of the language's own module starts; the end of the text if none was read in.
 fn std_from(prog: &Program) -> usize {
@@ -2820,7 +2831,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(()) | Err(Unwind::Abandon) => {}
                 Err(Unwind::Stop(stop)) => {
                     drop(state);
-                    self.die(stop);
+                    self.die(*stop);
                 }
                 Err(_) => unreachable!("the turn comes back with a stop or the end of the run"),
             }
@@ -2844,7 +2855,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         match self.c_leave(func.name_span) {
             Ok(left) => LEFT.with(|cell| *cell.borrow_mut() = left),
-            Err(Unwind::Stop(stop)) => self.die(stop),
+            Err(Unwind::Stop(stop)) => self.die(*stop),
             Err(_) => unreachable!("giving the turn away stops the run or not"),
         }
     }
@@ -2910,7 +2921,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 _ => store(ret as usize, gives, &value, self.plain),
             },
-            Err(Unwind::Stop(stop)) => self.die(stop),
+            Err(Unwind::Stop(stop)) => self.die(*stop),
             Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
         }
     }
@@ -3932,7 +3943,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             io: self.io,
             scope: self.scope,
             me: id,
-            depth: 0,
+           
             in_test: self.in_test,
             guards: Vec::new(),
             aliases: self.aliases.clone(),
@@ -3960,8 +3971,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // A panic that already shows a second place keeps it: the line of a task
                 // started inside this one, or the borrow it met.
                 result.map_err(|unwind| match unwind {
-                    Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic && diag.related.is_none() => {
-                        Unwind::Stop(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name)))))
+                    Unwind::Stop(stop) if matches!(&*stop, Stop::Diag(diag) if diag.kind == crate::diag::Kind::Panic && diag.related.is_none()) => {
+                        let Stop::Diag(diag) = *stop else { unreachable!() };
+                        Unwind::Stop(Box::new(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name))))))
                     }
                     other => other,
                 })
@@ -4027,8 +4039,10 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     fn call(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, call_span: Span) -> Res<Value> {
         self.step(call_span)?;
-        if self.depth == MAX_DEPTH {
-            return Err(Diag::panic(call_span, format!("stack overflow: more than {MAX_DEPTH} nested calls"))
+        // As deep as the stack of the thread holds (choice 1823), as in compiled code; the
+        // panic says the same and adds the call.
+        if stack_spent() {
+            return Err(Diag::panic(call_span, "stack overflow: calls are nested deeper than the stack of this thread holds")
                 .note(format!("last called: `{}`", func.name))
                 .into());
         }
@@ -4039,7 +4053,6 @@ impl<'a, 'e> Interp<'a, 'e> {
         for (param, value) in func.params.iter().zip(args) {
             frame.declare(&param.name, value);
         }
-        self.depth += 1;
         let result = self.block(&func.body, &mut frame);
         // What the function still holds ends in the reverse order of its names. A stop of the
         // run waits for nothing: the program ends. Otherwise a task left behind (an exit with
@@ -4054,7 +4067,6 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         }
-        self.depth -= 1;
         ended?;
         if !self.started.is_empty() && !stops {
             self.unwaited()?;
@@ -4068,16 +4080,16 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A panic inside the language's own module is shown at the call of the program that
             // led there, as `#[track_caller]` does in Rust: the line in the module says nothing
             // to the one who called it.
-            Err(Unwind::Stop(Stop::Diag(mut diag)))
-                if diag.kind == crate::diag::Kind::Panic
-                    && diag.span.start >= self.std_from
+            Err(Unwind::Stop(mut stop))
+                if matches!(&*stop, Stop::Diag(diag) if diag.kind == crate::diag::Kind::Panic && diag.span.start >= self.std_from)
                     && call_span.start < self.std_from
                     && !(func.this.is_some() && crate::emit_c::RUNTIME_METHODS.contains(&func.name.as_str())) =>
             {
                 // A hint there would name code the caller cannot see.
+                let Stop::Diag(diag) = &mut *stop else { unreachable!() };
                 diag.span = call_span;
                 diag.hint = None;
-                Err(Unwind::Stop(Stop::Diag(diag)))
+                Err(Unwind::Stop(stop))
             }
             Err(other) => Err(other),
         }
@@ -4149,169 +4161,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                 frame.declare(name, value);
             }
             // A write into raw memory: the right side first, as for any place.
-            StmtKind::Assign { target, op, value, .. } if target.in_raw_memory() => {
-                let mut new = strip(self.expr(value, frame)?);
-                let verb = if op.is_some() { "read" } else { "written" };
-                let spot = self.raw_place(target, verb, frame)?;
-                if let Some(op) = op {
-                    let old = spot.read(self.plain, target.span)?;
-                    new = binary(*op, old, new, stmt.span)?;
-                }
-                if let Some((_, width)) = spot.bits {
-                    fits_bits(&new, width, stmt.span)?;
-                }
-                spot.write(&new, self.plain);
-                windows_in(self.plain, stmt.span)?;
-            }
+            StmtKind::Assign { target, op, value, .. } if target.in_raw_memory() => return self.stmt_assign_raw(stmt, frame),
             // `u.word = 3`: the bytes of the field are written over those of the union.
-            StmtKind::Assign { target: place @ Expr { kind: ExprKind::Field { recv, index, .. }, .. }, value, .. } if self.union_of(recv).is_some() => {
-                let name = self.union_of(recv).expect("matched above");
-                let new = self.expr(value, frame)?;
-                let ty = self.plain[&name].fields[*index].clone();
-                let mut holder = self.place(recv, frame)?;
-                loop {
-                    let found = holder.borrow().clone();
-                    match found {
-                        Value::Ptr(inner) | Value::Borrow(inner) => holder = inner,
-                        Value::Shared(held) => holder = held.value.clone(),
-                        Value::Struct(_, fields) => {
-                            let mut bytes = union_bytes(&fields);
-                            let given = bytes_of(&new, &ty, self.plain);
-                            bytes[..given.len()].copy_from_slice(&given);
-                            *holder.borrow_mut() = union_value(&name, &bytes);
-                            break;
-                        }
-                        _ => unreachable!("the checker found a union at {}", place.span.start),
-                    }
-                }
-            }
-            StmtKind::Assign { target, op, value, through } => {
-                let mut new = self.expr(value, frame)?;
-                let width = match &target.kind {
-                    ExprKind::Field { recv, index, .. } => struct_name(&recv.ty).and_then(|name| self.plain.get(name)).and_then(|plain| plain.bits[*index]),
-                    _ => None,
-                };
-                let mut target = self.place(target, frame)?;
-                if *through {
-                    target = behind_borrows(target);
-                }
-                if let Some(op) = op {
-                    let old = strip(target.borrow().clone());
-                    new = binary(*op, old, new, stmt.span)?;
-                }
-                if let Some(width) = width {
-                    fits_bits(&new, width, stmt.span)?;
-                }
-                *target.borrow_mut() = new;
-            }
-            StmtKind::If { cond, then, els, after } => {
-                // The scope holds the names of an `is` pattern in the condition.
-                frame.scopes.push(Scope::default());
-                let flow = if self.condition(cond, frame)? {
-                    self.block(then, frame)?
-                } else if let Some(els) = els {
-                    self.block(els, frame)?
-                } else {
-                    Flow::Next
-                };
-                let names = frame.scopes.pop().expect("the scope of the condition");
-                // `if r is not Ok(value) { return }`: the code after it sees `value`.
-                keep_names(after, names, frame);
-                return Ok(flow);
-            }
-            StmtKind::While { cond, body, after, label } => {
-                let depth = frame.scopes.len();
-                let mark = self.guards.len();
-                loop {
-                    // What the condition lent for the names it gave ends with the round.
-                    self.guards.truncate(mark);
-                    frame.scopes.push(Scope::default());
-                    let flow = match self.condition(cond, frame)? {
-                        true => loop_flow(self.block(body, frame))?,
-                        false => {
-                            // `while r is not Ok(value) { ... }`: the code after it sees `value`.
-                            let names = frame.scopes.pop().expect("the scope of the condition");
-                            keep_names(after, names, frame);
-                            Flow::Break(None)
-                        }
-                    };
-                    frame.scopes.truncate(depth);
-                    match round(flow, label.as_ref()) {
-                        Round::Next => {}
-                        Round::Stop => break,
-                        Round::Leave(flow) => return Ok(flow),
-                    }
-                }
-            }
-            StmtKind::For { var, from, to, body, reversed, label, .. } => {
-                let (Value::Int(ty, start), Value::Int(_, end)) = (self.expr(from, frame)?, self.expr(to, frame)?) else {
-                    unreachable!("the checker makes range bounds integers")
-                };
-                let depth = frame.scopes.len();
-                let rounds: Box<dyn Iterator<Item = _>> = if *reversed { Box::new((start..end).rev()) } else { Box::new(start..end) };
-                for i in rounds {
-                    frame.scopes.push(Scope::default());
-                    frame.declare(var, Value::Int(ty, i));
-                    let flow = loop_flow(self.block(body, frame))?;
-                    frame.scopes.truncate(depth);
-                    match round(flow, label.as_ref()) {
-                        Round::Next => {}
-                        Round::Stop => break,
-                        Round::Leave(flow) => return Ok(flow),
-                    }
-                }
-            }
-            StmtKind::ForEach { var, iter, body, by, label, .. } => {
-                let collection = owned(self.expr(iter, frame)?);
-                // A loop handed the collection owns its items one by one: each ends with its
-                // turn, as in compiled code, and not with the collection.
-                let owns = by.is_none() && (iter.moved || !iter.is_place());
-                // A map or a set is gone over as it was when the loop started.
-                let entry = |(key, value): &(Value, Cell)| {
-                    let value = if owns { cell(value.replace(Value::Null)) } else { value.clone() };
-                    cell(Value::Struct("entry".into(), Fields::plain(vec![cell(key.clone()), value])))
-                };
-                let snapshot: Option<Vec<Cell>> = match &collection {
-                    Value::Map(entries) => Some(entries.borrow().values().map(entry).collect()),
-                    Value::Set(items) => Some(items.borrow().values().cloned().map(cell).collect()),
-                    _ => None,
-                };
-                let depth = frame.scopes.len();
-                let mut next = 0;
-                loop {
-                    let item = match (&collection, &snapshot) {
-                        (_, Some(items)) => items.get(next).cloned(),
-                        (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
-                        (Value::Lines(lines), _) => self.next_line(lines, iter.span)?.map(cell),
-                        (Value::Chan(end), _) => match self.receive(&end.chan, None, false, iter.span)? {
-                            Ok(Value::Null) => None,
-                            Ok(item) => Some(cell(item)),
-                            Err(_) => unreachable!("no token is given"),
-                        },
-                        (Value::List(items), _) => items.borrow().get(next).cloned(),
-                        (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
-                        (Value::Bytes(text, start, end), _) => text.as_bytes()[*start..*end].get(next).copied().map(byte_cell),
-                        _ => unreachable!("the checker only lets `for` go over a collection"),
-                    };
-                    let Some(item) = item else { break };
-                    next += 1;
-                    let bound = match (by, owns) {
-                        (Some(_), _) => Value::Borrow(item),
-                        (None, true) => item.replace(Value::Null),
-                        (None, false) if matches!(collection, Value::Chan(_)) => item.replace(Value::Null),
-                        (None, false) => item.borrow().clone(),
-                    };
-                    frame.scopes.push(Scope::default());
-                    frame.declare(var, bound);
-                    let flow = loop_flow(self.block(body, frame))?;
-                    frame.scopes.truncate(depth);
-                    match round(flow, label.as_ref()) {
-                        Round::Next => {}
-                        Round::Stop => break,
-                        Round::Leave(flow) => return Ok(flow),
-                    }
-                }
-            }
+            StmtKind::Assign { target: place @ Expr { kind: ExprKind::Field { recv, index, .. }, .. }, value, .. } if self.union_of(recv).is_some() => return self.stmt_assign_union(stmt, frame),
+            StmtKind::Assign { .. } => return self.stmt_assign(stmt, frame),
+            StmtKind::If { .. } => return self.stmt_if(stmt, frame),
+            StmtKind::While { .. } => return self.stmt_while(stmt, frame),
+            StmtKind::For { .. } => return self.stmt_for(stmt, frame),
+            StmtKind::ForEach { .. } => return self.stmt_for_each(stmt, frame),
             // `read folder as f { ... }`: what the `shared` value holds, lent for the block.
             StmtKind::As { value, name, body, .. } => {
                 let holder = self.expr(value, frame)?;
@@ -4328,49 +4185,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             StmtKind::Unsafe(body) => return self.block(body, frame),
             // A const of a block: its value was found when the program was compiled.
             StmtKind::Const { .. } | StmtKind::Static { .. } => {}
-            StmtKind::Lock { items, when, body, .. } => {
-                let mut taken: Vec<Rc<Held>> = Vec::new();
-                let mut keys: Vec<usize> = Vec::new();
-                let mut placed: Vec<bool> = Vec::new();
-                frame.scopes.push(Scope::default());
-                let mut statics: Vec<(&str, usize)> = Vec::new();
-                for (position, item) in items.iter().enumerate() {
-                    // `lock Settings as s`: a `static locked` value, in its cell.
-                    if let ExprKind::Static(name) = &item.value.kind {
-                        if let Some(&(_, first)) = statics.iter().find(|(other, _)| *other == name) {
-                            frame.scopes.pop();
-                            return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
-                        }
-                        let slot = self.static_cell(name, item.value.span)?;
-                        keys.push(Rc::as_ptr(&slot) as *const () as usize);
-                        frame.declare(&item.name, Value::Borrow(slot));
-                        statics.push((name, position));
-                        continue;
-                    }
-                    let holder = self.expr(&item.value, frame)?;
-                    let Some(held) = held_of(&holder) else { unreachable!("the checker locks only a `shared locked` value") };
-                    if let Some(first) = taken.iter().position(|other| Rc::ptr_eq(other, &held)) {
-                        frame.scopes.pop();
-                        return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
-                    }
-                    keys.push(Rc::as_ptr(&held.value) as *const () as usize);
-                    frame.declare(&item.name, Value::Borrow(held.value.clone()));
-                    placed.push(item.value.is_place());
-                    taken.push(held);
-                }
-                if let Some(when) = when {
-                    if let Err(unwind) = self.lock_wait(items, when, &taken, &placed, &keys, !statics.is_empty(), stmt.span, frame) {
-                        frame.scopes.pop();
-                        return Err(unwind);
-                    }
-                }
-                self.locking += 1;
-                let flow = self.block(body, frame);
-                self.locking -= 1;
-                frame.scopes.pop();
-                self.lock_ended(&keys);
-                return flow;
-            }
+            StmtKind::Lock { .. } => return self.stmt_lock(stmt, frame),
             StmtKind::Return(value) => {
                 let value = match value {
                     Some(expr) => self.expr(expr, frame)?,
@@ -4385,6 +4200,257 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_assign_raw(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::Assign { target, op, value, .. } = &stmt.kind else { unreachable!() };
+        {
+            let mut new = strip(self.expr(value, frame)?);
+            let verb = if op.is_some() { "read" } else { "written" };
+            let spot = self.raw_place(target, verb, frame)?;
+            if let Some(op) = op {
+                let old = spot.read(self.plain, target.span)?;
+                new = binary(*op, old, new, stmt.span)?;
+            }
+            if let Some((_, width)) = spot.bits {
+                fits_bits(&new, width, stmt.span)?;
+            }
+            spot.write(&new, self.plain);
+            windows_in(self.plain, stmt.span)?;
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_assign_union(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::Assign { target: place @ Expr { kind: ExprKind::Field { recv, index, .. }, .. }, value, .. } = &stmt.kind else { unreachable!() };
+        {
+            let name = self.union_of(recv).expect("matched above");
+            let new = self.expr(value, frame)?;
+            let ty = self.plain[&name].fields[*index].clone();
+            let mut holder = self.place(recv, frame)?;
+            loop {
+                let found = holder.borrow().clone();
+                match found {
+                    Value::Ptr(inner) | Value::Borrow(inner) => holder = inner,
+                    Value::Shared(held) => holder = held.value.clone(),
+                    Value::Struct(_, fields) => {
+                        let mut bytes = union_bytes(&fields);
+                        let given = bytes_of(&new, &ty, self.plain);
+                        bytes[..given.len()].copy_from_slice(&given);
+                        *holder.borrow_mut() = union_value(&name, &bytes);
+                        break;
+                    }
+                    _ => unreachable!("the checker found a union at {}", place.span.start),
+                }
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_assign(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::Assign { target, op, value, through } = &stmt.kind else { unreachable!() };
+        {
+            let mut new = self.expr(value, frame)?;
+            let width = match &target.kind {
+                ExprKind::Field { recv, index, .. } => struct_name(&recv.ty).and_then(|name| self.plain.get(name)).and_then(|plain| plain.bits[*index]),
+                _ => None,
+            };
+            let mut target = self.place(target, frame)?;
+            if *through {
+                target = behind_borrows(target);
+            }
+            if let Some(op) = op {
+                let old = strip(target.borrow().clone());
+                new = binary(*op, old, new, stmt.span)?;
+            }
+            if let Some(width) = width {
+                fits_bits(&new, width, stmt.span)?;
+            }
+            *target.borrow_mut() = new;
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_if(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::If { cond, then, els, after } = &stmt.kind else { unreachable!() };
+        {
+            // The scope holds the names of an `is` pattern in the condition.
+            frame.scopes.push(Scope::default());
+            let flow = if self.condition(cond, frame)? {
+                self.block(then, frame)?
+            } else if let Some(els) = els {
+                self.block(els, frame)?
+            } else {
+                Flow::Next
+            };
+            let names = frame.scopes.pop().expect("the scope of the condition");
+            // `if r is not Ok(value) { return }`: the code after it sees `value`.
+            keep_names(after, names, frame);
+            Ok(flow)
+        }
+    }
+
+    #[inline(never)]
+    fn stmt_while(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::While { cond, body, after, label } = &stmt.kind else { unreachable!() };
+        {
+            let depth = frame.scopes.len();
+            let mark = self.guards.len();
+            loop {
+                // What the condition lent for the names it gave ends with the round.
+                self.guards.truncate(mark);
+                frame.scopes.push(Scope::default());
+                let flow = match self.condition(cond, frame)? {
+                    true => loop_flow(self.block(body, frame))?,
+                    false => {
+                        // `while r is not Ok(value) { ... }`: the code after it sees `value`.
+                        let names = frame.scopes.pop().expect("the scope of the condition");
+                        keep_names(after, names, frame);
+                        Flow::Break(None)
+                    }
+                };
+                frame.scopes.truncate(depth);
+                match round(flow, label.as_ref()) {
+                    Round::Next => {}
+                    Round::Stop => break,
+                    Round::Leave(flow) => return Ok(flow),
+                }
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_for(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::For { var, from, to, body, reversed, label, .. } = &stmt.kind else { unreachable!() };
+        {
+            let (Value::Int(ty, start), Value::Int(_, end)) = (self.expr(from, frame)?, self.expr(to, frame)?) else {
+                unreachable!("the checker makes range bounds integers")
+            };
+            let depth = frame.scopes.len();
+            let rounds: Box<dyn Iterator<Item = _>> = if *reversed { Box::new((start..end).rev()) } else { Box::new(start..end) };
+            for i in rounds {
+                frame.scopes.push(Scope::default());
+                frame.declare(var, Value::Int(ty, i));
+                let flow = loop_flow(self.block(body, frame))?;
+                frame.scopes.truncate(depth);
+                match round(flow, label.as_ref()) {
+                    Round::Next => {}
+                    Round::Stop => break,
+                    Round::Leave(flow) => return Ok(flow),
+                }
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_for_each(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::ForEach { var, iter, body, by, label, .. } = &stmt.kind else { unreachable!() };
+        {
+            let collection = owned(self.expr(iter, frame)?);
+            // A loop handed the collection owns its items one by one: each ends with its
+            // turn, as in compiled code, and not with the collection.
+            let owns = by.is_none() && (iter.moved || !iter.is_place());
+            // A map or a set is gone over as it was when the loop started.
+            let entry = |(key, value): &(Value, Cell)| {
+                let value = if owns { cell(value.replace(Value::Null)) } else { value.clone() };
+                cell(Value::Struct("entry".into(), Fields::plain(vec![cell(key.clone()), value])))
+            };
+            let snapshot: Option<Vec<Cell>> = match &collection {
+                Value::Map(entries) => Some(entries.borrow().values().map(entry).collect()),
+                Value::Set(items) => Some(items.borrow().values().cloned().map(cell).collect()),
+                _ => None,
+            };
+            let depth = frame.scopes.len();
+            let mut next = 0;
+            loop {
+                let item = match (&collection, &snapshot) {
+                    (_, Some(items)) => items.get(next).cloned(),
+                    (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
+                    (Value::Lines(lines), _) => self.next_line(lines, iter.span)?.map(cell),
+                    (Value::Chan(end), _) => match self.receive(&end.chan, None, false, iter.span)? {
+                        Ok(Value::Null) => None,
+                        Ok(item) => Some(cell(item)),
+                        Err(_) => unreachable!("no token is given"),
+                    },
+                    (Value::List(items), _) => items.borrow().get(next).cloned(),
+                    (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
+                    (Value::Bytes(text, start, end), _) => text.as_bytes()[*start..*end].get(next).copied().map(byte_cell),
+                    _ => unreachable!("the checker only lets `for` go over a collection"),
+                };
+                let Some(item) = item else { break };
+                next += 1;
+                let bound = match (by, owns) {
+                    (Some(_), _) => Value::Borrow(item),
+                    (None, true) => item.replace(Value::Null),
+                    (None, false) if matches!(collection, Value::Chan(_)) => item.replace(Value::Null),
+                    (None, false) => item.borrow().clone(),
+                };
+                frame.scopes.push(Scope::default());
+                frame.declare(var, bound);
+                let flow = loop_flow(self.block(body, frame))?;
+                frame.scopes.truncate(depth);
+                match round(flow, label.as_ref()) {
+                    Round::Next => {}
+                    Round::Stop => break,
+                    Round::Leave(flow) => return Ok(flow),
+                }
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    #[inline(never)]
+    fn stmt_lock(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let StmtKind::Lock { items, when, body, .. } = &stmt.kind else { unreachable!() };
+        {
+            let mut taken: Vec<Rc<Held>> = Vec::new();
+            let mut keys: Vec<usize> = Vec::new();
+            let mut placed: Vec<bool> = Vec::new();
+            frame.scopes.push(Scope::default());
+            let mut statics: Vec<(&str, usize)> = Vec::new();
+            for (position, item) in items.iter().enumerate() {
+                // `lock Settings as s`: a `static locked` value, in its cell.
+                if let ExprKind::Static(name) = &item.value.kind {
+                    if let Some(&(_, first)) = statics.iter().find(|(other, _)| *other == name) {
+                        frame.scopes.pop();
+                        return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
+                    }
+                    let slot = self.static_cell(name, item.value.span)?;
+                    keys.push(Rc::as_ptr(&slot) as *const () as usize);
+                    frame.declare(&item.name, Value::Borrow(slot));
+                    statics.push((name, position));
+                    continue;
+                }
+                let holder = self.expr(&item.value, frame)?;
+                let Some(held) = held_of(&holder) else { unreachable!("the checker locks only a `shared locked` value") };
+                if let Some(first) = taken.iter().position(|other| Rc::ptr_eq(other, &held)) {
+                    frame.scopes.pop();
+                    return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
+                }
+                keys.push(Rc::as_ptr(&held.value) as *const () as usize);
+                frame.declare(&item.name, Value::Borrow(held.value.clone()));
+                placed.push(item.value.is_place());
+                taken.push(held);
+            }
+            if let Some(when) = when {
+                if let Err(unwind) = self.lock_wait(items, when, &taken, &placed, &keys, !statics.is_empty(), stmt.span, frame) {
+                    frame.scopes.pop();
+                    return Err(unwind);
+                }
+            }
+            self.locking += 1;
+            let flow = self.block(body, frame);
+            self.locking -= 1;
+            frame.scopes.pop();
+            self.lock_ended(&keys);
+            flow
+        }
     }
 
     fn condition(&mut self, cond: &'a Expr, frame: &mut Frame) -> Res<bool> {
@@ -4491,51 +4557,107 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::Str(text) => Ok(Value::Str(text.as_str().to_string().into())),
             ExprKind::Null => Ok(Value::Null),
-            ExprKind::Interp(parts) => {
-                // The values are computed first, from left to right; they are written after
-                // that, so a `format` method runs when every value of the line is there.
-                let mut values = Vec::new();
-                for part in parts {
-                    if let InterpPart::Expr(inner, _) = part {
-                        values.push(self.expr(inner, frame)?);
-                    }
-                }
-                let mut values = values.iter();
-                let mut text = String::new();
-                for part in parts {
-                    match part {
-                        InterpPart::Text(piece) => text.push_str(piece),
-                        InterpPart::Expr(inner, spec) => {
-                            let value = values.next().expect("one value for each part");
-                            let shown = match spec.and_then(|spec| spec.letter) {
-                                Some((letter, digits)) => written_as(&owned(value.clone()), letter, digits.unwrap_or(0) as usize),
-                                None => self.show(value, false, inner.span)?,
-                            };
-                            let width = spec.map_or(0, |spec| spec.width);
-                            let fill = (width.unsigned_abs() as usize).saturating_sub(shown.chars().count());
-                            if width > 0 {
-                                text.extend(std::iter::repeat_n(' ', fill));
-                            }
-                            text.push_str(&shown);
-                            if width < 0 {
-                                text.extend(std::iter::repeat_n(' ', fill));
-                            }
-                        }
-                    }
-                }
-                Ok(Value::Fmt(text.into()))
-            }
+            ExprKind::Field { .. } | ExprKind::Index { .. } if expr.in_raw_memory() => self.raw_read(expr, frame),
             // A moved value leaves its place empty, as it does in compiled code: what is left
             // behind would otherwise count as one more owner of a `shared` value. A moved
             // writer is the only one that writes its buffer, when it is dropped.
-            ExprKind::Field { .. } | ExprKind::Index { .. } if expr.in_raw_memory() => {
-                Ok(self.raw_place(expr, "read", frame)?.read(self.plain, expr.span)?)
-            }
             ExprKind::Var(_) | ExprKind::Field { .. } if expr.moved => Ok(self.place(expr, frame)?.replace(Value::Null)),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
             }
+            ExprKind::Unary(UnOp::Neg, _) => self.unary_value(expr, frame),
+            ExprKind::Unary(UnOp::Not, operand) => Ok(Value::Bool(!self.condition(operand, frame)?)),
+            ExprKind::Unary(UnOp::BitNot, operand) => match strip(self.expr(operand, frame)?) {
+                Value::Int(ty, value) => Ok(Value::Int(ty, ty.wrap(!value))),
+                _ => unreachable!("the checker makes the operand an integer"),
+            },
+            ExprKind::Binary(BinOp::And | BinOp::Or, ..) => self.binary_value3(expr, frame),
+            // `p + n`: `n` items further on.
+            ExprKind::Binary(..) if matches!(expr.ty, Ty::Raw(_)) => self.binary_value2(expr, frame),
+            // Two addresses, or one and `null`.
+            ExprKind::Binary(_, left, right) if matches!(left.ty.strip_borrow(), Ty::CFunc(..)) || matches!(right.ty.strip_borrow(), Ty::CFunc(..)) => {
+                self.c_functions_equal(expr, frame)
+            }
+            ExprKind::Binary(_, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => self.binary_value(expr, frame),
+            ExprKind::Binary(op, left, right) => {
+                let left = strip(self.expr(left, frame)?);
+                let right = strip(self.expr(right, frame)?);
+                self.binary(*op, left, right, expr.span)
+            }
+            ExprKind::Char(value) => Ok(Value::Char(*value)),
+            ExprKind::Call { .. } => self.call_value(expr, frame),
+            ExprKind::Method { .. } => self.method_value(expr, frame),
+            _ => self.expr_rare(expr, frame),
+        }
+    }
+
+    #[inline(never)]
+    fn raw_read(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        Ok(self.raw_place(expr, "read", frame)?.read(self.plain, expr.span)?)
+    }
+
+    /// Two addresses of C functions, or one and `null`.
+    #[inline(never)]
+    fn c_functions_equal(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Binary(op, left, right) = &expr.kind else { unreachable!() };
+        let left = raw_of(&strip(self.expr(left, frame)?));
+        let right = raw_of(&strip(self.expr(right, frame)?));
+        Ok(Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)))
+    }
+
+    /// What the program writes less often, apart from `expr_value`, so that the frame of
+    /// the walk every call goes through stays small (choice 1823).
+    #[inline(never)]
+    fn expr_rare(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        match &expr.kind {
+            ExprKind::Interp(..) => self.interp_value(expr, frame),
+            // `Channel<T>(n)`: the end that receives, of a channel with room for `n` items.
+            ExprKind::Collection { ty, args, .. } if ty.name == "Channel" => self.collection_value2(expr, frame),
+            ExprKind::Collection { .. } => self.collection_value(expr, frame),
+            ExprKind::Unsafe(inner) => self.expr(inner, frame),
+            // `(ref State)data`: the value whose address `Memory.addressOf` gave, if it is
+            // still there and of that type.
+            ExprKind::RawCast { expr: inner, .. } if expr.ty.is_borrow() => self.raw_cast_value2(expr, frame),
+            ExprKind::RawCast { .. } => self.raw_cast_value(expr, frame),
+            // `Memory.allocate<T>(n)`
+            ExprKind::Allocate { .. } => self.allocate_value(expr, frame),
+            ExprKind::Array { .. } => self.array_value(expr, frame),
+            ExprKind::Slice { .. } => self.slice_value(expr, frame),
+            ExprKind::Cast { .. } => self.cast_value(expr, frame),
+            // A union is its bytes: zero, with the one field given written over them.
+            ExprKind::StructLit { name, fields, .. } if self.plain.get(name.as_str()).is_some_and(|plain| plain.union) => self.struct_lit_value2(expr, frame),
+            ExprKind::StructLit { .. } => self.struct_lit_value(expr, frame),
+            // The value of `base`, owned here, with the fields written given anew: what they
+            // held is dropped as each is replaced.
+            ExprKind::With { .. } => self.with_value(expr, frame),
+            ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(self.place(inner, frame)?)),
+            ExprKind::IsNull { expr: inner, negated } => {
+                let is_null = matches!(strip(self.expr(inner, frame)?), Value::Null);
+                Ok(Value::Bool(is_null != *negated))
+            }
+            ExprKind::Coalesce { on_result: false, .. } => self.coalesce_value(expr, frame),
+            ExprKind::Coalesce { left, right, on_result: true } => match self.expr(left, frame)? {
+                Value::Enum(_, 0, fields) => Ok(fields[0].borrow().clone()),
+                _ => self.expr(right, frame),
+            },
+            ExprKind::Try { .. } => self.try_value(expr, frame),
+            ExprKind::Return(value) => {
+                let value = match value {
+                    Some(expr) => self.expr(expr, frame)?,
+                    None => Value::Void,
+                };
+                Err(Unwind::Return(value))
+            }
+            ExprKind::Variant { owner, index, args } => {
+                let cells = self.values(args, frame)?.into_iter().map(cell).collect();
+                Ok(Value::Enum(owner.as_str().into(), *index, Rc::new(cells)))
+            }
+            ExprKind::Unbox(..) => self.unbox_value(expr, frame),
+            ExprKind::IsVariant { .. } => self.is_variant_value(expr, frame),
+            ExprKind::Match { .. } => self.match_value(expr, frame),
+            // `await f(x)` of an async function runs it here, as part of this task.
+            ExprKind::Await(..) => self.await_value(expr, frame),
             ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.address(name), block: None })),
             ExprKind::FuncRef(name) => Ok(Value::Func(name.as_str().into())),
             // C owns the memory of its variable, so it is not checked as a block.
@@ -4554,319 +4676,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
                 Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))
             }
-            // `Channel<T>(n)`: the end that receives, of a channel with room for `n` items.
-            ExprKind::Collection { ty, args, .. } if ty.name == "Channel" => {
-                let Value::Int(_, room) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the room an `nint`") };
-                if room < 1 {
-                    return Err(Diag::panic(args[0].span, format!("a channel has room for at least one item, and this is {room}")).into());
-                }
-                let chan = Rc::new(Chan { items: RefCell::new(VecDeque::new()), room: usize::try_from(room).unwrap_or(usize::MAX), senders: std::cell::Cell::new(0), receivers: std::cell::Cell::new(0) });
-                Ok(Value::Chan(ChanEnd::new(&chan, false)))
-            }
-            ExprKind::Collection { ty, items, .. } => {
-                let given = items.iter().flatten();
-                if ty.name == "List" {
-                    let mut cells = Vec::new();
-                    for item in given {
-                        cells.push(cell(self.expr(&item.values[0], frame)?));
-                    }
-                    return Ok(Value::List(Rc::new(RefCell::new(cells))));
-                }
-                if ty.name == "HashSet" {
-                    let mut set = Table::new();
-                    for item in given {
-                        let value = strip(self.expr(&item.values[0], frame)?);
-                        set.insert(key_of(&value), value);
-                    }
-                    return Ok(Value::Set(Rc::new(RefCell::new(set))));
-                }
-                let mut entries = Entries::new();
-                for item in given {
-                    let key = strip(self.expr(&item.values[0], frame)?);
-                    let value = self.expr(&item.values[1], frame)?;
-                    let shown = self.show(&key, true, item.span)?;
-                    map_add(&mut entries, key, value, shown, item.span)?;
-                }
-                Ok(Value::Map(Rc::new(RefCell::new(entries))))
-            }
             ExprKind::Widen(ty, inner) => Ok(convert(strip(self.expr(inner, frame)?), ty)),
             ExprKind::Load(inner) => Ok(fresh(&owned(self.expr(inner, frame)?))),
-            ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
-                Value::Int(ty, value) => {
-                    if !ty.fits(-value) {
-                        return Err(Diag::panic(expr.span, format!("overflow: -({value}) does not fit in {}", ty.name()))
-                            .hint("`tryNegate` gives `null` instead, and `wrappingNegate` wraps around")
-                            .into());
-                    }
-                    Ok(Value::Int(ty, -value))
-                }
-                Value::Float(ty, value) => Ok(Value::Float(ty, -value)),
-                _ => unreachable!("the checker makes the operand a number"),
-            },
-            ExprKind::Unary(UnOp::Not, operand) => Ok(Value::Bool(!self.condition(operand, frame)?)),
-            ExprKind::Unary(UnOp::BitNot, operand) => match strip(self.expr(operand, frame)?) {
-                Value::Int(ty, value) => Ok(Value::Int(ty, ty.wrap(!value))),
-                _ => unreachable!("the checker makes the operand an integer"),
-            },
-            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
-                let left_value = self.condition(left, frame)?;
-                // Short circuit: when the left side decides the result, the right side does not run.
-                if left_value == (*op == BinOp::Or) {
-                    return Ok(Value::Bool(left_value));
-                }
-                Ok(Value::Bool(self.condition(right, frame)?))
-            }
-            // `p + n`: `n` items further on.
-            ExprKind::Binary(op, left, right) if matches!(expr.ty, Ty::Raw(_)) => {
-                let Ty::Raw(item) = &expr.ty else { unreachable!("tested above") };
-                let base = raw_of(&strip(self.expr(left, frame)?));
-                let count = self.int(right, frame)?;
-                let (size, _) = raw::layout(item, self.plain);
-                let count = if *op == BinOp::Sub { count.wrapping_neg() } else { count };
-                Ok(Value::Raw(base.offset(count.wrapping_mul(size as i128))))
-            }
-            // Two addresses, or one and `null`.
-            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::CFunc(..)) || matches!(right.ty.strip_borrow(), Ty::CFunc(..)) => {
-                let left = raw_of(&strip(self.expr(left, frame)?));
-                let right = raw_of(&strip(self.expr(right, frame)?));
-                Ok(Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)))
-            }
-            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
-                let item = match left.ty.strip_borrow() {
-                    Ty::Raw(item) => (**item).clone(),
-                    _ => Ty::Void,
-                };
-                let left = raw_of(&strip(self.expr(left, frame)?));
-                let right = raw_of(&strip(self.expr(right, frame)?));
-                Ok(match op {
-                    BinOp::Lt => Value::Bool(left.addr < right.addr),
-                    BinOp::Le => Value::Bool(left.addr <= right.addr),
-                    BinOp::Gt => Value::Bool(left.addr > right.addr),
-                    BinOp::Ge => Value::Bool(left.addr >= right.addr),
-                    // Two pointers into two blocks have nothing between them to count.
-                    BinOp::Sub => {
-                        if let (Some(a), Some(b)) = (left.block, right.block) {
-                            if a != b {
-                                return Err(Diag::panic(expr.span, "the items between two pointers are counted, and the two point into two blocks of raw memory").into());
-                            }
-                        }
-                        let (size, _) = raw::layout(&item, self.plain);
-                        let bytes = left.addr as i128 - right.addr as i128;
-                        Value::Int(IntTy::Nint, if size == 0 { 0 } else { bytes / size as i128 })
-                    }
-                    _ => Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)),
-                })
-            }
-            ExprKind::Binary(op, left, right) => {
-                let left = strip(self.expr(left, frame)?);
-                let right = strip(self.expr(right, frame)?);
-                self.binary(*op, left, right, expr.span)
-            }
-            ExprKind::Unsafe(inner) => self.expr(inner, frame),
-            // `(ref State)data`: the value whose address `Memory.addressOf` gave, if it is
-            // still there and of that type.
-            ExprKind::RawCast { expr: inner, .. } if expr.ty.is_borrow() => {
-                let pointer = raw_of(&strip(self.expr(inner, frame)?));
-                let wanted = expr.ty.strip_borrow();
-                let lent = if matches!(expr.ty, Ty::Ref(_)) { "ref" } else { "read" };
-                let found = ADDRESSES.with(|given| given.borrow().get(&pointer.addr).cloned());
-                let why = match found {
-                    _ if pointer.addr == 0 => format!("`({lent} {wanted})` is given an address that is `null`"),
-                    None => format!("`({lent} {wanted})` is given an address that `Memory.addressOf` did not give"),
-                    Some((_, ty)) if ty != *wanted => format!("`({lent} {wanted})` is given the address of a `{ty}`"),
-                    Some((held, ty)) => match held.upgrade() {
-                        None => format!("`({lent} {wanted})` is given the address of a value that has ended"),
-                        Some(held) if matches!(*held.borrow(), Value::Null) && !matches!(ty, Ty::Nullable(_)) => {
-                            format!("`({lent} {wanted})` is given the address of a value that was moved away")
-                        }
-                        Some(held) => return Ok(Value::Borrow(held)),
-                    },
-                };
-                Err(Diag::panic(expr.span, why).into())
-            }
-            ExprKind::RawCast { expr: inner, .. } => Ok(match strip(self.expr(inner, frame)?) {
-                Value::Null => Value::Null,
-                // A number made into a pointer finds its block again by its address.
-                Value::Int(_, number) => {
-                    let addr = number as i64 as usize;
-                    Value::Raw(RawPtr { addr, block: raw::block_at(addr) })
-                }
-                pointer => Value::Raw(raw_of(&pointer)),
-            }),
             ExprKind::SizeOf { align, of, .. } => {
                 let (size, alignment) = raw::layout(of, self.plain);
                 Ok(Value::Int(IntTy::Nint, if *align { alignment } else { size } as i128))
-            }
-            // `Memory.allocate<T>(n)`
-            ExprKind::Allocate { args, .. } => {
-                let Ty::Raw(item) = &expr.ty else { unreachable!("the checker gives a raw pointer") };
-                let count = self.int(&args[0], frame)?;
-                if count < 0 {
-                    return Err(Diag::panic(expr.span, format!("`Memory.allocate` is given a count below 0: {count}")).into());
-                }
-                let (size, align) = raw::layout(item, self.plain);
-                match raw::allocate(count as usize, size, align) {
-                    Ok(pointer) => Ok(Value::Raw(pointer)),
-                    Err(raw::AllocError::TooLarge) => {
-                        Err(Diag::panic(expr.span, format!("`Memory.allocate` is asked for more memory than an address can count: {count} items of `{item}`")).into())
-                    }
-                    Err(raw::AllocError::OutOfMemory) => Err(Diag::panic(expr.span, format!("`Memory.allocate` found no memory for {count} items of `{item}`")).into()),
-                }
-            }
-            ExprKind::Char(value) => Ok(Value::Char(*value)),
-            ExprKind::Array { args, items, .. } => {
-                let Ty::Array(item, length) = &expr.ty else { unreachable!("the checker gives an array its type") };
-                // An array the checker allows may still be more than the memory holds: that is
-                // a panic, as in compiled code, not an abort. Each item is a cell of its own here.
-                let mut cells = Vec::new();
-                if cells.try_reserve_exact(*length).is_err() {
-                    return Err(Diag::panic(expr.span, format!("there is no memory for an array of {} items", group_digits(*length as u64))).into());
-                }
-                match (items, args.first()) {
-                    (Some(items), _) => {
-                        for given in items {
-                            cells.push(cell(self.expr(given, frame)?));
-                        }
-                    }
-                    (None, Some(value)) => {
-                        let value = self.expr(value, frame)?;
-                        cells.extend((0..*length).map(|_| cell(fresh(&value))));
-                    }
-                    (None, None) => cells.extend((0..*length).map(|_| cell(zero(item)))),
-                }
-                Ok(Value::Array(Rc::new(cells)))
             }
             ExprKind::AsSlice(inner) => match owned(self.expr(inner, frame)?) {
                 bytes @ Value::Bytes(..) => Ok(bytes),
                 other => Ok(Value::Slice(cells_of(&other))),
             },
-            ExprKind::Slice { recv, from, to } => {
-                // The items where they are, not a copy of them: a place is looked into.
-                let holder = match recv.is_place() {
-                    true => owned(self.place(recv, frame)?.borrow().clone()),
-                    false => owned(self.expr(recv, frame)?),
-                };
-                // A list's length and its part are read where it is: copying all of its cells to
-                // cut a few out would make each slice of a long list as slow as the list is long.
-                let length = match &holder {
-                    Value::Str(text) => text.len() as i128,
-                    Value::List(items) => items.borrow().len() as i128,
-                    Value::Array(items) | Value::Slice(items) => items.len() as i128,
-                    Value::Bytes(_, start, end) => (end - start) as i128,
-                    other => cells_of(other).len() as i128,
-                };
-                let from = match from {
-                    Some(from) => self.int(from, frame)?,
-                    None => 0,
-                };
-                let to = match to {
-                    Some(to) => self.int(to, frame)?,
-                    None => length,
-                };
-                // An end that lies outside is said first: `xs[4..]` on three items is out of
-                // range, not a range that ends before it starts.
-                if from < 0 || from > length || to < 0 || to > length {
-                    return Err(Diag::panic(expr.span, format!("range {from}..{to} is out of range: the length is {length}")).into());
-                }
-                if from > to {
-                    return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
-                }
-                if let Value::Bytes(text, start, _) = holder {
-                    return Ok(Value::Bytes(text, start + from as usize, start + to as usize));
-                }
-                let Value::Str(text) = holder else {
-                    let part = match &holder {
-                        Value::List(items) => items.borrow()[from as usize..to as usize].to_vec(),
-                        Value::Array(items) | Value::Slice(items) => items[from as usize..to as usize].to_vec(),
-                        other => cells_of(other)[from as usize..to as usize].to_vec(),
-                    };
-                    return Ok(Value::Slice(Rc::new(part)));
-                };
-                let (start, end) = (from as usize, to as usize);
-                if let Some(cut) = [start, end].into_iter().find(|at| !text.is_char_boundary(*at)) {
-                    let inside = text.char_indices().take_while(|(at, _)| *at < cut).last().expect("a character starts before the cut");
-                    let (first, last) = (inside.0, inside.0 + inside.1.len_utf8());
-                    return Err(Diag::panic(expr.span, format!("range {from}..{to} cuts a character in half"))
-                        .note(format!("`{}` takes bytes {first}..{last}; a `string` is always valid UTF-8", inside.1))
-                        .into());
-                }
-                // A window in the design; a copy here, which cannot be told apart.
-                Ok(Value::Str(text[start..end].to_string().into()))
-            }
-            ExprKind::Cast { ty, expr: inner } => match (strip(self.expr(inner, frame)?), ty) {
-                (Value::Raw(pointer), Ty::Int(IntTy::Nint)) => Ok(Value::Int(IntTy::Nint, pointer.addr as isize as i128)),
-                (Value::Raw(pointer), Ty::Int(_)) => Ok(Value::Int(IntTy::Nuint, pointer.addr as i128)),
-                (Value::Null, Ty::Int(to)) => Ok(Value::Int(*to, 0)),
-                (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
-                (Value::Int(_, value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name()))
-                    .hint(format!("`tryTo{0}()` gives `null` when the value does not fit, and `wrappingTo{0}()` cuts it to size", to.title()))
-                    .into()),
-                (Value::Float(_, value), Ty::Int(to)) if float_fits(value, *to) => Ok(Value::Int(*to, value.trunc() as i128)),
-                (Value::Float(from, value), Ty::Int(to)) => {
-                    Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name()))
-                        .hint(format!("`tryTo{}()` gives `null` when the value does not fit", to.title()))
-                        .into())
-                }
-                // A code that is no character panics in every build: a text holds characters only.
-                (Value::Int(_, value), Ty::Char) => match crate::check::char_of(value) {
-                    Some(found) => Ok(Value::Char(found)),
-                    None => Err(Diag::panic(expr.span, format!("{value} is not the code of a character"))
-                        .hint("`tryToChar()` gives `null` when no character has the code")
-                        .into()),
-                },
-                (Value::Char(value), Ty::Char) => Ok(Value::Char(value)),
-                (Value::Char(value), Ty::Int(to)) if to.fits(value as i128) => Ok(Value::Int(*to, value as i128)),
-                (Value::Char(value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {} does not fit in {}", value as u32, to.name()))
-                    .hint("`(int)c` holds the code of every character")
-                    .into()),
-                (value, to) => Ok(convert(value, to)),
-            },
-            // A union is its bytes: zero, with the one field given written over them.
-            ExprKind::StructLit { name, fields, .. } if self.plain.get(name.as_str()).is_some_and(|plain| plain.union) => {
-                let value = self.expr(&fields[0].value, frame)?;
-                let ty = Ty::Struct(name.clone());
-                let (size, _) = raw::layout(&ty, self.plain);
-                let mut bytes = vec![0u8; size];
-                let given = bytes_of(&value, &self.plain[name.as_str()].fields[fields[0].index], self.plain);
-                bytes[..given.len()].copy_from_slice(&given);
-                Ok(union_value(name, &bytes))
-            }
-            ExprKind::StructLit { name, fields, .. } => {
-                let mut cells: Vec<Option<Cell>> = vec![None; fields.len()];
-                for init in fields {
-                    let value = self.expr(&init.value, frame)?;
-                    if let Some(width) = self.plain.get(name.as_str()).and_then(|plain| plain.bits[init.index]) {
-                        fits_bits(&value, width, init.value.span)?;
-                    }
-                    cells[init.index] = Some(cell(value));
-                }
-                let cells = cells.into_iter().map(|field| field.expect("the checker requires every field")).collect();
-                // One of a `Disposable` type is disposed of when its last owner lets it go.
-                let disposed_as = self.structs[name.as_str()].disposable().then(|| name.as_str().into());
-                Ok(Value::Struct(name.as_str().into(), Rc::new(Fields { cells, disposed_as })))
-            }
-            // The value of `base`, owned here, with the fields written given anew: what they
-            // held is dropped as each is replaced.
-            ExprKind::With { base, fields } => {
-                let Value::Struct(name, old) = self.expr(base, frame)? else { unreachable!("the checker gives `with` a struct") };
-                let mut values: Vec<Value> = match Rc::try_unwrap(old) {
-                    // Moved here: the value is this one, so it is not disposed of.
-                    Ok(mut whole) => {
-                        whole.disposed_as = None;
-                        std::mem::take(&mut whole.cells).into_iter().map(|field| field.borrow().clone()).collect()
-                    }
-                    Err(copied) => copied.cells.iter().map(|field| field.borrow().clone()).collect(),
-                };
-                for init in fields {
-                    let value = self.expr(&init.value, frame)?;
-                    if let Some(width) = self.plain.get(&*name).and_then(|plain| plain.bits[init.index]) {
-                        fits_bits(&value, width, init.value.span)?;
-                    }
-                    drop(std::mem::replace(&mut values[init.index], value));
-                }
-                let disposed_as = self.structs[&*name].disposable().then(|| name.clone());
-                Ok(Value::Struct(name, Rc::new(Fields { cells: values.into_iter().map(cell).collect(), disposed_as })))
-            }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
             // An atomic value is kept as the value itself: one task runs at a time.
             ExprKind::Atomic(inner) => self.expr(inner, frame),
@@ -4894,771 +4713,1193 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Value::Null => Value::Null,
                 _ => unreachable!("the checker lets `weak` take only `shared` and `weak` values"),
             }),
-            ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(self.place(inner, frame)?)),
-            ExprKind::IsNull { expr: inner, negated } => {
-                let is_null = matches!(strip(self.expr(inner, frame)?), Value::Null);
-                Ok(Value::Bool(is_null != *negated))
-            }
-            ExprKind::Coalesce { left, right, on_result: false } => {
-                let value = self.expr(left, frame)?;
-                if matches!(strip(value.clone()), Value::Null) {
-                    self.expr(right, frame)
-                } else {
-                    Ok(value)
+            _ => unreachable!("`expr_value` takes the others"),
+        }
+    }
+
+    #[inline(never)]
+    fn interp_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Interp(parts) = &expr.kind else { unreachable!() };
+        {
+            // The values are computed first, from left to right; they are written after
+            // that, so a `format` method runs when every value of the line is there.
+            let mut values = Vec::new();
+            for part in parts {
+                if let InterpPart::Expr(inner, _) = part {
+                    values.push(self.expr(inner, frame)?);
                 }
             }
-            ExprKind::Coalesce { left, right, on_result: true } => match self.expr(left, frame)? {
-                Value::Enum(_, 0, fields) => Ok(fields[0].borrow().clone()),
-                _ => self.expr(right, frame),
-            },
-            ExprKind::Try { expr: inner, kind } => {
-                let value = self.expr(inner, frame)?;
-                match (kind, value) {
-                    (TryKind::Null, Value::Null) => Err(Unwind::Return(Value::Null)),
-                    (TryKind::Null, value) => Ok(value),
-                    (TryKind::Result(_), Value::Enum(_, 0, fields)) => Ok(fields.first().map_or(Value::Void, |field| field.borrow().clone())),
-                    (TryKind::Result(convert), Value::Enum(result, _, fields)) => {
-                        let mut cause = fields[0].borrow().clone();
-                        if let Some((owner, variant)) = convert {
-                            cause = Value::Enum(owner.as_str().into(), *variant, Rc::new(vec![cell(cause)]));
+            let mut values = values.iter();
+            let mut text = String::new();
+            for part in parts {
+                match part {
+                    InterpPart::Text(piece) => text.push_str(piece),
+                    InterpPart::Expr(inner, spec) => {
+                        let value = values.next().expect("one value for each part");
+                        let shown = match spec.and_then(|spec| spec.letter) {
+                            Some((letter, digits)) => written_as(&owned(value.clone()), letter, digits.unwrap_or(0) as usize),
+                            None => self.show(value, false, inner.span)?,
+                        };
+                        let width = spec.map_or(0, |spec| spec.width);
+                        let fill = (width.unsigned_abs() as usize).saturating_sub(shown.chars().count());
+                        if width > 0 {
+                            text.extend(std::iter::repeat_n(' ', fill));
                         }
-                        Err(Unwind::Return(Value::Enum(result, 1, Rc::new(vec![cell(cause)]))))
+                        text.push_str(&shown);
+                        if width < 0 {
+                            text.extend(std::iter::repeat_n(' ', fill));
+                        }
                     }
-                    _ => unreachable!("the checker only lets `try` open a `Result` or a `T?`"),
                 }
             }
-            ExprKind::Return(value) => {
-                let value = match value {
-                    Some(expr) => self.expr(expr, frame)?,
-                    None => Value::Void,
-                };
-                Err(Unwind::Return(value))
+            Ok(Value::Fmt(text.into()))
+        }
+    }
+
+    #[inline(never)]
+    fn collection_value2(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Collection { args, .. } = &expr.kind else { unreachable!() };
+        {
+            let Value::Int(_, room) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the room an `nint`") };
+            if room < 1 {
+                return Err(Diag::panic(args[0].span, format!("a channel has room for at least one item, and this is {room}")).into());
             }
-            ExprKind::Variant { owner, index, args } => {
-                let cells = self.values(args, frame)?.into_iter().map(cell).collect();
-                Ok(Value::Enum(owner.as_str().into(), *index, Rc::new(cells)))
+            let chan = Rc::new(Chan { items: RefCell::new(VecDeque::new()), room: usize::try_from(room).unwrap_or(usize::MAX), senders: std::cell::Cell::new(0), receivers: std::cell::Cell::new(0) });
+            Ok(Value::Chan(ChanEnd::new(&chan, false)))
+        }
+    }
+
+    #[inline(never)]
+    fn collection_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Collection { ty, items, .. } = &expr.kind else { unreachable!() };
+        {
+            let given = items.iter().flatten();
+            if ty.name == "List" {
+                let mut cells = Vec::new();
+                for item in given {
+                    cells.push(cell(self.expr(&item.values[0], frame)?));
+                }
+                return Ok(Value::List(Rc::new(RefCell::new(cells))));
             }
-            ExprKind::Unbox(inner) => match self.expr(inner, frame)? {
-                Value::Borrow(target) => match &*behind_borrows(target).borrow() {
-                    Value::Ptr(owned) => Ok(Value::Borrow(owned.clone())),
-                    Value::Shared(held) => Ok(Value::Borrow(held.value.clone())),
-                    _ => unreachable!("the checker only unboxes a borrow of a pointer"),
+            if ty.name == "HashSet" {
+                let mut set = Table::new();
+                for item in given {
+                    let value = strip(self.expr(&item.values[0], frame)?);
+                    set.insert(key_of(&value), value);
+                }
+                return Ok(Value::Set(Rc::new(RefCell::new(set))));
+            }
+            let mut entries = Entries::new();
+            for item in given {
+                let key = strip(self.expr(&item.values[0], frame)?);
+                let value = self.expr(&item.values[1], frame)?;
+                let shown = self.show(&key, true, item.span)?;
+                map_add(&mut entries, key, value, shown, item.span)?;
+            }
+            Ok(Value::Map(Rc::new(RefCell::new(entries))))
+        }
+    }
+
+    #[inline(never)]
+    fn unary_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Unary(UnOp::Neg, operand) = &expr.kind else { unreachable!() };
+        match strip(self.expr(operand, frame)?) {
+            Value::Int(ty, value) => {
+                if !ty.fits(-value) {
+                    return Err(Diag::panic(expr.span, format!("overflow: -({value}) does not fit in {}", ty.name()))
+                        .hint("`tryNegate` gives `null` instead, and `wrappingNegate` wraps around")
+                        .into());
+                }
+                Ok(Value::Int(ty, -value))
+            }
+            Value::Float(ty, value) => Ok(Value::Float(ty, -value)),
+            _ => unreachable!("the checker makes the operand a number"),
+        }
+    }
+
+    #[inline(never)]
+    fn binary_value3(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) = &expr.kind else { unreachable!() };
+        {
+            let left_value = self.condition(left, frame)?;
+            // Short circuit: when the left side decides the result, the right side does not run.
+            if left_value == (*op == BinOp::Or) {
+                return Ok(Value::Bool(left_value));
+            }
+            Ok(Value::Bool(self.condition(right, frame)?))
+        }
+    }
+
+    #[inline(never)]
+    fn binary_value2(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Binary(op, left, right) = &expr.kind else { unreachable!() };
+        {
+            let Ty::Raw(item) = &expr.ty else { unreachable!("tested above") };
+            let base = raw_of(&strip(self.expr(left, frame)?));
+            let count = self.int(right, frame)?;
+            let (size, _) = raw::layout(item, self.plain);
+            let count = if *op == BinOp::Sub { count.wrapping_neg() } else { count };
+            Ok(Value::Raw(base.offset(count.wrapping_mul(size as i128))))
+        }
+    }
+
+    #[inline(never)]
+    fn binary_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Binary(op, left, right) = &expr.kind else { unreachable!() };
+        {
+            let item = match left.ty.strip_borrow() {
+                Ty::Raw(item) => (**item).clone(),
+                _ => Ty::Void,
+            };
+            let left = raw_of(&strip(self.expr(left, frame)?));
+            let right = raw_of(&strip(self.expr(right, frame)?));
+            Ok(match op {
+                BinOp::Lt => Value::Bool(left.addr < right.addr),
+                BinOp::Le => Value::Bool(left.addr <= right.addr),
+                BinOp::Gt => Value::Bool(left.addr > right.addr),
+                BinOp::Ge => Value::Bool(left.addr >= right.addr),
+                // Two pointers into two blocks have nothing between them to count.
+                BinOp::Sub => {
+                    if let (Some(a), Some(b)) = (left.block, right.block) {
+                        if a != b {
+                            return Err(Diag::panic(expr.span, "the items between two pointers are counted, and the two point into two blocks of raw memory").into());
+                        }
+                    }
+                    let (size, _) = raw::layout(&item, self.plain);
+                    let bytes = left.addr as i128 - right.addr as i128;
+                    Value::Int(IntTy::Nint, if size == 0 { 0 } else { bytes / size as i128 })
+                }
+                _ => Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)),
+            })
+        }
+    }
+
+    #[inline(never)]
+    fn raw_cast_value2(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::RawCast { expr: inner, .. } = &expr.kind else { unreachable!() };
+        {
+            let pointer = raw_of(&strip(self.expr(inner, frame)?));
+            let wanted = expr.ty.strip_borrow();
+            let lent = if matches!(expr.ty, Ty::Ref(_)) { "ref" } else { "read" };
+            let found = ADDRESSES.with(|given| given.borrow().get(&pointer.addr).cloned());
+            let why = match found {
+                _ if pointer.addr == 0 => format!("`({lent} {wanted})` is given an address that is `null`"),
+                None => format!("`({lent} {wanted})` is given an address that `Memory.addressOf` did not give"),
+                Some((_, ty)) if ty != *wanted => format!("`({lent} {wanted})` is given the address of a `{ty}`"),
+                Some((held, ty)) => match held.upgrade() {
+                    None => format!("`({lent} {wanted})` is given the address of a value that has ended"),
+                    Some(held) if matches!(*held.borrow(), Value::Null) && !matches!(ty, Ty::Nullable(_)) => {
+                        format!("`({lent} {wanted})` is given the address of a value that was moved away")
+                    }
+                    Some(held) => return Ok(Value::Borrow(held)),
                 },
-                _ => unreachable!("the checker only unboxes a borrow"),
+            };
+            Err(Diag::panic(expr.span, why).into())
+        }
+    }
+
+    #[inline(never)]
+    fn raw_cast_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::RawCast { expr: inner, .. } = &expr.kind else { unreachable!() };
+        Ok(match strip(self.expr(inner, frame)?) {
+            Value::Null => Value::Null,
+            // A number made into a pointer finds its block again by its address.
+            Value::Int(_, number) => {
+                let addr = number as i64 as usize;
+                Value::Raw(RawPtr { addr, block: raw::block_at(addr) })
+            }
+            pointer => Value::Raw(raw_of(&pointer)),
+        })
+    }
+
+    #[inline(never)]
+    fn allocate_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Allocate { args, .. } = &expr.kind else { unreachable!() };
+        {
+            let Ty::Raw(item) = &expr.ty else { unreachable!("the checker gives a raw pointer") };
+            let count = self.int(&args[0], frame)?;
+            if count < 0 {
+                return Err(Diag::panic(expr.span, format!("`Memory.allocate` is given a count below 0: {count}")).into());
+            }
+            let (size, align) = raw::layout(item, self.plain);
+            match raw::allocate(count as usize, size, align) {
+                Ok(pointer) => Ok(Value::Raw(pointer)),
+                Err(raw::AllocError::TooLarge) => {
+                    Err(Diag::panic(expr.span, format!("`Memory.allocate` is asked for more memory than an address can count: {count} items of `{item}`")).into())
+                }
+                Err(raw::AllocError::OutOfMemory) => Err(Diag::panic(expr.span, format!("`Memory.allocate` found no memory for {count} items of `{item}`")).into()),
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn array_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Array { args, items, .. } = &expr.kind else { unreachable!() };
+        {
+            let Ty::Array(item, length) = &expr.ty else { unreachable!("the checker gives an array its type") };
+            // An array the checker allows may still be more than the memory holds: that is
+            // a panic, as in compiled code, not an abort. Each item is a cell of its own here.
+            let mut cells = Vec::new();
+            if cells.try_reserve_exact(*length).is_err() {
+                return Err(Diag::panic(expr.span, format!("there is no memory for an array of {} items", group_digits(*length as u64))).into());
+            }
+            match (items, args.first()) {
+                (Some(items), _) => {
+                    for given in items {
+                        cells.push(cell(self.expr(given, frame)?));
+                    }
+                }
+                (None, Some(value)) => {
+                    let value = self.expr(value, frame)?;
+                    cells.extend((0..*length).map(|_| cell(fresh(&value))));
+                }
+                (None, None) => cells.extend((0..*length).map(|_| cell(zero(item)))),
+            }
+            Ok(Value::Array(Rc::new(cells)))
+        }
+    }
+
+    #[inline(never)]
+    fn slice_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Slice { recv, from, to } = &expr.kind else { unreachable!() };
+        {
+            // The items where they are, not a copy of them: a place is looked into.
+            let holder = match recv.is_place() {
+                true => owned(self.place(recv, frame)?.borrow().clone()),
+                false => owned(self.expr(recv, frame)?),
+            };
+            // A list's length and its part are read where it is: copying all of its cells to
+            // cut a few out would make each slice of a long list as slow as the list is long.
+            let length = match &holder {
+                Value::Str(text) => text.len() as i128,
+                Value::List(items) => items.borrow().len() as i128,
+                Value::Array(items) | Value::Slice(items) => items.len() as i128,
+                Value::Bytes(_, start, end) => (end - start) as i128,
+                other => cells_of(other).len() as i128,
+            };
+            let from = match from {
+                Some(from) => self.int(from, frame)?,
+                None => 0,
+            };
+            let to = match to {
+                Some(to) => self.int(to, frame)?,
+                None => length,
+            };
+            // An end that lies outside is said first: `xs[4..]` on three items is out of
+            // range, not a range that ends before it starts.
+            if from < 0 || from > length || to < 0 || to > length {
+                return Err(Diag::panic(expr.span, format!("range {from}..{to} is out of range: the length is {length}")).into());
+            }
+            if from > to {
+                return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
+            }
+            if let Value::Bytes(text, start, _) = holder {
+                return Ok(Value::Bytes(text, start + from as usize, start + to as usize));
+            }
+            let Value::Str(text) = holder else {
+                let part = match &holder {
+                    Value::List(items) => items.borrow()[from as usize..to as usize].to_vec(),
+                    Value::Array(items) | Value::Slice(items) => items[from as usize..to as usize].to_vec(),
+                    other => cells_of(other)[from as usize..to as usize].to_vec(),
+                };
+                return Ok(Value::Slice(Rc::new(part)));
+            };
+            let (start, end) = (from as usize, to as usize);
+            if let Some(cut) = [start, end].into_iter().find(|at| !text.is_char_boundary(*at)) {
+                let inside = text.char_indices().take_while(|(at, _)| *at < cut).last().expect("a character starts before the cut");
+                let (first, last) = (inside.0, inside.0 + inside.1.len_utf8());
+                return Err(Diag::panic(expr.span, format!("range {from}..{to} cuts a character in half"))
+                    .note(format!("`{}` takes bytes {first}..{last}; a `string` is always valid UTF-8", inside.1))
+                    .into());
+            }
+            // A window in the design; a copy here, which cannot be told apart.
+            Ok(Value::Str(text[start..end].to_string().into()))
+        }
+    }
+
+    #[inline(never)]
+    fn cast_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Cast { ty, expr: inner } = &expr.kind else { unreachable!() };
+        match (strip(self.expr(inner, frame)?), ty) {
+            (Value::Raw(pointer), Ty::Int(IntTy::Nint)) => Ok(Value::Int(IntTy::Nint, pointer.addr as isize as i128)),
+            (Value::Raw(pointer), Ty::Int(_)) => Ok(Value::Int(IntTy::Nuint, pointer.addr as i128)),
+            (Value::Null, Ty::Int(to)) => Ok(Value::Int(*to, 0)),
+            (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
+            (Value::Int(_, value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name()))
+                .hint(format!("`tryTo{0}()` gives `null` when the value does not fit, and `wrappingTo{0}()` cuts it to size", to.title()))
+                .into()),
+            (Value::Float(_, value), Ty::Int(to)) if float_fits(value, *to) => Ok(Value::Int(*to, value.trunc() as i128)),
+            (Value::Float(from, value), Ty::Int(to)) => {
+                Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name()))
+                    .hint(format!("`tryTo{}()` gives `null` when the value does not fit", to.title()))
+                    .into())
+            }
+            // A code that is no character panics in every build: a text holds characters only.
+            (Value::Int(_, value), Ty::Char) => match crate::check::char_of(value) {
+                Some(found) => Ok(Value::Char(found)),
+                None => Err(Diag::panic(expr.span, format!("{value} is not the code of a character"))
+                    .hint("`tryToChar()` gives `null` when no character has the code")
+                    .into()),
             },
-            ExprKind::IsVariant { expr: inner, negated, pattern, .. } => {
-                let value = cell(self.expr(inner, frame)?);
-                // `is` only looks, so the names borrow.
+            (Value::Char(value), Ty::Char) => Ok(Value::Char(value)),
+            (Value::Char(value), Ty::Int(to)) if to.fits(value as i128) => Ok(Value::Int(*to, value as i128)),
+            (Value::Char(value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {} does not fit in {}", value as u32, to.name()))
+                .hint("`(int)c` holds the code of every character")
+                .into()),
+            (value, to) => Ok(convert(value, to)),
+        }
+    }
+
+    #[inline(never)]
+    fn struct_lit_value2(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::StructLit { name, fields, .. } = &expr.kind else { unreachable!() };
+        {
+            let value = self.expr(&fields[0].value, frame)?;
+            let ty = Ty::Struct(name.clone());
+            let (size, _) = raw::layout(&ty, self.plain);
+            let mut bytes = vec![0u8; size];
+            let given = bytes_of(&value, &self.plain[name.as_str()].fields[fields[0].index], self.plain);
+            bytes[..given.len()].copy_from_slice(&given);
+            Ok(union_value(name, &bytes))
+        }
+    }
+
+    #[inline(never)]
+    fn struct_lit_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::StructLit { name, fields, .. } = &expr.kind else { unreachable!() };
+        {
+            let mut cells: Vec<Option<Cell>> = vec![None; fields.len()];
+            for init in fields {
+                let value = self.expr(&init.value, frame)?;
+                if let Some(width) = self.plain.get(name.as_str()).and_then(|plain| plain.bits[init.index]) {
+                    fits_bits(&value, width, init.value.span)?;
+                }
+                cells[init.index] = Some(cell(value));
+            }
+            let cells = cells.into_iter().map(|field| field.expect("the checker requires every field")).collect();
+            // One of a `Disposable` type is disposed of when its last owner lets it go.
+            let disposed_as = self.structs[name.as_str()].disposable().then(|| name.as_str().into());
+            Ok(Value::Struct(name.as_str().into(), Rc::new(Fields { cells, disposed_as })))
+        }
+    }
+
+    #[inline(never)]
+    fn with_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::With { base, fields } = &expr.kind else { unreachable!() };
+        {
+            let Value::Struct(name, old) = self.expr(base, frame)? else { unreachable!("the checker gives `with` a struct") };
+            let mut values: Vec<Value> = match Rc::try_unwrap(old) {
+                // Moved here: the value is this one, so it is not disposed of.
+                Ok(mut whole) => {
+                    whole.disposed_as = None;
+                    std::mem::take(&mut whole.cells).into_iter().map(|field| field.borrow().clone()).collect()
+                }
+                Err(copied) => copied.cells.iter().map(|field| field.borrow().clone()).collect(),
+            };
+            for init in fields {
+                let value = self.expr(&init.value, frame)?;
+                if let Some(width) = self.plain.get(&*name).and_then(|plain| plain.bits[init.index]) {
+                    fits_bits(&value, width, init.value.span)?;
+                }
+                drop(std::mem::replace(&mut values[init.index], value));
+            }
+            let disposed_as = self.structs[&*name].disposable().then(|| name.clone());
+            Ok(Value::Struct(name, Rc::new(Fields { cells: values.into_iter().map(cell).collect(), disposed_as })))
+        }
+    }
+
+    #[inline(never)]
+    fn coalesce_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Coalesce { left, right, on_result: false } = &expr.kind else { unreachable!() };
+        {
+            let value = self.expr(left, frame)?;
+            if matches!(strip(value.clone()), Value::Null) {
+                self.expr(right, frame)
+            } else {
+                Ok(value)
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn try_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Try { expr: inner, kind } = &expr.kind else { unreachable!() };
+        {
+            let value = self.expr(inner, frame)?;
+            match (kind, value) {
+                (TryKind::Null, Value::Null) => Err(Unwind::Return(Value::Null)),
+                (TryKind::Null, value) => Ok(value),
+                (TryKind::Result(_), Value::Enum(_, 0, fields)) => Ok(fields.first().map_or(Value::Void, |field| field.borrow().clone())),
+                (TryKind::Result(convert), Value::Enum(result, _, fields)) => {
+                    let mut cause = fields[0].borrow().clone();
+                    if let Some((owner, variant)) = convert {
+                        cause = Value::Enum(owner.as_str().into(), *variant, Rc::new(vec![cell(cause)]));
+                    }
+                    Err(Unwind::Return(Value::Enum(result, 1, Rc::new(vec![cell(cause)]))))
+                }
+                _ => unreachable!("the checker only lets `try` open a `Result` or a `T?`"),
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn unbox_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Unbox(inner) = &expr.kind else { unreachable!() };
+        match self.expr(inner, frame)? {
+            Value::Borrow(target) => match &*behind_borrows(target).borrow() {
+                Value::Ptr(owned) => Ok(Value::Borrow(owned.clone())),
+                Value::Shared(held) => Ok(Value::Borrow(held.value.clone())),
+                _ => unreachable!("the checker only unboxes a borrow of a pointer"),
+            },
+            _ => unreachable!("the checker only unboxes a borrow"),
+        }
+    }
+
+    #[inline(never)]
+    fn is_variant_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::IsVariant { expr: inner, negated, pattern, .. } = &expr.kind else { unreachable!() };
+        {
+            let value = cell(self.expr(inner, frame)?);
+            // `is` only looks, so the names borrow.
+            let mut binds = Vec::new();
+            let found = fits(pattern, &value, true, &mut binds);
+            if found {
+                for (name, bound) in binds {
+                    frame.scopes.last_mut().expect("an open scope").insert(name, cell(bound));
+                }
+            }
+            Ok(Value::Bool(found != *negated))
+        }
+    }
+
+    #[inline(never)]
+    fn match_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Match { subject, arms, borrowed } = &expr.kind else { unreachable!() };
+        {
+            let value = self.expr(subject, frame)?;
+            let held = cell(value.clone());
+            let depth = frame.scopes.len();
+            for arm in arms {
+                frame.scopes.push(Scope::default());
+                // `var other` takes the value as it was given; any other pattern looks inside.
                 let mut binds = Vec::new();
-                let found = fits(pattern, &value, true, &mut binds);
-                if found {
+                let fits = match &arm.pattern.kind {
+                    PatternKind::Bind(name) => {
+                        binds.push((name.clone(), value.clone()));
+                        true
+                    }
+                    _ => fits(&arm.pattern, &held, *borrowed, &mut binds),
+                };
+                if fits {
                     for (name, bound) in binds {
-                        frame.scopes.last_mut().expect("an open scope").insert(name, cell(bound));
+                        frame.declare(&name, bound);
                     }
                 }
-                Ok(Value::Bool(found != *negated))
-            }
-            ExprKind::Match { subject, arms, borrowed } => {
-                let value = self.expr(subject, frame)?;
-                let held = cell(value.clone());
-                let depth = frame.scopes.len();
-                for arm in arms {
-                    frame.scopes.push(Scope::default());
-                    // `var other` takes the value as it was given; any other pattern looks inside.
-                    let mut binds = Vec::new();
-                    let fits = match &arm.pattern.kind {
-                        PatternKind::Bind(name) => {
-                            binds.push((name.clone(), value.clone()));
-                            true
-                        }
-                        _ => fits(&arm.pattern, &held, *borrowed, &mut binds),
+                let chosen = fits
+                    && match &arm.guard {
+                        Some(guard) => self.condition(guard, frame)?,
+                        None => true,
                     };
-                    if fits {
-                        for (name, bound) in binds {
-                            frame.declare(&name, bound);
+                if chosen {
+                    for stmt in &arm.body {
+                        match self.stmt(stmt, frame)? {
+                            Flow::Next => {}
+                            Flow::Break(label) => return Err(Unwind::Break(label)),
+                            Flow::Continue(label) => return Err(Unwind::Continue(label)),
+                            Flow::Return(value) => return Err(Unwind::Return(value)),
                         }
                     }
-                    let chosen = fits
-                        && match &arm.guard {
-                            Some(guard) => self.condition(guard, frame)?,
-                            None => true,
-                        };
-                    if chosen {
-                        for stmt in &arm.body {
-                            match self.stmt(stmt, frame)? {
-                                Flow::Next => {}
-                                Flow::Break(label) => return Err(Unwind::Break(label)),
-                                Flow::Continue(label) => return Err(Unwind::Continue(label)),
-                                Flow::Return(value) => return Err(Unwind::Return(value)),
-                            }
-                        }
-                        let result = match &arm.value {
-                            Some(value) => self.expr(value, frame)?,
-                            None => Value::Void,
-                        };
-                        frame.scopes.truncate(depth);
-                        return Ok(result);
-                    }
+                    let result = match &arm.value {
+                        Some(value) => self.expr(value, frame)?,
+                        None => Value::Void,
+                    };
                     frame.scopes.truncate(depth);
+                    return Ok(result);
                 }
-                unreachable!("the checker requires an arm for every variant")
+                frame.scopes.truncate(depth);
             }
-            // `await f(x)` of an async function runs it here, as part of this task.
-            ExprKind::Await(inner) => {
-                if let ExprKind::Call { name, args, callee: Callee::Plain, .. } = &inner.kind {
-                    if let Some(func) = self.funcs.get(name.as_str()).copied().filter(|func| func.is_async) {
-                        let values = self.values(args, frame)?;
-                        return self.call(func, None, values, inner.span);
+            unreachable!("the checker requires an arm for every variant")
+        }
+    }
+
+    #[inline(never)]
+    fn await_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Await(inner) = &expr.kind else { unreachable!() };
+        {
+            if let ExprKind::Call { name, args, callee: Callee::Plain, .. } = &inner.kind {
+                if let Some(func) = self.funcs.get(name.as_str()).copied().filter(|func| func.is_async) {
+                    let values = self.values(args, frame)?;
+                    return self.call(func, None, values, inner.span);
+                }
+            }
+            // `await x.load()` of an async method runs it here too.
+            if let ExprKind::Method { recv, name, args, callee: Callee::Method { owner, this, whole }, .. } = &inner.kind {
+                if self.methods[owner.as_str()][name.as_str()].is_async {
+                    return self.method_call(inner, recv, owner, name, *this, *whole, args, frame, true);
+                }
+            }
+            if let ExprKind::Call { args, callee: Callee::Static { owner, name }, .. } = &inner.kind {
+                let func = self.methods[owner.as_str()][name.as_str()];
+                if func.is_async {
+                    let values = self.values(args, frame)?;
+                    return self.call(func, None, values, inner.span);
+                }
+            }
+            let Value::Task(task) = strip(self.expr(inner, frame)?) else { unreachable!("the checker lets only a task be awaited") };
+            self.await_task(&task, expr.span)
+        }
+    }
+
+    #[inline(never)]
+    fn call_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Call { name, args, callee, .. } = &expr.kind else { unreachable!() };
+        match callee {
+            // A function of the program: the call a deep recursion makes, kept apart from the
+            // rest so that its frame stays small (choice 1823).
+            Callee::Plain if !BUILT_IN_CALLS.contains(&name.as_str()) => self.call_plain(expr, name, args, frame),
+            Callee::Static { owner, name } => {
+                let func = self.methods[owner.as_str()][name.as_str()];
+                let values = self.values(args, frame)?;
+                self.call(func, None, values, expr.span)
+            }
+            _ => self.call_other(expr, frame),
+        }
+    }
+
+    #[inline(never)]
+    fn call_other(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Call { name, args, callee, .. } = &expr.kind else { unreachable!() };
+        match callee {
+            Callee::Cancel(CancelCall::New) => Ok(Value::Source(Rc::new(RefCell::new(Cancel::default())))),
+            Callee::Group(GroupCall::New(limited), _) => {
+                let limit = match limited {
+                    true => {
+                        let Value::Int(_, limit) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the limit an `int`") };
+                        if limit < 1 {
+                            return Err(Diag::panic(expr.span, format!("`TaskGroup({limit})`: a group lets at least one task run")).into());
+                        }
+                        Some(limit as usize)
+                    }
+                    false => None,
+                };
+                Ok(Value::Group(Rc::new(RefCell::new(Group { tasks: Vec::new(), limit }))))
+            }
+            Callee::Value => {
+                let Value::Func(target) = strip(frame.slot(name).borrow().clone()) else {
+                    unreachable!("the checker only lets a function value be called")
+                };
+                let func = self.funcs[&*target];
+                let values = self.values(args, frame)?;
+                self.call(func, None, values, expr.span)
+            }
+            Callee::Extern => self.call_extern(name, args, expr, frame),
+            Callee::Variadic(params) => {
+                let ret = self.foreign[name].1.clone();
+                self.call_c(None, &crate::ffi::variadic_key(name, params, &ret), params, &ret, args, expr, frame)
+            }
+            Callee::CValue(params) => {
+                let target = raw_of(&strip(frame.slot(name).borrow().clone()));
+                if target.addr == 0 {
+                    return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
+                }
+                self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
+            }
+            _ => self.call_expr(expr, name, args, frame),
+        }
+    }
+
+    #[inline(never)]
+    fn method_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Method { recv, name, args, callee, .. } = &expr.kind else { unreachable!() };
+        match callee {
+            // `.clone()` made by the language: through a `T*`, the `T` is copied.
+            Callee::Clone(_) => {
+                let mut value = strip(self.expr(recv, frame)?);
+                while let Value::Ptr(inner) = &value {
+                    let held = inner.borrow().clone();
+                    value = strip(held);
+                }
+                self.cloned(&value, expr.span)
+            }
+            Callee::System(call) => self.system(*call, args, frame),
+            Callee::Atomic { op, .. } => self.atomic(*op, Some(recv), args, expr.span, frame),
+            Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
+            // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
+            Callee::FromCString => {
+                let given = strip(self.expr(&args[0], frame)?);
+                if let Value::CStr(text) = &given {
+                    return Ok(match String::from_utf8(text.as_bytes().to_vec()) {
+                        Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                        Err(error) => {
+                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
+                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        }
+                    });
+                }
+                let pointer = raw_of(&given);
+                if pointer.addr == 0 {
+                    return Err(Diag::panic(expr.span, "`string.fromCString` is given a pointer that is `null`").into());
+                }
+                let length = match raw::text_length(pointer) {
+                    Ok(length) => length,
+                    Err(raw::Fault::Freed) => return Err(Diag::panic(expr.span, "`string.fromCString` reads raw memory after it was given back with `Memory.free`").into()),
+                    Err(_) => return Err(Diag::panic(expr.span, "`string.fromCString` finds no zero byte before the end of the block").into()),
+                };
+                // SAFETY: `length` bytes lie at the pointer: in its block, or C said so.
+                let bytes = unsafe { std::slice::from_raw_parts(pointer.addr as *const u8, length) }.to_vec();
+                Ok(match String::from_utf8(bytes) {
+                    Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                    Err(error) => {
+                        let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
+                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                    }
+                })
+            }
+            // `CString.from(text)`: a zero byte inside is an error at its position.
+            Callee::ToCString => {
+                let Value::Str(text) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `CString.from` a text") };
+                Ok(match std::ffi::CString::new(text.as_bytes()) {
+                    Ok(made) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::CStr(Rc::new(made)))])),
+                    Err(error) => {
+                        let position = cell(Value::Int(IntTy::Nint, error.nul_position() as i128));
+                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                    }
+                })
+            }
+            Callee::Static { owner, name } => {
+                let func = self.methods[owner.as_str()][name.as_str()];
+                let values = self.values(args, frame)?;
+                match func.is_async {
+                    true => self.start_async(func, None, values, expr.span),
+                    false => self.call(func, None, values, expr.span),
+                }
+            }
+            Callee::Method { owner, this, whole } => self.method_call(expr, recv, owner, name, *this, *whole, args, frame, false),
+            Callee::FieldValue(index) => {
+                let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
+                    unreachable!("the checker only lets a field of a struct be called")
+                };
+                let Value::Func(target) = strip(fields[*index].borrow().clone()) else {
+                    unreachable!("the checker only lets a function value be called")
+                };
+                let func = self.funcs[&*target];
+                let values = self.values(args, frame)?;
+                self.call(func, None, values, expr.span)
+            }
+            Callee::CFieldValue(index, params) => {
+                let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
+                    unreachable!("the checker only lets a field of a struct be called")
+                };
+                let target = raw_of(&strip(fields[*index].borrow().clone()));
+                if target.addr == 0 {
+                    return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
+                }
+                self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
+            }
+            Callee::Value | Callee::CValue(_) => unreachable!("a variable is called without a receiver"),
+            Callee::Join => {
+                let Value::Str(separator) = strip(self.expr(&args[0], frame)?) else {
+                    unreachable!("the checker makes the separator text")
+                };
+                let Value::List(items) = owned(self.expr(&args[1], frame)?) else {
+                    unreachable!("the checker makes the second argument a list")
+                };
+                let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
+                Ok(Value::Str(parts.join(&separator).into()))
+            }
+            // `count` copies of the item, each a value of its own (1648).
+            Callee::ListRepeat => {
+                let value = self.expr(&args[0], frame)?;
+                let count = self.int(&args[1], frame)?;
+                let Ok(count) = usize::try_from(count) else {
+                    return Err(Diag::panic(expr.span, format!("a list cannot have {count} items")).into());
+                };
+                let mut cells = Vec::new();
+                if cells.try_reserve_exact(count).is_err() {
+                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                }
+                cells.extend((0..count).map(|_| cell(fresh(&value))));
+                Ok(Value::List(Rc::new(RefCell::new(cells))))
+            }
+            // An empty list with room for `count` items (1652).
+            Callee::ListWithCapacity => {
+                let count = self.int(&args[0], frame)?;
+                let Ok(count) = usize::try_from(count) else {
+                    return Err(Diag::panic(expr.span, format!("the capacity of a list cannot be negative: {count}")).into());
+                };
+                let mut cells: Vec<Cell> = Vec::new();
+                if cells.try_reserve_exact(count).is_err() {
+                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                }
+                Ok(Value::List(Rc::new(RefCell::new(cells))))
+            }
+            Callee::WithCapacity => {
+                let room = self.int(&args[0], frame)?;
+                let Ok(room) = usize::try_from(room) else {
+                    return Err(Diag::panic(expr.span, format!("the capacity of a text cannot be negative: {room}")).into());
+                };
+                let mut text = String::new();
+                if text.try_reserve(room).is_err() {
+                    return Err(Diag::panic(expr.span, format!("there is no memory for a text of {room} bytes")).into());
+                }
+                Ok(Value::Str(Rc::new(text)))
+            }
+            Callee::FromUtf8 => {
+                let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
+                Ok(match String::from_utf8(bytes) {
+                    Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                    Err(error) => {
+                        let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
+                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                    }
+                })
+            }
+            // `ulong.fromLittleEndian(bytes)`: exactly as many bytes as the type takes.
+            // The bytes, laid where a value of the type lies.
+            Callee::FromValue(owner) => {
+                let Value::Int(_, wanted) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the argument an integer") };
+                let decl = self.enums[owner.as_str()];
+                for index in 0..decl.variants.len() {
+                    if let Value::Int(_, number) = self.variant_number(owner, index, expr.span)? {
+                        if number == wanted {
+                            return Ok(Value::Enum(owner.as_str().into(), index, Rc::new(Vec::new())));
+                        }
                     }
                 }
-                // `await x.load()` of an async method runs it here too.
-                if let ExprKind::Method { recv, name, args, callee: Callee::Method { owner, this, whole }, .. } = &inner.kind {
-                    if self.methods[owner.as_str()][name.as_str()].is_async {
-                        return self.method_call(inner, recv, owner, name, *this, *whole, args, frame, true);
+                Ok(Value::Null)
+            }
+            Callee::StructFromBytes(name) => {
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let ty = Ty::Struct(name.clone());
+                let (size, _) = raw::layout(&ty, self.plain);
+                if cells.len() != size {
+                    let message = format!("`{}.fromBytes` reads {size} bytes, and it was given {}", crate::ast::short_name(name), cells.len());
+                    return Err(Diag::panic(expr.span, message).into());
+                }
+                let bytes: Vec<u8> = cells
+                    .iter()
+                    .map(|item| match *item.borrow() {
+                        Value::Int(_, byte) => byte as u8,
+                        _ => unreachable!("the checker makes the items bytes"),
+                    })
+                    .collect();
+                Ok(load(bytes.as_ptr() as usize, &ty, self.plain, expr.span)?)
+            }
+            Callee::FromBytes { ty, big } => {
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let size = (ty.bits() / 8) as usize;
+                if cells.len() != size {
+                    let message = format!("`{}.{name}` reads {size} bytes, and it was given {}", ty.name(), cells.len());
+                    return Err(Diag::panic(expr.span, message).into());
+                }
+                let mut bits: u128 = 0;
+                for (at, item) in cells.iter().enumerate() {
+                    let Value::Int(_, byte) = &*item.borrow() else { unreachable!("the checker makes the items bytes") };
+                    let shift = if *big { (size - 1 - at) * 8 } else { at * 8 };
+                    bits |= (*byte as u128) << shift;
+                }
+                Ok(Value::Int(*ty, ty.wrap(bits as i128)))
+            }
+            Callee::Parse(radix) => {
+                let Value::Str(text) = strip(self.expr(&args[0], frame)?) else {
+                    unreachable!("the checker makes the argument text")
+                };
+                let Ty::Result(ty, _) = &expr.ty else { unreachable!("`parse` gives a `Result`") };
+                Ok(match parse_number(text.as_bytes(), ty, *radix) {
+                    Ok(value) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)])),
+                    Err(error) => {
+                        let cause = match error {
+                            Some(position) => Value::Enum("NumberError".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Nint, position as i128))])),
+                            None => Value::Enum("NumberError".into(), 1, Rc::new(Vec::new())),
+                        };
+                        Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                    }
+                })
+            }
+            Callee::Io(call) => self.io(*call, args, frame),
+            Callee::Clock(ClockCall::OffsetAt) => {
+                let Value::Int(_, seconds) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `offsetAt` a `long`") };
+                Ok(Value::Int(IntTy::Int, i128::from(local_offset(seconds as i64))))
+            }
+            Callee::Clock(ClockCall::WallSeconds) => Ok(Value::Int(IntTy::Long, clock(true).div_euclid(1_000_000_000))),
+            Callee::Clock(call) => Ok(Value::Int(IntTy::Long, clock(*call == ClockCall::Wall))),
+            Callee::Os(os) => Ok(Value::Bool(os.here())),
+            Callee::Entropy => {
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let mut bytes = vec![0u8; cells.len()];
+                if !entropy(&mut bytes) {
+                    return Err(Diag::panic(expr.span, "the system gave no random bytes").into());
+                }
+                for (slot, byte) in cells.iter().zip(&bytes) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Byte, i128::from(*byte));
+                }
+                Ok(Value::Void)
+            }
+            Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
+            Callee::Stream(StreamCall::Consume) => self.reader_consume(recv, &args[0], expr.span, frame),
+            Callee::Stream(call) => self.stream(*call, recv, args, None, expr.span, frame),
+            Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
+            Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
+            Callee::Group(call, told) => self.group(*call, *told, recv, args, expr.span, frame),
+            // Awaited where it is written: in the interpreter a fiber waits the same way
+            // whether its task is async or not.
+            Callee::ChanAsync(call, told) => {
+                let value = self.chan(*call, *told, recv, args, expr.span, frame)?;
+                Ok(self.ended_task(value, expr.span))
+            }
+            // Awaited where it is written: the wait is done here, and the task given has
+            // ended.
+            Callee::NetAsync(call) => {
+                let given = match call {
+                    NetCall::Connect | NetCall::Receive | NetCall::Send | NetCall::SendPieces => 1,
+                    NetCall::Accept | NetCall::Bind | NetCall::Port | NetCall::Reader => 0,
+                };
+                let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
+                Ok(self.ended_task(value, expr.span))
+            }
+            // `Task.run(work, x)`: the task runs when it is waited for.
+            Callee::TaskRun => {
+                let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
+                let values = self.values(&args[1..], frame)?;
+                let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new(), fiber: None }));
+                self.started.push(task.clone());
+                let mut state = self.io.sched.lock();
+                // Those that have run, or are gone, are let go of now and then.
+                if state.lazy.len() >= 64 {
+                    state.lazy.retain(|task| task.upgrade().is_some_and(|task| matches!(task.borrow().state, TaskState::Lazy(..))));
+                }
+                state.lazy.push(Rc::downgrade(&task));
+                drop(state);
+                Ok(Value::Task(task))
+            }
+            Callee::Delay(told) => {
+                let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.delay` take an `int`") };
+                let token = match told {
+                    true => Some(self.token(&args[1], frame)?),
+                    false => None,
+                };
+                self.delay(ms, token, expr.span)
+            }
+            Callee::Cancel(CancelCall::After) => {
+                let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
+                self.source_after(ms, expr.span)
+            }
+            Callee::Cancel(CancelCall::Linked) => {
+                let parent = self.token(&args[0], frame)?;
+                let source = Rc::new(RefCell::new(Cancel::default()));
+                if let Some(parent) = parent {
+                    let mut parent = parent.borrow_mut();
+                    if parent.cancelled {
+                        source.borrow_mut().cancelled = true;
+                    } else {
+                        if parent.linked.len() >= 64 && parent.linked.len().is_power_of_two() {
+                            parent.linked.retain(|child| child.strong_count() > 0);
+                        }
+                        parent.linked.push(Rc::downgrade(&source));
                     }
                 }
-                if let ExprKind::Call { args, callee: Callee::Static { owner, name }, .. } = &inner.kind {
-                    let func = self.methods[owner.as_str()][name.as_str()];
-                    if func.is_async {
-                        let values = self.values(args, frame)?;
-                        return self.call(func, None, values, inner.span);
+                Ok(Value::Source(source))
+            }
+            Callee::Cancel(CancelCall::CancelAfter) => {
+                let Value::Source(source) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls it on a source") };
+                let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
+                if ms < 0 {
+                    return Err(Diag::panic(expr.span, format!("`cancelAfter({ms})`: a time is not negative")).into());
+                }
+                self.cancel_after(&source, ms);
+                Ok(Value::Void)
+            }
+            Callee::Cancel(call) => {
+                let source = match owned(self.expr(recv, frame)?) {
+                    Value::Source(source) => Some(source),
+                    Value::Token(source) => source,
+                    _ => unreachable!("the checker calls these on a source or a token"),
+                };
+                let is_cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
+                Ok(match call {
+                    CancelCall::Cancel => {
+                        let source = source.expect("a source");
+                        let mut state = self.io.sched.lock();
+                        Sched::cancel(&mut state, &source);
+                        Value::Void
+                    }
+                    CancelCall::Token | CancelCall::Clone => Value::Token(source),
+                    CancelCall::IsCancelled => Value::Bool(is_cancelled),
+                    CancelCall::CanBeCancelled => Value::Bool(source.is_some()),
+                    CancelCall::Check if is_cancelled => failed(cancelled()),
+                    CancelCall::Check => ok(Value::Void),
+                    CancelCall::New | CancelCall::After | CancelCall::Linked | CancelCall::CancelAfter => unreachable!("handled above"),
+                })
+            }
+            // Input and output in the interpreter is done when it is called, so the task
+            // has ended when it is given; a token is looked at before the work.
+            Callee::IoAsync(call) => {
+                let mut values = self.values(args, frame)?;
+                let params = match call {
+                    IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
+                    IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
+                };
+                let source = match values.len() > params {
+                    true => match owned(values.pop().expect("a token")) {
+                        Value::Token(source) => source,
+                        _ => unreachable!("the checker makes it a token"),
+                    },
+                    false => None,
+                };
+                // So is a task let go by an exit with an error (1692).
+                let value = match source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
+                    true => failed(io_cancelled()),
+                    false => self.io_values(*call, values)?,
+                };
+                Ok(self.ended_task(value, expr.span))
+            }
+            // A writer's async methods do the work of the methods without `Async`; the
+            // block that the compiled code writes on a thread of its own is written here.
+            Callee::StreamAsync(call) => {
+                let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill) { 0 } else { 1 };
+                let token = args.get(given);
+                // The input that can make the program wait is waited for outside the run.
+                if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
+                    let reader = match owned(self.expr(recv, frame)?) {
+                        Value::Reader(reader) if reader.borrow().is_stdin() => Some(reader),
+                        _ => None,
+                    };
+                    if let Some(reader) = reader {
+                        self.input_held(&reader, *call == StreamCall::Fill, expr.span)?;
+                        let base = self.io.input.borrow().buffer().len();
+                        if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
+                            return Ok(self.ended_task(cancelled, expr.span));
+                        }
+                        if *call == StreamCall::Fill {
+                            self.input_held(&reader, true, expr.span)?;
+                            let value = self.reader_fill(&reader, base, None, expr.span)?;
+                            return Ok(self.ended_task(value, expr.span));
+                        }
                     }
                 }
-                let Value::Task(task) = strip(self.expr(inner, frame)?) else { unreachable!("the checker lets only a task be awaited") };
+                let value = self.stream(*call, recv, &args[..given], token, expr.span, frame)?;
+                Ok(self.ended_task(value, expr.span))
+            }
+            Callee::Wait => {
+                let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
                 self.await_task(&task, expr.span)
             }
-            ExprKind::Call { name, args, callee, .. } => match callee {
-                Callee::Cancel(CancelCall::New) => Ok(Value::Source(Rc::new(RefCell::new(Cancel::default())))),
-                Callee::Group(GroupCall::New(limited), _) => {
-                    let limit = match limited {
-                        true => {
-                            let Value::Int(_, limit) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the limit an `int`") };
-                            if limit < 1 {
-                                return Err(Diag::panic(expr.span, format!("`TaskGroup({limit})`: a group lets at least one task run")).into());
-                            }
-                            Some(limit as usize)
-                        }
-                        false => None,
+            // `Task.whenAll(tasks)` and `Task.whenAny(ref tasks)` are awaited where they are
+            // written: the wait is done here, and the task given has ended.
+            Callee::WhenAll => {
+                let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAll` a list") };
+                let gives = !matches!(&expr.ty, Ty::Task(result) if **result == Ty::Void);
+                self.when_all(&list, gives, expr.span)
+            }
+            Callee::WhenAny => {
+                let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAny` a list") };
+                self.when_any(&list, expr.span)
+            }
+            // `x.makeUnique()`: what `x` points to, lent as `ref` when `x` is its only owner and
+            // nothing looks at it; otherwise a copy, which `x` then owns alone.
+            Callee::Plain if name == "makeUnique" => {
+                let slot = behind_borrows(self.place(recv, frame)?);
+                let held = match &*slot.borrow() {
+                    Value::Shared(held) => held.clone(),
+                    _ => unreachable!("the checker lets `makeUnique` be called on a `shared` value only"),
+                };
+                // The place holds one owner and `held` is the other; the list of the values
+                // alive (`LIVE`, for the leak report) is the one looker.
+                if Rc::strong_count(&held) == 2 && Rc::weak_count(&held) == 1 {
+                    return Ok(Value::Borrow(held.value.clone()));
+                }
+                let value = held.value.borrow().clone();
+                let copy = self.cloned(&value, expr.span)?;
+                let fresh = Held::new(copy, false, expr.span);
+                let lent = fresh.value.clone();
+                *slot.borrow_mut() = Value::Shared(fresh);
+                Ok(Value::Borrow(lent))
+            }
+            Callee::Take => {
+                let slot = behind_borrows(self.place(recv, frame)?);
+                let old = slot.replace(Value::Null);
+                Ok(old)
+            }
+            Callee::Replace => {
+                let slot = behind_borrows(self.place(recv, frame)?);
+                let new = self.expr(&args[0], frame)?;
+                let old = slot.replace(new);
+                Ok(old)
+            }
+            // `text.write(x)` and `text.clear()` change the text where it is. A text that
+            // nothing else holds grows in place; one that is shared is copied first.
+            Callee::Plain if matches!(name.as_str(), "write" | "clear") && is_text_behind(&recv.ty) => {
+                let mut slot = self.place(recv, frame)?;
+                loop {
+                    let inner = match &*slot.borrow() {
+                        Value::Borrow(inner) | Value::Ptr(inner) => inner.clone(),
+                        _ => break,
                     };
-                    Ok(Value::Group(Rc::new(RefCell::new(Group { tasks: Vec::new(), limit }))))
+                    slot = inner;
                 }
-                Callee::Static { owner, name } => {
-                    let func = self.methods[owner.as_str()][name.as_str()];
-                    let values = self.values(args, frame)?;
-                    self.call(func, None, values, expr.span)
-                }
-                Callee::Value => {
-                    let Value::Func(target) = strip(frame.slot(name).borrow().clone()) else {
-                        unreachable!("the checker only lets a function value be called")
-                    };
-                    let func = self.funcs[&*target];
-                    let values = self.values(args, frame)?;
-                    self.call(func, None, values, expr.span)
-                }
-                Callee::Extern => self.call_extern(name, args, expr, frame),
-                Callee::Variadic(params) => {
-                    let ret = self.foreign[name].1.clone();
-                    self.call_c(None, &crate::ffi::variadic_key(name, params, &ret), params, &ret, args, expr, frame)
-                }
-                Callee::CValue(params) => {
-                    let target = raw_of(&strip(frame.slot(name).borrow().clone()));
-                    if target.addr == 0 {
-                        return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
+                let added = match args.first() {
+                    Some(arg) => {
+                        let value = self.expr(arg, frame)?;
+                        self.show(&value, false, arg.span)?
                     }
-                    self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
+                    None => String::new(),
+                };
+                let mut value = slot.borrow_mut();
+                let Value::Str(text) = &mut *value else { unreachable!("the checker makes the receiver a text") };
+                let text = Rc::make_mut(text);
+                if name == "clear" {
+                    text.clear();
                 }
-                _ => self.call_expr(expr, name, args, frame),
-            },
-            ExprKind::Method { recv, name, args, callee, .. } => match callee {
-                // `.clone()` made by the language: through a `T*`, the `T` is copied.
-                Callee::Clone(_) => {
-                    let mut value = strip(self.expr(recv, frame)?);
-                    while let Value::Ptr(inner) = &value {
-                        let held = inner.borrow().clone();
-                        value = strip(held);
-                    }
-                    self.cloned(&value, expr.span)
+                text.push_str(&added);
+                Ok(Value::Void)
+            }
+            // `.clone()` of a `shared` value: one more owner.
+            Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => Ok(strip(self.expr(recv, frame)?)),
+            Callee::Plain => {
+                // An array that is put in order is the one in its place, not a copy of it.
+                let mark = self.guards.len();
+                let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse" | "copyFrom") {
+                    true => owned(self.place(recv, frame)?.borrow().clone()),
+                    false => owned(self.expr(recv, frame)?),
+                };
+                let lent = self.guards.len();
+                if let Value::Lines(lines) = &recv {
+                    return Ok(self.next_line(lines, expr.span)?.unwrap_or(Value::Null));
                 }
-                Callee::System(call) => self.system(*call, args, frame),
-                Callee::Atomic { op, .. } => self.atomic(*op, Some(recv), args, expr.span, frame),
-                Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
-                // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
-                Callee::FromCString => {
-                    let given = strip(self.expr(&args[0], frame)?);
-                    if let Value::CStr(text) = &given {
-                        return Ok(match String::from_utf8(text.as_bytes().to_vec()) {
-                            Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
-                            Err(error) => {
-                                let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                                let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
-                                Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
-                            }
-                        });
-                    }
-                    let pointer = raw_of(&given);
-                    if pointer.addr == 0 {
-                        return Err(Diag::panic(expr.span, "`string.fromCString` is given a pointer that is `null`").into());
-                    }
-                    let length = match raw::text_length(pointer) {
-                        Ok(length) => length,
-                        Err(raw::Fault::Freed) => return Err(Diag::panic(expr.span, "`string.fromCString` reads raw memory after it was given back with `Memory.free`").into()),
-                        Err(_) => return Err(Diag::panic(expr.span, "`string.fromCString` finds no zero byte before the end of the block").into()),
-                    };
-                    // SAFETY: `length` bytes lie at the pointer: in its block, or C said so.
-                    let bytes = unsafe { std::slice::from_raw_parts(pointer.addr as *const u8, length) }.to_vec();
-                    Ok(match String::from_utf8(bytes) {
-                        Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
-                        Err(error) => {
-                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
-                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
-                        }
-                    })
-                }
-                // `CString.from(text)`: a zero byte inside is an error at its position.
-                Callee::ToCString => {
-                    let Value::Str(text) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `CString.from` a text") };
-                    Ok(match std::ffi::CString::new(text.as_bytes()) {
-                        Ok(made) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::CStr(Rc::new(made)))])),
-                        Err(error) => {
-                            let position = cell(Value::Int(IntTy::Nint, error.nul_position() as i128));
-                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
-                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
-                        }
-                    })
-                }
-                Callee::Static { owner, name } => {
-                    let func = self.methods[owner.as_str()][name.as_str()];
-                    let values = self.values(args, frame)?;
-                    match func.is_async {
-                        true => self.start_async(func, None, values, expr.span),
-                        false => self.call(func, None, values, expr.span),
-                    }
-                }
-                Callee::Method { owner, this, whole } => self.method_call(expr, recv, owner, name, *this, *whole, args, frame, false),
-                Callee::FieldValue(index) => {
-                    let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
-                        unreachable!("the checker only lets a field of a struct be called")
-                    };
-                    let Value::Func(target) = strip(fields[*index].borrow().clone()) else {
-                        unreachable!("the checker only lets a function value be called")
-                    };
-                    let func = self.funcs[&*target];
-                    let values = self.values(args, frame)?;
-                    self.call(func, None, values, expr.span)
-                }
-                Callee::CFieldValue(index, params) => {
-                    let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
-                        unreachable!("the checker only lets a field of a struct be called")
-                    };
-                    let target = raw_of(&strip(fields[*index].borrow().clone()));
-                    if target.addr == 0 {
-                        return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
-                    }
-                    self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
-                }
-                Callee::Value | Callee::CValue(_) => unreachable!("a variable is called without a receiver"),
-                Callee::Join => {
-                    let Value::Str(separator) = strip(self.expr(&args[0], frame)?) else {
-                        unreachable!("the checker makes the separator text")
-                    };
-                    let Value::List(items) = owned(self.expr(&args[1], frame)?) else {
-                        unreachable!("the checker makes the second argument a list")
-                    };
-                    let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
-                    Ok(Value::Str(parts.join(&separator).into()))
-                }
-                // `count` copies of the item, each a value of its own (1648).
-                Callee::ListRepeat => {
+                // `f.write(x)` inside a `format` method.
+                if let Value::Formatter(written) = &recv {
                     let value = self.expr(&args[0], frame)?;
-                    let count = self.int(&args[1], frame)?;
-                    let Ok(count) = usize::try_from(count) else {
-                        return Err(Diag::panic(expr.span, format!("a list cannot have {count} items")).into());
-                    };
-                    let mut cells = Vec::new();
-                    if cells.try_reserve_exact(count).is_err() {
-                        return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
-                    }
-                    cells.extend((0..count).map(|_| cell(fresh(&value))));
-                    Ok(Value::List(Rc::new(RefCell::new(cells))))
+                    let text = self.show(&value, false, args[0].span)?;
+                    written.borrow_mut().push_str(&text);
+                    return Ok(Value::Void);
                 }
-                // An empty list with room for `count` items (1652).
-                Callee::ListWithCapacity => {
-                    let count = self.int(&args[0], frame)?;
-                    let Ok(count) = usize::try_from(count) else {
-                        return Err(Diag::panic(expr.span, format!("the capacity of a list cannot be negative: {count}")).into());
-                    };
-                    let mut cells: Vec<Cell> = Vec::new();
-                    if cells.try_reserve_exact(count).is_err() {
-                        return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
-                    }
-                    Ok(Value::List(Rc::new(RefCell::new(cells))))
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(strip(self.expr(arg, frame)?));
                 }
-                Callee::WithCapacity => {
-                    let room = self.int(&args[0], frame)?;
-                    let Ok(room) = usize::try_from(room) else {
-                        return Err(Diag::panic(expr.span, format!("the capacity of a text cannot be negative: {room}")).into());
-                    };
-                    let mut text = String::new();
-                    if text.try_reserve(room).is_err() {
-                        return Err(Diag::panic(expr.span, format!("there is no memory for a text of {room} bytes")).into());
+                self.change_reserved(mark..lent)?;
+                // The items given are read before any is written over, as C's `memmove`.
+                if name == "copyFrom" {
+                    let into = cells_of(&recv);
+                    let given: Vec<Value> = cells_of(&values[0]).iter().map(|item| fresh(&item.borrow())).collect();
+                    if given.len() != into.len() {
+                        return Err(Diag::panic(expr.span, format!("`copyFrom` is given {} item(s) to copy over {}", given.len(), into.len()))
+                            .note("the two have the same length: copy over a window of as many, `xs[a..a + n].copyFrom(ys)`")
+                            .into());
                     }
-                    Ok(Value::Str(Rc::new(text)))
+                    for (item, value) in into.iter().zip(given) {
+                        *item.borrow_mut() = value;
+                    }
+                    return Ok(Value::Void);
                 }
-                Callee::FromUtf8 => {
-                    let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
-                    Ok(match String::from_utf8(bytes) {
-                        Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
-                        Err(error) => {
-                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
-                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                // An array or a slice keeps its cells, which are those of its owner; the
+                // values move between them.
+                if let (Value::Array(cells) | Value::Slice(cells), "sort" | "reverse") = (&recv, name.as_str()) {
+                    let order = match name.as_str() {
+                        "sort" => self.sorted((**cells).clone(), expr.span)?,
+                        _ => cells.iter().rev().cloned().collect(),
+                    };
+                    let values: Vec<Value> = order.iter().map(|item| item.borrow().clone()).collect();
+                    for (item, value) in cells.iter().zip(values) {
+                        *item.borrow_mut() = value;
+                    }
+                    return Ok(Value::Void);
+                }
+                // The length and an item of an array or a slice are read where they are: a
+                // list made of a million cells for each `data.length()` of a loop made
+                // hashing a megabyte take most of a minute.
+                match (&recv, name.as_str(), values.as_slice()) {
+                    (Value::Array(cells) | Value::Slice(cells), "length", []) => return Ok(Value::Int(IntTy::Nint, cells.len() as i128)),
+                    (Value::Bytes(_, start, end), "length", []) => return Ok(Value::Int(IntTy::Nint, (end - start) as i128)),
+                    (Value::Bytes(text, start, end), "get", [Value::Int(_, at)]) => {
+                        let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes()[*start..*end].get(at).copied());
+                        return Ok(byte.map_or(Value::Null, |byte| Value::Borrow(byte_cell(byte))));
+                    }
+                    (Value::Array(cells) | Value::Slice(cells), "get", [Value::Int(_, at)]) => {
+                        return Ok(usize::try_from(*at).ok().and_then(|at| cells.get(at).cloned()).map_or(Value::Null, Value::Borrow));
+                    }
+                    _ => {}
+                }
+                let recv = as_list(recv);
+                if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
+                    return self.collection_method(recv, name, values, expr.span);
+                }
+                // A separator that is empty would split nowhere and everywhere.
+                if let (Value::Str(_), "split", [Value::Str(separator)]) = (&recv, name.as_str(), values.as_slice()) {
+                    if separator.is_empty() {
+                        return Err(Diag::panic(expr.span, "the separator of `split` is empty")
+                            .hint("the characters, one after the other: `text.chars()`")
+                            .into());
+                    }
+                }
+                // Nothing to look for, or a number of times that is no number of times.
+                match (&recv, name.as_str(), values.as_slice()) {
+                    (Value::Str(_), "replaceAll", [Value::Str(old), _]) if old.is_empty() => {
+                        return Err(Diag::panic(expr.span, "the text that `replaceAll` looks for is empty").into());
+                    }
+                    (Value::Str(text), "repeat", [Value::Int(_, times)]) => {
+                        if *times < 0 {
+                            return Err(Diag::panic(expr.span, format!("a text cannot be repeated {times} times")).into());
                         }
-                    })
-                }
-                // `ulong.fromLittleEndian(bytes)`: exactly as many bytes as the type takes.
-                // The bytes, laid where a value of the type lies.
-                Callee::FromValue(owner) => {
-                    let Value::Int(_, wanted) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the argument an integer") };
-                    let decl = self.enums[owner.as_str()];
-                    for index in 0..decl.variants.len() {
-                        if let Value::Int(_, number) = self.variant_number(owner, index, expr.span)? {
-                            if number == wanted {
-                                return Ok(Value::Enum(owner.as_str().into(), index, Rc::new(Vec::new())));
-                            }
+                        // As in compiled code, a text too big for the memory stops the program
+                        // with a panic instead of aborting it.
+                        let size = (text.len() as i128).checked_mul(*times).filter(|size| *size <= isize::MAX as i128);
+                        let mut repeated = String::new();
+                        if size.is_none_or(|size| repeated.try_reserve_exact(size as usize).is_err()) {
+                            return Err(Diag::panic(expr.span, format!("there is no memory for a text of {} bytes repeated {times} times", text.len())).into());
                         }
-                    }
-                    Ok(Value::Null)
-                }
-                Callee::StructFromBytes(name) => {
-                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
-                    let ty = Ty::Struct(name.clone());
-                    let (size, _) = raw::layout(&ty, self.plain);
-                    if cells.len() != size {
-                        let message = format!("`{}.fromBytes` reads {size} bytes, and it was given {}", crate::ast::short_name(name), cells.len());
-                        return Err(Diag::panic(expr.span, message).into());
-                    }
-                    let bytes: Vec<u8> = cells
-                        .iter()
-                        .map(|item| match *item.borrow() {
-                            Value::Int(_, byte) => byte as u8,
-                            _ => unreachable!("the checker makes the items bytes"),
-                        })
-                        .collect();
-                    Ok(load(bytes.as_ptr() as usize, &ty, self.plain, expr.span)?)
-                }
-                Callee::FromBytes { ty, big } => {
-                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
-                    let size = (ty.bits() / 8) as usize;
-                    if cells.len() != size {
-                        let message = format!("`{}.{name}` reads {size} bytes, and it was given {}", ty.name(), cells.len());
-                        return Err(Diag::panic(expr.span, message).into());
-                    }
-                    let mut bits: u128 = 0;
-                    for (at, item) in cells.iter().enumerate() {
-                        let Value::Int(_, byte) = &*item.borrow() else { unreachable!("the checker makes the items bytes") };
-                        let shift = if *big { (size - 1 - at) * 8 } else { at * 8 };
-                        bits |= (*byte as u128) << shift;
-                    }
-                    Ok(Value::Int(*ty, ty.wrap(bits as i128)))
-                }
-                Callee::Parse(radix) => {
-                    let Value::Str(text) = strip(self.expr(&args[0], frame)?) else {
-                        unreachable!("the checker makes the argument text")
-                    };
-                    let Ty::Result(ty, _) = &expr.ty else { unreachable!("`parse` gives a `Result`") };
-                    Ok(match parse_number(text.as_bytes(), ty, *radix) {
-                        Ok(value) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)])),
-                        Err(error) => {
-                            let cause = match error {
-                                Some(position) => Value::Enum("NumberError".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Nint, position as i128))])),
-                                None => Value::Enum("NumberError".into(), 1, Rc::new(Vec::new())),
-                            };
-                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        for _ in 0..*times {
+                            repeated.push_str(text);
                         }
-                    })
-                }
-                Callee::Io(call) => self.io(*call, args, frame),
-                Callee::Clock(ClockCall::OffsetAt) => {
-                    let Value::Int(_, seconds) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `offsetAt` a `long`") };
-                    Ok(Value::Int(IntTy::Int, i128::from(local_offset(seconds as i64))))
-                }
-                Callee::Clock(ClockCall::WallSeconds) => Ok(Value::Int(IntTy::Long, clock(true).div_euclid(1_000_000_000))),
-                Callee::Clock(call) => Ok(Value::Int(IntTy::Long, clock(*call == ClockCall::Wall))),
-                Callee::Os(os) => Ok(Value::Bool(os.here())),
-                Callee::Entropy => {
-                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
-                    let mut bytes = vec![0u8; cells.len()];
-                    if !entropy(&mut bytes) {
-                        return Err(Diag::panic(expr.span, "the system gave no random bytes").into());
+                        return Ok(Value::Str(repeated.into()));
                     }
-                    for (slot, byte) in cells.iter().zip(&bytes) {
-                        *slot.borrow_mut() = Value::Int(IntTy::Byte, i128::from(*byte));
-                    }
-                    Ok(Value::Void)
-                }
-                Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
-                Callee::Stream(StreamCall::Consume) => self.reader_consume(recv, &args[0], expr.span, frame),
-                Callee::Stream(call) => self.stream(*call, recv, args, None, expr.span, frame),
-                Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
-                Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
-                Callee::Group(call, told) => self.group(*call, *told, recv, args, expr.span, frame),
-                // Awaited where it is written: in the interpreter a fiber waits the same way
-                // whether its task is async or not.
-                Callee::ChanAsync(call, told) => {
-                    let value = self.chan(*call, *told, recv, args, expr.span, frame)?;
-                    Ok(self.ended_task(value, expr.span))
-                }
-                // Awaited where it is written: the wait is done here, and the task given has
-                // ended.
-                Callee::NetAsync(call) => {
-                    let given = match call {
-                        NetCall::Connect | NetCall::Receive | NetCall::Send | NetCall::SendPieces => 1,
-                        NetCall::Accept | NetCall::Bind | NetCall::Port | NetCall::Reader => 0,
-                    };
-                    let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
-                    Ok(self.ended_task(value, expr.span))
-                }
-                // `Task.run(work, x)`: the task runs when it is waited for.
-                Callee::TaskRun => {
-                    let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
-                    let values = self.values(&args[1..], frame)?;
-                    let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new(), fiber: None }));
-                    self.started.push(task.clone());
-                    let mut state = self.io.sched.lock();
-                    // Those that have run, or are gone, are let go of now and then.
-                    if state.lazy.len() >= 64 {
-                        state.lazy.retain(|task| task.upgrade().is_some_and(|task| matches!(task.borrow().state, TaskState::Lazy(..))));
-                    }
-                    state.lazy.push(Rc::downgrade(&task));
-                    drop(state);
-                    Ok(Value::Task(task))
-                }
-                Callee::Delay(told) => {
-                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.delay` take an `int`") };
-                    let token = match told {
-                        true => Some(self.token(&args[1], frame)?),
-                        false => None,
-                    };
-                    self.delay(ms, token, expr.span)
-                }
-                Callee::Cancel(CancelCall::After) => {
-                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
-                    self.source_after(ms, expr.span)
-                }
-                Callee::Cancel(CancelCall::Linked) => {
-                    let parent = self.token(&args[0], frame)?;
-                    let source = Rc::new(RefCell::new(Cancel::default()));
-                    if let Some(parent) = parent {
-                        let mut parent = parent.borrow_mut();
-                        if parent.cancelled {
-                            source.borrow_mut().cancelled = true;
-                        } else {
-                            if parent.linked.len() >= 64 && parent.linked.len().is_power_of_two() {
-                                parent.linked.retain(|child| child.strong_count() > 0);
-                            }
-                            parent.linked.push(Rc::downgrade(&source));
-                        }
-                    }
-                    Ok(Value::Source(source))
-                }
-                Callee::Cancel(CancelCall::CancelAfter) => {
-                    let Value::Source(source) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls it on a source") };
-                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
-                    if ms < 0 {
-                        return Err(Diag::panic(expr.span, format!("`cancelAfter({ms})`: a time is not negative")).into());
-                    }
-                    self.cancel_after(&source, ms);
-                    Ok(Value::Void)
-                }
-                Callee::Cancel(call) => {
-                    let source = match owned(self.expr(recv, frame)?) {
-                        Value::Source(source) => Some(source),
-                        Value::Token(source) => source,
-                        _ => unreachable!("the checker calls these on a source or a token"),
-                    };
-                    let is_cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
-                    Ok(match call {
-                        CancelCall::Cancel => {
-                            let source = source.expect("a source");
-                            let mut state = self.io.sched.lock();
-                            Sched::cancel(&mut state, &source);
-                            Value::Void
-                        }
-                        CancelCall::Token | CancelCall::Clone => Value::Token(source),
-                        CancelCall::IsCancelled => Value::Bool(is_cancelled),
-                        CancelCall::CanBeCancelled => Value::Bool(source.is_some()),
-                        CancelCall::Check if is_cancelled => failed(cancelled()),
-                        CancelCall::Check => ok(Value::Void),
-                        CancelCall::New | CancelCall::After | CancelCall::Linked | CancelCall::CancelAfter => unreachable!("handled above"),
-                    })
-                }
-                // Input and output in the interpreter is done when it is called, so the task
-                // has ended when it is given; a token is looked at before the work.
-                Callee::IoAsync(call) => {
-                    let mut values = self.values(args, frame)?;
-                    let params = match call {
-                        IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
-                        IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
-                    };
-                    let source = match values.len() > params {
-                        true => match owned(values.pop().expect("a token")) {
-                            Value::Token(source) => source,
-                            _ => unreachable!("the checker makes it a token"),
-                        },
-                        false => None,
-                    };
-                    // So is a task let go by an exit with an error (1692).
-                    let value = match source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
-                        true => failed(io_cancelled()),
-                        false => self.io_values(*call, values)?,
-                    };
-                    Ok(self.ended_task(value, expr.span))
-                }
-                // A writer's async methods do the work of the methods without `Async`; the
-                // block that the compiled code writes on a thread of its own is written here.
-                Callee::StreamAsync(call) => {
-                    let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill) { 0 } else { 1 };
-                    let token = args.get(given);
-                    // The input that can make the program wait is waited for outside the run.
-                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
-                        let reader = match owned(self.expr(recv, frame)?) {
-                            Value::Reader(reader) if reader.borrow().is_stdin() => Some(reader),
-                            _ => None,
-                        };
-                        if let Some(reader) = reader {
-                            self.input_held(&reader, *call == StreamCall::Fill, expr.span)?;
-                            let base = self.io.input.borrow().buffer().len();
-                            if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
-                                return Ok(self.ended_task(cancelled, expr.span));
-                            }
-                            if *call == StreamCall::Fill {
-                                self.input_held(&reader, true, expr.span)?;
-                                let value = self.reader_fill(&reader, base, None, expr.span)?;
-                                return Ok(self.ended_task(value, expr.span));
-                            }
-                        }
-                    }
-                    let value = self.stream(*call, recv, &args[..given], token, expr.span, frame)?;
-                    Ok(self.ended_task(value, expr.span))
-                }
-                Callee::Wait => {
-                    let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
-                    self.await_task(&task, expr.span)
-                }
-                // `Task.whenAll(tasks)` and `Task.whenAny(ref tasks)` are awaited where they are
-                // written: the wait is done here, and the task given has ended.
-                Callee::WhenAll => {
-                    let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAll` a list") };
-                    let gives = !matches!(&expr.ty, Ty::Task(result) if **result == Ty::Void);
-                    self.when_all(&list, gives, expr.span)
-                }
-                Callee::WhenAny => {
-                    let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAny` a list") };
-                    self.when_any(&list, expr.span)
-                }
-                // `x.makeUnique()`: what `x` points to, lent as `ref` when `x` is its only owner and
-                // nothing looks at it; otherwise a copy, which `x` then owns alone.
-                Callee::Plain if name == "makeUnique" => {
-                    let slot = behind_borrows(self.place(recv, frame)?);
-                    let held = match &*slot.borrow() {
-                        Value::Shared(held) => held.clone(),
-                        _ => unreachable!("the checker lets `makeUnique` be called on a `shared` value only"),
-                    };
-                    // The place holds one owner and `held` is the other; the list of the values
-                    // alive (`LIVE`, for the leak report) is the one looker.
-                    if Rc::strong_count(&held) == 2 && Rc::weak_count(&held) == 1 {
-                        return Ok(Value::Borrow(held.value.clone()));
-                    }
-                    let value = held.value.borrow().clone();
-                    let copy = self.cloned(&value, expr.span)?;
-                    let fresh = Held::new(copy, false, expr.span);
-                    let lent = fresh.value.clone();
-                    *slot.borrow_mut() = Value::Shared(fresh);
-                    Ok(Value::Borrow(lent))
-                }
-                Callee::Take => {
-                    let slot = behind_borrows(self.place(recv, frame)?);
-                    let old = slot.replace(Value::Null);
-                    Ok(old)
-                }
-                Callee::Replace => {
-                    let slot = behind_borrows(self.place(recv, frame)?);
-                    let new = self.expr(&args[0], frame)?;
-                    let old = slot.replace(new);
-                    Ok(old)
-                }
-                // `text.write(x)` and `text.clear()` change the text where it is. A text that
-                // nothing else holds grows in place; one that is shared is copied first.
-                Callee::Plain if matches!(name.as_str(), "write" | "clear") && is_text_behind(&recv.ty) => {
-                    let mut slot = self.place(recv, frame)?;
-                    loop {
-                        let inner = match &*slot.borrow() {
-                            Value::Borrow(inner) | Value::Ptr(inner) => inner.clone(),
-                            _ => break,
-                        };
-                        slot = inner;
-                    }
-                    let added = match args.first() {
-                        Some(arg) => {
-                            let value = self.expr(arg, frame)?;
-                            self.show(&value, false, arg.span)?
-                        }
-                        None => String::new(),
-                    };
-                    let mut value = slot.borrow_mut();
-                    let Value::Str(text) = &mut *value else { unreachable!("the checker makes the receiver a text") };
-                    let text = Rc::make_mut(text);
-                    if name == "clear" {
-                        text.clear();
-                    }
-                    text.push_str(&added);
-                    Ok(Value::Void)
-                }
-                // `.clone()` of a `shared` value: one more owner.
-                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => Ok(strip(self.expr(recv, frame)?)),
-                Callee::Plain => {
-                    // An array that is put in order is the one in its place, not a copy of it.
-                    let mark = self.guards.len();
-                    let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse" | "copyFrom") {
-                        true => owned(self.place(recv, frame)?.borrow().clone()),
-                        false => owned(self.expr(recv, frame)?),
-                    };
-                    let lent = self.guards.len();
-                    if let Value::Lines(lines) = &recv {
-                        return Ok(self.next_line(lines, expr.span)?.unwrap_or(Value::Null));
-                    }
-                    // `f.write(x)` inside a `format` method.
-                    if let Value::Formatter(written) = &recv {
-                        let value = self.expr(&args[0], frame)?;
-                        let text = self.show(&value, false, args[0].span)?;
-                        written.borrow_mut().push_str(&text);
-                        return Ok(Value::Void);
-                    }
-                    let mut values = Vec::new();
-                    for arg in args {
-                        values.push(strip(self.expr(arg, frame)?));
-                    }
-                    self.change_reserved(mark..lent)?;
-                    // The items given are read before any is written over, as C's `memmove`.
-                    if name == "copyFrom" {
-                        let into = cells_of(&recv);
-                        let given: Vec<Value> = cells_of(&values[0]).iter().map(|item| fresh(&item.borrow())).collect();
-                        if given.len() != into.len() {
-                            return Err(Diag::panic(expr.span, format!("`copyFrom` is given {} item(s) to copy over {}", given.len(), into.len()))
-                                .note("the two have the same length: copy over a window of as many, `xs[a..a + n].copyFrom(ys)`")
+                    // `(byte)block`: the number of the variant.
+                    (Value::Enum(owner, index, _), crate::check::NUMBER_OF, []) => return self.variant_number(owner, *index, expr.span),
+                    // `int.MinValue.abs()` overflows, as `-x` does.
+                    (Value::Int(ty, value), "abs", []) => {
+                        if !ty.fits(value.abs()) {
+                            let unsigned = ty.unsigned().name();
+                            return Err(Diag::panic(expr.span, format!("overflow: the absolute value of {value} does not fit in {}", ty.name()))
+                                .hint(format!("`tryAbs` gives `null` instead, `wrappingAbs` wraps around, and `unsignedAbs` gives a `{unsigned}`"))
                                 .into());
                         }
-                        for (item, value) in into.iter().zip(given) {
-                            *item.borrow_mut() = value;
-                        }
-                        return Ok(Value::Void);
+                        return Ok(Value::Int(*ty, value.abs()));
                     }
-                    // An array or a slice keeps its cells, which are those of its owner; the
-                    // values move between them.
-                    if let (Value::Array(cells) | Value::Slice(cells), "sort" | "reverse") = (&recv, name.as_str()) {
-                        let order = match name.as_str() {
-                            "sort" => self.sorted((**cells).clone(), expr.span)?,
-                            _ => cells.iter().rev().cloned().collect(),
+                    // The ends of `clamp` in the wrong order, or one that is `NaN`.
+                    (Value::Int(ty, value), "clamp", [Value::Int(_, low), Value::Int(_, high)]) => {
+                        if low > high {
+                            return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
+                        }
+                        return Ok(Value::Int(*ty, *value.max(low).min(high)));
+                    }
+                    (Value::Float(ty, value), "clamp", [Value::Float(_, low), Value::Float(_, high)]) => {
+                        if low.is_nan() || high.is_nan() {
+                            let which = if low.is_nan() { "low" } else { "high" };
+                            return Err(Diag::panic(expr.span, format!("`clamp`: the {which} end is NaN")).into());
+                        }
+                        if low > high {
+                            let (low, high) = (show_float(*low, *ty), show_float(*high, *ty));
+                            return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
+                        }
+                        let Value::Float(_, above) = float_method2(*ty, *value, "max", *low) else { unreachable!("a number") };
+                        return Ok(float_method2(*ty, above, "min", *high));
+                    }
+                    // The bits of an integer; a power of two that does not fit, and the log2 of 0, panic.
+                    (Value::Int(ty, value), _, _) if crate::check::BIT_METHODS.contains(&name.as_str()) => {
+                        let count = match values.as_slice() {
+                            [Value::Int(_, count)] => *count,
+                            _ => 0,
                         };
-                        let values: Vec<Value> = order.iter().map(|item| item.borrow().clone()).collect();
-                        for (item, value) in cells.iter().zip(values) {
-                            *item.borrow_mut() = value;
-                        }
-                        return Ok(Value::Void);
+                        return int_bits(*ty, *value, name, count).map_err(|message| Diag::panic(expr.span, message).into());
                     }
-                    // The length and an item of an array or a slice are read where they are: a
-                    // list made of a million cells for each `data.length()` of a loop made
-                    // hashing a megabyte take most of a minute.
-                    match (&recv, name.as_str(), values.as_slice()) {
-                        (Value::Array(cells) | Value::Slice(cells), "length", []) => return Ok(Value::Int(IntTy::Nint, cells.len() as i128)),
-                        (Value::Bytes(_, start, end), "length", []) => return Ok(Value::Int(IntTy::Nint, (end - start) as i128)),
-                        (Value::Bytes(text, start, end), "get", [Value::Int(_, at)]) => {
-                            let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes()[*start..*end].get(at).copied());
-                            return Ok(byte.map_or(Value::Null, |byte| Value::Borrow(byte_cell(byte))));
-                        }
-                        (Value::Array(cells) | Value::Slice(cells), "get", [Value::Int(_, at)]) => {
-                            return Ok(usize::try_from(*at).ok().and_then(|at| cells.get(at).cloned()).map_or(Value::Null, Value::Borrow));
-                        }
-                        _ => {}
-                    }
-                    let recv = as_list(recv);
-                    if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
-                        return self.collection_method(recv, name, values, expr.span);
-                    }
-                    // A separator that is empty would split nowhere and everywhere.
-                    if let (Value::Str(_), "split", [Value::Str(separator)]) = (&recv, name.as_str(), values.as_slice()) {
-                        if separator.is_empty() {
-                            return Err(Diag::panic(expr.span, "the separator of `split` is empty")
-                                .hint("the characters, one after the other: `text.chars()`")
-                                .into());
-                        }
-                    }
-                    // Nothing to look for, or a number of times that is no number of times.
-                    match (&recv, name.as_str(), values.as_slice()) {
-                        (Value::Str(_), "replaceAll", [Value::Str(old), _]) if old.is_empty() => {
-                            return Err(Diag::panic(expr.span, "the text that `replaceAll` looks for is empty").into());
-                        }
-                        (Value::Str(text), "repeat", [Value::Int(_, times)]) => {
-                            if *times < 0 {
-                                return Err(Diag::panic(expr.span, format!("a text cannot be repeated {times} times")).into());
-                            }
-                            // As in compiled code, a text too big for the memory stops the program
-                            // with a panic instead of aborting it.
-                            let size = (text.len() as i128).checked_mul(*times).filter(|size| *size <= isize::MAX as i128);
-                            let mut repeated = String::new();
-                            if size.is_none_or(|size| repeated.try_reserve_exact(size as usize).is_err()) {
-                                return Err(Diag::panic(expr.span, format!("there is no memory for a text of {} bytes repeated {times} times", text.len())).into());
-                            }
-                            for _ in 0..*times {
-                                repeated.push_str(text);
-                            }
-                            return Ok(Value::Str(repeated.into()));
-                        }
-                        // `(byte)block`: the number of the variant.
-                        (Value::Enum(owner, index, _), crate::check::NUMBER_OF, []) => return self.variant_number(owner, *index, expr.span),
-                        // `int.MinValue.abs()` overflows, as `-x` does.
-                        (Value::Int(ty, value), "abs", []) => {
-                            if !ty.fits(value.abs()) {
-                                let unsigned = ty.unsigned().name();
-                                return Err(Diag::panic(expr.span, format!("overflow: the absolute value of {value} does not fit in {}", ty.name()))
-                                    .hint(format!("`tryAbs` gives `null` instead, `wrappingAbs` wraps around, and `unsignedAbs` gives a `{unsigned}`"))
-                                    .into());
-                            }
-                            return Ok(Value::Int(*ty, value.abs()));
-                        }
-                        // The ends of `clamp` in the wrong order, or one that is `NaN`.
-                        (Value::Int(ty, value), "clamp", [Value::Int(_, low), Value::Int(_, high)]) => {
-                            if low > high {
-                                return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
-                            }
-                            return Ok(Value::Int(*ty, *value.max(low).min(high)));
-                        }
-                        (Value::Float(ty, value), "clamp", [Value::Float(_, low), Value::Float(_, high)]) => {
-                            if low.is_nan() || high.is_nan() {
-                                let which = if low.is_nan() { "low" } else { "high" };
-                                return Err(Diag::panic(expr.span, format!("`clamp`: the {which} end is NaN")).into());
-                            }
-                            if low > high {
-                                let (low, high) = (show_float(*low, *ty), show_float(*high, *ty));
-                                return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
-                            }
-                            let Value::Float(_, above) = float_method2(*ty, *value, "max", *low) else { unreachable!("a number") };
-                            return Ok(float_method2(*ty, above, "min", *high));
-                        }
-                        // The bits of an integer; a power of two that does not fit, and the log2 of 0, panic.
-                        (Value::Int(ty, value), _, _) if crate::check::BIT_METHODS.contains(&name.as_str()) => {
-                            let count = match values.as_slice() {
-                                [Value::Int(_, count)] => *count,
-                                _ => 0,
-                            };
-                            return int_bits(*ty, *value, name, count).map_err(|message| Diag::panic(expr.span, message).into());
-                        }
-                        _ => {}
-                    }
-                    Ok(method(recv, name, values))
+                    _ => {}
                 }
-            },
+                Ok(method(recv, name, values))
+            }
         }
     }
 
@@ -6189,6 +6430,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(values)
     }
 
+    #[inline(never)]
     fn call_expr(&mut self, expr: &'a Expr, name: &str, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
         match name {
             "print" => {
@@ -6231,21 +6473,24 @@ impl<'a, 'e> Interp<'a, 'e> {
                     return Err(Diag::panic(expr.span, format!("`exit({code})` in a test: a test cannot end the program")).into());
                 }
                 ending();
-                Err(Unwind::Stop(Stop::Exit(code)))
+                Err(Unwind::Stop(Box::new(Stop::Exit(code))))
             }
             "assert" => self.assert(expr, &args[0], frame),
             "same" => match (strip(self.expr(&args[0], frame)?), strip(self.expr(&args[1], frame)?)) {
                 (Value::Shared(a), Value::Shared(b)) => Ok(Value::Bool(Rc::ptr_eq(&a, &b))),
                 _ => unreachable!("the checker lets `same` take only two `shared` values"),
             },
-            _ => {
-                let func = self.funcs[name];
-                let values = self.values(args, frame)?;
-                match func.is_async {
-                    true => self.start_async(func, None, values, expr.span),
-                    false => self.call(func, None, values, expr.span),
-                }
-            }
+            _ => self.call_plain(expr, name, args, frame),
+        }
+    }
+
+    /// A call of a function of the program, or of an `async` one, which starts it.
+    fn call_plain(&mut self, expr: &'a Expr, name: &str, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let func = self.funcs[name];
+        let values = self.values(args, frame)?;
+        match func.is_async {
+            true => self.start_async(func, None, values, expr.span),
+            false => self.call(func, None, values, expr.span),
         }
     }
 
@@ -8043,8 +8288,8 @@ impl<'a, 'e> Interp<'a, 'e> {
 fn output_failed(error: std::io::Error) -> Unwind {
     ending();
     match error.kind() {
-        std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
-        _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
+        std::io::ErrorKind::BrokenPipe => Unwind::Stop(Box::new(Stop::OutputClosed)),
+        _ => Unwind::Stop(Box::new(Stop::OutputFailed(error.to_string()))),
     }
 }
 

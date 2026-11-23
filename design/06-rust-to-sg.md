@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826.
 
 ## Functions and variables
 
@@ -319,7 +319,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 |---|---|---|---|
 | `Arc::new(Mutex::new(v))` on a value you already have | `new shared locked v` | built | `v` is moved in; a value is locked from where it is made, never later in place |
 | `thread::spawn(move \|\| work(x))` | `Task.run(work, x)` | built | The function and what it is given are written apart. A thread of 1 GB of stack on every system, taken a page at a time as it is used, as `main`'s, where Rust's is 2 MB and `main`'s 8 MB (1821); 8 MB where the system gives no such thread. Windows included (`_beginthreadex`), and a lock is an `SRWLOCK` there, as Rust's `Mutex` is |
-| `thread::Builder::new().stack_size(n)` | nothing to write | built | Every task has 1 GB; a stack that overflows is `panic: stack overflow`, exit code 1, where Rust's says `thread '...' has overflowed its stack` and aborts (1815) |
+| `thread::Builder::new().stack_size(n)` | nothing to write | built | Every task has 1 GB; a stack that overflows is `panic: stack overflow`, exit code 1, where Rust's says `thread '...' has overflowed its stack` and aborts (1815); the interpreter says the same, naming the call, about 380,000 calls deep (1823) |
 | `JoinHandle<R>` | `Task<R>` | built | |
 | `h.join().unwrap()` | `t.wait()` | built | A panic stops the process, so there is nothing to unwrap |
 | dropping a `JoinHandle` (the thread goes on) | a compile error | built | Every task is waited for on every path |
@@ -609,7 +609,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `json!({"a": 1})` | `var o = JsonObject()`, `o.add("a", JsonValue.Integer(1))` | built | No macros |
 | `#[derive(Serialize, Deserialize)]` | `toJson` and `fromJson` written by hand | | No reflection or macros |
 | `serde_json::Deserializer::from_str(...).into_iter::<Value>()`, a stream of values | `JsonReader.create(options)`, `reader.next(read text, true)` | built | The tokens of values one after another, as text grows: `UnexpectedEnd` with `more` leaves the reader as it was, and `rebase(n)` lets the program drop what it read (1814) |
-| `serde_json`'s `Deserializer` tokens with `RawValue` numbers, `arbitrary_precision` | `JsonToken.Number(text)` | built | A number as it is written; the program decides what it is. A name given twice is the program's to decide too |
+| `serde_json`'s `Deserializer` tokens with `RawValue` numbers, `arbitrary_precision` | `JsonToken.Number(text)` | built | A number as it is written; the program decides what it is. A name given twice is the program's to decide too ; `print(token)` writes `Name("id")`, as `{:?}` would (1826) |
 
 ## Log
 

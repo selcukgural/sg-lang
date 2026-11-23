@@ -511,7 +511,9 @@ fn builds_a_program() {
 }
 
 /// Calls nested past the stack, in `main` and in a task: compiled code has a stack of 1 GB
-/// (choice 1821) and says so when it is full, where it ended with a SIGSEGV (choice 1815).
+/// (choice 1821) and says so when it is full, where it ended with a SIGSEGV (choice 1815). The
+/// interpreter's bound follows its own stack of 1 GB (choice 1823), where it was 5,000 calls,
+/// and its panic says the same.
 #[test]
 fn a_stack_that_overflows_is_told() {
     if !has_compiler() {
@@ -532,6 +534,14 @@ fn a_stack_that_overflows_is_told() {
     }
     assert_eq!(ran(&sg(&dir, &["build", "fits.sg"])).0, 0);
     assert_eq!(ran(&Command::new(program(&dir, "fits")).output().unwrap()), (0, "1000000\n".into(), String::new()));
+    for stem in ["deep", "task"] {
+        let (code, out, err) = ran(&sg(&dir, &[&format!("{stem}.sg")]));
+        assert_eq!((code, out.as_str()), (1, ""), "{stem}: {err}");
+        assert!(err.starts_with("panic: stack overflow: calls are nested deeper than the stack of this thread holds\n  last called: `down`"), "{stem}: {err}");
+    }
+    // A hundred thousand calls fit in the interpreter: a call takes it about 2.5 KB of its stack.
+    write(&dir, "fits_interpreted.sg", "int sum(int n) {\n    if n == 0 {\n        return 0\n    }\n    return sum(n - 1) + 1\n}\n\nvoid main() {\n    print(sum(100000))\n}\n");
+    assert_eq!(ran(&sg(&dir, &["fits_interpreted.sg"])), (0, "100000\n".into(), String::new()));
 }
 
 /// A `try` inside a statement is computed first, under a name, only where all that comes before
@@ -1216,8 +1226,8 @@ fn the_trial_of_jq() {
         // An error in the middle: the others are worked, and the last input decides the exit code.
         (&["-c", ".a + 1", "mid.json"], true, 0, "2\n4\n"),
         (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | (. == .), ([.] | length)"], true, 0, "true\n1\n"),
-        // Compared 10,001 deep: past the interpreter's 5,000 nested calls, so compiled only.
-        (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | [., [.]] | sort | length"], false, 5, ""),
+        // Compared 10,001 deep, past the 5,000 nested calls the interpreter once took (1823).
+        (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | [., [.]] | sort | length"], true, 5, ""),
         (&[".", "missing.json"], true, 2, ""),
         (&[".["], true, 3, ""),
     ];

@@ -1,0 +1,22 @@
+// `JsonToken` is `Formattable` (choice 1826): a token is written as its variant, and the text
+// of a name, a string or a number in quotes, escaped as a text is.
+void main() {
+    string text = "[{\"id\": 1.50, \"a\\\"b\": [true, false, null, \"x\\ny\\u0001ş\"]}, -0, 1e400]"
+    var r = JsonReader()
+    while true {
+        match r.next(read text) {
+            Ok(t) => {
+                print(t)
+                if t == JsonToken.End {
+                    break
+                }
+            }
+            Error(e) => {
+                print(e)
+                break
+            }
+        }
+    }
+    var name = JsonToken.Name("id")
+    print($"in a line: {name}, {JsonToken.BeginObject}")
+}

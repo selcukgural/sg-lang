@@ -1032,7 +1032,7 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lev
 }
 
 // A token of a text of JSON, as `JsonReader.next` gives them.
-public enum JsonToken : Equatable {
+public enum JsonToken : Equatable, Formattable {
     BeginArray
     EndArray
     BeginObject

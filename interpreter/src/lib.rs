@@ -46,8 +46,9 @@ pub use diag::Diag;
 pub use interp::{Stop, World};
 pub use source::{load, load_over, Sources};
 
-/// The tree is walked recursively, so deep calls need stack. `interp::MAX_DEPTH` sets the limit;
-/// this stack is large enough to reach it.
+/// The tree is walked recursively, so deep calls need stack: each thread of the interpreter has
+/// this much, taken by the system a page at a time, and a call or a walk of a value that finds
+/// too little of it left is a panic of the program (choices 1343 and 1823).
 pub(crate) const STACK_BYTES: usize = 1 << 30;
 
 /// Parses the files of the program into one tree. With `tests`, the test command: only the

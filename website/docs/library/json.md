@@ -174,8 +174,9 @@ It prints:
 a program that builds values of its own. It leaves to the program what `Json.parse` decides: a number comes
 as it is written (`1.50`, `1e400`, twenty digits), and a name given twice comes twice. `next` gives a
 `JsonToken`: `BeginArray`, `EndArray`, `BeginObject`, `EndObject`, `Name(text)`, `String(text)`,
-`Number(text)`, `True`, `False`, `Null`, and `End` when only spaces are left. `depth()` says how many arrays
-and objects are open, `position()` where the next token is looked for.
+`Number(text)`, `True`, `False`, `Null`, and `End` when only spaces are left. `print(token)` writes
+`BeginArray`, `Name("id")`, `Number("1.50")`. `depth()` says how many arrays and objects are open,
+`position()` where the next token is looked for.
 
 The reader keeps where it is and what is open, not the text, so the text may grow between two calls. With
 `more`, a token that reaches the end of the text is `UnexpectedEnd` and the reader is left as it was, to be

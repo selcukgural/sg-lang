@@ -77,9 +77,11 @@ It prints:
 255
 ```
 
-There is no flag for another optimisation level. Deep recursion is caught by the interpreter (5000 nested
-calls) but not by compiled code, which would pay for a count on every call; it ends at the guard page of the
-stack, as in C.
+There is no flag for another optimisation level. Deep recursion ends in a panic in both, `stack overflow`,
+when the stack of 1 GB is full. The interpreter looks at what is left before each call and names the call;
+compiled code, which would pay for a look on every call, runs on to the guard page of its stack, as C does,
+and says so there. A call takes the interpreter about 2.5 KB of its stack, so it goes about 380,000 calls
+deep, where compiled code goes past a million.
 
 ## The C that SG writes
 

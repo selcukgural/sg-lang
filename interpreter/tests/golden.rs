@@ -764,9 +764,9 @@ fn compiled() {
     let done = in_parallel(&files, |path| {
         let mut done = Done::default();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Deep recursion is caught by the interpreter's own count of calls; compiled code runs on
-        // until its stack of 1 GB is full and then says so, without naming the call (choices 1815
-        // and 1821, tested in `cli.rs`).
+        // Deep recursion: both say so when their stack of 1 GB is full, the interpreter naming
+        // the call and its line, compiled code neither (choices 1815, 1821 and 1823, tested in
+        // `cli.rs`).
         // So is a value nested too deep for the interpreter's stack: compiled code makes it on
         // the stack, which ends at its guard page. (An array too big for the memory, of
         // `panic_array_no_memory`, is refused by `sg build`: no stack holds it, choice 1346.)

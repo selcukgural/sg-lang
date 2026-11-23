@@ -54,7 +54,8 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   the order of the items and not their number, so an array and a `ref T[]` have them and a `read T[]` does
   not; a range in front of them (`xs[2..5].sort()`) is lent as `ref`, with what `ref xs[2..5]` needs.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
-- Deep recursion ends in a readable panic (limit: 5000 nested calls), not a crash.
+- Deep recursion ends in a readable panic when the stack of 1 GB is nearly full (about 380,000 calls in
+  the interpreter, choice 1823), not a crash.
 - Errors come with the source line, a marker and, where the fix is known, a hint.
 - Types are checked before the program runs. An integer literal takes the type it is used as
   (`long x = 5`); one that does not fit is an error.
