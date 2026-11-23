@@ -15542,12 +15542,14 @@ impl<'a> Emitter<'a> {
             }
             // The items are `Copyable`, so a copy of their bytes is a copy of them; the checker
             // has seen that they do not lie in the list itself.
+            // `<= 0`, though a window is never shorter: GCC then knows the length of the copy is
+            // not negative (it refused `Memory.view`'s, checked when the program runs).
             "addAll" => {
                 let slice = Ty::Slice(item.clone());
                 let window = self.ctype(&slice, span)?;
                 let _ = writeln!(
                     self.glue,
-                    "static inline void {helper}({list_c}* v, {window} items) {{ if (items.len == 0) return; \
+                    "static inline void {helper}({list_c}* v, {window} items) {{ if (items.len <= 0) return; \
                      if (items.len > v->cap - v->len) v->ptr = sg_reserve(v->ptr, &v->cap, v->len + items.len, sizeof({held}), _Alignof({held})); \
                      memcpy(v->ptr + v->len, items.ptr, (size_t)items.len * sizeof({held})); v->len += items.len; }}"
                 );
