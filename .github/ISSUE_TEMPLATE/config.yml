@@ -1,0 +1,10 @@
+# Questions and ideas go to the mailing list, security problems to a private report; issues are for bugs.
+# https://sg-lang.org/docs/about/community says where each thing goes.
+blank_issues_enabled: true
+contact_links:
+  - name: A question or an idea
+    url: https://groups.google.com/g/sg-lang
+    about: Ask on the mailing list (join by an empty message to sg-lang+subscribe@googlegroups.com). Issues are for bugs.
+  - name: A security problem
+    url: https://github.com/selcukgural/sg-lang/security/advisories/new
+    about: Report it privately, as SECURITY.md says; never in a public issue.

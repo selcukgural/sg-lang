@@ -176,6 +176,7 @@ const next = [
   {
     title: 'Take part',
     links: [
+      ['The mailing list: questions and ideas', '/docs/about/community'],
       ['The source on GitHub', 'https://github.com/selcukgural/sg-lang'],
       ['Every decision, with its reason', 'https://github.com/selcukgural/sg-lang/blob/main/design/rules/README.md'],
       ['The repository', '/docs/about/repository'],
