@@ -22,7 +22,7 @@ const MACHINE: [&str; 3] = ["-mcmodel=medany", "-march=rv64gc", "-mabi=lp64d"];
 
 const HOW: &str = "the kernel's test needs a Clang that knows RISC-V (`CC`, or `clang` on the path; Apple's knows only its own), LLD and QEMU: \
 on macOS `brew install llvm lld qemu`, then `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`; \
-on Debian or Ubuntu `apt install clang lld qemu-system-misc` (the image of `tests/Containerfile` has them); \
+on Debian or Ubuntu `apt install clang lld qemu-system-misc` (`qemu-system-riscv` from Ubuntu 26.04) (the image of `tests/Containerfile` has them); \
 on Windows LLVM's Clang has them all, and QEMU comes with `winget install SoftwareFreedomConservancy.QEMU`";
 
 /// The Clang of `CC`, or `clang`; on Windows the one `sg build` finds.
@@ -84,7 +84,12 @@ fn boots_in_qemu() {
     let probe = work.join("probe.c");
     std::fs::write(&probe, "int f(void) { return 1; }\n").unwrap();
     let knows = Command::new(&cc).args(["--target=riscv64-unknown-elf", "-c", "-o"]).arg(work.join("probe.o")).arg(&probe).output();
-    assert!(knows.is_ok_and(|made| made.status.success()), "`{cc}` does not compile for RISC-V\n{HOW}");
+    // What went wrong is told: the compiler's own words, or why it could not be started.
+    let why = match &knows {
+        Ok(made) => String::from_utf8_lossy(&made.stderr).into_owned(),
+        Err(error) => format!("it could not be started: {error}"),
+    };
+    assert!(knows.is_ok_and(|made| made.status.success()), "`{cc}` does not compile for RISC-V: {why}\n{HOW}");
     let linked = Command::new(&cc).args(["--target=riscv64-unknown-elf", "-nostdlib", "-fuse-ld=lld", "-Wl,-e,f", "-o"]).arg(work.join("probe.elf")).arg(work.join("probe.o")).output().unwrap();
     assert!(linked.status.success(), "`{cc}` cannot link with LLD: {}\n{HOW}", String::from_utf8_lossy(&linked.stderr));
     assert!(Command::new(qemu()).arg("--version").output().is_ok_and(|ran| ran.status.success()), "no `qemu-system-riscv64`\n{HOW}");
