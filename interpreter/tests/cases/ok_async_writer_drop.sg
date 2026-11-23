@@ -35,9 +35,10 @@ async Result<void, IoError> pass(string path, string missing) {
 
 // A task declared after the writer is awaited first, as names end in the reverse order. It is
 // let go first (1691): its delay, without a token, runs on, and its read, a wait that can say it
-// was cancelled, ends with `Cancelled` (1692).
+// was cancelled, ends with `Cancelled` (1692). The delay is long enough for the read of a missing
+// file to fail first even under the thread sanitizer on a loaded machine, where 10 ms was not.
 async void look(string path) {
-    await Task.delay(10)
+    await Task.delay(250)
     match await File.readTextAsync(read path) {
         Ok(value) => print($"the task saw {value.length()} bytes")
         Error(cause) => print($"the task saw {cause}")
