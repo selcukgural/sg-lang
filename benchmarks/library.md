@@ -7,11 +7,12 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in [How it is measured](method.md), and so are the rules of fairness (1554). `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `command_line`, `environment`, `files`, `path`, `process`, `regex`, `signals`.
+Not measured yet: `atomic`, `files`, `process`, `regex`, `signals`.
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
-which 1637 does not name.
+which 1637 does not name. The command line and the environment are measured for their memory and size alone,
+since their work takes microseconds (1553, 1801).
 
 ## json
 
@@ -398,3 +399,75 @@ looked at for the bytes it may hold, not for its whole form. A run takes about t
 ```sh
 python3 trials/server/http/conformance/compare.py
 ```
+
+## command_line
+
+`trials/std/command_line`: the front of a packer of files, `pack [OPTIONS] FORMAT FOLDER [FILES]...`, with
+four flags, three options (`--exclude` may be given again), two words in their places and the rest; it
+prints what it read (1798). `a usual command line` mixes them in GNU's ways (`-vfn`, `--level=9`, `-xa*.tmp`,
+`--` and a lone `-`); `10,000 words` gives the rest ten thousand names of files; `the help` prints the help,
+which each library words its own way, so that case is held only to its exit code. Memory and size alone
+(1801). Apple M3 Max, 23 November 2026:
+
+| Case | SG | SG, checked | Rust `clap` | Rust `lexopt` | Zig | Zig, safe |
+|---|---|---|---|---|---|---|
+| a usual command line | 1.88 MB | 1.86 MB | 2.33 MB | 2.00 MB | 1.92 MB | 2.06 MB |
+| 10,000 words | 2.78 MB | 2.77 MB | 5.02 MB | 3.17 MB | 2.56 MB | 2.67 MB |
+| the help | 1.88 MB | 1.86 MB | 2.30 MB | 1.98 MB | 1.92 MB | 2.05 MB |
+| Size, stripped | 83 KB | 83 KB | 730 KB | 369 KB | 361 KB | 442 KB |
+| Lines | 34 | 34 | 75 | 100 | 149 | 149 |
+
+Rust is `clap` 4.6.9 with its default features and `derive`, as most programs in Rust read their command
+line, and once more `lexopt` 0.3.2, a parser as small as SG's, with the help written by hand (1796). Zig's
+library has no parser, so the Zig program takes its arguments apart by hand, as the Zig compiler does (1797).
+With ten thousand words Zig holds 0.22 MB less than SG: SG copies each word into the list of its name, where
+Zig keeps a view of the arguments; `clap` keeps each word twice, as a text and as the value it parsed.
+
+## environment
+
+`trials/std/environment`: `get` reads a variable that is there, one that is not and one that is not UTF-8
+(`caf\xe9`), each as text; `read` reads one variable a million times, each time as a new text, as
+`Environment.get` gives it (1799). Memory and size alone (1801). Apple M3 Max, 23 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| one variable | 1.83 MB | 1.83 MB | 1.95 MB | 1.94 MB | 2.11 MB |
+| a variable read 1,000,000 times | 1.88 MB | 1.91 MB | 1.97 MB | 1.97 MB | 2.12 MB |
+| Size, stripped | 34 KB | 34 KB | 352 KB | 345 KB | 442 KB |
+| Lines | 35 | 35 | 33 | 49 | 49 |
+
+Rust is `std::env::var`. Zig 0.17 has no `getEnvVarOwned`, which 1799 named; its heir, `Environ.getAlloc`,
+builds a map of the whole environment on each call, so the Zig program looks the variable up in the map Zig
+gives `main` (`init.environ_map`), checks it is UTF-8 and copies it, the work SG and Rust do.
+
+## path
+
+`trials/std/path`: a million paths made from a seed, each built from one to four folders and a name, a fifth
+of them from the root, with names past ASCII (`café`, `日本`) and one of six extensions or none; each is taken
+apart into its name, its extension and its folder, and the bytes of each part are added up (1800). SG builds
+each path with `Path.push` onto one text that grows (1802); the second case joins each part into a new text
+with `Path.join`, which Rust and Zig run their one way again. Apple M3 Max, 23 November 2026:
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| 1,000,000 paths built and taken apart | 0.093 s, 1.9 MB | 0.096 s, 1.9 MB | 0.195 s, 2.1 MB | 0.103 s, 2.0 MB | 0.144 s, 2.1 MB |
+| the same, SG joining each part into a new text | 0.126 s, 2.0 MB | 0.127 s, 2.0 MB | 0.197 s, 2.1 MB | 0.102 s, 2.0 MB | 0.145 s, 2.1 MB |
+| Size, stripped | 50 KB | 50 KB | 352 KB | 345 KB | 442 KB |
+| Lines | 71 | 71 | 56 | 77 | 77 |
+
+Rust is `std::path`, a `PathBuf` pushed onto; Zig is `std.fs.path`, the parts of a path joined at once by
+`path.join`. SG joining each part into a new text loses to Zig by 1.23 times: it makes four or five texts for
+each path where Zig makes one, and `Path.push` is its answer. Before this slice `$"{a}/{b}".toString()` read a
+format of `printf` twice, once to count and once to write, and SG took 0.210 s; a line made only of texts is
+now copied straight into a text of its length, in every program, and took 0.121 s before `Path.push`.
+
+The paths are those a program meets, and the three read them alike. Where they take a path apart their own
+ways, nothing is measured; the differences are these:
+
+| Path | SG | Rust | Zig |
+|---|---|---|---|
+| `a/file.` | no extension | an empty extension, shown `.` | the extension `.` |
+| `logs/` | the name empty, the folder `logs` | the name `logs`, the folder empty | the name `logs`, no folder |
+| `/` | the folder `/` | no folder | no folder |
+| `a/..` | the name `..`, no extension | no name | the name `..`, the extension `.` |
+| `a/.profile` | no extension | no extension | no extension |

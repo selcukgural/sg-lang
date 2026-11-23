@@ -2667,6 +2667,20 @@ static sg_string sg_format(const char* format, ...) {
     va_end(write);
     return text;
 }
+/* `$"{a}/{b}".toString()` of texts alone: their bytes copied one after another into a text of
+   their length, with no format to read. */
+static sg_string sg_concat(int n, const sg_str* parts) {
+    int64_t total = 0;
+    for (int i = 0; i < n; i++) total += parts[i].len;
+    if (total == 0) return SG_LIT("", 0);
+    sg_string text = { malloc((size_t)total), 0, total };
+    if (!text.ptr) abort();
+    for (int i = 0; i < n; i++) {
+        if (parts[i].len > 0) memcpy(text.ptr + text.len, parts[i].ptr, (size_t)parts[i].len);
+        text.len += parts[i].len;
+    }
+    return text;
+}
 /* A line into a stream, gathered whole before it is written (on the stack while it is short), so
    that it is one write of the system: lines that several programs write into one file at once
    (`Log` into an appended file) do not mix. Where several threads run, the stream is held for
@@ -12720,6 +12734,38 @@ fn has_helper(ty: &Ty) -> bool {
 /// The C statement that adds this text to what `out` is writing.
 fn put_text(text: &str) -> String {
     format!("sg_put(out, {}, {});", c_string(text), text.len())
+}
+
+/// The parts of a line made only of texts, each as an `sg_str`, when its format holds nothing but
+/// its words and `%.*s` (each with its length and its bytes among the values); `None` when it
+/// writes a number, a `bool` or a width, which `sg_format` writes.
+fn concatenated(format: &str, values: &[String]) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut words = String::new();
+    let mut taken = 0;
+    let mut rest = format;
+    while let Some(at) = rest.find('%') {
+        words.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if let Some(after) = rest.strip_prefix("%%") {
+            words.push('%');
+            rest = after;
+        } else {
+            rest = rest.strip_prefix("%.*s")?;
+            if !words.is_empty() {
+                parts.push(format!("SG_STR({}, {})", c_string(&words), words.len()));
+                words.clear();
+            }
+            let (len, ptr) = (values.get(taken)?, values.get(taken + 1)?);
+            parts.push(format!("{{ (const uint8_t*)({ptr}), (int64_t)({len}) }}"));
+            taken += 2;
+        }
+    }
+    words.push_str(rest);
+    if !words.is_empty() {
+        parts.push(format!("SG_STR({}, {})", c_string(&words), words.len()));
+    }
+    (taken == values.len() && !parts.is_empty()).then_some(parts)
 }
 
 fn c_string(text: &str) -> String {
@@ -22929,8 +22975,11 @@ impl<'a> Emitter<'a> {
                     ))
                 }
                 Callee::Plain if name == "toString" => {
-                    let (format, values) = self.format(recv)?;
-                    Ok(format!("sg_format({}{values})", c_string(&format)))
+                    let (format, values) = self.format_values(recv)?;
+                    if let Some(parts) = concatenated(&format, &values) {
+                        return Ok(format!("sg_concat({}, (sg_str[]){{ {} }})", parts.len(), parts.join(", ")));
+                    }
+                    Ok(format!("sg_format({}{})", c_string(&format), values.iter().map(|value| format!(", {value}")).collect::<String>()))
                 }
                 // `null` where the plain operator would panic: overflow, and division by zero.
                 Callee::Plain if matches!(name.as_str(), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide") => {

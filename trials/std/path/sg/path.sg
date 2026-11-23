@@ -1,0 +1,91 @@
+// `path`: `std`'s paths measured (choices 1553, 1637, 1795, 1800-1802). Two ways of using them:
+//
+//     path show PATH...    for each path its name, its extension, its folder and itself joined with
+//                          `more.txt`: `logs/report.txt: report.txt .txt logs logs/report.txt/more.txt`
+//     path many COUNT [WAY]
+//                          COUNT paths made from the seed 1, each joined from one to four folders and
+//                          a name, then taken apart into its name, its extension and its folder;
+//                          prints how many paths and the bytes of each kind of part. WAY is how the
+//                          parts are joined: `push`, the default, onto one text that grows in place
+//                          (`Path.push`), or `join`, each part into a new text (`Path.join`)
+//
+// The paths are made by MINSTD (`x = x * 48271 % 2147483647`), the same in each language: a fifth
+// start at the root, the names are ASCII and not (`café`, `日本`), and an extension is one of six
+// or none. They are those a program meets, so the three languages read them alike; where they take
+// a path apart their own ways (`.profile`, `file.`, `logs/`) is written beside the table. A wrong
+// use is told on the standard error, with exit code 2.
+
+void show(read List<string> args) {
+    for k in 1..args.length() {
+        var path = read args[k]
+        var joined = Path.join(read path, "more.txt")
+        print($"{path}: {Path.fileName(read path)} {Path.extension(read path)} {Path.parent(read path)} {joined}")
+    }
+}
+
+void many(long count, bool pushed) {
+    var folders = List<string> { "src", "lib", "docs", "tests", "assets", "build", "images", "2026", "café", "日本" }
+    var names = List<string> { "report", "main", "index", "photo", "README", "data", "archive", "notes" }
+    var endings = List<string> { "", ".txt", ".tar.gz", ".rs", ".sg", ".json", ".jpeg" }
+    long x = 1
+    long bytes = 0
+    long nameBytes = 0
+    long extensions = 0
+    long parents = 0
+    long withExtension = 0
+    for _ in 0..count {
+        x = x * 48271 % 2147483647
+        long depth = 1 + x % 4
+        x = x * 48271 % 2147483647
+        // A text that grows starts with room for a path; one that is joined starts as a literal.
+        string path = ""
+        if pushed {
+            path = string.withCapacity(64)
+        }
+        if x % 5 == 0 {
+            path.write('/')
+        }
+        for _ in 0..depth {
+            x = x * 48271 % 2147483647
+            if pushed {
+                Path.push(ref path, read folders[(nint)(x % 10)])
+            } else {
+                path = Path.join(read path, read folders[(nint)(x % 10)])
+            }
+        }
+        x = x * 48271 % 2147483647
+        if pushed {
+            Path.push(ref path, read names[(nint)(x % 8)])
+            path.write(read endings[(nint)(x / 8 % 7)])
+        } else {
+            var name = $"{names[(nint)(x % 8)]}{endings[(nint)(x / 8 % 7)]}".toString()
+            path = Path.join(read path, read name)
+        }
+        bytes += path.length()
+        nameBytes += Path.fileName(read path).length()
+        var extension = Path.extension(read path)
+        extensions += extension.length()
+        if extension.length() > 0 {
+            withExtension += 1
+        }
+        parents += Path.parent(read path).length()
+    }
+    print($"paths {count}\nbytes {bytes}\nnames {nameBytes}\nextensions {extensions} in {withExtension}\nfolders {parents}")
+}
+
+void main(List<string> args) {
+    if args.length() >= 2 && args[0] == "show" {
+        show(read args)
+        return
+    }
+    long count = -1
+    bool known = args.length() == 2 || args.length() == 3 && (args[2] == "push" || args[2] == "join")
+    if known && args[0] == "many" {
+        count = long.parse(read args[1]) ?? -1
+    }
+    if count < 0 {
+        printError("usage: path show PATH... | many COUNT [push | join]")
+        exit(2)
+    }
+    many(count, args.length() == 2 || args[2] == "push")
+}

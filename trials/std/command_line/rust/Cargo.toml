@@ -1,0 +1,15 @@
+[package]
+name = "command_line"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `clap` as people use it, with its default features and `derive` (choice 1796); built once more
+# with `lexopt` in its place (`--no-default-features --features lexopt`), a parser as small as SG's.
+[dependencies]
+clap = { version = "4", features = ["derive"], optional = true }
+lexopt = { version = "0.3", optional = true }
+
+[features]
+default = ["clap"]
+lexopt = ["dep:lexopt"]

@@ -1,0 +1,48 @@
+// `command_line`: `std`'s command line measured (choices 1553, 1637, 1795-1798). The program is the
+// front of a packer of files, `pack [OPTIONS] FORMAT FOLDER [FILES]...`: four flags, three options
+// (`--exclude` may be given again), two words in their places and the rest. It packs nothing; it
+// prints what it read, one line for each name:
+//
+//     verbose true
+//     output out.zip           (`none` when it was not given)
+//     exclude 2 *.tmp *.log    (how many, then each)
+//     files 3 22 notes.txt -   (how many, their bytes, the first and the last)
+//
+// `-h` and `--help` print the help, which each library writes its own way. A wrong use is told on
+// the standard error, with exit code 2.
+
+void main(List<string> args) {
+    var cl = CommandLine("pack", "Packs files into an archive.")
+    cl.flag("verbose", 'v', "Print each file as it is packed")
+    cl.flag("quiet", 'q', "Print nothing but errors")
+    cl.flag("force", 'f', "Write over an archive that exists")
+    cl.flag("dry-run", 'n', "Show what would be packed, and pack nothing")
+    cl.option("output", 'o', "FILE", "Write the archive to FILE")
+    cl.option("level", 'l', "N", "Compress at level N")
+    cl.option("exclude", 'x', "PATTERN", "Leave out the files that match PATTERN; may be given again")
+    cl.positional("format", "The kind of archive: zip or tar")
+    cl.positional("folder", "The folder to pack")
+    cl.rest("files", "Files to pack besides the folder")
+    var a = cl.parseOrExit(read args)
+
+    var out = string.withCapacity(256)
+    out.write($"verbose {a.flag("verbose")}\nquiet {a.flag("quiet")}\n")
+    out.write($"force {a.flag("force")}\ndry-run {a.flag("dry-run")}\n")
+    out.write($"output {a.option("output") ?? "none"}\nlevel {a.option("level") ?? "none"}\n")
+    var excluded = a.options("exclude")
+    out.write($"exclude {excluded.length()}")
+    for pattern in excluded {
+        out.write($" {pattern}")
+    }
+    out.write($"\nformat {a.positional("format")}\nfolder {a.positional("folder")}\n")
+    var files = a.rest()
+    nint bytes = 0
+    for file in files {
+        bytes += file.length()
+    }
+    out.write($"files {files.length()} {bytes}")
+    if files.length() > 0 {
+        out.write($" {files[0]} {files[files.length() - 1]}")
+    }
+    print(out)
+}

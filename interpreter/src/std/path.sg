@@ -32,6 +32,31 @@ public struct Path {
         return $"{first}/{tail}".toString()
     }
 
+    // `name` added to the end of `path` where it lies, as `join` would join them:
+    // `Path.push(ref path, "today.txt")` makes `logs` into `logs/today.txt` (`logs\today.txt` on
+    // Windows), with the same rules for a separator already there, a root at the start of `name`
+    // and an empty part. The text grows in place, so a path built of many parts is not copied for
+    // each (Rust's `PathBuf::push`). A name that comes from outside the program goes through
+    // `joinInside`.
+    public void push(ref string path, read string name) {
+        if name.length() == 0 {
+            return
+        }
+        if path.length() == 0 {
+            path.write(read name)
+            return
+        }
+        var tail = name[Path.rootLength(name)..]
+        if !Path.isSeparator(path[path.length() - 1]) {
+            if !OperatingSystem.isWindows() {
+                path.write('/')
+            } else if Path.rootLength(path) != 2 || path.length() != 2 {
+                path.write('\\')
+            }
+        }
+        path.write(read tail)
+    }
+
     // `folder` and `name` joined as `join` joins them, for a name that comes from outside the
     // program (a request, a file, an archive): the path stays inside `folder` on every system.
     // `name` may name a folder inside it too (`2026/report.txt`). It is an `InvalidInput`, the

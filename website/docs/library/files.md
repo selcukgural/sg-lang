@@ -334,6 +334,7 @@ and `\` on Windows, where a path may also start with a drive (`C:\`) or a share 
 | Signature | What it gives |
 |---|---|
 | `string Path.join(read string first, read string second)` | The two with one separator between them (`\` on Windows); a root at the start of the second is left out |
+| `void Path.push(ref string path, read string name)` | `name` added to the end of `path` where it lies, as `join` would join them; a path built of many parts is not copied for each |
 | `Result<string, IoError> Path.joinInside(read string folder, read string name)` | The same for a name from outside the program: `InvalidInput` for one that could lead out of the folder on any system |
 | `read string Path.fileName(read string path)` | What comes after the last separator |
 | `read string Path.extension(read string path)` | The end of the name from its last `.`, the `.` with it, or the empty text |

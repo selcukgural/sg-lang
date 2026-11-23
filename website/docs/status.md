@@ -58,7 +58,9 @@ took 2.4 times as long, and numbers and lines of a log in the time of Rust and Z
 which SG asks of the C library each time, takes four times `chrono`'s. Then the network, against `std::net`,
 `tokio` and Zig: in their time where the functions block, 0.92 to 1.06 times the best of them the async way, but
 1.25 to 1.30 times `tokio` where the two ends talk inside one program, 1,000 connections at once in the memory of
-`tokio`'s, and addresses read and written in the time of Zig and faster than Rust. On the network SG is never to
+`tokio`'s, and addresses read and written in the time of Zig and faster than Rust. Last came the command line,
+the environment and paths: SG's programs are the smallest, a tenth of the size of Rust's and Zig's, and a
+million paths are built and taken apart faster than Rust and Zig. On the network SG is never to
 be worse than the best rival, under load or not. Servers are measured on Linux against Rust, Zig and C
 ([the tables](benchmarks/server.md)): a store that speaks a part of Redis's protocol and an HTTP server hold less
 memory in SG than in Rust and Zig in all but two cases, 100,000 idle connections at 4.96 KB each, and since each

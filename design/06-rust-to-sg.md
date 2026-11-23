@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-sixty-second slice (`std/http` for hyper's server of HTTP/1.1, 1765 to 1794; `token.canBeCancelled()`, 1785).
+Last brought up to date: 23 November 2026, the hundred-and-sixty-third slice (`Path.push` for `PathBuf::push`, 1802).
 
 ## Functions and variables
 
@@ -425,6 +425,7 @@ Last brought up to date: 23 November 2026, the hundred-and-sixty-second slice (`
 | `tempfile::NamedTempFile::new()` | `File.createTemp()` | built | `mkstemp`, a file only the user can open; it gives the path, and removing the file is the program's work: nothing deletes it when it ends |
 | `path.join(name)`, `path.file_name()`, `path.extension()`, `path.parent()` | `Path.join(read path, name)`, `Path.fileName(read path)`, `Path.extension(read path)`, `Path.parent(read path)` | built | A path is a `string`. A second path that starts with a root is put after the first, the root left out, where Rust's `join` puts it in its place; the extension keeps its `.`, as in C#. On Windows `/` and `\` both separate, `join` writes `\`, and `C:\`, `C:` and `\\server\share\` are roots, as Rust reads them |
 | `cfg!(windows)`, `cfg!(target_os = "linux")`, `cfg!(target_os = "macos")` | `OperatingSystem.isWindows()`, `isLinux()`, `isMacOS()` | built | Known when the program is built, as `cfg!` is: both branches are checked on every system and only one is compiled. There is no `#[cfg]` that leaves code unchecked |
+| `path_buf.push(name)` | `Path.push(ref path, read name)` | built | The name added to the end of the text where it lies, by the rules of `Path.join` (a root at its start left out, where Rust's `push` puts it in the place of the path); a path built of many parts is not copied for each (1802) |
 | a check of each component of a name from outside before `path.join(name)` (Go's `filepath.IsLocal`) | `try Path.joinInside(read folder, name)` | built | An `InvalidInput`, the same on every system, for `..`, a root, a `\`, a `:`, a part that ends with `.` or a space, a control character (C0, DEL, C1) and the devices of Windows; a link inside the folder is still followed |
 | `env::var("HOME")` | `Environment.get("HOME")` | built | A `Result<string, VariableError>` with `Missing` and `InvalidText(position)`, as Rust's `VarError` |
 | `env::set_var`, `env::remove_var` | none | not in SG | Unsafe in Rust 2024 for the same reason: another thread may be reading. A program that starts another gives it an environment of its own |

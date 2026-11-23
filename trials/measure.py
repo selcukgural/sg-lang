@@ -11,6 +11,7 @@ them (choices 1418, 1525-1532, 1540-1542). The modules of `std` are measured the
     python3 trials/measure.py std/encoding std/unicode
     python3 trials/measure.py std/time std/random std/log
     python3 trials/measure.py std/net
+    python3 trials/measure.py std/command_line std/environment std/path
     python3 trials/measure.py --check       only checked, nothing measured (what Linux runs)
     python3 trials/measure.py --runs 1      one run of each instead of the best of five
 
@@ -25,11 +26,13 @@ of the input (1660, 1662). What a log writes on the standard error is held to it
 time to the millisecond, the level and the message, and the messages, in order of their text, must
 be the same everywhere (1670). Every program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or
 `RUST_LOG` (1668, 1670). The addresses `std/net` writes into `{out}` are held to what Python's
-`ipaddress` writes of each line of the input (1681).
+`ipaddress` writes of each line of the input (1681). A help each library words its own way is held
+only to its exit code (1798). `std/environment` reads `SG_TRIAL_TEXT` and `SG_TRIAL_BYTES` (not
+UTF-8), which every program is given, and `SG_TRIAL_MISSING`, which none is (1799).
 Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
-only a comment. SG is built with `sg build --release`, and once more with its arithmetic checked:
+only a comment; for the command line and the environment the time is not shown (1553, 1801). SG is built with `sg build --release`, and once more with its arithmetic checked:
 the C of `sg emit-c` compiled with `-O2` as `--release` compiles it (`sg build` alone compiles with
 `-O0`, for a debugger); Rust with `cargo build --release`; Zig twice, `ReleaseFast` and `ReleaseSafe`
 (which keeps its checks of bounds and overflow), with `zig build` where the trial has a `build.zig` (a
@@ -441,13 +444,62 @@ TRIALS_CASES = {
             ("10,000,000 addresses, read and written", ["address", "{addresses}"], None),
         ],
     },
+    "std/command_line": {
+        "check": [
+            ("flags, options and words", ["-vf", "zip", "src"], None),
+            ("nothing but the words", ["tar", "docs", "--", "--not-an-option", "-"], None),
+            ("an option that is not one", ["--verbos", "zip", "src"], None),
+            ("a word missing", ["-v", "zip"], None),
+            ("an option with no value", ["zip", "src", "--output"], None),
+        ],
+        "measure": [
+            ("a usual command line", ["-vfn", "--level=9", "-o", "out.zip", "zip", "src", "-xa*.tmp",
+                                      "--exclude", "*.log", "notes.txt", "--", "-odd.txt", "-"], None),
+            ("10,000 words", ["--dry-run", "zip", "src", *[f"file-{i}.txt" for i in range(10000)]], None),
+            ("the help", ["--help"], None, "own"),
+        ],
+    },
+    "std/environment": {
+        "check": [
+            ("a variable there, missing and not text",
+             ["get", "SG_TRIAL_TEXT", "SG_TRIAL_MISSING", "SG_TRIAL_BYTES"], None),
+            ("a wrong use", ["read", "SG_TRIAL_TEXT", "many"], None),
+        ],
+        "measure": [
+            ("one variable", ["get", "SG_TRIAL_TEXT"], None),
+            ("a variable read 1,000,000 times", ["read", "SG_TRIAL_TEXT", "1000000"], None),
+        ],
+    },
+    "std/path": {
+        "check": [
+            ("paths a program meets", ["show", "logs/report.txt", "/report.txt", "café/日本.tar.gz",
+                                       "a/b/README", "/usr/local/lib/libz.so.1", "./build.sg"], None),
+            ("1,000 paths", ["many", "1000"], None),
+            ("1,000 paths, joined", ["many", "1000", "join"], None),
+            ("a wrong use", ["many", "all"], None),
+            ("a wrong way", ["many", "1000", "glue"], None),
+        ],
+        "measure": [
+            ("1,000,000 paths built and taken apart", ["many", "1000000", "push"], None),
+            ("the same, SG joining each part into a new text", ["many", "1000000", "join"], None),
+        ],
+    },
 }
 
 # Rust built once more with a feature: trial -> (name of the build, arguments of `cargo build`).
 RUST_FEATURES = {
     "std/compression": [("Rust zlib-rs", ["--features", "zlib-rs"])],
     "std/unicode": [("Rust unicode-normalization", ["--features", "unicode-normalization"])],
+    "std/command_line": [("Rust lexopt", ["--no-default-features", "--features", "lexopt"])],
 }
+
+# The files of `rust/src` each Rust build leaves out of its lines, where one crate holds two ways.
+RUST_LEFT_OUT = {
+    "std/command_line": {"Rust": {"with_lexopt.rs"}, "Rust lexopt": {"with_clap.rs"}},
+}
+
+# The trials whose time is not shown, only their memory and size (1553, 1801).
+NO_TIME = {"std/command_line", "std/environment"}
 
 
 def fresh_copy(source, target):
@@ -676,7 +728,9 @@ def check(trial, built, cases, notes):
         for build, path in built.items():
             errors = []
             code, output = run_once(path, args, stdin_path, True, errors)[:2]
-            if kind:
+            if kind == ["own"]:
+                output = b""
+            elif kind:
                 said, note = verify(kind[0], args, errors[0])
                 wrong = said.startswith(b"malformed") if kind[0] == "log" else \
                     kind[0] != "stderr" and said != b"what it wrote opens to its input: True"
@@ -731,11 +785,11 @@ def stripped_size(path):
     return copy.stat().st_size
 
 
-def lines(folder, suffix):
+def lines(folder, suffix, left_out=frozenset()):
     """Lines that are neither blank nor only a comment."""
     count = 0
     for path in sorted(folder.rglob(f"*{suffix}")):
-        if "target" in path.parts or path.name == "build.zig" or ".zig-cache" in path.parts:
+        if path.name in left_out or "target" in path.parts or path.name == "build.zig" or ".zig-cache" in path.parts:
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             text = line.strip()
@@ -751,13 +805,19 @@ def report(trial, built, rows, notes):
     print("| Case | " + " | ".join(builds) + " |")
     print("|---|" + "---|" * len(builds))
     for name, row in rows:
-        cells = [f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB" for b in builds]
+        if trial in NO_TIME:
+            cells = [f"{row[b][1] / 1048576:.2f} MB" for b in builds]
+        else:
+            cells = [f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB" for b in builds]
         print(f"| {name} | " + " | ".join(cells) + " |")
     sizes = {b: stripped_size(p) for b, p in built.items()}
     print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" for b in builds) + " |")
-    counts = {"SG": lines(folder / "sg", ".sg"), "Rust": lines(folder / "rust", ".rs"),
-              "Zig": lines(folder / "zig", ".zig")}
-    print("| Lines | " + " | ".join(str(counts[b.split()[0]]) for b in builds) + " |")
+    left_out = RUST_LEFT_OUT.get(trial, {})
+    counts = {"SG": lines(folder / "sg", ".sg"), "Zig": lines(folder / "zig", ".zig")}
+    for b in builds:
+        if b.startswith("Rust"):
+            counts[b] = lines(folder / "rust", ".rs", left_out.get(b, frozenset()))
+    print("| Lines | " + " | ".join(str(counts.get(b, counts[b.split()[0]])) for b in builds) + " |")
     measured = [name for name, _ in rows]
     for name in measured:
         if name in notes:
@@ -773,8 +833,10 @@ def main():
     a = parser.parse_args()
     trials = a.trials or list(TRIALS_CASES)
     os.environ["TZ"] = "Europe/Istanbul"
-    for name in ("SG_LOG", "RUST_LOG"):
+    for name in ("SG_LOG", "RUST_LOG", "SG_TRIAL_MISSING"):
         os.environ.pop(name, None)
+    os.environ["SG_TRIAL_TEXT"] = "/usr/local/bin:/usr/bin:/bin:/opt/sg/bin:/home/ayşe/.local/bin"
+    os.environb[b"SG_TRIAL_BYTES"] = b"caf\xe9"
     build_sg()
     make_inputs()
     all_ok = True

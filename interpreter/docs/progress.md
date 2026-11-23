@@ -412,11 +412,16 @@ behind the one written by hand with the same limits; 55 requests on the edges of
 and 62 are set beside hyper's answers by hand. Writing it put right the checker's view of a field written
 from another and of formatted text, gave tokens `canBeCancelled()`, and let a source of cancellation let go of
 leave the clock at once.
+The hundred-and-sixty-third measures the last modules 1637 names, the command line, the environment and paths,
+against `clap`, `lexopt`, `std::env`, `std::path` and Zig's library (1795 to 1801): SG's programs are the
+smallest, 34 to 83 KB, and hold the least memory but where Zig keeps views of ten thousand arguments. Paths
+took twice Zig's time: a line of texts alone, `$"{a}/{b}".toString()`, read a format of `printf` twice, and
+is now copied straight into its text in every program; and `Path.push` adds a name to a path where it lies,
+as Rust's `PathBuf::push` (1802), which puts SG ahead of Zig.
 
 ## Next
 
-Next comes the heavy level of the stand, run at night; and a slice for the command line,
-the environment and paths. Then the checks of the DFA's reads and a search in any case
+Next comes the heavy level of the stand, run at night. Then the checks of the DFA's reads and a search in any case
 with vector instructions; then a `jq` of JSON, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

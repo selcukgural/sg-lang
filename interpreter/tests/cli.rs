@@ -1449,6 +1449,78 @@ fn the_trial_of_time() {
     assert_eq!(compiled(&["format", "many"]).0, 2, "a wrong use");
 }
 
+/// The trials of `std`'s command line, environment and paths (choices 1795-1802), run small: the SG
+/// programs, interpreted and compiled, print what `clap`, `std::env` and `std::path` print for the
+/// same words.
+#[test]
+fn the_trials_of_command_line_environment_and_path() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_trials_of_command_line_environment_and_path");
+    for module in ["command_line", "environment", "path"] {
+        let (source, built) = std_trial(&dir, module);
+        let compiled = |args: &[&str]| {
+            let mut command = Command::new(&built);
+            command.args(args).env("SG_TRIAL_TEXT", "/usr/bin:/home/ayşe/bin").env_remove("SG_TRIAL_MISSING");
+            #[cfg(unix)]
+            command.env("SG_TRIAL_BYTES", <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"caf\xe9"));
+            ran(&command.current_dir(&dir).stdin(Stdio::null()).finished())
+        };
+        let interpreted = |args: &[&str]| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+            command.arg(&source).args(args).env("SG_TRIAL_TEXT", "/usr/bin:/home/ayşe/bin").env_remove("SG_TRIAL_MISSING");
+            #[cfg(unix)]
+            command.env("SG_TRIAL_BYTES", <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"caf\xe9"));
+            ran(&command.current_dir(&dir).stdin(Stdio::null()).finished())
+        };
+        let mut cases: Vec<(Vec<&str>, &str)> = match module {
+            "command_line" => vec![
+                (
+                    vec!["-vfn", "--level=9", "-o", "out.zip", "zip", "src", "-xa*.tmp", "--exclude", "*.log", "notes.txt", "--", "-odd.txt", "-"],
+                    "verbose true\nquiet false\nforce true\ndry-run true\noutput out.zip\nlevel 9\nexclude 2 a*.tmp *.log\n\
+                     format zip\nfolder src\nfiles 3 18 notes.txt -\n",
+                ),
+                (
+                    vec!["tar", "docs", "--", "--not-an-option", "-"],
+                    "verbose false\nquiet false\nforce false\ndry-run false\noutput none\nlevel none\nexclude 0\n\
+                     format tar\nfolder docs\nfiles 2 16 --not-an-option -\n",
+                ),
+            ],
+            "environment" => vec![
+                (vec!["get", "SG_TRIAL_TEXT", "SG_TRIAL_MISSING"], "SG_TRIAL_TEXT /usr/bin:/home/ayşe/bin\nSG_TRIAL_MISSING missing\n"),
+                (vec!["read", "SG_TRIAL_TEXT", "1000"], "reads 1000\nbytes 24000\n"),
+            ],
+            _ => vec![
+                (vec!["many", "1000"], "paths 1000\nbytes 23559\nnames 9045\nextensions 3271 in 849\nfolders 13514\n"),
+                (vec!["many", "1000", "join"], "paths 1000\nbytes 23559\nnames 9045\nextensions 3271 in 849\nfolders 13514\n"),
+            ],
+        };
+        // A path is joined with `\` on Windows, and a variable there holds UTF-16.
+        if cfg!(unix) && module == "path" {
+            cases.push((
+                vec!["show", "logs/report.txt", "/report.txt", "café/日本.tar.gz", "./build.sg"],
+                "logs/report.txt: report.txt .txt logs logs/report.txt/more.txt\n/report.txt: report.txt .txt / /report.txt/more.txt\n\
+                 café/日本.tar.gz: 日本.tar.gz .gz café café/日本.tar.gz/more.txt\n./build.sg: build.sg .sg . ./build.sg/more.txt\n",
+            ));
+        }
+        if cfg!(unix) && module == "environment" {
+            cases.push((vec!["get", "SG_TRIAL_BYTES"], "SG_TRIAL_BYTES not text\n"));
+        }
+        for (args, expected) in &cases {
+            assert_eq!(interpreted(args), (0, expected.to_string(), String::new()), "{module} {args:?}, interpreted");
+            assert_eq!(compiled(args), (0, expected.to_string(), String::new()), "{module} {args:?}, compiled");
+        }
+        let wrong: &[&str] = match module {
+            "command_line" => &["--verbos", "zip", "src"],
+            "environment" => &["read", "SG_TRIAL_TEXT", "many"],
+            _ => &["many", "1000", "glue"],
+        };
+        assert_eq!(compiled(wrong).0, 2, "{module}: a wrong use");
+        assert_eq!(interpreted(wrong).0, 2, "{module}: a wrong use, interpreted");
+    }
+}
+
 /// The trial of `std`'s random numbers (choices 1667, 1669), run small, interpreted and compiled.
 /// What it prints does not depend on the numbers drawn; that they are those of the reference code
 /// of xoshiro256** seeded with SplitMix64, as `rand_xoshiro`'s, is held by `ok_random_seeded`.

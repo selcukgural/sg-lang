@@ -1,0 +1,30 @@
+// `Path.push` adds a name to the end of a path where it lies, as `Path.join` joins them: the same
+// text for every pair, a separator there or not, a root at the start of the name, empty parts,
+// drives and shares (which only Windows reads as roots).
+void main() {
+    var firsts = List<string> { "logs", "logs/", "/", "", "C:", "C:\\", "\\\\server\\share\\", "a\\b", "日本" }
+    var seconds = List<string> { "today.txt", "/etc/passwd", "", "C:\\etc", "\\\\server\\share\\etc", "../up", "café" }
+    long same = 0
+    long pairs = 0
+    for first in read firsts {
+        for second in read seconds {
+            var path = first.clone()
+            Path.push(ref path, read second)
+            pairs += 1
+            if path == Path.join(read first, read second) {
+                same += 1
+            } else {
+                print($"[{first}] [{second}]: pushed [{path}], joined [{Path.join(read first, read second)}]")
+            }
+        }
+    }
+    print($"{same} of {pairs} the same as join")
+    // One text grows in place, part by part.
+    var path = string.withCapacity(64)
+    path.write('/')
+    for part in "usr|local|lib|libz.so.1".split('|') {
+        Path.push(ref path, read part)
+    }
+    print(Path.fileName(read path))
+    print(Path.extension(read path))
+}

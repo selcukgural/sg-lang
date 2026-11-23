@@ -1,0 +1,47 @@
+// `environment`: `std`'s variables of the environment measured (choices 1553, 1637, 1795, 1799).
+// Two ways of using them:
+//
+//     environment get NAME...          each variable as text: `NAME value`, `NAME missing`, or
+//                                      `NAME not text` when what it holds is not UTF-8
+//     environment read NAME COUNT      the variable read COUNT times, each time as a new text;
+//                                      prints how many reads and how many bytes they gave
+//
+// A wrong use is told on the standard error, with exit code 2.
+
+void get(read List<string> args) {
+    for k in 1..args.length() {
+        var name = read args[k]
+        match Environment.get(read name) {
+            Ok(value) => print($"{name} {value}")
+            Error(Missing) => print($"{name} missing")
+            Error(InvalidText(_)) => print($"{name} not text")
+        }
+    }
+}
+
+void readMany(read string name, long count) {
+    long bytes = 0
+    for _ in 0..count {
+        match Environment.get(read name) {
+            Ok(value) => bytes += value.length()
+            Error(_) => {}
+        }
+    }
+    print($"reads {count}\nbytes {bytes}")
+}
+
+void main(List<string> args) {
+    if args.length() >= 2 && args[0] == "get" {
+        get(read args)
+        return
+    }
+    long count = -1
+    if args.length() == 3 && args[0] == "read" {
+        count = long.parse(read args[2]) ?? -1
+    }
+    if count < 0 {
+        printError("usage: environment get NAME... | read NAME COUNT")
+        exit(2)
+    }
+    readMany(read args[1], count)
+}

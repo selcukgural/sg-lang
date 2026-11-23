@@ -2127,7 +2127,9 @@ var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target
 is there. `Path.join` puts a second path that starts with a root after the first (the root left out), and
-joins a `..` as it is: it is for the paths a program makes itself. On Windows `/` and `\` both separate the
+joins a `..` as it is: it is for the paths a program makes itself. `Path.push(ref path, name)` adds a name to
+the end of a path where it lies, by the same rules, so that a path built of many parts is not copied for each
+(1802). On Windows `/` and `\` both separate the
 parts of a path, `Path.join` writes `\` (`logs\today.txt`), and a path may start with a drive or a share
 (`C:\`, `C:`, `\\server\share\`), which `Path.parent` keeps whole. A name from outside the program (a request, an archive) goes through
 `Path.joinInside`, which gives an `InvalidInput`, the same on every system, for a name that could lead out of
