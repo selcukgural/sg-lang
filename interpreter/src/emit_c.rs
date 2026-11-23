@@ -20421,7 +20421,7 @@ impl<'a> Emitter<'a> {
                 Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) && !is_window(&expr.ty) { format!("(*{field})") } else { field })
             }
             // An item of a list: the index is checked, and the item is used where it is.
-            ExprKind::Index { recv, index, kind: IndexKind::List } => {
+            ExprKind::Index { recv, index, kind: IndexKind::List, unchecked } => {
                 let Some((list, _)) = list_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
                 let Ty::List(item) = list else { unreachable!("it is a list") };
                 let (name, held) = (mangle(list).ok_or_else(|| not_yet(expr.span, &format!("the type `{list}`")))?, self.ctype(item, expr.span)?);
@@ -20430,7 +20430,12 @@ impl<'a> Emitter<'a> {
                 // finds it is computed once if computing it does more than read.
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
                 let address = self.list_address(recv)?;
-                let found = match self.index_sum(index)? {
+                // `getUnchecked` in the language's own module (1803): a release build reads the
+                // item without checking the index; a debug build checks it as `xs[i]` does.
+                let unchecked = *unchecked && !self.checked;
+                let sum = if unchecked { None } else { self.index_sum(index)? };
+                let found = match sum {
+                    _ if unchecked => format!("(&({address})->ptr[{}])", self.value(index)?),
                     Some((at, sum)) => format!("sg_ats_{name}({address}, {at}, &{sum}, {})", self.loc(expr.span)),
                     None => {
                         let at = self.value(index)?;
@@ -20449,7 +20454,7 @@ impl<'a> Emitter<'a> {
                 Ok(place(temp))
             }
             // An item of an array or of a window, where it is: the index is checked.
-            ExprKind::Index { recv, index, kind: IndexKind::Array } => {
+            ExprKind::Index { recv, index, kind: IndexKind::Array, unchecked } => {
                 let Some(items) = items_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
                 let (Ty::Array(item, _) | Ty::Slice(item)) = items else { unreachable!("it is an array or a slice") };
                 let (name, held) = (mangle(items).ok_or_else(|| not_yet(expr.span, &format!("the type `{items}`")))?, self.ctype(item, expr.span)?);
@@ -20463,11 +20468,17 @@ impl<'a> Emitter<'a> {
                 };
                 let mut parts = vec![self.part(recv, &from_ty, from, before)];
                 let before = self.mark();
-                let (at, sum) = self.index_or_sum(index)?;
+                // See `getUnchecked` of a list (1803).
+                let unchecked = *unchecked && !self.checked;
+                let (at, sum) = if unchecked { (self.value(index)?, None) } else { self.index_or_sum(index)? };
                 parts.push(self.part(index, &index.ty, at, before));
                 let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
                 let found = match sum {
+                    _ if unchecked => {
+                        let reached = if matches!(items, Ty::Slice(_)) { ".ptr" } else { "->items" };
+                        sequence(&names, format!("(&({}){reached}[{}])", values[0], values[1]))
+                    }
                     Some(sum) => sequence(&names, format!("sg_ats_{name}({}, {}, &{sum}, {loc})", values[0], values[1])),
                     None => sequence(&names, format!("sg_at_{name}({}, {}, {loc})", values[0], values[1])),
                 };
@@ -20479,7 +20490,7 @@ impl<'a> Emitter<'a> {
                 Ok(format!("(*{temp})"))
             }
             // An item of raw memory, where it is: nothing is checked (it is written inside `unsafe`).
-            ExprKind::Index { recv, index, kind: IndexKind::Raw } => {
+            ExprKind::Index { recv, index, kind: IndexKind::Raw, .. } => {
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
                 let mut pointer = self.look(recv)?;
                 // A debug build tests that the pointer lies where its type may.
@@ -20497,7 +20508,7 @@ impl<'a> Emitter<'a> {
                 Ok(format!("(*{temp})"))
             }
             // What a map keeps under a key: the key has to be there.
-            ExprKind::Index { recv, index, kind: IndexKind::Map } => {
+            ExprKind::Index { recv, index, kind: IndexKind::Map, .. } => {
                 let Some((table, _)) = table_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
                 let table = table.clone();
                 let Ty::Map(_, value) = &table else { return Err(not_yet(expr.span, "this place")) };
@@ -21578,7 +21589,7 @@ impl<'a> Emitter<'a> {
                 Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
             }
             // A byte of text and a range of it: checked in every build.
-            ExprKind::Index { recv, index, kind: IndexKind::Text } => {
+            ExprKind::Index { recv, index, kind: IndexKind::Text, .. } => {
                 let before = self.mark();
                 let text = self.view(recv)?;
                 let mut parts = vec![self.part(recv, &Ty::Read(Box::new(Ty::Str)), text, before)];

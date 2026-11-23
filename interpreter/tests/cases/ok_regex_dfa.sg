@@ -54,6 +54,15 @@ void main() {
     // `k` and `s` are not looked for as ASCII under `(?i)`: they also match `K` (Kelvin) and `ſ`.
     print(Regex.of("(?i)ask").isMatch("A\u{17F}\u{212A}"))
     print(Regex.of("(?i)error").findAll("ERROR, Error, eRRoR, err"))
+    // Sixteen places at a time by their first two bytes: a match inside a block, one across the
+    // edge of two, a place where only the first bytes agree, and one in the places past the last
+    // block, looked at one at a time; a byte that is no letter matches only itself. `(?i)error` is
+    // that text alone, found without the DFAs; `(?i)ror \d+` holds it.
+    var long = "--------------ErRor----------------------------ERRORer-------erRoXOr-Error"
+    print(Regex.of("(?i)error").findAll(read long))
+    print(Regex.of("(?i)r-e").findAll(read long))
+    print(Regex.of("(?i)r-e").isMatch("--------------------r\re r_e R-"))
+    print(Regex.of("""(?i)ror \d+""").findAll("a long line of text in which the code is ERROR 42, then error 7"))
 
     // The groups, found by Pike's machine from where the DFAs say the match starts.
     var c = Regex.of("""(\w+)@(\w+)\.com""").captures("write to ada@example.com today") ?? panic("a match")

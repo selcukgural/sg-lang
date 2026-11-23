@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 23 November 2026, the hundred-and-sixty-third slice (`Path.push` for `PathBuf::push`, 1802).
+Last brought up to date: 23 November 2026, the hundred-and-sixty-fourth slice (`get_unchecked` has no counterpart in a program, 1803).
 
 ## Functions and variables
 
@@ -144,6 +144,7 @@ Last brought up to date: 23 November 2026, the hundred-and-sixty-third slice (`P
 | `v.push(x)`, `v.pop()`, `v.len()` | `xs.add(x)`, `xs.removeLast()`, `xs.length()` | built | `removeLast` gives a `T?` |
 | `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?`; the panic of `xs[i]` names it, where Rust's names nothing |
 | `v.get(i).copied()` | `int? first = xs.get(i)` | built | A `read T?` is copied into a `T?` where one is written, when `T` is copyable; otherwise `xs.get(i)?.clone()` |
+| `unsafe { *v.get_unchecked(i) }` | `xs[i]` | built | No counterpart in a program: `getUnchecked`, which reads without the check in a release build, is for the language's own module only, which reads the table of `Regex`'s DFA with it (1803). Where the index is known to be inside, the C compiler leaves out the check of `xs[i]` by itself (`for i in 0..xs.length()`) |
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
 | `dst.copy_from_slice(&src)` | `dst.copyFrom(src)` | built | For `Copyable` items; lengths that differ are a panic, as in Rust. `dst` is a list, an array, a `ref T[]` or a range (`buf[0..n].copyFrom(...)`) (1597) |
 | `v.copy_within(k..k + n, 0)` | `v[0..n].copyFrom(v[k..k + n])` | built | The two may be windows of one place: copied as `memmove` copies (1609) |

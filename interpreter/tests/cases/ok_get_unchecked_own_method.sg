@@ -1,0 +1,15 @@
+// A method of the program's own named `getUnchecked` is that method: only a list, an array and a
+// slice of the language's own module have the one that reads without checking (1803).
+struct Shelf {
+    List<int> items
+
+    int getUnchecked(read this, nint at) {
+        return this.items.get(at) ?? -1
+    }
+}
+
+void main() {
+    var shelf = Shelf { items = List<int> { 4, 5 } }
+    print(shelf.getUnchecked(1))
+    print(shelf.getUnchecked(7))
+}

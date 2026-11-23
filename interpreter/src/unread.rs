@@ -234,7 +234,7 @@ impl<'p> Pass<'p> {
                     reaches |= reaches_out(&recv.ty);
                     place = recv;
                 }
-                ExprKind::Index { recv, index, kind } => {
+                ExprKind::Index { recv, index, kind, .. } => {
                     self.expr(index);
                     reaches |= *kind == IndexKind::Raw || reaches_out(&recv.ty);
                     place = recv;

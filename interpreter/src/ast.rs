@@ -1219,8 +1219,10 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call { name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
     Method { recv: Box<Expr>, name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
-    /// `text[i]`, `xs[i]`, `map[key]`. `kind` is set by the checker.
-    Index { recv: Box<Expr>, index: Box<Expr>, kind: IndexKind },
+    /// `text[i]`, `xs[i]`, `map[key]`. `kind` is set by the checker. `unchecked`: made by the
+    /// checker of `xs.getUnchecked(i)` in the language's own module (1803), read in a release
+    /// build without checking the index.
+    Index { recv: Box<Expr>, index: Box<Expr>, kind: IndexKind, unchecked: bool },
     /// `List<int>()`, `List<int> { 1, 2 }`, `HashMap<string, int> { {"x", 10} }`. `items` is
     /// `None` when no braces were written.
     Collection { ty: TypeExpr, args: Vec<Expr>, items: Option<Vec<Item>> },

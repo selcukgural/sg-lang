@@ -4946,7 +4946,7 @@ impl<'a> Checker<'a> {
         if is_var && self.names.cvars.contains(name.as_str()) {
             let name = name.clone();
             let at = |kind| Box::new(Expr { kind, span, ty: Ty::Void, moved: false });
-            expr.kind = ExprKind::Index { recv: at(ExprKind::CVar(name)), index: at(ExprKind::Int(0, IntTy::Nint)), kind: IndexKind::Raw };
+            expr.kind = ExprKind::Index { recv: at(ExprKind::CVar(name)), index: at(ExprKind::Int(0, IntTy::Nint)), kind: IndexKind::Raw, unchecked: false };
             return Ok(());
         }
         // An alias of a struct or an enum builds it under the other name.
@@ -7969,7 +7969,7 @@ impl<'a> Checker<'a> {
                 Ok(Some((fields[position].1.clone(), writable && !info.readonly[position])))
             }
             // An item is a place too: `xs[i] = v`, `xs[i].name`, `ref xs[i]`.
-            ExprKind::Index { recv, index, kind } => {
+            ExprKind::Index { recv, index, kind, .. } => {
                 let (ty, mut writable) = match self.place_unchecked(recv)? {
                     Some(base) => base,
                     None => (self.expr(recv, None)?, true),
@@ -8269,6 +8269,7 @@ impl<'a> Checker<'a> {
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let mark = self.borrows.touched.len();
         let ty = self.expr_untyped(expr, expected)?;
+        unchecked_index(expr);
         expr.ty = ty.clone();
         if self.borrows.touched[mark..].iter().any(|touch| touch.2 != Access::Read) {
             self.lent_to_the_end(expr, mark)?;
@@ -13283,7 +13284,7 @@ impl<'a> Checker<'a> {
         // change the order of the items, and the one that copies over them, none changing how
         // many there are.
         if let Ty::Array(item, _) | Ty::Slice(item) = target {
-            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound" | "sort" | "reverse" | "copyFrom") {
+            if !matches!(name, "length" | "get" | "getUnchecked" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound" | "sort" | "reverse" | "copyFrom") {
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match name {
                     "add" | "addAll" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
@@ -14000,6 +14001,26 @@ impl<'a> Checker<'a> {
                 arity(1)?;
                 self.index(&mut args[0], "an index")?;
                 Ok(Ty::Read(Box::new(nullable(item.strip_borrow()))))
+            }
+            // `xs[i]` without the check of the index in a release build (1803): only the
+            // language's own module writes it, inside `unsafe`, where a loop has made sure of the
+            // index another way (the moves of the DFA of `Regex`). The interpreter and a debug
+            // build check it all the same. The checker then makes it the item itself
+            // (`unchecked_index`).
+            (Ty::List(item), "getUnchecked") => {
+                if self.module != STD_MODULE {
+                    let list = &self.src[recv.span.start..recv.span.end];
+                    return Err(Diag::error(name_span, "`getUnchecked` is for the language's own module only")
+                        .note("it reads an item without checking its index, which only `std` does, where the index is known to be inside")
+                        .hint(format!("`{list}[i]`, which checks the index, or `{list}.get(i)`, which gives `null` past the end")));
+                }
+                arity(1)?;
+                if item.is_borrow() || !item.is_copyable(self.copyable) {
+                    return Err(Diag::error(span, format!("`getUnchecked` gives an item of a `Copyable` type, and this one is `{item}`")));
+                }
+                self.index(&mut args[0], "an index")?;
+                self.needs_unsafe(span, "this reads an item without checking its index")?;
+                Ok((**item).clone())
             }
             (Ty::List(item), "removeLast") => {
                 arity(0)?;
@@ -14726,6 +14747,22 @@ fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
 
 /// Replaces `expr` with a node built around it.
 /// `unsafe e`, once checked, is `e`: what `unsafe` allowed is decided.
+/// `xs.getUnchecked(i)` of a list, an array or a slice, checked: made the item `xs[i]`, marked to
+/// be read without checking the index (1803). A method of the program's own of that name stays one.
+fn unchecked_index(expr: &mut Expr) {
+    let ExprKind::Method { recv, name, callee: Callee::Plain, .. } = &expr.kind else { return };
+    if name != "getUnchecked" {
+        return;
+    }
+    let kind = match recv.ty.strip_borrow() {
+        Ty::List(_) => IndexKind::List,
+        Ty::Array(..) | Ty::Slice(_) => IndexKind::Array,
+        _ => return,
+    };
+    let ExprKind::Method { recv, mut args, .. } = std::mem::replace(&mut expr.kind, ExprKind::Null) else { unreachable!("just matched") };
+    expr.kind = ExprKind::Index { recv, index: Box::new(args.remove(0)), kind, unchecked: true };
+}
+
 fn unwrap_unsafe(expr: &mut Expr) {
     if let ExprKind::Unsafe(inner) = std::mem::replace(&mut expr.kind, ExprKind::Null) {
         expr.moved = inner.moved;

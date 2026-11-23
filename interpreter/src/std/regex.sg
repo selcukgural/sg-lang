@@ -291,6 +291,9 @@ public struct Regex : Formattable {
     // looked for whatever the case of its ASCII letters (`(?i)error`).
     string inner
     bool innerFolded
+    // The whole pattern is `inner`, folded, with no group: a match is where the search for it
+    // finds it, and the machine never runs (`(?i)error`).
+    bool foldedLiteral
     // The program has an assertion (`^`, `$`, `\b`, ...): the DFA then tells its states apart by
     // what came before.
     bool asserts
@@ -326,6 +329,9 @@ public struct Regex : Formattable {
         if !inner.bestFolded && inner.best == prefix {
             inner.best.clear()
         }
+        var whole = string.withCapacity(16)
+        int way = 2
+        bool foldedLiteral = inner.bestFolded && parser.names.length() <= 1 && regexExact(read parser, root, ref whole, ref way) && way == 1 && whole == inner.best
         bool asserts = false
         for inst in read code {
             if inst.op == RegexOpAssert {
@@ -347,6 +353,7 @@ public struct Regex : Formattable {
             anchored = anchored,
             inner = inner.best,
             innerFolded = inner.bestFolded,
+            foldedLiteral = foldedLiteral,
             asserts = asserts,
             back = back,
             cache = new shared locked regexCacheFor(size, backSize)
@@ -394,6 +401,9 @@ public struct Regex : Formattable {
     public bool isMatch(read this, read string text) {
         if this.literal {
             return text.contains(read this.prefix)
+        }
+        if this.foldedLiteral {
+            return regexInnerAt(read this, text, 0) >= 0
         }
         if this.inner.length() > 0 && regexInnerAt(read this, text, 0) < 0 {
             return false
@@ -1845,25 +1855,60 @@ nint regexInnerAt(read Regex re, read string text, nint from) {
     }
     var needle = re.inner.asBytes()
     nint last = bytes.length() - needle.length()
-    byte first = needle[0]
     nint i = from
-    while i <= last {
-        if (bytes[i] | 0x20) == first || bytes[i] == first {
-            bool same = true
-            for k in 1..needle.length() {
-                byte b = bytes[i + k]
-                if b != needle[k] && (b | 0x20) != needle[k] {
-                    same = false
-                    break
+    if needle.length() >= 2 {
+        // Sixteen places at a time, each held to the first two bytes of the text with no branch,
+        // which the C compiler makes vector code of; only a block with a place that may match is
+        // looked at a place at a time.
+        byte n0 = needle[0]
+        byte m0 = regexFoldMask(n0)
+        byte n1 = needle[1]
+        byte m1 = regexFoldMask(n1)
+        while i + 16 <= last {
+            var window = bytes[i..i + 17]
+            int maybe = 0
+            for k in 0..16 {
+                if (((window[k] | m0) ^ n0) | ((window[k + 1] | m1) ^ n1)) == 0 {
+                    maybe += 1
                 }
             }
-            if same {
-                return i
+            if maybe > 0 {
+                for k in 0..16 {
+                    if regexFoldedAt(bytes, i + k, needle) {
+                        return i + k
+                    }
+                }
             }
+            i += 16
+        }
+    }
+    while i <= last {
+        if regexFoldedAt(bytes, i, needle) {
+            return i
         }
         i += 1
     }
     return -1
+}
+
+// What a byte of a folded inner text is joined with by `|` before it is compared: 0x20 for a letter,
+// written in lower case, so that its upper case matches too; 0 for any other byte.
+byte regexFoldMask(byte b) {
+    if b >= 'a' && b <= 'z' {
+        return 0x20
+    }
+    return 0
+}
+
+// Whether the folded inner text `needle` lies in `bytes` at `at`, ASCII letters in either case.
+bool regexFoldedAt(read byte[] bytes, nint at, read byte[] needle) {
+    for k in 0..needle.length() {
+        byte n = needle[k]
+        if (bytes[at + k] | regexFoldMask(n)) != n {
+            return false
+        }
+    }
+    return true
 }
 
 // Whether every match must start at the start of the text: `\A` or `^` without `(?m)` first.
@@ -2266,7 +2311,10 @@ nint regexDfaRun(read int[] table, read byte[] bytes, nint at, ref int s, int de
         if b >= 0x80 {
             break
         }
-        int t = table[row + b]
+        // `row` is where the row of a state starts, given by `regexDfaStart` or by a move of this
+        // table, and a row holds `RegexDfaWidth` moves, so `row + b` is inside for each `b` below
+        // 0x80; the check of the index cost a sixth of the search (1803).
+        int t = unsafe table.getUnchecked(row + b)
         if t < 0 {
             break
         }
@@ -2451,6 +2499,13 @@ int regexDfaFind(read Regex re, ref RegexCache c, read string text, nint from, r
 Match? regexNext(read Regex re, ref RegexCache c, read string text, nint from, ref RegexMachine m) {
     if re.literal {
         return regexFindAt(re, text, from, ref m)
+    }
+    if re.foldedLiteral {
+        nint at = regexInnerAt(re, text, from)
+        if at < 0 {
+            return null
+        }
+        return Match { start = at, end = at + re.inner.length() }
     }
     nint start = 0
     nint end = 0

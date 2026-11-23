@@ -5910,7 +5910,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// written, for the panic).
     fn raw_place(&mut self, expr: &'a Expr, verb: &str, frame: &mut Frame) -> Res<RawSpot> {
         match &expr.kind {
-            ExprKind::Index { recv, index, kind: IndexKind::Raw } => {
+            ExprKind::Index { recv, index, kind: IndexKind::Raw, .. } => {
                 let base = raw_of(&strip(self.expr(recv, frame)?));
                 let at = self.int(index, frame)?;
                 let (size, _) = raw::layout(&expr.ty, self.plain);

@@ -1,0 +1,6 @@
+error: `getUnchecked` is for the language's own module only
+  it reads an item without checking its index, which only `std` does, where the index is known to be inside
+  --> error_get_unchecked_outside_std.sg:5:26
+ 5 |     print(unsafe numbers.getUnchecked(1))
+   |                          ^^^^^^^^^^^^
+  hint: `numbers[i]`, which checks the index, or `numbers.get(i)`, which gives `null` past the end

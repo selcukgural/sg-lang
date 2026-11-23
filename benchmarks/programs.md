@@ -27,13 +27,13 @@ millisecond.
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |
 |---|---|---|---|---|---|
-| `-c ERROR` | 0.046 s, 2.0 MB | 0.046 s, 2.0 MB | 0.066 s, 2.8 MB | 0.060 s, 3.4 MB | 0.061 s, 3.6 MB |
-| `-n timeout` | 0.052 s, 2.1 MB | 0.054 s, 2.1 MB | 0.072 s, 2.8 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
-| `-c -i error` | 0.150 s, 2.0 MB | 0.159 s, 2.0 MB | 0.086 s, 3.0 MB | 0.069 s, 3.5 MB | 0.070 s, 3.6 MB |
-| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.228 s, 2.1 MB | 0.236 s, 2.1 MB | 0.146 s, 3.2 MB | 0.129 s, 3.5 MB | 0.130 s, 3.6 MB |
-| `'in [0-9]{4} ms: .*日本'` | 0.064 s, 2.2 MB | 0.064 s, 2.1 MB | 0.106 s, 3.2 MB | 0.072 s, 3.5 MB | 0.072 s, 3.6 MB |
-| `-v -c INFO` | 0.049 s, 2.0 MB | 0.048 s, 2.0 MB | 0.068 s, 2.8 MB | 0.062 s, 3.4 MB | 0.063 s, 3.6 MB |
-| Size, stripped | 164 KB | 164 KB | 1684 KB | 362 KB | 442 KB |
+| `-c ERROR` | 0.045 s, 2.0 MB | 0.045 s, 2.0 MB | 0.065 s, 2.8 MB | 0.060 s, 3.4 MB | 0.060 s, 3.6 MB |
+| `-n timeout` | 0.051 s, 2.1 MB | 0.050 s, 2.1 MB | 0.068 s, 2.8 MB | 0.068 s, 3.5 MB | 0.070 s, 3.6 MB |
+| `-c -i error` | 0.076 s, 2.0 MB | 0.078 s, 2.0 MB | 0.086 s, 3.0 MB | 0.069 s, 3.5 MB | 0.071 s, 3.6 MB |
+| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.189 s, 2.1 MB | 0.224 s, 2.0 MB | 0.149 s, 3.1 MB | 0.128 s, 3.5 MB | 0.129 s, 3.6 MB |
+| `'in [0-9]{4} ms: .*日本'` | 0.060 s, 2.2 MB | 0.061 s, 2.1 MB | 0.106 s, 3.2 MB | 0.072 s, 3.5 MB | 0.073 s, 3.6 MB |
+| `-v -c INFO` | 0.048 s, 2.0 MB | 0.046 s, 2.0 MB | 0.068 s, 2.8 MB | 0.062 s, 3.4 MB | 0.065 s, 3.6 MB |
+| Size, stripped | 180 KB | 164 KB | 1684 KB | 362 KB | 442 KB |
 | Lines | 101 | 101 | 145 | 137 | 137 |
 
 `-n timeout` prints 136,194 lines: it took 0.086 s, against Rust's and Zig's 0.072 s, until the slice that
@@ -48,11 +48,14 @@ is 0.033 s of them. `-i` and the address are still behind, for the reasons below
 
 Before the first slice of the trials, `Regex` ran Pike's machine on every line: `-i error` took 1.16 s, the address 2.06 s and
 `日本` 0.83 s. An inner text every match holds (1535), a lazy DFA (1536) with its cache kept in the `Regex`
-(1538), and the same for where a match is (1539) brought them to the numbers above. Go's `regexp` took 1.13 s and 1.33 s on the two hardest. What is left behind Rust and Zig:
-`-i` looks for `error` in any case a byte at a time where Rust's `regex` uses the processor's vector
-instructions, and the DFA's loop checks each read of its table against the table's end; PCRE2's JIT turns the
-pattern into machine code, and its search for a pattern that starts with a class or a word in any case
-goes as fast as a search for text.
+(1538), and the same for where a match is (1539) brought them to 0.150 s and 0.228 s. Go's `regexp` took 1.13 s and 1.33 s on the two hardest.
+In the hundred-and-sixty-fourth slice `-i` looks for `error` sixteen places at a time with the processor's
+vector instructions, as Rust's `regex` does, and a pattern that is only a text in any case runs no DFA; the
+DFA's loop reads its table without checking the index against the table's end in a release build (1803), which
+a checked build still does (0.224 s). What is left behind Rust and Zig on the address: SG's DFA reads each line
+from its start, where Rust's finds `@example.com ` first and reads back and forth from it; PCRE2's JIT turns the
+pattern into machine code, and its search for a pattern that starts with a class or a word in any case goes
+as fast as a search for text.
 
 Rust's `\w` and `\d` are Unicode's unless `(?-u)` is written, while SG's are ASCII's as RE2's, and PCRE2
 backtracks where SG and Rust never do: the patterns measured mean the same in all three.

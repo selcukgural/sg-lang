@@ -1,0 +1,6 @@
+// `getUnchecked` reads an item without checking its index; only the language's own module
+// writes it (1803), and a program is told so, inside `unsafe` or not.
+void main() {
+    var numbers = List<int> { 1, 2, 3 }
+    print(unsafe numbers.getUnchecked(1))
+}

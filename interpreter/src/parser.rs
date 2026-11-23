@@ -2270,7 +2270,7 @@ impl<'a> Parser<'a> {
             }
             if !p.eat(&Tok::DotDot) {
                 let index = from.expect("read above when there is no `..`");
-                return Ok(ExprKind::Index { recv, index, kind: IndexKind::Text });
+                return Ok(ExprKind::Index { recv, index, kind: IndexKind::Text, unchecked: false });
             }
             let to = match p.peek() {
                 Tok::RBracket => None,
