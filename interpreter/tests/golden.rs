@@ -141,23 +141,22 @@ fn write_golden(out: &Path, actual: &str) {
 /// process was given: a shell that starts `cargo test` in the background (`&`, without job
 /// control) has both ignored, an ignored signal stays ignored in every program started after it,
 /// and a test that sends one (`ok_signals_process`) would then depend on how the tests were
-/// started.
+/// started. They are set back to the default in this process, once, and not in each child
+/// between `fork` and `exec`: with nothing to run there, std starts a child with `posix_spawn`,
+/// which copies nothing. A `fork` of this process, which holds a stack of 1 GB for each thread
+/// of the programs it interprets, was refused with `ENOMEM` on GitHub's Linux.
 fn default_signals(command: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
+        static ONCE: std::sync::Once = std::sync::Once::new();
         extern "C" {
             fn signal(number: i32, handler: usize) -> usize;
         }
-        // SAFETY: between `fork` and `exec` the closure only calls `signal`, which may be called
-        // there, and allocates nothing. 0 is SIG_DFL.
-        unsafe {
-            command.pre_exec(|| {
-                signal(2, 0);
-                signal(3, 0);
-                Ok(())
-            });
-        }
+        // SAFETY: `signal` with SIG_DFL (0) for SIGINT and SIGQUIT changes no memory of Rust's.
+        ONCE.call_once(|| unsafe {
+            signal(2, 0);
+            signal(3, 0);
+        });
     }
     command
 }
