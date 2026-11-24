@@ -1,3 +1,4 @@
+// A set is not a key: a list is (choice 1853), a set or a map is not.
 void main() {
-    var groups = HashMap<List<int>, string>()
+    var groups = HashMap<HashSet<int>, string>()
 }

@@ -60,6 +60,7 @@ extern "system" {
     fn CloseHandle(handle: Handle) -> Bool;
     fn GetFileInformationByHandle(handle: Handle, info: *mut ByHandleFileInformation) -> Bool;
     fn SetFileInformationByHandle(handle: Handle, class: i32, info: *const c_void, size: u32) -> Bool;
+    fn ReOpenFile(original: Handle, access: u32, share: u32, flags: u32) -> Handle;
     fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> Bool;
     fn CopyFileExW(from: *const u16, to: *const u16, progress: *const c_void, data: *const c_void, cancel: *mut Bool, flags: u32) -> Bool;
     fn CreateDirectoryW(name: *const u16, security: *const SecurityAttributes) -> Bool;
@@ -491,6 +492,49 @@ pub(crate) fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
     match unsafe { CopyFileExW(from.as_ptr(), to.as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), FAIL_IF_EXISTS) } {
         0 => Err(last_error()),
         _ => Ok(()),
+    }
+}
+
+/// `writer.syncData()` (`data`) and `writer.sync()`: Rust's `sync_data` and `sync_all`, which
+/// are what compiled code calls: `fdatasync` and `fsync` on Linux, `F_FULLFSYNC` for both on
+/// macOS, `FlushFileBuffers` for both on Windows.
+pub(crate) fn sync_file(file: &std::fs::File, data: bool) -> std::io::Result<()> {
+    match data {
+        true => file.sync_data(),
+        false => file.sync_all(),
+    }
+}
+
+/// `writer.setLength(n)`: Rust's `set_len`, which needs the right to write the file's data. A writer
+/// of `openAppend` holds only the right to append, as compiled code's does, so the file is opened
+/// once more through its handle (`ReOpenFile`) with the right to write, and its end set there; the
+/// writer still appends.
+pub(crate) fn set_length(file: &std::fs::File, length: u64) -> std::io::Result<()> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    const ACCESS_DENIED: i32 = 5;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const SHARE_ALL: u32 = 7;
+    match file.set_len(length) {
+        Err(error) if error.raw_os_error() == Some(ACCESS_DENIED) => {
+            // SAFETY: the handle is the file's, open while `file` is.
+            let again = unsafe { ReOpenFile(file.as_raw_handle() as Handle, GENERIC_WRITE, SHARE_ALL, 0) };
+            if again as isize == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: a new handle that nothing else owns; the `File` closes it.
+            unsafe { std::fs::File::from_raw_handle(again as _) }.set_len(length)
+        }
+        other => other,
+    }
+}
+
+/// `Directory.sync(path)`: Windows keeps the names of a folder with the files themselves, so
+/// there is nothing to do but to tell a path that is not a folder.
+pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
+    match std::fs::metadata(path) {
+        Ok(info) if info.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::from_raw_os_error(NOT_DIR)),
+        Err(error) => Err(refine(path, error)),
     }
 }
 

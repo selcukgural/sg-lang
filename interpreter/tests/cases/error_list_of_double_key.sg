@@ -1,0 +1,4 @@
+// A list is a key when what it holds is, and a fractional number is not.
+void main() {
+    var seen = HashSet<List<double>>()
+}

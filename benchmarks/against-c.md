@@ -7,10 +7,10 @@ faster. How the numbers are taken, and the rules that keep them fair, are in
 
 ## In short
 
-Of the 61 programs, 36 take the time of C within 5% (the middle of all is 1.00),
-13 are faster and 12 are slower.
+Of the 61 programs, 37 take the time of C within 5% (the middle of all is 1.00),
+13 are faster and 11 are slower.
 
-- **Slower:** `tree` 1.53, `queue` 1.39, `gunzip` 1.31, `signals` 1.27, `tasklist` 1.24, `counts` 1.20, `asynclines` 1.18, `sha256` 1.17, `json` 1.15, `netlines` 1.09, `async` 1.08, `echo` 1.06. Each is in [Slower than C](slower-than-c.md), with what would fix it.
+- **Slower:** `tree` 1.53, `queue` 1.39, `gunzip` 1.31, `signals` 1.27, `tasklist` 1.24, `asynclines` 1.18, `sha256` 1.17, `json` 1.15, `netlines` 1.09, `async` 1.08, `echo` 1.06. Each is in [Slower than C](slower-than-c.md), with what would fix it.
 - **Faster:** `floats` 0.23, `dates` 0.29, `show` 0.47, `table` 0.52, `copy` 0.54, `asynccopy` 0.59, `checksum` 0.69, `bits` 0.79, `lines` 0.79, `rewrite` 0.86, `classes` 0.87, `bitfields` 0.91, `bytes` 0.94. Several of these are C's library (`printf`, `gmtime_r`) against SG's
   own code, not something C cannot do; the notes below say so program by program.
 
@@ -31,7 +31,7 @@ arm64: the best of five runs, `-O2` for all three, the C written by hand with no
 | `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.529 s | 0.324 s | 1.02 |
-| `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
+| `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.322 s | 0.328 s | 0.323 s | 1.00 |
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.176 s | 0.183 s | 0.377 s | 0.47 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.290 s | 0.283 s | 0.99 |

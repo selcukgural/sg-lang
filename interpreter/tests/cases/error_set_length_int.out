@@ -1,0 +1,4 @@
+error: expected `long`, found `string`
+  --> error_set_length_int.sg:4:21
+ 4 |     try w.setLength("4")
+   |                     ^^^

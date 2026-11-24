@@ -1,0 +1,5 @@
+// The standard error has no length to set.
+Result<void, IoError> main() {
+    try Stderr.setLength(0)
+    return Ok()
+}

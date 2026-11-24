@@ -162,3 +162,41 @@ What it shows:
 - The sizes are stripped; the lines are the trial's own, without comments. SG's version is the longest: it
   writes its own reader of numbers (decNumber's rules) and Perl's `$` for `test`, which Rust and Zig take
   from their libraries.
+
+## kv
+
+A store of keys and values with a log written before each change (`trials/kv/README.md`, choices
+1844-1853). The three write the same log byte for byte; 16 cases of `measure.py kv --check` hold their output,
+exit code and log to each other, and `trials/kv/tests/check.py` holds them to a model written in Python on
+streams drawn at random, logs cut at every byte and with bits turned, and the store killed in the middle of its
+sets (every set answered `OK` there after it starts again). Apple M3 Max, macOS, 24 November 2026, slice 175,
+after the slots of a table kept 32 bits of each key's hash. A key is 16 bytes and a value 100; each run starts
+in a folder made anew, empty or with a log Python wrote. The case of `always` is measured once after its
+warming run, being the disk's time: a sync with `F_FULLFSYNC` takes about 4 ms on this machine.
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe |
+|---|---|---|---|---|---|
+| A million sets, never synced | 0.240 s, 196.7 MB | 0.241 s, 196.7 MB | 0.317 s, 321.2 MB | 0.382 s, 216.7 MB | 0.446 s, 216.9 MB |
+| A million sets, synced each block | 8.492 s, 197.2 MB | 8.556 s, 196.6 MB | 8.707 s, 321.2 MB | 9.085 s, 216.7 MB | 8.923 s, 216.9 MB |
+| Ten thousand sets, each synced (once) | 41.938 s, 4.2 MB | 40.828 s, 4.5 MB | 40.445 s, 4.9 MB | 40.189 s, 4.4 MB | 40.232 s, 4.7 MB |
+| A million gets, sets and deletes over 100,000 keys | 4.484 s, 35.4 MB | 4.612 s, 37.6 MB | 4.612 s, 24.6 MB | 4.760 s, 20.2 MB | 4.693 s, 20.4 MB |
+| A value of 100 MB, set and read back | 0.097 s, 304.1 MB | 0.099 s, 304.1 MB | 0.099 s, 304.2 MB | 0.335 s, 302.2 MB | 0.355 s, 402.2 MB |
+| A log of 1 GB read back | 2.697 s, 194.0 MB | 2.718 s, 194.0 MB | 2.374 s, 315.1 MB | 3.237 s, 216.6 MB | 3.355 s, 216.8 MB |
+| Ten million keys read and compacted | 4.285 s, 1852.5 MB | 4.199 s, 1937.2 MB | 5.361 s, 1876.9 MB | 12.078 s, 1064.6 MB | 10.258 s, 1064.9 MB |
+| Size, stripped | 100 KB | 116 KB | 385 KB | 394 KB | 474 KB |
+| Lines | 369 | 369 | 367 | 348 | 348 |
+
+- Three cases are the disk's: a sync of each block of the input, and of each set, take the same time in the
+  three within the noise of the disk.
+- SG holds less than Rust where the map is large: a key and a value are each a list of their own (24 bytes and
+  the bytes), where Rust's `Vec` takes the same and its table keeps a whole hash; Zig keeps a key as a slice
+  and its table is the smallest. Over 100,000 keys changing all the time SG holds the most, 35.4 MB against
+  24.6 MB, in [Slower than C](slower-than-c.md).
+- The log of 1 GB is read in 2.70 s against Rust's 2.37 s: the map's work, the reading and the CRC-32 taking
+  0.3 s of it. Measured the same day before the table kept its hashes, SG took 2.67 s against Rust's 2.16 s
+  (a quieter run) and the compaction of ten million keys 6.53 s against 4.82 s: the search compared the key
+  of each entry it passed, and growing hashed every key again. In [Slower than C](slower-than-c.md).
+- A compaction sorts the keys by their bytes. SG moves the entries out of the map to sort them and puts them
+  back, since a list is not `Comparable`; Rust and Zig sort references to them. Zig's map grows by hashing
+  each key again, which the compaction of ten million keys shows.
+- The checked builds differ by the noise of the disk; with nothing on the disk, by 2% or less either way.

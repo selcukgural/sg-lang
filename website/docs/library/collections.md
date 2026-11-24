@@ -284,8 +284,10 @@ says so.
 
 ## `HashMap<K, V>`
 
-A key is an integer, a `bool`, a `string`, or a type of your own written `: Equatable, Hashable`. A method that
-only looks a key up takes text as `read string`, so a literal or a part of a text goes in as it is.
+A key is an integer, a `bool`, a `string`, a `List` of keys, or a type of your own written `: Equatable,
+Hashable`. A method that only looks a key up takes text as `read string`, so a literal or a part of a text goes
+in as it is, and a list as a `read T[]` of what it holds, so a part of a buffer finds its key without being
+copied into a list; `getOrAdd` keeps a list of its own when the key is new.
 
 | Signature | What it does |
 |---|---|
@@ -377,4 +379,26 @@ again: a
 again: a
 ```
 
-A collection is not `Hashable` and not `Comparable`: it is not a key, and `xs < ys` is an error.
+A list is `Hashable` when what it holds is, and is a key (choice 1853): the bytes of a key-value store, a path
+as a `List<string>`. A set and a map are not keys, and no collection is `Comparable`: `xs < ys` is an error.
+
+```sg
+void main() {
+    var seen = HashMap<List<byte>, int>()
+    var buffer = "GET /a GET /b GET /a".asBytes()
+    // Each request counted where it lies in the buffer: no list is made to look it up.
+    for at in 0..3 {
+        var slot = seen.getOrAdd(buffer[at * 7..at * 7 + 6], 0)
+        slot += 1
+    }
+    print(seen.get("GET /a".asBytes()) ?? 0)
+    print(seen.length())
+}
+```
+
+It prints:
+
+```text
+2
+2
+```

@@ -1,0 +1,64 @@
+// A writer puts its file on the disk (`syncData`, `sync`) and cuts it or makes it longer
+// (`setLength`) without moving where it writes; the folder's names go on the disk with
+// `Directory.sync`. The folder is the first word of the command line.
+Result<void, IoError> show(read string path) {
+    var bytes = try File.readBytes(read path)
+    var shown = List<byte>()
+    for b in bytes {
+        if b == 0 {
+            shown.add('.')
+        } else {
+            shown.add(b)
+        }
+    }
+    print($"{shown.length()}: {string.fromUtf8(read shown) ?? "?"}")
+    return Ok()
+}
+
+void tell(Result<void, IoError> done) {
+    match done {
+        Ok => print("ok")
+        Error(cause) => print(cause)
+    }
+}
+
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "log")
+    var w = try File.createText(read path)
+    try w.write("hello world")
+    try w.syncData()
+    try show(read path)
+    try w.setLength(5)
+    try show(read path)
+    // The writer stands at 11 still: the bytes between are zeros.
+    try w.write("!")
+    try w.sync()
+    try show(read path)
+    try w.setLength(20)
+    try show(read path)
+    tell(w.setLength(-1))
+    try w.close()
+
+    // A writer that writes at the end goes on from the new end.
+    var a = try File.openAppend(read path)
+    try a.setLength(2)
+    try a.write("XY")
+    try a.syncData()
+    try show(read path)
+    try a.setLength(0)
+    try a.write("one")
+    try a.close()
+    try show(read path)
+
+    // What the block holds is written before the length is set, so it is cut too.
+    var b = try File.openWrite(read path)
+    try b.write("abcdef")
+    try b.setLength(4)
+    try b.close()
+    try show(read path)
+
+    tell(Directory.sync(read args[0]))
+    tell(Directory.sync(read path))
+    tell(Directory.sync(read Path.join(read args[0], "none")))
+    return Ok()
+}

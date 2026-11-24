@@ -1,0 +1,5 @@
+error: `Stderr` is the standard error of the program, which has no length to set
+  a file opened with `File.createText(path)`, `File.openWrite(path)` or `File.openAppend(path)` can
+  --> error_set_length_stderr.sg:3:9
+ 3 |     try Stderr.setLength(0)
+   |         ^^^^^^

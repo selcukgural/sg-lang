@@ -320,6 +320,32 @@ pub(crate) fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
     written
 }
 
+/// `writer.syncData()` (`data`) and `writer.sync()`: Rust's `sync_data` and `sync_all`, which
+/// are what compiled code calls: `fdatasync` and `fsync` on Linux, `F_FULLFSYNC` for both on
+/// macOS, `FlushFileBuffers` for both on Windows.
+pub(crate) fn sync_file(file: &std::fs::File, data: bool) -> std::io::Result<()> {
+    match data {
+        true => file.sync_data(),
+        false => file.sync_all(),
+    }
+}
+
+/// `writer.setLength(n)`: `ftruncate`, which a file opened to append may do too.
+pub(crate) fn set_length(file: &std::fs::File, length: u64) -> std::io::Result<()> {
+    file.set_len(length)
+}
+
+/// `Directory.sync(path)`: the folder opened and put on the disk as a file is (`fsync`, and
+/// `F_FULLFSYNC` on macOS), so that a name made, renamed or removed in it stays. A path that is a
+/// file is `NotDirectory`, as compiled code's `O_DIRECTORY` gives it.
+pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
+    let folder = std::fs::File::open(path)?;
+    if !folder.metadata()?.is_dir() {
+        return Err(std::io::Error::from_raw_os_error(NOT_DIR));
+    }
+    folder.sync_all()
+}
+
 /// A folder and all it holds, links not followed: a path that is a link, or a file, is `ENOTDIR`.
 pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
     if !std::fs::symlink_metadata(path)?.is_dir() {

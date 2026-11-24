@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836); the hundred-and-seventy-third (`regex::bytes`, `read_until` and `memmem` of bytes, 1840-1843); the hundred-and-seventy-fourth (`Regex` faster in any case: nothing of Rust changes).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836); the hundred-and-seventy-third (`regex::bytes`, `read_until` and `memmem` of bytes, 1840-1843); the hundred-and-seventy-fourth (`Regex` faster in any case: nothing of Rust changes); the hundred-and-seventy-fifth (`sync_data`, `set_len`, a folder synced, `Vec<u8>` as a key, 1852-1853).
 
 ## Functions and variables
 
@@ -160,6 +160,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `m.get(&k)`, `m[&k]` | `map.get(k)`, `map[k]` | built | `get` gives a `V?` |
 | `*m.entry(k).or_insert(0) += 1` | `var count = map.getOrAdd(k, 0)`, then `count += 1` | built | `getOrAdd` gives a `ref V` |
 | `m.contains_key(&k)`, `m.remove(&k)` | `map.contains(k)`, `map.remove(k)` | built | |
+| `HashMap<Vec<u8>, V>`, `m.get(&buf[a..b])` | `HashMap<List<byte>, V>`, `map.get(buf[a..b])` | built | A `List<T>` is a key when `T` is (1853), looked up by a `read T[]` as `Vec<u8>` is by `&[u8]`; `getOrAdd` copies the slice into a list of its own only when the key is new, which `entry` cannot (it takes the owned key first) |
 | `HashSet<T>`, `s.insert(x)` | `HashSet<T>`, `set.add(x)` | built | `add` gives `true` if the item was not there |
 | `for x in v` / `&v` / `&mut v` | `for x in xs` / `read xs` / `ref xs` | built | |
 | `for x in f()? { }` | `for x in try f() { }` | built | |
@@ -410,6 +411,9 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `OpenOptions::new().write(true).create(true).open(p)?` | `File.openWrite(p)` | built | A `StreamWriter` from the start, over what the file holds |
 | `file.seek(SeekFrom::Start(n))?` | `try reader.seek(SeekFrom.Start(n))`, `try writer.seek(...)` | built | `End(n)` and `Current(n)` too; gives the new place as a `long`. `Start` holds a `long`, and a place before the start is `InvalidInput`. A reader moves inside its block without the system for `Start` too, where `BufReader` does only for `seek_relative`; a writer writes what it holds first, as `BufWriter` does |
 | `file.stream_position()?` | `try reader.seek(SeekFrom.Current(0))` | built | |
+| `file.sync_data()?`, `file.sync_all()?` | `try writer.syncData()`, `try writer.sync()` | built | The writer's block is written first, as `BufWriter::flush` then `get_ref().sync_data()`; the same calls of the system, `F_FULLFSYNC` on macOS. A sync that failed stays the writer's error (1852) |
+| `file.set_len(n)?` | `try writer.setLength(n)` | built | What the writer holds is written first; where it stands does not move, as with `set_len` |
+| `File::open(dir)?.sync_all()?` | `try Directory.sync(path)` | built | Nothing on Windows, where Rust's would fail to open a folder |
 | `eprintln!("{path}: {e}")` of an `io::Error` | `printError($"{path}: {cause}")` | built | `not found`, `invalid text at byte 812`: a sentence in lower case, as Go's; Rust writes the system's own words and the code (`No such file or directory (os error 2)`) |
 | `ErrorKind::AddrNotAvailable` | `IoError.AddressNotAvailable` | built | `address not available`: an address not of the machine, or no local port left to connect from |
 | `ErrorKind::NotSeekable` | `IoError.NotSeekable` | built | Also a writer of `openAppend`; `Stdin.seek` and `seek` on the reader of a connection are compile errors, where `Stdin` has no `Seek` in Rust |

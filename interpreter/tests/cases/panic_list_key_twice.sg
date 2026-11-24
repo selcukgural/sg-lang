@@ -1,0 +1,9 @@
+// `add` refuses a key that is there, and says which: a list of bytes is written as a list.
+void main() {
+    var seen = HashMap<List<byte>, int>()
+    var key = List<byte>()
+    key.add(104)
+    key.add(105)
+    seen.add(key.clone(), 1)
+    seen.add(key.clone(), 2)
+}

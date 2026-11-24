@@ -1,0 +1,33 @@
+// In an async function a writer syncs and sets its length as a task, on a thread that may wait
+// for the disk. The folder is the first word of the command line.
+async Result<void, IoError> run(string path) {
+    var w = try await File.createTextAsync(read path)
+    try await w.writeAsync("hello world")
+    try await w.syncDataAsync()
+    try await w.setLengthAsync(5)
+    try await w.syncAsync()
+    try await w.writeAsync("?")
+    var source = CancellationSource()
+    source.cancel()
+    match await w.syncDataAsync(read source.token()) {
+        Ok => print("synced")
+        Error(cause) => print(cause)
+    }
+    match await w.setLengthAsync(1, read source.token()) {
+        Ok => print("cut")
+        Error(cause) => print(cause)
+    }
+    match await w.setLengthAsync(-2) {
+        Ok => print("cut")
+        Error(cause) => print(cause)
+    }
+    try await w.closeAsync()
+    var text = try await File.readTextAsync(read path)
+    print(text.length())
+    print(text[0..5])
+    return Ok()
+}
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "a.txt")
+    return run(path).wait()
+}

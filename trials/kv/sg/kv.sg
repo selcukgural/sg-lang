@@ -1,0 +1,428 @@
+// `kv`: a store of keys and values held in memory, each change written first to a log in the folder
+// it is given, so that what was answered `OK` is there again when the store starts after a crash.
+//
+//     kv [--sync always|batch|never] DIR
+//
+// The commands come on the input, a line each: `SET key value` (the key ends at the next space, the
+// value is the rest of the line, spaces and all), `GET key`, `DEL key` and `COMPACT`; a key and a
+// value are bytes, UTF-8 or not, and a line ends at `\n` alone. `SET` answers `OK`, `GET` the value or
+// `(nil)`, `DEL` `1` or `0`, `COMPACT` `OK`. A line that is not a command is told on the standard error,
+// and the store ends with 1 once the input is done.
+//
+// The log, `DIR/log`, is records one after another (choice 1845), each
+//
+//     crc u32 | op u8 | key length u32 | value length u32 | key | value
+//
+// little-endian, the CRC-32 that of everything after it; the op is 1 for a set, 2 for a delete, whose
+// value is empty. The input is read in blocks of up to 64 KB; what one block asks is answered after
+// its records are on the disk (`--sync batch`, the default), or with the log only handed to the system
+// (`never`); with `always` each command is answered after its record is on the disk. A record cut off at the end of the log, as a crash in
+// the middle of a write leaves it, is cut away and told; a record whose CRC is wrong with more after
+// it is damage, and the store does not start (choice 1847). When the log is more than twice what the
+// store holds, and more than 1 MB, it is written again with only what is held, keys in the order of
+// their bytes, into `DIR/log.new`, which then takes its place (choice 1848).
+
+const nint HeaderLength = 13
+const nint InputBlock = 65536
+const byte OpSet = 1
+const byte OpDelete = 2
+const long CompactFrom = 1_048_576
+
+const int SyncAlways = 0
+const int SyncBatch = 1
+const int SyncNever = 2
+
+struct Store {
+    HashMap<List<byte>, List<byte>> map
+    string folder
+    string logPath
+    StreamWriter log
+    int sync
+    // The bytes of the log, and of the records of what is held.
+    long logLength
+    long liveLength
+    // Records written since the log was last put on the disk.
+    bool unsynced
+}
+
+// A key and its value, taken out of the map to be written in order of the key's bytes.
+struct Entry : Comparable {
+    List<byte> key
+    List<byte> value
+
+    int compare(read this, read Entry other) {
+        nint n = this.key.length()
+        if other.key.length() < n {
+            n = other.key.length()
+        }
+        for i in 0..n {
+            if this.key[i] != other.key[i] {
+                return this.key[i].compare(other.key[i])
+            }
+        }
+        return this.key.length().compare(other.key.length())
+    }
+}
+
+void putUint(ref byte[] at, uint value) {
+    at[0] = (byte)(value & 0xFF)
+    at[1] = (byte)((value >> 8) & 0xFF)
+    at[2] = (byte)((value >> 16) & 0xFF)
+    at[3] = (byte)(value >> 24)
+}
+
+uint uintAt(read byte[] at) {
+    return (uint)at[0] | ((uint)at[1] << 8) | ((uint)at[2] << 16) | ((uint)at[3] << 24)
+}
+
+long recordLength(nint key, nint value) {
+    return (long)(HeaderLength + key + value)
+}
+
+// One record into the log.
+Result<void, IoError> writeRecord(ref StreamWriter log, byte op, read byte[] key, read byte[] value) {
+    byte[13] header = byte[13]
+    header[4] = op
+    putUint(ref header[5..9], (uint)key.length())
+    putUint(ref header[9..13], (uint)value.length())
+    var crc = Crc32.create()
+    crc.update(header[4..13])
+    crc.update(key)
+    crc.update(value)
+    putUint(ref header[0..4], crc.value())
+    try log.writeBytes(header[0..13])
+    try log.writeBytes(key)
+    try log.writeBytes(value)
+    return Ok()
+}
+
+void fail(string message) {
+    printError($"kv: {message}")
+    exit(1)
+}
+
+// Reads the log into the map. A record cut off at the end is cut away; one whose CRC or op is wrong
+// with more after it stops the store.
+Result<void, IoError> recover(ref Store store) {
+    if !File.exists(read store.logPath) {
+        return Ok()
+    }
+    var info = try File.info(read store.logPath)
+    long size = info.size
+    var reader = try File.openText(read store.logPath)
+    byte[13] header = byte[13]
+    var bytes = List<byte>()
+    long at = 0
+    long cut = -1
+    while at < size {
+        var got = try reader.readBytes(ref header[0..13])
+        if got < HeaderLength {
+            cut = at
+            break
+        }
+        long keyLength = (long)uintAt(header[5..9])
+        long valueLength = (long)uintAt(header[9..13])
+        long length = HeaderLength + keyLength + valueLength
+        if length > size - at {
+            cut = at
+            break
+        }
+        nint body = (nint)(keyLength + valueLength)
+        if bytes.length() < body {
+            bytes = List<byte>.repeat(0, body)
+        }
+        _ = try reader.readBytes(ref bytes[0..body])
+        var crc = Crc32.create()
+        crc.update(header[4..13])
+        crc.update(bytes[0..body])
+        byte op = header[4]
+        bool known = op == OpSet || (op == OpDelete && valueLength == 0)
+        if crc.value() != uintAt(header[0..4]) || !known {
+            // The last record of the log, written only in part before a crash.
+            if at + length == size && crc.value() != uintAt(header[0..4]) {
+                cut = at
+                break
+            }
+            fail($"log: a damaged record at {at}".toString())
+        }
+        nint k = (nint)keyLength
+        if op == OpSet {
+            var value = List<byte>.withCapacity(body - k)
+            value.addAll(bytes[k..body])
+            nint before = store.map.length()
+            var slot = store.map.getOrAdd(bytes[0..k], List<byte>())
+            nint old = slot.length()
+            slot = value
+            // A key that was there gives up the record of its old value.
+            if store.map.length() == before {
+                store.liveLength -= recordLength(k, old)
+            }
+            store.liveLength += length
+        } else {
+            var old = store.map.remove(bytes[0..k])
+            if old is not null {
+                store.liveLength -= recordLength(k, old.length())
+            }
+        }
+        at += length
+    }
+    store.logLength = at
+    if cut >= 0 {
+        printError($"kv: log: a record cut off at {cut}, {size - cut} bytes cut")
+        var log = try File.openAppend(read store.logPath)
+        try log.setLength(cut)
+        if store.sync != SyncNever {
+            try log.syncData()
+        }
+        try log.close()
+    }
+    return Ok()
+}
+
+// The log written again with only what the store holds, in the order of the keys' bytes.
+Result<void, IoError> compact(ref Store store) {
+    try store.log.flush()
+    var entries = List<Entry>.withCapacity(store.map.length())
+    for entry in store.map.replace(HashMap<List<byte>, List<byte>>()) {
+        entries.add(Entry { key = entry.key, value = entry.value })
+    }
+    entries.sort()
+    var fresh = Path.join(read store.folder, "log.new")
+    var log = try File.createText(read fresh)
+    long length = 0
+    for entry in read entries {
+        try writeRecord(ref log, OpSet, read entry.key, read entry.value)
+        length += recordLength(entry.key.length(), entry.value.length())
+    }
+    if store.sync != SyncNever {
+        try log.syncData()
+    }
+    try log.close()
+    try File.replace(read fresh, read store.logPath)
+    if store.sync != SyncNever {
+        try Directory.sync(read store.folder)
+    }
+    store.log = try File.openAppend(read store.logPath)
+    store.logLength = length
+    store.liveLength = length
+    for entry in entries {
+        store.map.add(entry.key, entry.value)
+    }
+    return Ok()
+}
+
+// A record written; after `always`, on the disk.
+Result<void, IoError> logged(ref Store store, byte op, read byte[] key, read byte[] value) {
+    try writeRecord(ref store.log, op, key, value)
+    store.logLength += recordLength(key.length(), value.length())
+    if store.sync == SyncAlways {
+        try store.log.syncData()
+    } else {
+        store.unsynced = true
+    }
+    return Ok()
+}
+
+Result<void, IoError> afterChange(ref Store store) {
+    if store.logLength > CompactFrom && store.logLength > 2 * store.liveLength {
+        try compact(ref store)
+    }
+    return Ok()
+}
+
+void answer(ref List<byte> out, read string text) {
+    out.addAll(text.asBytes())
+    out.add('\n')
+}
+
+// What one line asks, its answer put into `out`; false for a line that is not a command.
+Result<bool, IoError> run(ref Store store, read byte[] line, ref List<byte> out) {
+    var space = line.indexOf(' ')
+    if space is null {
+        if line.length() == 7 && line[0] == 'C' && line[1] == 'O' && line[2] == 'M' && line[3] == 'P' && line[4] == 'A' && line[5] == 'C' && line[6] == 'T' {
+            try compact(ref store)
+            answer(ref out, "OK")
+            return Ok(true)
+        }
+        return Ok(false)
+    }
+    nint s = space
+    var word = line[0..s]
+    var rest = line[s + 1..line.length()]
+    if s == 3 && word[0] == 'S' && word[1] == 'E' && word[2] == 'T' {
+        var at = rest.indexOf(' ')
+        if at is null {
+            return Ok(false)
+        }
+        nint k = at
+        var key = rest[0..k]
+        var given = rest[k + 1..rest.length()]
+        try logged(ref store, OpSet, key, given)
+        var value = List<byte>.withCapacity(given.length())
+        value.addAll(given)
+        nint before = store.map.length()
+        var slot = store.map.getOrAdd(key, List<byte>())
+        nint old = slot.length()
+        slot = value
+        if store.map.length() == before {
+            store.liveLength -= recordLength(k, old)
+        }
+        store.liveLength += recordLength(k, given.length())
+        answer(ref out, "OK")
+        try afterChange(ref store)
+        return Ok(true)
+    }
+    if s == 3 && word[0] == 'G' && word[1] == 'E' && word[2] == 'T' {
+        var value = store.map.get(rest)
+        if value is not null {
+            out.addAll(value)
+            out.add('\n')
+        } else {
+            answer(ref out, "(nil)")
+        }
+        return Ok(true)
+    }
+    if s == 3 && word[0] == 'D' && word[1] == 'E' && word[2] == 'L' {
+        if !store.map.contains(rest) {
+            answer(ref out, "0")
+            return Ok(true)
+        }
+        try logged(ref store, OpDelete, rest, "".asBytes())
+        var old = store.map.remove(rest)
+        if old is not null {
+            store.liveLength -= recordLength(rest.length(), old.length())
+        }
+        answer(ref out, "1")
+        try afterChange(ref store)
+        return Ok(true)
+    }
+    return Ok(false)
+}
+
+// What a block asked is answered once its records are where `--sync` says.
+Result<void, IoError> answered(ref Store store, ref List<byte> out) {
+    if store.unsynced {
+        try store.log.flush()
+        if store.sync == SyncBatch {
+            try store.log.syncData()
+        }
+        store.unsynced = false
+    }
+    try Stdout.writeBytes(read out)
+    try Stdout.flush()
+    out.clear()
+    return Ok()
+}
+
+void usage() {
+    printError("usage: kv [--sync always|batch|never] DIR")
+    exit(2)
+}
+
+Result<void, IoError> serve(int sync, read string folder) {
+    if !Directory.exists(folder) {
+        try Directory.create(folder)
+    }
+    var logPath = Path.join(folder, "log")
+    var leftOver = Path.join(folder, "log.new")
+    if File.exists(read leftOver) {
+        try File.delete(read leftOver)
+    }
+    bool made = !File.exists(read logPath)
+    var store = Store {
+        map = HashMap<List<byte>, List<byte>>(), folder = folder.clone(), logPath = logPath.clone(),
+        log = try File.openAppend(read logPath), sync = sync, logLength = 0, liveLength = 0, unsynced = false,
+    }
+    if made && sync != SyncNever {
+        try Directory.sync(folder)
+    }
+    try recover(ref store)
+
+    var block = List<byte>.repeat(0, InputBlock)
+    // A line that goes on past the block it started in.
+    var carried = List<byte>()
+    var out = List<byte>()
+    long lineNumber = 0
+    bool bad = false
+    while true {
+        var got = try Stdin.readSome(ref block[0..InputBlock])
+        if got == 0 {
+            break
+        }
+        nint start = 0
+        while start < got {
+            var end = block[start..got].indexOf('\n')
+            if end is null {
+                carried.addAll(block[start..got])
+                break
+            }
+            nint e = start + end
+            lineNumber += 1
+            bool ok = false
+            if carried.length() > 0 {
+                carried.addAll(block[start..e])
+                ok = try run(ref store, read carried, ref out)
+                carried.clear()
+            } else {
+                ok = try run(ref store, block[start..e], ref out)
+            }
+            if !ok {
+                printError($"kv: line {lineNumber}: not a command")
+                bad = true
+            }
+            // Each answer as soon as its record is on the disk.
+            if store.sync == SyncAlways {
+                try answered(ref store, ref out)
+            }
+            start = e + 1
+        }
+        try answered(ref store, ref out)
+    }
+    // The last line, without its `\n`.
+    if carried.length() > 0 {
+        lineNumber += 1
+        if !(try run(ref store, read carried, ref out)) {
+            printError($"kv: line {lineNumber}: not a command")
+            bad = true
+        }
+    }
+    try answered(ref store, ref out)
+    try store.log.close()
+    if bad {
+        exit(1)
+    }
+    return Ok()
+}
+
+void main(List<string> args) {
+    int sync = SyncBatch
+    string? folder = null
+    nint i = 0
+    while i < args.length() {
+        if args[i] == "--sync" && i + 1 < args.length() {
+            var mode = read args[i + 1]
+            if mode == "always" {
+                sync = SyncAlways
+            } else if mode == "batch" {
+                sync = SyncBatch
+            } else if mode == "never" {
+                sync = SyncNever
+            } else {
+                usage()
+            }
+            i += 2
+        } else if folder is null && !args[i].startsWith("-") {
+            folder = args[i].clone()
+            i += 1
+        } else {
+            usage()
+        }
+    }
+    if folder is null {
+        usage()
+        return
+    }
+    if serve(sync, read folder) is Error(cause) {
+        fail($"{cause}".toString())
+    }
+}

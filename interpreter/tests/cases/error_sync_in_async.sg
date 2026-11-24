@@ -1,0 +1,10 @@
+// A sync waits for the disk, which would hold the thread of an async function.
+async Result<void, IoError> run(string path) {
+    var writer = try await File.createTextAsync(read path)
+    try writer.syncData()
+    try await writer.closeAsync()
+    return Ok()
+}
+
+void main() {
+}

@@ -26,7 +26,9 @@ of the input (1660, 1662). What a log writes on the standard error is held to it
 time to the millisecond, the level and the message, and the messages, in order of their text, must
 be the same everywhere (1670). Every program runs with `TZ=Europe/Istanbul` and without `SG_LOG` or
 `RUST_LOG` (1668, 1670). The addresses `std/net` writes into `{out}` are held to what Python's
-`ipaddress` writes of each line of the input (1681). A help each library words its own way is held
+`ipaddress` writes of each line of the input (1681). `kv` runs in a folder made anew before each run, empty or
+with a log Python wrote (`{kvdir}`), and the log it leaves is held to be the same, byte for byte, in every
+build (1845); a case marked `once` is measured once after its warming run, being the disk's time (1849). A help each library words its own way is held
 only to its exit code (1798). `std/environment` reads `SG_TRIAL_TEXT` and `SG_TRIAL_BYTES` (not
 UTF-8), which every program is given, and `SG_TRIAL_MISSING`, which none is (1799).
 Measured:
@@ -135,6 +137,137 @@ UNICODE_SEED = 1
 TIME_SEED = 1
 ADDRESS_SEED = 1
 DOS_TIME = (2026, 11, 20, 13, 45, 30)
+
+
+# The inputs of `kv` (choices 1844-1849), made here by Python from a seed: placeholder -> file name. A
+# key is 16 bytes and a value 100, as the cases say; a log is written by Python's `zlib.crc32` and
+# `struct`, which none of the programs measured is.
+KV_INPUTS = {
+    "kv-sets": "kv-sets-1000000.txt",
+    "kv-sets-10k": "kv-sets-10000.txt",
+    "kv-mixed": "kv-mixed-1000000.txt",
+    "kv-big": "kv-big-100.txt",
+    "kv-gets": "kv-gets-1000.txt",
+    "kv-compact": "kv-compact.txt",
+    "kv-commands": "kv-commands.txt",
+    "kv-log-1g": "kv-log-1000.bin",
+    "kv-log-10m": "kv-log-10000000.bin",
+    "kv-log-small": "kv-log-small.bin",
+    "kv-log-cut": "kv-log-cut.bin",
+    "kv-log-flipped": "kv-log-flipped.bin",
+    "kv-log-zeros": "kv-log-zeros.bin",
+    "kv-log-empty": "kv-log-empty.bin",
+    "kv-small-gets": "kv-small-gets.txt",
+}
+KV_SEED = 1
+
+
+def kv_record(op, key, value):
+    import struct
+    import zlib
+    body = struct.pack("<BII", op, len(key), len(value)) + key + value
+    return struct.pack("<I", zlib.crc32(body)) + body
+
+
+def kv_value(rng, pool, length=100):
+    at = rng.randrange(len(pool) - length)
+    return pool[at:at + length]
+
+
+def kv_pool(rng):
+    """A megabyte of printable bytes, spaces among them, that values are cut from."""
+    letters = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.:/"
+    return bytes(letters[rng.randrange(len(letters))] for _ in range(1 << 20))
+
+
+def kv_input(placeholder):
+    import random
+    path = OUT / "kv-inputs" / KV_INPUTS[placeholder]
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(f"{KV_SEED}-{placeholder}")
+    pool = kv_pool(rng)
+    key = lambda n: b"key:%012d" % n
+    partial = path.with_name(path.name + ".part")
+    with open(partial, "wb") as f:
+        if placeholder in ("kv-sets", "kv-sets-10k"):
+            count = 1_000_000 if placeholder == "kv-sets" else 10_000
+            order = list(range(count))
+            rng.shuffle(order)
+            for n in order:
+                f.write(b"SET " + key(n) + b" " + kv_value(rng, pool) + b"\n")
+        elif placeholder == "kv-mixed":
+            # A million commands over 100,000 keys: half `GET`, two fifths `SET`, a tenth `DEL`.
+            for _ in range(1_000_000):
+                r, n = rng.random(), rng.randrange(100_000)
+                if r < 0.5:
+                    f.write(b"GET " + key(n) + b"\n")
+                elif r < 0.9:
+                    f.write(b"SET " + key(n) + b" " + kv_value(rng, pool) + b"\n")
+                else:
+                    f.write(b"DEL " + key(n) + b"\n")
+        elif placeholder == "kv-big":
+            # A value of 100 MB, read back.
+            f.write(b"SET big ")
+            for _ in range(100):
+                f.write(pool)
+            f.write(b"\nGET big\n")
+        elif placeholder in ("kv-gets", "kv-small-gets"):
+            count = 1000 if placeholder == "kv-gets" else 200
+            for _ in range(count):
+                f.write(b"GET " + key(rng.randrange(1_000_000 if placeholder == "kv-gets" else 300)) + b"\n")
+        elif placeholder == "kv-compact":
+            f.write(b"COMPACT\n")
+            for _ in range(1000):
+                f.write(b"GET " + key(rng.randrange(10_000_000)) + b"\n")
+        elif placeholder == "kv-commands":
+            # What the commands are at their edges: an empty key and value, spaces in a value, bytes
+            # that are not UTF-8, a CR before the line's end, lines that are not commands, a last
+            # line without its end, and enough writes over few keys that the log is compacted.
+            lines = [b"SET a 1", b"SET b two words", b"GET a", b"GET b", b"GET c", b"DEL a", b"DEL a",
+                     b"GET a", b"SET  empty key", b"GET ", b"SET k ", b"GET k", b"SET \xff\xfe bytes \xc3\x28",
+                     b"GET \xff\xfe", b"SET cr value\r", b"GET cr", b"FOO", b"SET x", b"set a 1", b"", b"GET",
+                     b"DEL", b"COMPACT", b"GET b", b"COMPACT x", b" SET a 1", b"SETa 1"]
+            for n in range(20_000):
+                lines.append(b"SET hot%d " % (n % 7) + kv_value(rng, pool))
+            lines += [b"GET hot%d" % n for n in range(8)]
+            lines += [b"DEL hot%d" % n for n in range(3)]
+            lines.append(b"GET b")
+            f.write(b"\n".join(lines))
+        elif placeholder in ("kv-log-1g", "kv-log-10m", "kv-log-small", "kv-log-cut", "kv-log-flipped", "kv-log-zeros"):
+            if placeholder == "kv-log-1g":
+                # About 1 GB: sets over a million keys, a twentieth deletes.
+                written = 0
+                while written < 1_000_000_000:
+                    n = rng.randrange(1_000_000)
+                    record = kv_record(2, key(n), b"") if rng.random() < 0.05 else kv_record(1, key(n), kv_value(rng, pool))
+                    f.write(record)
+                    written += len(record)
+            elif placeholder == "kv-log-10m":
+                # Ten million keys with values of 8 bytes, then two million of them written again.
+                for n in range(10_000_000):
+                    f.write(kv_record(1, key(n), b"%08d" % n))
+                for _ in range(2_000_000):
+                    n = rng.randrange(10_000_000)
+                    f.write(kv_record(1, key(n), b"again%03d" % rng.randrange(1000)))
+            else:
+                records = [kv_record(1, key(rng.randrange(300)), kv_value(rng, pool, rng.randrange(0, 200)))
+                           if rng.random() < 0.9 else kv_record(2, key(rng.randrange(300)), b"") for _ in range(2000)]
+                data = b"".join(records)
+                if placeholder == "kv-log-cut":
+                    # Cut in the middle of its last record, as a crash in a write leaves it.
+                    data = data[:len(data) - len(records[-1]) // 2]
+                elif placeholder == "kv-log-flipped":
+                    # A bit of a value turned in the middle: the store must not start.
+                    middle = sum(len(r) for r in records[:1000]) + 20
+                    data = data[:middle] + bytes([data[middle] ^ 0x10]) + data[middle + 1:]
+                elif placeholder == "kv-log-zeros":
+                    # What a file system may leave after a crash: the length grown, the bytes zeros.
+                    data += bytes(4096)
+                f.write(data)
+    partial.rename(path)
+    return path
 
 
 def zip_of_parts(text):
@@ -344,6 +477,29 @@ TRIALS_CASES = {
             ("a def a million deep", ["-n", "-c", "def f: if . < 1000000 then (. + 1 | f) + 0 else . end; 0 | f"], None),
             ("a def ten million in tail", ["-n", "-c", "def f: if . < 10000000 then . + 1 | f else . end; 0 | f"], None),
             ("nested ten million deep", ["-n", "-c", "reduce range(10000000) as $i (0; [.]) | length"], None),
+        ],
+    },
+    # Each case runs in `{kvdir}`, made anew: `kv fresh` empty, `kv log:NAME` with the log of `{NAME}`.
+    "kv": {
+        "check": [
+            ("the commands at their edges", ["--sync", "never", "{kvdir}"], "{kv-commands}", "kv", "fresh"),
+            ("a log read back", ["{kvdir}"], "{kv-small-gets}", "kv", "log:kv-log-small"),
+            ("a log cut in its last record", ["{kvdir}"], "{kv-small-gets}", "kv", "log:kv-log-cut"),
+            ("a bit turned in the middle of the log", ["{kvdir}"], "{kv-small-gets}", "kv", "log:kv-log-flipped"),
+            ("zeros after the last record", ["{kvdir}"], "{kv-small-gets}", "kv", "log:kv-log-zeros"),
+            ("an empty log", ["{kvdir}"], "{kv-small-gets}", "kv", "log:kv-log-empty"),
+            ("a log.new left by a compaction", ["{kvdir}"], "{kv-small-gets}", "kv", "leftover:kv-log-small"),
+            ("a folder whose parent is missing", ["{kvdir}/no/such"], "{kv-small-gets}", "kv", "fresh"),
+            ("options not known", ["--sync", "sometimes", "{kvdir}"], "{kv-small-gets}", "kv", "fresh"),
+        ],
+        "measure": [
+            ("a million sets, never synced", ["--sync", "never", "{kvdir}"], "{kv-sets}", "kv", "fresh"),
+            ("a million sets, synced each block", ["--sync", "batch", "{kvdir}"], "{kv-sets}", "kv", "fresh"),
+            ("ten thousand sets, each synced", ["--sync", "always", "{kvdir}"], "{kv-sets-10k}", "kv", "fresh", "once"),
+            ("a million gets, sets and deletes", ["--sync", "batch", "{kvdir}"], "{kv-mixed}", "kv", "fresh"),
+            ("a value of 100 MB", ["--sync", "batch", "{kvdir}"], "{kv-big}", "kv", "fresh"),
+            ("a log of 1 GB read back", ["{kvdir}"], "{kv-gets}", "kv", "log:kv-log-1g"),
+            ("ten million keys read and compacted", ["{kvdir}"], "{kv-compact}", "kv", "log:kv-log-10m"),
         ],
     },
     "std/json": {
@@ -739,8 +895,33 @@ def expand(words, trial):
     words = [w.format(**values) if "{" in w and "}" in w and w.strip("{}") in values else w for w in words]
     words = [str(json_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in JSON_INPUTS else w
              for w in words]
+    words = [str(OUT / "kv" / "store") + w[len("{kvdir}"):] if w.startswith("{kvdir}") else w for w in words]
+    words = [str(kv_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in KV_INPUTS else w for w in words]
     return [str(other_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in OTHER_INPUTS else w
             for w in words]
+
+
+def kv_prepare(kind):
+    """The folder of `kv`, made anew before a run: empty (`fresh`), with a log Python wrote
+    (`log:NAME`), or with that log and a `log.new` a compaction left (`leftover:NAME`)."""
+    store = OUT / "kv" / "store"
+    if store.exists():
+        shutil.rmtree(store)
+    store.mkdir(parents=True)
+    how, _, name = kind[1].partition(":")
+    if name:
+        shutil.copyfile(kv_input(name), store / "log")
+    if how == "leftover":
+        (store / "log.new").write_bytes(b"half of a compaction")
+
+
+def kv_log():
+    """What a run of `kv` left: its log, held as its SHA-256 and its length."""
+    log = OUT / "kv" / "store" / "log"
+    if not log.exists():
+        return b"no log"
+    data = log.read_bytes()
+    return f"log {len(data)} bytes, {hashlib.sha256(data).hexdigest()}".encode()
 
 
 def run_once(program, args, stdin_path, capture, errors=None):
@@ -883,8 +1064,12 @@ def check(trial, built, cases, notes):
         results = {}
         for build, path in built.items():
             errors = []
+            if kind and kind[0] == "kv":
+                kv_prepare(kind)
             code, output = run_once(path, args, stdin_path, True, errors)[:2]
-            if kind == ["own"]:
+            if kind and kind[0] == "kv":
+                output += kv_log()
+            elif kind == ["own"]:
                 output = b""
             elif kind == ["quirk"]:
                 # jq takes what the three refuse (its quirks, in `trials/jq/README.md`).
@@ -930,7 +1115,9 @@ def measure(trial, built, cases, runs):
             # One run to warm up, then `runs`; a run that fails stops the measuring, so that a
             # program that gave up early is never counted fast (1685).
             failed = False
-            for run in range(runs + 1):
+            for run in range((1 if "once" in kind else runs) + 1):
+                if kind and kind[0] == "kv":
+                    kv_prepare(kind)
                 code, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
                 if code != 0 and build in LOOSE | REFERENCE_NAMES:
                     # A reference that fails a case is shown so, not counted.

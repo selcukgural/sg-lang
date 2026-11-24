@@ -3707,7 +3707,8 @@ fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
     let diag = Diag::error(span, format!("`{ty}` cannot be {what}: it is not `Equatable` and `Hashable`"));
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add them to the definition: `{name} : Equatable, Hashable`")),
-        Ty::List(_) | Ty::Set(_) | Ty::Map(..) => diag.note("a collection can be compared with `==`, but it is not `Hashable`"),
+        Ty::List(_) => diag.note("a list is a key when what it holds is: integers, `bool`, `char`, `string` and the types written with `: Equatable, Hashable`"),
+        Ty::Set(_) | Ty::Map(..) => diag.note("a set or a map can be compared with `==`, but it is not `Hashable`; a `List` is"),
         _ => diag.note("integers, `bool`, `char`, `string` and the types written with `: Equatable, Hashable` are"),
     }
 }
@@ -3889,7 +3890,8 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
 
 /// Whether a value of this type is `Equatable` (or `Hashable`): numbers, `bool`, text, the
 /// types in `declared`, and a `T*` or `T?` of those. With `collections`, a collection counts
-/// if what it holds does: that is so for `Equatable`, not for `Hashable`.
+/// if what it holds does: that is so for `Equatable`; for `Hashable`, only a `List` is
+/// (choice 1853), looked up by a slice of what it holds.
 ///
 /// A fractional number is `Equatable` and not `Hashable`, like a collection: two values that
 /// `equals` calls the same, `0.0` and `-0.0`, have different bits.
@@ -3901,7 +3903,8 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
         // `==` looks at what a `shared` value points to; a key it is not, as a collection is not.
         Ty::Shared(inner, _) => collections && has(inner, declared, collections),
-        Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => collections && has(item, declared, collections),
+        Ty::List(item) => has(item, declared, collections),
+        Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => collections && has(item, declared, collections),
         Ty::Map(key, value) => collections && has(key, declared, collections) && has(value, declared, collections),
         _ => false,
     }
@@ -3926,7 +3929,7 @@ fn all_have<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (St
         }
         let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `{word}` field by field: `{}` is a `{ty}`, which is not `{word}`", field.name));
         return Err(match (ty, lacking(ty, declared)) {
-            (Ty::List(_) | Ty::Set(_) | Ty::Map(..), _) if word == "Hashable" => diag.note("a collection can be compared with `==`, but it is not a key"),
+            (Ty::Set(_) | Ty::Map(..), _) if word == "Hashable" => diag.note("a set or a map can be compared with `==`, but it is not a key; a `List` is"),
             (Ty::Shared(..), _) if word == "Hashable" => diag.note("a `shared` value can be compared with `==`, but it is not a key"),
             (Ty::Weak(..), _) => diag.note("a `weak` value may point to nothing any more, so it has no content to compare; `same(share a, share b)` tells whether two point to one object"),
             (Ty::Float(_), _) => diag.note("a fractional number is not `Hashable`"),
@@ -8067,7 +8070,7 @@ impl<'a> Checker<'a> {
                         Ok(Some(((**item).clone(), writable)))
                     }
                     Ty::Map(key, value) => {
-                        self.typed(index, &self.key_param(key))?;
+                        self.typed(index, &self.table_key_param(key))?;
                         *kind = IndexKind::Map;
                         Ok(Some(((**value).clone(), writable)))
                     }
@@ -8129,6 +8132,17 @@ impl<'a> Checker<'a> {
         match key.is_copyable(self.copyable) {
             true => key.clone(),
             false => Ty::Read(Box::new(key.clone())),
+        }
+    }
+
+    /// How a table takes a key it only looks up: as `key_param`, and a list as a slice of what it
+    /// holds, as text is a `read string`, so a part of a buffer finds its key without being
+    /// copied into a list (choice 1853). A list's own search of an item is not this: an item
+    /// that is a list is a list there.
+    fn table_key_param(&self, key: &Ty) -> Ty {
+        match key {
+            Ty::List(item) => Ty::Read(Box::new(Ty::Slice(item.clone()))),
+            _ => self.key_param(key),
         }
     }
 
@@ -11933,7 +11947,8 @@ impl<'a> Checker<'a> {
                     .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
             }
             (Ty::Writer, "write" | "writeLine" | "writeBytes") => 1,
-            (Ty::Writer, "flush") => 0,
+            (Ty::Writer, "flush" | "syncData" | "sync") => 0,
+            (Ty::Writer, "setLength") => 1,
             // `closeAsync` takes the writer, and is not cancelled: what the writer holds is
             // written, as when it ends without `close`.
             (Ty::Writer, "close") => {
@@ -11966,7 +11981,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let known: &[&str] = match target {
                     Ty::Reader(_) => &["readLineAsync", "readLineBytesAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
-                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync"],
+                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync", "syncDataAsync", "syncAsync", "setLengthAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -12359,6 +12374,7 @@ impl<'a> Checker<'a> {
             "createDirectory" => (SystemCall::CreateDirectory, vec![text()], io(Ty::Void)),
             "removeDirectory" => (SystemCall::RemoveDirectory, vec![text()], io(Ty::Void)),
             "removeAll" => (SystemCall::RemoveAll, vec![text()], io(Ty::Void)),
+            "syncDirectory" => (SystemCall::SyncDirectory, vec![text()], io(Ty::Void)),
             "list" => (
                 SystemCall::List,
                 vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
@@ -14211,14 +14227,14 @@ impl<'a> Checker<'a> {
             }
             (Ty::Set(item), "contains") => {
                 arity(1)?;
-                self.typed(&mut args[0], &self.key_param(item))?;
+                self.typed(&mut args[0], &self.table_key_param(item))?;
                 Ok(Ty::Bool)
             }
             // `true` if the item was there.
             (Ty::Set(item), "remove") => {
                 arity(1)?;
                 changes()?;
-                self.typed(&mut args[0], &self.key_param(item))?;
+                self.typed(&mut args[0], &self.table_key_param(item))?;
                 Ok(Ty::Bool)
             }
             (Ty::Map(key, value), "add") => {
@@ -14236,24 +14252,24 @@ impl<'a> Checker<'a> {
             }
             (Ty::Map(key, value), "get") => {
                 arity(1)?;
-                self.typed(&mut args[0], &self.key_param(key))?;
+                self.typed(&mut args[0], &self.table_key_param(key))?;
                 Ok(Ty::Read(Box::new(nullable(value))))
             }
             (Ty::Map(key, _), "contains") => {
                 arity(1)?;
-                self.typed(&mut args[0], &self.key_param(key))?;
+                self.typed(&mut args[0], &self.table_key_param(key))?;
                 Ok(Ty::Bool)
             }
             (Ty::Map(key, value), "remove") => {
                 arity(1)?;
                 changes()?;
-                self.typed(&mut args[0], &self.key_param(key))?;
+                self.typed(&mut args[0], &self.table_key_param(key))?;
                 Ok(nullable(value))
             }
             (Ty::Map(key, value), "getOrAdd") => {
                 arity(2)?;
                 changes()?;
-                self.typed(&mut args[0], &self.key_param(key))?;
+                self.typed(&mut args[0], &self.table_key_param(key))?;
                 self.typed(&mut args[1], value)?;
                 if self.holds(key) {
                     self.stores(recv, &args[0], true)?;
@@ -14334,11 +14350,14 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
             (Ty::Writer, "flush") => StreamCall::Flush,
             (Ty::Writer, "close") => StreamCall::Close,
+            (Ty::Writer, "syncData") => StreamCall::SyncData,
+            (Ty::Writer, "sync") => StreamCall::Sync,
+            (Ty::Writer, "setLength") => StreamCall::SetLength,
             (_, "seek") => StreamCall::Seek,
             _ => {
                 let known: &[&str] = match target {
                     Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek"],
-                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek"],
+                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek", "syncData", "sync", "setLength"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -14347,7 +14366,7 @@ impl<'a> Checker<'a> {
                 };
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
-                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
+                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush" | "syncData" | "sync" | "setLength") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
                     (Ty::Writer, "readLine" | "readLineBytes" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
@@ -14382,6 +14401,17 @@ impl<'a> Checker<'a> {
             if *target == Ty::Reader(true) {
                 return Err(Diag::error(recv.span, "the reader of a connection cannot seek: what has come over the network goes only forward")
                     .note("a file opened with `File.openText(path)` can seek"));
+            }
+        }
+        // A standard stream is not a file the program holds: it may be a terminal or a pipe, and
+        // a file it was sent into is the caller's to keep.
+        if matches!(call, StreamCall::SyncData | StreamCall::Sync | StreamCall::SetLength) {
+            if let ExprKind::Var(var) = &recv.kind {
+                if let Some(what) = std_stream(var) {
+                    let does = if call == StreamCall::SetLength { "has no length to set" } else { "is not a file the program can put on the disk" };
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which {does}"))
+                        .note("a file opened with `File.createText(path)`, `File.openWrite(path)` or `File.openAppend(path)` can"));
+                }
             }
         }
         if call == StreamCall::Buffered {
@@ -14445,8 +14475,12 @@ impl<'a> Checker<'a> {
                 self.printable(&ty, args[0].span)?;
                 result(Ty::Void)
             }
-            StreamCall::Flush | StreamCall::Close => {
+            StreamCall::Flush | StreamCall::Close | StreamCall::SyncData | StreamCall::Sync => {
                 arity(0)?;
+                result(Ty::Void)
+            }
+            StreamCall::SetLength => {
+                self.args(shown, args, &[Ty::Int(IntTy::Long)], span)?;
                 result(Ty::Void)
             }
             StreamCall::Seek => {

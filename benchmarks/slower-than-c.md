@@ -139,6 +139,13 @@ says what is slower, by how much and against what, the choice that measured it, 
   before). What would fix it, put to the author and left: a fraction of up to 15 digits held as its
   `double` in the three (its `double` found from its digits by one division, as for whole numbers), and
   SG's short literal kept in a `byte[24]` of its value.
+- **`kv`: a log of 1 GB read back** (slice 175): 2.70 s against Rust's 2.37 s (Zig 3.24 s), the map's work
+  and not the log's: without the sets and deletes the reading and the CRC-32 take 0.3 s. Slice 175 gave the
+  slots of a table 32 bits of each key's hash (2.67 s against Rust's 2.16 s before, measured on a quieter
+  run); what is left is the search itself, one slot after another where Rust's hashbrown looks at sixteen
+  with one instruction. What would fix it: groups of slots looked at together.
+- **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
+  Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
   331 MB): the text is read whole into the reader's buffer and then copied into the value; Zig unescapes
   it from the buffer into the value once.
@@ -159,10 +166,6 @@ says what is slower, by how much and against what, the choice that measured it, 
   has room for (315); the checked `buffer` now takes the time of C. A sum in a `while`, in a `for` over
   the parts of a text, written `sum = sum + x`, or in a loop with a loop inside or with a call keeps its
   test (316, 317); none of the measured programs has one where it costs.
-
-- **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
-  one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
-  that still resists chosen keys is the open question.
 
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so

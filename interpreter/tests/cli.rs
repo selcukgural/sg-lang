@@ -1233,6 +1233,84 @@ fn the_trials() {
     }
 }
 
+/// The trial of `kv` (choices 1844-1853): the store of keys and values with a log, built and run
+/// interpreted and compiled, with each `--sync`, on commands at their edges (bytes that are not
+/// UTF-8, an empty key and value, a CR, lines that are not commands, a last line without its end);
+/// on its log read back; on sets enough to compact it on its own; on its log cut in its last record,
+/// as a crash leaves it; and on a bit turned in the middle, where it does not start. What it prints,
+/// its exit code and the length of its log are those the trial's model gives
+/// (`trials/kv/tests/check.py`); interpreted, it leaves the log compiled code leaves, byte for byte.
+#[test]
+fn the_trial_of_kv() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_kv");
+    let source = trials.join("kv").join("sg").join("kv.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "kv").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    // Runs the store on `input` in `folder`, interpreted or compiled: the exit code, what it
+    // printed and the log it left.
+    let run = |interpreted: bool, folder: &str, sync: &str, input: &[u8]| {
+        let path = dir.join(format!("{folder}.in"));
+        std::fs::write(&path, input).unwrap();
+        let mut command = match interpreted {
+            true => {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+                command.arg(&source);
+                command
+            }
+            false => Command::new(&built),
+        };
+        let out = command.args(["--sync", sync, folder]).current_dir(&dir).stdin(std::fs::File::open(&path).unwrap()).finished();
+        let log = std::fs::read(dir.join(folder).join("log")).unwrap_or_default();
+        (out.status.code().unwrap_or(-1), out.stdout, log)
+    };
+    let edge: &[u8] = b"SET a 1\nSET b two words\nGET a\nGET b\nGET c\nDEL a\nDEL a\nGET a\nSET  empty key\nGET \nSET k \nGET k\n\
+        SET \xff\xfe bytes \xc3\x28\nGET \xff\xfe\nSET cr value\r\nGET cr\nFOO\nSET x\nset a 1\n\nGET\nDEL\nCOMPACT\nGET b\nCOMPACT x\n SET a 1";
+    let again: &[u8] = b"GET b\nSET c 3\nDEL b\nGET b\nGET c\n";
+    let mut hot = Vec::new();
+    for n in 0..3000 {
+        hot.extend_from_slice(format!("SET hot{} {}\n", n % 3, "v".repeat(390 + n % 20)).as_bytes());
+    }
+    hot.extend_from_slice(b"GET hot0\nGET hot1\nGET hot2\nGET hot3\n");
+    let gets: &[u8] = b"GET hot0\nGET hot1\nGET hot2\n";
+    let lengths = |out: &[u8]| out.split(|b| *b == b'\n').map(<[u8]>::len).collect::<Vec<_>>();
+    for interpreted in [false, true] {
+        let how = if interpreted { "interpreted" } else { "compiled" };
+        let edges = format!("edges-{how}");
+        let (code, out, log) = run(interpreted, &edges, "never", edge);
+        assert_eq!((code, out.as_slice(), log.len()), (1, &b"OK\nOK\n1\ntwo words\n(nil)\n1\n0\n(nil)\nOK\nempty key\nOK\n\nOK\nbytes \xc3(\nOK\nvalue\r\nOK\ntwo words\n"[..], 103), "edges {how}");
+        let (code, out, log) = run(interpreted, &edges, "always", again);
+        assert_eq!((code, out.as_slice(), log.len()), (0, &b"two words\nOK\n1\n(nil)\n3\n"[..], 132), "read back {how}");
+        // 3,000 sets of three keys: the log is compacted once it is past 1 MB.
+        let hots = format!("hot-{how}");
+        let (code, out, log) = run(interpreted, &hots, "batch", &hot);
+        assert_eq!((code, lengths(&out)[3000..].to_vec(), log.len()), (0, vec![407, 408, 409, 5, 0], 202_040), "compacted {how}");
+        // The last record cut off, as a crash in its write leaves it: cut away, and the value
+        // before it is there.
+        let cut = format!("cut-{how}");
+        std::fs::create_dir_all(dir.join(&cut)).unwrap();
+        std::fs::write(dir.join(&cut).join("log"), &log[..log.len() - 5]).unwrap();
+        let (code, out, cut_log) = run(interpreted, &cut, "batch", gets);
+        assert_eq!((code, lengths(&out), cut_log.len()), (0, vec![407, 408, 406, 0], 201_614), "cut {how}");
+        // A bit turned in the first record, with more after it: the store does not start.
+        let turned = format!("turned-{how}");
+        std::fs::create_dir_all(dir.join(&turned)).unwrap();
+        let mut bad = log.clone();
+        bad[20] ^= 4;
+        std::fs::write(dir.join(&turned).join("log"), &bad).unwrap();
+        let (code, out, turned_log) = run(interpreted, &turned, "batch", gets);
+        assert_eq!((code, out.len(), turned_log == bad), (1, 0, true), "turned {how}");
+    }
+    // Interpreted and compiled leave the same logs.
+    for name in ["edges", "hot", "cut"] {
+        let log = |how: &str| std::fs::read(dir.join(format!("{name}-{how}")).join("log")).unwrap();
+        assert!(log("interpreted") == log("compiled"), "the log of {name}");
+    }
+}
+
 /// The trial of `jq` (choices 1804-1822): `trials/jq/sg`, a folder of files, built and run on the
 /// megabyte of records, lines and numbers `trials/inputs/json.sg` makes from seed 7, and on inputs
 /// that break things. What it prints and its exit code are jq 1.8.2's, taken from jq itself (the

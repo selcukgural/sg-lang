@@ -1,5 +1,5 @@
-error: `Route` cannot be `Hashable` field by field: `steps` is a `List<int>`, which is not `Hashable`
-  a collection can be compared with `==`, but it is not a key
-  --> error_hashable_collection_field.sg:2:5
- 2 |     List<int> steps
-   |     ^^^^^^^^^
+error: `Route` cannot be `Hashable` field by field: `steps` is a `HashSet<int>`, which is not `Hashable`
+  a set or a map can be compared with `==`, but it is not a key; a `List` is
+  --> error_hashable_collection_field.sg:3:5
+ 3 |     HashSet<int> steps
+   |     ^^^^^^^^^^^^

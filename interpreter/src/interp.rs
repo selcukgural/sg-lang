@@ -802,7 +802,7 @@ fn c_stdio_flush() {
 
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
-    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false }))));
+    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false, pipe: false }))));
     let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0, seekable: false }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
@@ -1172,6 +1172,8 @@ pub struct Writer {
     failed: Option<Value>,
     /// A file `File.createText` or `File.openWrite` opened: `seek` moves it.
     seekable: bool,
+    /// The input of another program: it cannot be put on the disk, nor given a length.
+    pipe: bool,
 }
 
 /// A writer that ends without `close` (in a field, a list, after an exit through `try`)
@@ -1635,12 +1637,20 @@ fn leaf_key(value: &Value) -> Option<Key> {
     })
 }
 
-/// The key of a struct or an enum whose fields are all of one part, as the walk of `key_of`
+/// The key of a struct or an enum whose fields are all of one part, or of a list whose items
+/// are (choice 1853: a list of bytes is a key, looked up by a slice), as the walk of `key_of`
 /// makes it; `None` for any other.
 fn flat_key(value: &Value) -> Option<Key> {
+    let list;
     let (index, fields): (Option<usize>, &[Cell]) = match value {
         Value::Struct(_, fields) => (None, &fields.cells),
         Value::Enum(_, index, fields) => (Some(*index), fields),
+        Value::List(items) => {
+            list = items.borrow();
+            (None, &list[..])
+        }
+        Value::Array(items) | Value::Slice(items) => (None, &items[..]),
+        Value::Bytes(text, start, end) => return Some(Key::Parts(text.as_bytes()[*start..*end].iter().map(|byte| Key::Int(i128::from(*byte))).collect())),
         _ => return None,
     };
     let mut parts = Vec::with_capacity(fields.len() + 1);
@@ -1665,11 +1675,22 @@ fn behind_pointers(mut value: Value) -> Value {
 /// Of a struct or an enum, puts the position of the variant with the parts and the fields on
 /// the list to be gone over, the first last; whether the value has fields.
 fn open_parts(value: &Value, parts: &mut Vec<Key>, left: &mut Vec<Option<Cell>>) -> bool {
+    let list;
     let fields: &[Cell] = match value {
         Value::Struct(_, fields) => &fields.cells,
         Value::Enum(_, index, fields) => {
             parts.push(Key::Int(*index as i128));
             fields
+        }
+        // The items of a list are its parts, as the fields of a struct are.
+        Value::List(items) => {
+            list = items.borrow();
+            &list[..]
+        }
+        Value::Array(items) | Value::Slice(items) => &items[..],
+        Value::Bytes(text, start, end) => {
+            parts.extend(text.as_bytes()[*start..*end].iter().map(|byte| Key::Int(i128::from(*byte))));
+            return true;
         }
         _ => return false,
     };
@@ -6032,7 +6053,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A writer's async methods do the work of the methods without `Async`; the
             // block that the compiled code writes on a thread of its own is written here.
             Callee::StreamAsync(call) => {
-                let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill) { 0 } else { 1 };
+                let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill | StreamCall::SyncData | StreamCall::Sync) { 0 } else { 1 };
                 let token = args.get(given);
                 // The input that can make the program wait is waited for outside the run.
                 if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
@@ -7337,6 +7358,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                 *items.borrow_mut() = sorted;
                 Ok(Value::Void)
             }
+            // A key looked up by a slice is put in as a list of its own (choice 1853), not as
+            // the cells of what the slice looks at.
+            (Value::Map(_), "getOrAdd") if matches!(args[0], Value::List(_) | Value::Array(_) | Value::Slice(_) | Value::Bytes(..)) => {
+                let items = Value::List(Rc::new(RefCell::new(cells_of(&args[0]).to_vec())));
+                args[0] = self.cloned(&items, span)?;
+                Ok(collection_method(recv, name, args))
+            }
             (Value::Map(entries), "add") => {
                 let value = args.remove(1);
                 let key = args.remove(0);
@@ -7413,7 +7441,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     _ => std::fs::OpenOptions::new().append(true).create(true).open(&path),
                 };
                 let seekable = call != IoCall::OpenAppend;
-                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable })))))
+                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable, pipe: false })))))
             }
         })
     }
@@ -7537,7 +7565,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable: false }))));
+                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable: false, pipe: true }))));
             }
             _ => {}
         }
@@ -7552,6 +7580,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::CreateDirectory => done(std::fs::create_dir(text(0)).map(|()| Value::Void)),
             SystemCall::RemoveDirectory => done(std::fs::remove_dir(text(0)).map(|()| Value::Void)),
             SystemCall::RemoveAll => done(remove_all(&text(0)).map(|()| Value::Void)),
+            SystemCall::SyncDirectory => done(crate::sys::sync_folder(&text(0)).map(|()| Value::Void)),
             SystemCall::List => {
                 let mut found = Vec::new();
                 let listed = std::fs::read_dir(text(0)).and_then(|entries| {
@@ -8282,6 +8311,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 self.write_stream(&writer, &[], true)
             }
+            (StreamCall::SyncData | StreamCall::Sync, Value::Writer(writer)) => {
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                self.sync_writer(&writer, call == StreamCall::SyncData)
+            }
+            (StreamCall::SetLength, Value::Writer(writer)) => {
+                let Value::Int(_, length) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a `long`") };
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                self.set_length(&writer, length as i64)
+            }
             (StreamCall::Seek, stream) => {
                 let Value::Enum(_, kind, fields) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a `SeekFrom`") };
                 if self.cancelled(token, frame)? {
@@ -8302,6 +8344,68 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             _ => unreachable!("the checker gives each method its stream"),
         }
+    }
+
+    /// `writer.syncData()` (`data`) and `writer.sync()`: what the buffer holds is written, then
+    /// the system puts the file on the disk. A standard stream or the input of another program
+    /// is written and is `InvalidInput`. A sync that failed is the writer's error from then on:
+    /// the system may have let go of what it could not write, so a later sync that succeeds
+    /// would not mean it is on the disk.
+    fn sync_writer(&mut self, writer: &Rc<RefCell<Writer>>, data: bool) -> Res<Value> {
+        let (file_of_writer, cause) = {
+            let writer = writer.borrow();
+            (matches!(writer.sink, Sink::File(_)) && !writer.pipe, writer.failed.clone())
+        };
+        if let Some(cause) = cause {
+            return Ok(failed(cause));
+        }
+        let flushed = self.write_stream(writer, &[], true)?;
+        if !file_of_writer || matches!(&flushed, Value::Enum(_, 1, _)) {
+            return Ok(match file_of_writer {
+                true => flushed,
+                false if matches!(&flushed, Value::Enum(_, 1, _)) => flushed,
+                false => failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new()))),
+            });
+        }
+        let mut writer = writer.borrow_mut();
+        let Sink::File(Some(file)) = &writer.sink else { unreachable!("a writer of a file") };
+        Ok(match crate::sys::sync_file(file, data) {
+            Ok(()) => ok(Value::Void),
+            Err(error) => {
+                let cause = io_cause(Some(&error), error.raw_os_error());
+                writer.failed = Some(cause.clone());
+                failed(cause)
+            }
+        })
+    }
+
+    /// `writer.setLength(n)`: what the buffer holds is written, then the file is cut to `n`
+    /// bytes or made longer with zeros. A standard stream or the input of another program is
+    /// `NotSeekable`; a length below 0 is `InvalidInput`.
+    fn set_length(&mut self, writer: &Rc<RefCell<Writer>>, length: i64) -> Res<Value> {
+        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        {
+            let writer = writer.borrow();
+            if !matches!(writer.sink, Sink::File(_)) || writer.pipe {
+                return Ok(io_variant(17));
+            }
+            if let Some(cause) = &writer.failed {
+                return Ok(failed(cause.clone()));
+            }
+        }
+        if length < 0 {
+            return Ok(io_variant(15));
+        }
+        let flushed = self.write_stream(writer, &[], true)?;
+        if matches!(&flushed, Value::Enum(_, 1, _)) {
+            return Ok(flushed);
+        }
+        let writer = writer.borrow();
+        let Sink::File(Some(file)) = &writer.sink else { unreachable!("a writer of a file") };
+        Ok(match crate::sys::set_length(file, length as u64) {
+            Ok(()) => ok(Value::Void),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        })
     }
 
     /// `stream.seek(from)`: `kind` is the variant of `SeekFrom` (0 `Start`, 1 `End`, 2 `Current`).

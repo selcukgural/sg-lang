@@ -3691,8 +3691,12 @@ SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_st
 
 /// The hash table behind a `HashMap` or a `HashSet`, written once for each type of table.
 /// The entries lie one after the other in `entries`, in the order they were added; `slots`
-/// says, for each place a hash can point at, which entry is there (its position plus one, 0 for
-/// none). An entry that is removed is replaced by the last one. `@N` is the name of the type,
+/// says, for each place a hash can point at, which entry is there (its position plus one in the
+/// low 32 bits, 0 for none) and the low 32 bits of its key's hash in the high ones. A key is
+/// compared only with an entry whose hash agrees, so a search does not reach the key of each
+/// entry it passes, and growing places the entries again by the hashes kept, without hashing
+/// their keys, as Rust's hashbrown keeps seven bits of each. An entry that is removed is
+/// replaced by the last one. `@N` is the name of the type,
 /// `@K` the key, `@P` the key as it is given to look something up; the lines between `@V{`
 /// and `@V}` are for a map only.
 /// Raw memory: `Memory.allocate<T>(n)` is zeroed memory from `calloc`, behind the tests the
@@ -4161,20 +4165,23 @@ pub fn link_flags(code: &str) -> Vec<String> {
 const TABLE: &str = r#"
 static int64_t sg_find_@N(const sg_@N* m, @P key) {
     if (m->len == 0) return -1;
-    uint64_t at = sg_khash_@N(key) & (uint64_t)m->mask;
+    uint32_t hash = (uint32_t)sg_khash_@N(key);
+    uint64_t at = hash & (uint64_t)m->mask;
     for (;;) {
-        uint32_t slot = m->slots[at];
+        uint64_t slot = m->slots[at];
         if (slot == 0) return -1;
-        if (sg_keq_@N(&m->entries[slot - 1].m_key, key)) return (int64_t)slot - 1;
+        if ((uint32_t)(slot >> 32) == hash && sg_keq_@N(&m->entries[(uint32_t)slot - 1].m_key, key)) return (int64_t)(uint32_t)slot - 1;
         at = (at + 1) & (uint64_t)m->mask;
     }
 }
-static void sg_place_@N(sg_@N* m, int64_t entry) {
-    uint64_t at = sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & (uint64_t)m->mask;
-    while (m->slots[at] != 0) at = (at + 1) & (uint64_t)m->mask;
-    m->slots[at] = (uint32_t)entry + 1;
+/* A slot for the entry whose key has this hash, past those taken. */
+static inline void sg_place_@N(uint64_t* slots, uint64_t mask, uint32_t hash, uint64_t entry) {
+    uint64_t at = hash & mask;
+    while (slots[at] != 0) at = (at + 1) & mask;
+    slots[at] = ((uint64_t)hash << 32) | (entry + 1);
 }
-/* Room for one more entry; the slots are kept at most three quarters full. */
+/* Room for one more entry; the slots are kept at most three quarters full. Growing places each
+   entry again by the hash its slot keeps. */
 static void sg_room_@N(sg_@N* m) {
     if (m->len == m->cap) {
         if (m->len >= 0x7fffffff) abort();
@@ -4182,11 +4189,17 @@ static void sg_room_@N(sg_@N* m) {
     }
     if (!m->slots || (m->len + 1) * 4 > (m->mask + 1) * 3) {
         int64_t size = m->slots ? (m->mask + 1) * 2 : 8;
-        free(m->slots);
-        m->slots = calloc((size_t)size, sizeof(uint32_t));
-        if (!m->slots) abort();
+        uint64_t* slots = calloc((size_t)size, sizeof(uint64_t));
+        if (!slots) abort();
+        if (m->slots) {
+            for (int64_t i = 0; i <= m->mask; i++) {
+                uint64_t slot = m->slots[i];
+                if (slot != 0) sg_place_@N(slots, (uint64_t)size - 1, (uint32_t)(slot >> 32), (uint32_t)slot - 1);
+            }
+            free(m->slots);
+        }
+        m->slots = slots;
         m->mask = size - 1;
-        for (int64_t i = 0; i < m->len; i++) sg_place_@N(m, i);
     }
 }
 /* A key that is known not to be there yet. */
@@ -4194,17 +4207,17 @@ static inline void sg_put_@N(sg_@N* m, @K key@V{, @W value@V}) {
     sg_room_@N(m);
     m->entries[m->len].m_key = key;@V{
     m->entries[m->len].m_value = value;@V}
+    sg_place_@N(m->slots, (uint64_t)m->mask, (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[m->len].m_key)), (uint64_t)m->len);
     m->len++;
-    sg_place_@N(m, m->len - 1);
 }
 /* Takes the entry out of the table without freeing what it holds. The slots after it move
    up so that every key is still found from its own place; the last entry takes its room. */
 static void sg_take_@N(sg_@N* m, int64_t entry) {
     uint64_t mask = (uint64_t)m->mask;
-    uint64_t hole = sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & mask;
-    while (m->slots[hole] != (uint32_t)entry + 1) hole = (hole + 1) & mask;
+    uint64_t hole = (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & mask;
+    while ((uint32_t)m->slots[hole] != (uint32_t)entry + 1) hole = (hole + 1) & mask;
     for (uint64_t next = (hole + 1) & mask; m->slots[next] != 0; next = (next + 1) & mask) {
-        uint64_t home = sg_khash_@N(sg_kof_@N(&m->entries[m->slots[next] - 1].m_key)) & mask;
+        uint64_t home = (m->slots[next] >> 32) & mask;
         if (((next - home) & mask) >= ((next - hole) & mask)) {
             m->slots[hole] = m->slots[next];
             hole = next;
@@ -4213,9 +4226,9 @@ static void sg_take_@N(sg_@N* m, int64_t entry) {
     m->slots[hole] = 0;
     int64_t last = m->len - 1;
     if (entry != last) {
-        uint64_t at = sg_khash_@N(sg_kof_@N(&m->entries[last].m_key)) & mask;
-        while (m->slots[at] != (uint32_t)last + 1) at = (at + 1) & mask;
-        m->slots[at] = (uint32_t)entry + 1;
+        uint64_t at = (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[last].m_key)) & mask;
+        while ((uint32_t)m->slots[at] != (uint32_t)last + 1) at = (at + 1) & mask;
+        m->slots[at] = (m->slots[at] & 0xFFFFFFFF00000000ULL) | ((uint64_t)entry + 1);
         m->entries[entry] = m->entries[last];
     }
     m->len = last;
@@ -4237,7 +4250,7 @@ static inline sg_@N sg_move_@N(sg_@N* m) { sg_@N out = *m; *m = (sg_@N){ 0 }; re
 static void sg_clear_@N(sg_@N* m) {
     for (int64_t i = 0; i < m->len; i++) { @DROPE(m->entries[i]) }
     m->len = 0;
-    if (m->slots) memset(m->slots, 0, (size_t)(m->mask + 1) * sizeof(uint32_t));
+    if (m->slots) memset(m->slots, 0, (size_t)(m->mask + 1) * sizeof(uint64_t));
 }@V{
 static inline void sg_add_@N(sg_@N* m, @K key, @W value, const char* loc) {
     if (__builtin_expect(sg_find_@N(m, sg_kof_@N(&key)) >= 0, 0)) sg_fail_@N(sg_kof_@N(&key), false, loc);
@@ -9873,6 +9886,18 @@ static int sg_fs_rmdir(sg_str path) {
     free(name);
     return code;
 }
+/* `Directory.sync(path)`: Windows keeps the names of a folder with the files themselves, so only
+   a path that is not a folder is told. */
+static int sg_fs_sync_dir(sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    DWORD kind = GetFileAttributesW(name);
+    if (kind == INVALID_FILE_ATTRIBUTES) code = sg_win_refine(name, sg_win_error());
+    else if (!(kind & FILE_ATTRIBUTE_DIRECTORY)) code = SG_E_NOT_DIR;
+    free(name);
+    return code;
+}
 /* The path made whole, with `\\?\` in front: the paths inside it may grow long. */
 static wchar_t* sg_win_verbatim(const wchar_t* name) {
     if (wcsncmp(name, L"\\\\?\\", 4) == 0) {
@@ -10228,6 +10253,19 @@ static int sg_fs_rmdir(sg_str path) {
     if (!name) return code;
     if (rmdir(name) != 0) code = sg_os_error();
     free(name);
+    return code;
+}
+/* `Directory.sync(path)`: the folder opened and put on the disk as a file is, so that a name
+   made, renamed or removed in it stays. */
+static int sg_fs_sync_dir(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    free(name);
+    if (fd < 0) return sg_os_error();
+    code = sg_sys_sync(fd, false);
+    close(fd);
     return code;
 }
 /* Removes all that the folder `fd` holds, and closes it. Each folder inside is opened through the
@@ -10605,6 +10643,28 @@ static int sg_sys_where(int fd, int64_t* at) {
     *at = p.QuadPart;
     return 0;
 }
+/* `syncData` and `sync`: both `FlushFileBuffers`, as Rust's `sync_data` and `sync_all` are. */
+static int sg_sys_sync(int fd, bool data) {
+    (void)data;
+    return FlushFileBuffers(sg_handle(fd)) ? 0 : sg_win_error();
+}
+/* `setLength`: the end of the file moved to `n` without moving where it is written. A writer of
+   `openAppend` holds only the right to append (`FILE_APPEND_DATA`), so the file is opened once more
+   through its handle with the right to write, and its end set there; the writer still appends. */
+static int sg_sys_set_length(int fd, int64_t n) {
+    HANDLE h = sg_handle(fd);
+    if (GetFileType(h) != FILE_TYPE_DISK) return SG_NOT_SEEKABLE;
+    FILE_END_OF_FILE_INFO end;
+    end.EndOfFile.QuadPart = n;
+    if (SetFileInformationByHandle(h, FileEndOfFileInfo, &end, sizeof end)) return 0;
+    int code = sg_win_error();
+    if (code != ERROR_ACCESS_DENIED) return code;
+    HANDLE again = ReOpenFile(h, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
+    if (again == INVALID_HANDLE_VALUE) return sg_win_error();
+    code = SetFileInformationByHandle(again, FileEndOfFileInfo, &end, sizeof end) ? 0 : sg_win_error();
+    CloseHandle(again);
+    return code;
+}
 /* The input when it is a console: read as UTF-16 with `ReadConsoleW` and given as UTF-8, a pair
    of UTF-16 cut between two reads kept until it is whole. A Ctrl-Z at the start of a line ends
    the input, as it does for the programs of Windows. */
@@ -10704,6 +10764,27 @@ static int sg_sys_where(int fd, int64_t* at) {
     if (p < 0) return sg_os_error();
     *at = (int64_t)p;
     return 0;
+}
+/* `syncData` (`data`) and `sync`: as Rust's `sync_data` and `sync_all`, `fdatasync` and `fsync`;
+   on macOS both are `F_FULLFSYNC`, since its `fsync` leaves the bytes in the disk's own cache. */
+static int sg_sys_sync(int fd, bool data) {
+    for (;;) {
+#if defined(__APPLE__)
+        (void)data;
+        int r = fcntl(fd, F_FULLFSYNC);
+#else
+        int r = data ? fdatasync(fd) : fsync(fd);
+#endif
+        if (r == 0) return 0;
+        if (errno != EINTR) return sg_os_error();
+    }
+}
+/* `setLength`: `ftruncate`, which does not move where the file is written. */
+static int sg_sys_set_length(int fd, int64_t n) {
+    for (;;) {
+        if (ftruncate(fd, (off_t)n) == 0) return 0;
+        if (errno != EINTR) return sg_os_error();
+    }
 }
 static int sg_io_kind(int code) {
     switch (code) {
@@ -11598,6 +11679,32 @@ static int sg_writer_seek(sg_writer* w, int kind, int64_t offset, int64_t* at) {
     *at = to;
     return 0;
 }
+/* `writer.syncData()` (`data`) and `writer.sync()`: the block is written, then the system puts the
+   file on the disk. A standard stream and the input of another program are written and are
+   `InvalidInput`. A sync that failed is the writer's error from then on: the system may have let
+   go of what it could not write, and a later sync that succeeded would not mean it is there. */
+static int sg_writer_sync(sg_writer* w, bool data) {
+    if (sg_failed(w)) return sg_failed(w);
+    if (w->std || w->pipe) {
+        int code = sg_writer_flush(w);
+        return code ? code : SG_INVALID_INPUT;
+    }
+    int code = w->buf.len > 0 ? sg_writer_out(w) : 0;
+    if (code) return code;
+    code = sg_sys_sync(w->fd, data);
+    if (code) w->failed = code;
+    return code;
+}
+/* `writer.setLength(n)`: the block is written, then the file is cut to `n` bytes or made longer
+   with zeros. A standard stream and the input of another program are `NotSeekable`. */
+static int sg_writer_set_length(sg_writer* w, int64_t n) {
+    if (w->std || w->pipe) return SG_NOT_SEEKABLE;
+    if (w->failed) return w->failed;
+    if (n < 0) return SG_INVALID_INPUT;
+    int code = w->buf.len > 0 ? sg_writer_out(w) : 0;
+    if (code) return code;
+    return sg_sys_set_length(w->fd, n);
+}
 "#;
 
 /// What a program with async input and output needs besides `IO_RUNTIME`: the threads that do
@@ -12011,8 +12118,9 @@ static int sg_lap_wait(sg_reader* r, sg_wait* w, sg_cancel* token, const char* l
 #endif
 /* What a writer's async methods cannot do in place: write the block out, then `bytes` straight
    (a `writeBytesAsync` of 64 KB or more); with `w` NULL, close the writer `held`, moved here
-   (`closeAsync`). `r`: the error code, or 0. */
-typedef struct { sg_io io; sg_writer* w; const uint8_t* bytes; int64_t len; sg_writer held; int r; } sg_io_writer;
+   (`closeAsync`); with `then`, after the block, 1 `syncDataAsync`, 2 `syncAsync`, 3
+   `setLengthAsync` to `length`. `r`: the error code, or 0. */
+typedef struct { sg_io io; sg_writer* w; const uint8_t* bytes; int64_t len; sg_writer held; int then; int64_t length; int r; } sg_io_writer;
 static void sg_io_run_writer(sg_io* io) {
     sg_io_writer* x = (sg_io_writer*)io;
     if (!x->w) { x->r = sg_writer_close(&x->held); return; }
@@ -12021,7 +12129,22 @@ static void sg_io_run_writer(sg_io* io) {
         code = sg_writer_put(x->w, x->bytes, x->len);
         if (code) x->w->failed = code;
     }
+    if (!code && x->then) code = x->then == 3 ? sg_writer_set_length(x->w, x->length) : sg_writer_sync(x->w, x->then == 1);
     x->r = code;
+}
+static inline sg_io_writer sg_io_writer_then(sg_writer* w, int then, int64_t length) { return (sg_io_writer){ .w = w, .then = then, .length = length }; }
+/* `syncDataAsync`, `syncAsync` and `setLengthAsync` in place where they need no thread: -1 when
+   the file has to be asked on one. */
+static inline int sg_writer_sync_n(sg_writer* w, bool data) {
+    if (sg_failed(w)) return sg_failed(w);
+    if (w->std || w->pipe) return sg_writer_sync(w, data);
+    return -1;
+}
+static inline int sg_writer_set_length_n(sg_writer* w, int64_t n) {
+    if (w->std || w->pipe) return SG_NOT_SEEKABLE;
+    if (w->failed) return w->failed;
+    if (n < 0) return SG_INVALID_INPUT;
+    return -1;
 }
 static inline sg_io_writer sg_io_writer_out(sg_writer* w, const uint8_t* bytes, int64_t len) { return (sg_io_writer){ .w = w, .bytes = bytes, .len = len }; }
 static inline sg_io_writer sg_io_writer_close(sg_writer held) { return (sg_io_writer){ .w = NULL, .held = held }; }
@@ -14574,7 +14697,7 @@ impl<'a> Emitter<'a> {
                 // The entry is only pointed at by the table, so a struct can hold a map of
                 // its own kind; what the entry is made of is written after all the structs.
                 let _ = writeln!(self.types, "typedef struct sg_E_{name} sg_E_{name};");
-                let _ = writeln!(self.types, "typedef struct {{ sg_E_{name}* entries; uint32_t* slots; int64_t len; int64_t cap; int64_t mask; }} sg_{name};");
+                let _ = writeln!(self.types, "typedef struct {{ sg_E_{name}* entries; uint64_t* slots; int64_t len; int64_t cap; int64_t mask; }} sg_{name};");
                 let held = if value.is_some() { format!(" {value_c} m_value;") } else { String::new() };
                 let _ = writeln!(self.late_types, "struct sg_E_{name} {{ {key_c} m_key;{held} }};");
                 // How a key is given, hashed, compared and written.
@@ -14600,6 +14723,27 @@ impl<'a> Emitter<'a> {
                         "sg_view(held)".to_string(),
                         "sg_put_quoted(out, key);".to_string(),
                     ),
+                    // A list is given as a window onto the items, a slice of a buffer or all of a
+                    // list (choice 1853); items that own nothing are compared as their bytes.
+                    Ty::List(item) => {
+                        let window = self.ctype(&Ty::Slice(item.clone()), span)?;
+                        let equal = match &**item {
+                            Ty::Int(_) | Ty::Bool | Ty::Char => {
+                                "held->len == key.len && (key.len == 0 || memcmp(held->ptr, key.ptr, (size_t)key.len * sizeof *key.ptr) == 0)".to_string()
+                            }
+                            _ => format!(
+                                "({{ bool same = held->len == key.len; for (int64_t i = 0; same && i < key.len; i++) same = {}; same; }})",
+                                self.same_at(item, "held->ptr[i]", "key.ptr[i]", span)?
+                            ),
+                        };
+                        (
+                            window.clone(),
+                            format!("{}(key, 0)", self.window_hasher(item, span)?),
+                            equal,
+                            format!("({window}){{ held->ptr, held->len }}"),
+                            format!("{key_c} shown = {{ key.ptr, key.len, key.len }}; {}(out, &shown);", self.shower(key, span)?),
+                        )
+                    }
                     _ => (
                         format!("{key_c} const*"),
                         format!("{}(key, 0)", self.hasher(key, span)?),
@@ -16009,9 +16153,34 @@ impl<'a> Emitter<'a> {
                 }
                 body.push_str(" default: break; } return h;");
             }
+            // A list is hashed as the window onto all of it, as it is looked up (choice 1853).
+            Ty::List(item) => {
+                let window = self.ctype(&Ty::Slice(item.clone()), span)?;
+                let _ = write!(body, "return {}(({window}){{ v->ptr, v->len }}, h);", self.window_hasher(item, span)?);
+            }
             other => return Err(not_yet(span, &format!("a `{other}` as a key"))),
         }
         let _ = writeln!(self.glue, "static uint64_t {helper}({ctype} const* v, uint64_t h) {{ {body} }}");
+        Ok(helper)
+    }
+
+    /// The helper that hashes the items a window shows, on top of `h`: bytes as text is hashed,
+    /// other items one by one after their number, so that the key of a list is the same
+    /// whether it is the list or a slice of a buffer that holds the same items.
+    fn window_hasher(&mut self, item: &Ty, span: Span) -> Res<String> {
+        let slice = Ty::Slice(Box::new(item.clone()));
+        let name = mangle(&slice).ok_or_else(|| not_yet(span, &format!("a `List<{item}>` as a key")))?;
+        let helper = format!("sg_hash_{name}");
+        let window = self.ctype(&slice, span)?;
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let body = match item {
+            Ty::Int(IntTy::Byte) => "return sg_hash_bytes(h, (const uint8_t*)v.ptr, v.len);".to_string(),
+            _ => format!("h = sg_hash_word(h, (uint64_t)v.len); for (int64_t i = 0; i < v.len; i++) h = {}(&v.ptr[i], h); return h;", self.hasher(item, span)?),
+        };
+        let _ = writeln!(self.glue_protos, "static uint64_t {helper}({window} v, uint64_t h);");
+        let _ = writeln!(self.glue, "static uint64_t {helper}({window} v, uint64_t h) {{ {body} }}");
         Ok(helper)
     }
 
@@ -16022,6 +16191,7 @@ impl<'a> Emitter<'a> {
         match &**key {
             Ty::Int(_) | Ty::Bool | Ty::Char => self.value(arg),
             Ty::Str => self.view(arg),
+            Ty::List(_) => self.window(arg),
             _ => self.pointer(arg),
         }
     }
@@ -16043,6 +16213,7 @@ impl<'a> Emitter<'a> {
         let value = self.key(table, arg)?;
         let ty = match &**key {
             Ty::Int(_) | Ty::Bool | Ty::Char => (**key).clone(),
+            Ty::List(item) => Ty::Read(Box::new(Ty::Slice(item.clone()))),
             _ => Ty::Read(key.clone()),
         };
         Ok(self.part(arg, &ty, value, before))
@@ -16061,14 +16232,23 @@ impl<'a> Emitter<'a> {
         let given = match &**key {
             Ty::Int(_) | Ty::Bool | Ty::Char => key_c.clone(),
             Ty::Str => "sg_str".to_string(),
+            Ty::List(item) => self.ctype(&Ty::Slice(item.clone()), span)?,
             _ => format!("{key_c} const*"),
         };
         if what == "getOrAdd" {
             // The key is only lent; if it has to be kept, the table keeps a copy.
             let copy = match &**key {
-                Ty::Int(_) | Ty::Bool | Ty::Char => "key",
-                Ty::Str => "sg_clone(key)",
-                other if !self.droppable(other) => "*key",
+                Ty::Int(_) | Ty::Bool | Ty::Char => "key".to_string(),
+                Ty::Str => "sg_clone(key)".to_string(),
+                // A list of its own, made of the items the window shows.
+                Ty::List(item) => {
+                    let each = self.copy_at(item, "&key.ptr[i]", span)?;
+                    format!(
+                        "({{ {key_c} copy = {{ NULL, 0, 0 }}; if (key.len > 0) {{ copy.ptr = sg_reserve(copy.ptr, &copy.cap, key.len, sizeof *copy.ptr, _Alignof(__typeof__(*copy.ptr))); \
+                         for (int64_t i = 0; i < key.len; i++) copy.ptr[i] = {each}; copy.len = key.len; }} copy; }})"
+                    )
+                }
+                other if !self.droppable(other) => "*key".to_string(),
                 other => return Err(not_yet(span, &format!("`getOrAdd` with a key of the type `{other}`"))),
             };
             let drop = if self.droppable(value) { self.drop_of(value, "value") } else { String::new() };
@@ -19543,6 +19723,7 @@ impl<'a> Emitter<'a> {
             SystemCall::CreateDirectory => ("sg_system_create_directory", vec![text()], plain("sg_fs_mkdir(a0)")),
             SystemCall::RemoveDirectory => ("sg_system_remove_directory", vec![text()], plain("sg_fs_rmdir(a0)")),
             SystemCall::RemoveAll => ("sg_system_remove_all", vec![text()], plain("sg_fs_remove_all(a0)")),
+            SystemCall::SyncDirectory => ("sg_system_sync_directory", vec![text()], plain("sg_fs_sync_dir(a0)")),
             SystemCall::List => (
                 "sg_system_list",
                 vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), bytes()],
@@ -19876,6 +20057,14 @@ impl<'a> Emitter<'a> {
                 Ok(format!("({{ sg_reader* {temp} = {}; SG_IN_HOLD({temp}, false, {loc}); (sg_read_lines){{ {temp}, false, {loc} }}; }})", self.list_address(recv)?))
             }
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
+            StreamCall::SyncData | StreamCall::Sync => {
+                Ok(done(&format!("sg_writer_sync({}, {})", self.list_address(recv)?, call == StreamCall::SyncData)))
+            }
+            StreamCall::SetLength => {
+                let (temp, writer) = (self.temp(), self.list_address(recv)?);
+                let length = self.value(&args[0])?;
+                Ok(format!("({{ sg_writer* {temp} = {writer}; {}; }})", done(&format!("sg_writer_set_length({temp}, {length})"))))
+            }
             // The bytes the block holds, looked at where they are.
             StreamCall::Buffered => {
                 let (window, temp) = (self.ctype(&expr.ty, span)?, self.temp());
@@ -20576,6 +20765,35 @@ impl<'a> Emitter<'a> {
                     None => self.pre.push(format!("int {c} = sg_writer_flush_n({w});")),
                 }
                 "NULL, 0".to_string()
+            }
+            // The block and the call of the system both go to a thread: a sync may take long.
+            StreamCall::SyncData | StreamCall::Sync | StreamCall::SetLength => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                let (then, length, start) = match call {
+                    StreamCall::SetLength => {
+                        let length = self.value(&args[0])?;
+                        self.pre.push(format!("int64_t {w}l = {length};"));
+                        (3, format!("{w}l"), format!("sg_writer_set_length_n({w}, {w}l)"))
+                    }
+                    _ => {
+                        let data = call == StreamCall::SyncData;
+                        (if data { 1 } else { 2 }, "0".to_string(), format!("sg_writer_sync_n({w}, {data})"))
+                    }
+                };
+                let given = usize::from(call == StreamCall::SetLength);
+                match token(self, given)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : {start};")),
+                    None => self.pre.push(format!("int {c} = {start};")),
+                }
+                let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
+                awaits.push(span);
+                let mark = awaits.len() - 1;
+                self.pre.push(format!(
+                    "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_then({w}, {then}, {length}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
+                     SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) {{ return false; }} {c} = {w}i.r; }}"
+                ));
+                return Ok(self.writer_result(&c, &gives));
             }
             StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
             StreamCall::Buffered | StreamCall::Consume => unreachable!("the checker gives these no async form"),

@@ -1,0 +1,6 @@
+// A length is a `long`, as the size of a file is.
+Result<void, IoError> main() {
+    var w = try File.createText("x")
+    try w.setLength("4")
+    return Ok()
+}

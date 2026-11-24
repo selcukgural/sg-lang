@@ -503,10 +503,20 @@ alone is no longer chosen as the inner text before a longer one. `grep -c -i err
 `findAll` of `(?i)error [a-z]+` takes 0.039 s, from 0.226 s (Rust 0.025 s), and of `x+error` 0.007 s, from
 0.171 s (Rust 0.014 s).
 
+Slice 175 (1844-1853) is the trial of a store of keys and values with a log written before each change,
+`trials/kv`, in SG, Rust and Zig, held to a model written in Python and killed in the middle of its sets. It
+asked two things of the language. A writer is put on the disk with `syncData` (`fdatasync`, `F_FULLFSYNC` on
+macOS) and `sync`, cut to a length with `setLength`, and a folder's names synced with `Directory.sync`; a
+sync that failed stays the writer's error. And a `List<T>` is a key when `T` is, looked up by a slice of
+what it holds, so a part of the buffer a line lies in finds its key without a copy. The trial found the hash tables of
+compiled code slow where a map is large: a slot now keeps 32 bits of its key's hash, so a search compares only
+keys whose hash agrees and growing hashes nothing again; ten million keys are compacted in 4.3 s, ahead of
+Rust's 5.4 s, and the table benchmark takes the time of C.
+
 ## Next
 
 Next comes the heavy level of
-the stand, run at night, a key-value store with a write-ahead log, a pool of workers,
+the stand, run at night, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with

@@ -1,0 +1,5 @@
+panic: key [104, 105] is already in the map
+  to change what is kept under a key, write `map[key] = value`
+  --> panic_list_key_twice.sg:8:5
+ 8 |     seen.add(key.clone(), 2)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^

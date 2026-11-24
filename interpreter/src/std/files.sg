@@ -129,6 +129,14 @@ public struct Directory {
         return System.removeAll(path)
     }
 
+    // Puts the names the folder holds on the disk, so that a file made, renamed or removed in it
+    // stays so if the machine stops: after `File.replace` of a file written and synced, the new
+    // name is not certain until its folder is synced too. On Windows, which keeps the names with
+    // the files, it does nothing but tell a path that is not a folder (`NotDirectory`).
+    public Result<void, IoError> sync(read string path) {
+        return System.syncDirectory(path)
+    }
+
     // The names in the folder, without `.` and `..`, in the order of their bytes: the same on every
     // system. A name that is not UTF-8 is an `InvalidText` at its first byte that is not.
     public Result<List<DirectoryEntry>, IoError> list(read string path) {

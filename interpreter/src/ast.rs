@@ -887,6 +887,9 @@ pub enum SystemCall {
     RemoveDirectory,
     /// `System.removeAll(path)`: a folder with all it holds, links not followed.
     RemoveAll,
+    /// `System.syncDirectory(path)`: the names a folder holds put on the disk (`fsync` of the
+    /// folder), so that a file made, renamed or removed in it stays so; nothing on Windows.
+    SyncDirectory,
     /// `System.list(path, ref names, ref kinds)`: the names of a folder in the order of their
     /// bytes, and the kind of each.
     List,
@@ -1058,6 +1061,16 @@ pub enum StreamCall {
     Flush,
     /// `writer.close()`: the buffer goes out and the file is closed; takes the writer.
     Close,
+    /// `writer.syncData()`: the buffer goes out and the system puts the bytes of the file on
+    /// the disk, with what is needed to read them back (`fdatasync`, `F_FULLFSYNC` on macOS,
+    /// `FlushFileBuffers` on Windows).
+    SyncData,
+    /// `writer.sync()`: as `syncData`, and the rest of what the system keeps of the file, its
+    /// times among it (`fsync`).
+    Sync,
+    /// `writer.setLength(n)`: the buffer goes out and the file is cut to `n` bytes, or made
+    /// longer with zeros; where the writer stands does not move.
+    SetLength,
     /// `reader.seek(from)`, `writer.seek(from)`: where the next read or write starts, given by a
     /// `SeekFrom`; gives the new place, counted from the start of the file.
     Seek,

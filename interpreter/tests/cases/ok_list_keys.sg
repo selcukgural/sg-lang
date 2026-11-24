@@ -1,0 +1,79 @@
+// A list is a key when what it holds is (choice 1853): it is looked up by a slice of what it
+// holds, a part of a buffer or all of a list, without a copy; `getOrAdd` keeps a list of its own.
+struct Route : Equatable, Hashable, Formattable {
+    List<byte> steps
+    int cost
+}
+
+void main() {
+    var counts = HashMap<List<byte>, int>()
+    var buffer = byte[8] { 'a', 'b', 'c', 'a', 'b', 'x', 'a', 'b' }
+    // Each pair of bytes, counted where it lies in the buffer.
+    for at in 0..7 {
+        var slot = counts.getOrAdd(buffer[at..at + 2], 0)
+        slot += 1
+    }
+    var ab = List<byte>()
+    ab.add('a')
+    ab.add('b')
+    print(counts[read ab])
+    print(counts.get(buffer[1..3]) ?? -1)
+    print(counts.contains(buffer[4..6]))
+    print(counts.contains(buffer[0..1]))
+    // What was kept is a copy: the buffer may change.
+    buffer[0] = 'z'
+    print(counts.get(read ab) ?? -1)
+    print(counts.length())
+    print(counts.remove(read ab) ?? -1)
+    print(counts.length())
+
+    // The empty list is a key too, and a slice of nothing finds it.
+    counts.add(List<byte>(), 7)
+    print(counts.get(buffer[3..3]) ?? -1)
+    print(counts.get("".asBytes()) ?? -1)
+    // The bytes of a text find the list of the same bytes.
+    var text = "bc"
+    print(counts.get(text.asBytes()) ?? -1)
+
+    // A list of texts, and a list of lists.
+    var paths = HashMap<List<string>, int>()
+    var path = List<string>()
+    path.add("usr")
+    path.add("bin")
+    var first = paths.getOrAdd(read path, 0)
+    first += 2
+    var again = paths.getOrAdd(read path, 0)
+    again += 3
+    path.add("sg")
+    print(paths.getOrAdd(read path, 9))
+    _ = path.removeLast()
+    print(paths.get(read path) ?? -1)
+    var nested = HashSet<List<List<int>>>()
+    var inner = List<List<int>>()
+    inner.add(List<int>())
+    print(nested.add(inner.clone()))
+    inner[0].add(1)
+    print(nested.add(inner.clone()))
+    print(nested.add(inner.clone()))
+    print(nested.length())
+
+    // A struct with a list in it is `Hashable` field by field.
+    var routes = HashSet<Route>()
+    print(routes.add(Route { steps = ab.clone(), cost = 1 }))
+    print(routes.contains(read Route { steps = ab.clone(), cost = 1 }))
+    print(routes.contains(read Route { steps = List<byte>(), cost = 1 }))
+
+    // Two maps with lists for keys are equal when they hold the same.
+    var a = HashMap<List<byte>, int>()
+    var b = HashMap<List<byte>, int>()
+    a.add(ab.clone(), 1)
+    a.add(List<byte>(), 2)
+    b.add(List<byte>(), 2)
+    b.add(ab.clone(), 1)
+    print(a == b)
+    for entry in a {
+        if entry.value == 1 {
+            print(entry.key)
+        }
+    }
+}

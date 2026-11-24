@@ -1,0 +1,5 @@
+error: `List<double>` cannot be an item of a `HashSet`: it is not `Equatable` and `Hashable`
+  a list is a key when what it holds is: integers, `bool`, `char`, `string` and the types written with `: Equatable, Hashable`
+  --> error_list_of_double_key.sg:3:24
+ 3 |     var seen = HashSet<List<double>>()
+   |                        ^^^^^^^^^^^^

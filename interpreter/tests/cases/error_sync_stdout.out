@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program, which is not a file the program can put on the disk
+  a file opened with `File.createText(path)`, `File.openWrite(path)` or `File.openAppend(path)` can
+  --> error_sync_stdout.sg:3:9
+ 3 |     try Stdout.syncData()
+   |         ^^^^^^

@@ -1,0 +1,9 @@
+[package]
+name = "kv"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The CRC-32 people use in Rust, with the instructions of the processor where it has them.
+crc32fast = "1"

@@ -16,6 +16,7 @@ that keep it fair, in [How it is measured](../benchmarks/method.md). This folder
 | [wc](wc) | The lines, words and bytes of files, read in pieces of 64 KB | 133 |
 | [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v`; a line is read and searched as bytes, so one that is not UTF-8 is written as it is (choice 1840) | 133, 173 |
 | [jq](jq) | The jq people use, held byte for byte to jq 1.8.2, on records, lines and numbers of JSON and on inputs that break things (choices 1804-1822); jq and jaq measured beside it | 166 |
+| [kv](kv) | A store of keys and values with a log written before each change, synced each block, each record or never; read back, cut by a crash, damaged, compacted; held to a model in Python and killed in the middle (choices 1844-1853) | 175 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
 and their tables are in [The library against Rust and Zig](../benchmarks/library.md):
@@ -38,7 +39,7 @@ Servers are measured in [server](server) (choices 1698-1707): a store that speak
 and an HTTP server, each in SG, Rust, Zig and C, under one load written in C, on Linux, with their tables in
 [Servers against Rust, Zig and C](../benchmarks/server.md).
 
-Still to come, in this order: a key-value store with a write-ahead log, a pool of workers,
+Still to come, in this order: a pool of workers,
 an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 
 ## How they are written (1525-1532)

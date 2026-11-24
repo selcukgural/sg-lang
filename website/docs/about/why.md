@@ -148,16 +148,16 @@ and 11 are slower. Some of them (time of SG divided by time of C; 1.00 is the sa
 | A linked list of a million nodes, built, walked and freed | 1.01 |
 | A list of a million numbers, filled, changed, added up | 1.02 |
 | Three hundred million lookups that give back a borrow or nothing | 1.01 |
-| Counting in a hash table | 1.20 |
+| Counting in a hash table | 1.00 |
 | Printing two million structs | 0.47 |
 
-The hash table is slower because it uses a keyed hash by default, which protects against crafted keys; with a
-plain hash it is 0.99. The same programs were measured on Windows 11 too (64-bit Arm, in a virtual machine):
+The hash table uses a keyed hash by default, which protects against crafted keys, and still takes the time of C:
+each slot keeps part of its key's hash, so a search compares only the keys that may be the one. The same programs were measured on Windows 11 too (64-bit Arm, in a virtual machine):
 most take the time of C there as well, and those that lean on Windows' C library (`printf`, `fgets`) are
 several times faster in SG. These are small programs on two machines, not proof: [SG against C](../benchmarks/against-c.md).
 
 Real programs are measured too, written the same way in SG, Rust and Zig: [the trials](../benchmarks/programs.md).
 Each module of the library is measured the same way against Rust's crates and Zig's own library, JSON first,
 where SG reads, walks and writes 100 MB faster than `serde_json` and Zig's `std.json`, in less memory. Against
-the faster of Rust and Zig, SG is faster in 9 of the 25 cases and slower in 14:
+the faster of Rust and Zig, SG is faster in 14 of the 32 cases and slower in 16:
 [every case](../benchmarks/index.md#at-a-glance-against-rust-and-zig).

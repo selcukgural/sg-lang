@@ -83,6 +83,51 @@ false
 | `Result<void, IoError> flush(ref this)` | Hands what the block holds to the system |
 | `Result<void, IoError> close(this)` | Writes what is left and closes the file |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Writes what it holds, then moves; gives the new place |
+| `Result<void, IoError> syncData(ref this)` | Writes what it holds, then waits until the system has put the file's bytes on the disk, with what is needed to read them back |
+| `Result<void, IoError> sync(ref this)` | The same, and the rest of what the system keeps of the file, its times among it |
+| `Result<void, IoError> setLength(ref this, long length)` | Writes what it holds, then cuts the file to `length` bytes or makes it longer with zeros; where the writer stands does not move |
+
+### On the disk
+
+`flush` hands the bytes to the system, which keeps them in memory a while: a program that is killed loses
+nothing then, but a machine that loses its power may. `syncData` waits until they are on the disk: `fdatasync`
+on Linux, `F_FULLFSYNC` on macOS, whose `fsync` leaves them in the disk's own cache, and `FlushFileBuffers` on
+Windows, as Rust's `sync_data` is. A file made, renamed or removed is only certain once its folder is synced
+too, with `Directory.sync`. This is how a program writes a file that a crash may not leave half written:
+
+```sg
+Result<void, IoError> save(read string folder, read string text) {
+    var path = Path.join(folder, "settings.json")
+    var fresh = Path.join(folder, "settings.json.new")
+    var out = try File.createText(read fresh)
+    try out.write(text)
+    try out.syncData()
+    try out.close()
+    try File.replace(read fresh, read path)
+    return Directory.sync(folder)
+}
+
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    try save(read folder, "{\"theme\": \"dark\"}")
+    print(try File.readText(read Path.join(read folder, "settings.json")))
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+{"theme": "dark"}
+```
+
+A sync that failed stays the writer's error, given again by every call after it: the system may have let go of
+the bytes it could not write, so a later sync that succeeded would not mean they are on the disk. `Stdout`,
+`Stderr` and the input of another program are not files the program holds: `syncData` and `sync` on them write
+what they hold and are `InvalidInput` (written as `Stdout.syncData()`, an error of the compiler), `setLength`
+is `NotSeekable`. `setLength` below 0 is `InvalidInput`. In an async function they are `syncDataAsync`,
+`syncAsync` and `setLengthAsync`, done on a thread that may wait for the disk.
 
 A writer kept in a local variable is closed, or moved somewhere, on every path before it ends: otherwise an
 error writing its last block would be lost without a word.
@@ -230,8 +275,8 @@ end
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`;
 on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
-`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`, and
-`seekAsync` on both. Each may take a
+`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`,
+`syncDataAsync`, `syncAsync`, `setLengthAsync`, and `seekAsync` on both. Each may take a
 `read CancellationToken` last (not `closeAsync`). In an async function the calls without `Async` are an error,
 since they would hold the thread. `buffered` and `consume` do not wait, and are called as they are.
 
@@ -280,6 +325,7 @@ to the output
 | `Result<void, IoError> Directory.createAll(read string path)` | Makes it and every folder on the way; a folder already there is no error |
 | `Result<void, IoError> Directory.delete(read string path)` | Removes an empty folder (`DirectoryNotEmpty`) |
 | `Result<void, IoError> Directory.deleteAll(read string path)` | Removes it and all it holds; a link inside is removed, not followed |
+| `Result<void, IoError> Directory.sync(read string path)` | Puts the names it holds on the disk, so that a file made, renamed or removed in it stays so (see [On the disk](#on-the-disk)); on Windows, which keeps them with the files, nothing more than `NotDirectory` for a path that is not a folder |
 | `Result<List<DirectoryEntry>, IoError> Directory.list(read string path)` | The names in it, without `.` and `..`, in the order of their bytes on every system |
 | `bool Directory.exists(read string path)` | Whether the path names a folder |
 | `Result<string, IoError> Directory.current()` | The folder the program works in; it is never changed from inside |
@@ -389,8 +435,8 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `IsDirectory`, `NotDirectory` | A folder where a file was meant, or a file where a folder was |
 | `AlreadyExists`, `DirectoryNotEmpty` | Something is where one was to be made; a folder to remove holds something |
 | `NoSpace` | The disk is full |
-| `InvalidInput` | What was given cannot go to the system, or a seek before the start |
-| `NotSeekable` | `seek` on a pipe, on `Stdin` or on a writer of `openAppend` |
+| `InvalidInput` | What was given cannot go to the system, a seek before the start, a length below 0, or a sync of what is not a file |
+| `NotSeekable` | `seek` on a pipe, on `Stdin` or on a writer of `openAppend`; `setLength` on a standard stream or the input of another program |
 | `TooLong` | `fill` on a reader whose block holds its limit already |
 | `InvalidText(long position)` | A byte that is not UTF-8, at that place |
 | `Other(int code)` | Any other error of the system, by its number |

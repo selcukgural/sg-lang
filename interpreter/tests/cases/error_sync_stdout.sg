@@ -1,0 +1,5 @@
+// The output of the program is not a file it holds: it may be a terminal or a pipe.
+Result<void, IoError> main() {
+    try Stdout.syncData()
+    return Ok()
+}

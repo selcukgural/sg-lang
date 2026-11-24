@@ -1,5 +1,6 @@
+// A struct is `Hashable` field by field: a set in it is not, a list would be (choice 1853).
 struct Route : Equatable, Hashable {
-    List<int> steps
+    HashSet<int> steps
 }
 
 void main() {
