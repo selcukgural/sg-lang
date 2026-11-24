@@ -10,22 +10,32 @@ that break things (choice 1849):
 - a log with one bit turned at places drawn: a record whose CRC is wrong with more after it is
   damage, and the store does not start; in its last record, it is taken for a crash;
 - logs written by each build read by each other;
+- what the format cannot tell, as the README says, held as it is: 13 zeros after the last record cut
+  away, 14 and a page of them damage, and a bit turned in the length of a key or a value that makes
+  the record reach past the end, cut away with every record after it;
 - a crash: the store killed (SIGKILL) at a moment drawn while it is given sets, in each `--sync`,
   then started again: every set it answered `OK` must be there with its value. A SIGKILL leaves what
   was handed to the system in its cache, so this tests the program, not the disk: a machine that
   loses its power is not tested here;
-- its output closed while it writes: it ends as a C program does, by SIGPIPE.
+- its output closed while it writes: it ends as a C program does, by SIGPIPE;
+- with `--full DIR`, a small file system mounted at DIR (a tmpfs of a few MB on Linux) filled but
+  for a margin before the store is given sets, or its log made large before a `COMPACT` with no
+  room for the new one, in each `--sync`: it ends with an error and the exit code 1, it answers no
+  set whose record did not go to the system, and once there is room again every set it answered is
+  there with its value, and no other key has a value it was not given.
 
 For each case every build must give the standard output, the exit code and the log, byte for byte,
 that the model gives (the standard error is not compared: each language words its errors its own
 way).
 
-    python3 -I trials/kv/tests/check.py [BINARY...] [--interpreted] [--quick] [--only PART] [-v]
+    python3 -I trials/kv/tests/check.py [BINARY...] [--interpreted] [--quick] [--only PART]
+        [--full DIR] [-v]
 
 With no BINARY, the builds `python3 trials/measure.py --check kv` left in trials/target/kv. With
 `--interpreted`, SG's interpreter runs the cases too (interpreter/target/release/sg); `--quick`
-draws fewer cases; `--only` runs one part (options, streams, cuts, flips, each_reads_each,
-closed_output, crash). Files are written in trials/target/kv-tests.
+draws fewer cases; `--only` runs one part (options, streams, cuts, flips, limits, each_reads_each,
+closed_output, crash, full). Files are written in trials/target/kv-tests; `full` writes in DIR and
+is left out without `--full`.
 """
 import os
 import random
@@ -51,7 +61,8 @@ VERBOSE = "-v" in args
 QUICK = "--quick" in args
 INTERPRETED = "--interpreted" in args
 ONLY = args[args.index("--only") + 1] if "--only" in args else None
-binaries = [a for a in args if not a.startswith("-") and a != ONLY]
+FULL = args[args.index("--full") + 1] if "--full" in args else None
+binaries = [a for a in args if not a.startswith("-") and a not in (ONLY, FULL)]
 if not binaries:
     binaries = [os.path.join(BUILT, name) for name in
                 ("kv-sg", "kv-sg-checked", "kv-rust", "kv-zig-ReleaseFast", "kv-zig-ReleaseSafe")]
@@ -313,6 +324,23 @@ def flips(rng):
             held(f"a bit turned at {place}", build, run(build, store, gets), model, turned)
 
 
+def limits(rng):
+    log = a_log(rng, 300)
+    gets = all_gets(log)
+    cases = [(f"{n} zeros after the last record", log + bytes(n)) for n in (1, 12, 13, 14, 100, 4096)]
+    # The high bits of the first record's key length (at 5) and value length (at 9).
+    for at in (8, 12):
+        turned = bytearray(log)
+        turned[at] ^= 1
+        cases.append((f"the length at {at} turned", bytes(turned)))
+    for name, data in cases:
+        model = Model(data).run(gets)
+        for build in BUILDS:
+            store = folder("limits")
+            write_log(store, data)
+            held(name, build, run(build, store, gets), model, data)
+
+
 def each_reads_each(rng):
     commands = random_commands(rng, 3000)
     for writer in BUILDS:
@@ -331,8 +359,6 @@ def crash(rng):
     """Sets of keys one after another, each answered `OK`; the store killed at a moment drawn; then
     every key answered must be there with its value."""
     for build in BUILDS:
-        if build == "sg interpreted":
-            continue
         for sync in ("always", "batch", "never"):
             for draw in range(2 if QUICK else 5):
                 store = folder("crash")
@@ -406,6 +432,105 @@ def closed_output(rng):
                             f"stderr {process.stderr.read()[:200]!r}")
 
 
+def room(path):
+    stat = os.statvfs(path)
+    return stat.f_bavail * stat.f_frsize
+
+
+def fill(margin):
+    """Fills the small file system but for `margin` bytes, with a file of its own."""
+    filler = os.path.join(FULL, "filler")
+    if os.path.exists(filler):
+        os.remove(filler)
+    size = max(0, room(FULL) - margin)
+    with open(filler, "wb") as f:
+        try:
+            while size > 0:
+                f.write(b"\0" * min(size, 1 << 20))
+                size -= min(size, 1 << 20)
+            f.flush()
+        except OSError:
+            pass
+    return filler
+
+
+def full_value(n):
+    return b"full-%d-" % n + bytes([97 + n % 26]) * (300 + n % 700)
+
+
+def full_held(name, build, store, given, answered):
+    """Once there is room again: every set answered is there with its value, a set not answered is
+    there with its value or not there, and the store starts."""
+    gets = b"".join(b"GET f%d\n" % n for n in range(given))
+    out, code, _, err = run(build, store, gets)
+    counted[0] += 1
+    lines = out.split(b"\n")[:-1]
+    problems = []
+    if code != 0 or len(lines) != given:
+        problems.append(f"read back: exit {code}, {len(lines)} lines of {given}")
+    else:
+        lost = [n for n in range(answered) if lines[n] != full_value(n)]
+        wrong = [n for n in range(answered, given) if lines[n] not in (b"(nil)", full_value(n))]
+        if lost:
+            problems.append(f"{len(lost)} answered sets lost, first f{lost[0]}")
+        if wrong:
+            problems.append(f"{len(wrong)} keys not answered with a value not given, first f{wrong[0]}")
+    if problems:
+        failures.append(f"{name} / {build}: {answered} answered; {'; '.join(problems)}; stderr {err[:200]!r}")
+    elif VERBOSE:
+        print(f"  {name} / {build}: {answered} of {given} answered, all there")
+
+
+def full(rng):
+    """A disk with no room: on Linux a tmpfs, where `fdatasync` has nothing to do and the room runs
+    out in `write`."""
+    if FULL is None:
+        return
+    for build in BUILDS:
+        for sync in ("always", "batch", "never"):
+            # Sets until there is no room: none answered that is not in the log.
+            for margin in (0, 4096, 70_000, 300_000):
+                name = f"no room past {margin} B ({sync})"
+                store = os.path.join(FULL, "store")
+                shutil.rmtree(store, ignore_errors=True)
+                filler = fill(margin)
+                given = (margin + 400_000) // 600
+                commands = b"".join(b"SET f%d " % n + full_value(n) + b"\n" for n in range(given))
+                out, code, _, err = run(build, store, commands, sync)
+                counted[0] += 1
+                answered = out.count(b"OK\n")
+                if code != 1 or out != b"OK\n" * answered or not err:
+                    failures.append(f"{name} / {build}: exit {code}, {answered} answered, "
+                                    f"{len(out)} bytes out, stderr {err[:200]!r}")
+                os.remove(filler)
+                full_held(name, build, store, given, answered)
+            # A log of 600 KB, then `COMPACT` with no room for the new log beside it.
+            name = f"no room to compact ({sync})"
+            store = os.path.join(FULL, "store")
+            shutil.rmtree(store, ignore_errors=True)
+            filler = fill(900_000)
+            given = 1000
+            sets = b"".join(b"SET f%d " % n + full_value(n) + b"\n" for n in range(given))
+            out, code, _, err = run(build, store, sets + b"COMPACT\nSET after 1\n", sync)
+            counted[0] += 1
+            # The sets in the block of `COMPACT` may go unanswered: their records are in the log, but
+            # the block ends in an error.
+            answered = out.count(b"OK\n")
+            if code != 1 or out != b"OK\n" * answered or answered > given or not err:
+                failures.append(f"{name} / {build}: exit {code}, {answered} answered of {given} "
+                                f"and no more, stderr {err[:200]!r}")
+            os.remove(filler)
+            full_held(name, build, store, given, min(answered, given))
+            # Once there is room, the compaction is done.
+            out, code, log, err = run(build, store, b"COMPACT\n" + b"".join(b"GET f%d\n" % n for n in range(given)), sync)
+            counted[0] += 1
+            want = b"OK\n" + b"".join(full_value(n) + b"\n" for n in range(given))
+            if code != 0 or out != want or os.path.exists(os.path.join(store, "log.new")):
+                failures.append(f"{name}, then with room / {build}: exit {code}, {len(out)} bytes out of "
+                                f"{len(want)}, stderr {err[:200]!r}")
+    shutil.rmtree(os.path.join(FULL, "store"), ignore_errors=True)
+
+
 def options(rng):
     for argv, code in ((["--sync"], 2), (["--sync", "sometimes", "x"], 2), ([], 2), (["a", "b"], 2), (["-x", "a"], 2)):
         for build in BUILDS:
@@ -419,7 +544,7 @@ def main():
     os.makedirs(HERE, exist_ok=True)
     rng = random.Random(1850)
     started = time.time()
-    for part in (options, streams, cuts, flips, each_reads_each, closed_output, crash):
+    for part in (options, streams, cuts, flips, limits, each_reads_each, closed_output, crash, full):
         if ONLY and part.__name__ != ONLY:
             continue
         before = counted[0], len(failures)

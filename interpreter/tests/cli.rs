@@ -1237,7 +1237,8 @@ fn the_trials() {
 /// interpreted and compiled, with each `--sync`, on commands at their edges (bytes that are not
 /// UTF-8, an empty key and value, a CR, lines that are not commands, a last line without its end);
 /// on its log read back; on sets enough to compact it on its own; on its log cut in its last record,
-/// as a crash leaves it; and on a bit turned in the middle, where it does not start. What it prints,
+/// as a crash leaves it; on a bit turned in the middle, where it does not start; and on what its format
+/// cannot tell (zeros after the last record, a length turned so the record reaches past the end). What it prints,
 /// its exit code and the length of its log are those the trial's model gives
 /// (`trials/kv/tests/check.py`); interpreted, it leaves the log compiled code leaves, byte for byte.
 #[test]
@@ -1303,6 +1304,26 @@ fn the_trial_of_kv() {
         std::fs::write(dir.join(&turned).join("log"), &bad).unwrap();
         let (code, out, turned_log) = run(interpreted, &turned, "batch", gets);
         assert_eq!((code, out.len(), turned_log == bad), (1, 0, true), "turned {how}");
+        // What the trial cannot tell, as its README says. Thirteen zeros after the last record are
+        // a record cut off, cut away; fourteen are damage, and the log is left as it is.
+        for (zeros, want) in [(13, (0, vec![407, 408, 409, 0], log.len())), (14, (1, vec![0], log.len() + 14))] {
+            let name = format!("zeros-{zeros}-{how}");
+            std::fs::create_dir_all(dir.join(&name)).unwrap();
+            let mut padded = log.clone();
+            padded.resize(log.len() + zeros, 0);
+            std::fs::write(dir.join(&name).join("log"), &padded).unwrap();
+            let (code, out, left) = run(interpreted, &name, "batch", gets);
+            assert_eq!((code, lengths(&out), left.len()), want, "{zeros} zeros {how}");
+        }
+        // A bit turned in the length of the first key makes it reach past the end: the log is cut
+        // away from there, with every record after it, as a crash would leave it.
+        let long = format!("long-{how}");
+        std::fs::create_dir_all(dir.join(&long)).unwrap();
+        let mut bad = log.clone();
+        bad[8] ^= 1;
+        std::fs::write(dir.join(&long).join("log"), &bad).unwrap();
+        let (code, out, long_log) = run(interpreted, &long, "batch", gets);
+        assert_eq!((code, out.as_slice(), long_log.len()), (0, &b"(nil)\n(nil)\n(nil)\n"[..], 0), "length turned {how}");
     }
     // Interpreted and compiled leave the same logs.
     for name in ["edges", "hot", "cut"] {

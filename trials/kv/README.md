@@ -87,12 +87,20 @@ slice of the buffer the line lies in. Before them the store of the server lane k
   their edges, on logs Python wrote (read back, cut in the last record, a bit turned in the middle, zeros after
   the last record, empty, a `log.new` left over), on a folder whose parent is missing and on options it does not
   know: the same output, exit code and log.
-- `python3 -I trials/kv/tests/check.py [BINARY...] [--interpreted] [--quick]` holds them to a model of the store
-  written in Python (choice 1850): streams of commands drawn at random with keys and values of any bytes, each
-  `--sync`, long enough to compact; a log cut at every byte of its last records and at places drawn; a bit
-  turned at places drawn; each build's log read by each other; the output closed while it writes (it ends by
-  SIGPIPE); and a crash: the store killed with SIGKILL at a moment drawn while it is given sets, in each
-  `--sync`, then started again, every set it answered being there with its value. A SIGKILL leaves what was
-  handed to the system in its cache, so this tests the program and not the disk: a machine that loses its
-  power is not tested here, and with `--sync never` it would lose what was answered.
+- `python3 -I trials/kv/tests/check.py [BINARY...] [--interpreted] [--quick] [--full DIR]` holds them to a model
+  of the store written in Python (choice 1850): streams of commands drawn at random with keys and values of any
+  bytes, each `--sync`, long enough to compact; a log cut at every byte of its last records and at places drawn;
+  a bit turned at places drawn; what the format cannot tell, held as the section above says (13 zeros after the
+  last record cut away, 14 and a page of them damage, a bit turned in a length cut away with what follows);
+  each build's log read by each other; the output closed while it writes (it ends by SIGPIPE); and a crash: the
+  store killed with SIGKILL at a moment drawn while it is given sets, in each `--sync`, then started again,
+  every set it answered being there with its value. A SIGKILL leaves what was handed to the system in its
+  cache, so this tests the program and not the disk: a machine that loses its power is not tested here, and
+  with `--sync never` it would lose what was answered.
+- With `--full DIR`, a small file system mounted at DIR (`podman run --tmpfs /full:size=4m` on Linux, a disk
+  image of 4 MB from `hdiutil create -size 4m -fs HFS+` on macOS), it is filled but for a margin before the
+  store is given sets, and left without room for the new log of a `COMPACT`, in each `--sync`: the store ends
+  with 1 and an error, answers no set whose record did not reach the system, and once there is room every set
+  it answered is there with its value; the compaction is then done. A sync that fails (`EIO`) is not tested:
+  a tmpfs has nothing to sync, and a disk that fails cannot be made without the rights of root.
 - `interpreter/tests/cli.rs`, `the_trial_of_kv`, runs the SG version interpreted and compiled on every test run.
