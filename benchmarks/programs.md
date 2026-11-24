@@ -98,7 +98,7 @@ backtracks where SG and Rust never do: the patterns measured mean the same in al
 
 The jq people use (`trials/jq/README.md`, choices 1804-1822), held byte for byte to jq 1.8.2 by 44 cases of
 `measure.py jq --check` (every build gives jq's output and exit code), by the two suites of
-`trials/jq/tests`, 3,681 cases written with the Rust version and 6,389 with the Zig version, each version
+`trials/jq/tests`, 3,687 cases written with the Rust version and 6,389 with the Zig version, each version
 passing both. jq 1.8.2 (Homebrew) and jaq 3.2.0 are
 measured beside them; jaq is another algorithm and is not held to jq's output. Apple M3 Max, macOS, 24
 November 2026, after slice 171; 100 MB of records, of a record a line and of numbers from

@@ -235,7 +235,7 @@ code; each version passes both (choice 1839). They are run by hand, with jq 1.8.
 `JQ=`), not by `cargo test`:
 
 ```
-python3 -I trials/jq/tests/filters.py <jq>    # 3,681 cases, written with the Rust version
+python3 -I trials/jq/tests/filters.py <jq>    # 3,687 cases, written with the Rust version
 python3 -I trials/jq/tests/streams.py <jq>    # 6,389 cases, written with the Zig version
 ```
 
