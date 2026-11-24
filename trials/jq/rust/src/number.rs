@@ -190,28 +190,20 @@ fn round(digits: &[u8], keep: i64, half_even: bool) -> Vec<u8> {
 
 /// What a literal is, as jq holds it.
 pub enum Literal {
-    /// A double that writes the literal the same way: nothing more need be kept.
+    /// A whole number of at most 15 digits: its double, which writes it the same way, is all it
+    /// needs (choice 1837).
     Exact(f64),
-    /// The literal's text, as decNumber writes it, and its double.
-    Text(f64, String),
+    /// The literal's text, as decNumber writes it; its double is worked out when wanted (1824).
+    Text(String),
     /// Too large for decNumber: its infinity.
     Infinite(f64),
 }
 
 /// The literal of a decimal read.
 pub fn literal(mut decimal: Decimal) -> Literal {
-    // A literal of at most 15 digits, without an exponent, that a double writes the same way: the
-    // double is all it needs (most numbers read are such).
     let count = decimal.digits.len() as i64;
-    if decimal.exponent <= 0 && count <= 15 {
-        let exact = if decimal.is_zero() {
-            decimal.exponent == 0
-        } else {
-            decimal.adjusted() >= -4 && (decimal.exponent == 0 || decimal.digits.last() != Some(&b'0'))
-        };
-        if exact {
-            return Literal::Exact(decimal.to_double());
-        }
+    if decimal.exponent == 0 && count <= 15 {
+        return Literal::Exact(decimal.to_double());
     }
     if decimal.exponent < ETINY {
         // Rounded there half up, as jq's decNumber context rounds.
@@ -222,7 +214,100 @@ pub fn literal(mut decimal: Decimal) -> Literal {
     if !decimal.is_zero() && decimal.adjusted() > EMAX {
         return Literal::Infinite(if decimal.negative { f64::NEG_INFINITY } else { f64::INFINITY });
     }
-    Literal::Text(decimal.to_double(), decimal.to_text())
+    Literal::Text(decimal.to_text())
+}
+
+/// A whole number of at most 15 digits written without a leading zero, other than 0: its double,
+/// found from its digits (choice 1837). Most numbers read are such.
+pub fn small_whole(text: &[u8]) -> Option<f64> {
+    let digits = text.strip_prefix(b"-").unwrap_or(text);
+    if digits.is_empty() || digits.len() > 15 || digits[0] == b'0' {
+        return None;
+    }
+    let mut n: i64 = 0;
+    for &c in digits {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        n = n * 10 + i64::from(c - b'0');
+    }
+    Some(if digits.len() < text.len() { -(n as f64) } else { n as f64 })
+}
+
+/// Whether a number is written already as decNumber writes it, so that its text is its literal: no
+/// exponent and no `+`, no leading zero before other digits, and at least 0.000001, where
+/// decNumber turns to an exponent (a zero with at most six zeros after its point). Most are.
+pub fn written_as_decnumber(text: &[u8]) -> bool {
+    let b = text.strip_prefix(b"-").unwrap_or(text);
+    let whole = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    if whole == 0 || (whole > 1 && b[0] == b'0') {
+        return false;
+    }
+    if whole == b.len() {
+        return true;
+    }
+    if b[whole] != b'.' {
+        return false;
+    }
+    let fraction = &b[whole + 1..];
+    if fraction.is_empty() || !fraction.iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    if b[0] != b'0' {
+        return true;
+    }
+    match fraction.iter().position(|&c| c != b'0') {
+        Some(k) => k <= 5,
+        None => fraction.len() <= 6,
+    }
+}
+
+/// Whether a literal (as decNumber writes it) is ordered exactly by its double: at most 15 digits
+/// in its coefficient, and its adjusted exponent within 307 of 0 (choice 1837). Two such numbers
+/// whose doubles are the same are the same number.
+pub fn ordered_by_double(text: &str) -> bool {
+    let b = text.as_bytes();
+    let b = b.strip_prefix(b"-").unwrap_or(b);
+    let end = b.iter().position(|&c| c == b'E').unwrap_or(b.len());
+    let mut digits = 0;
+    let mut whole_digits = 0;
+    let mut zeros_after_point = 0;
+    let mut seen_point = false;
+    let mut seen_digit = false;
+    for &c in &b[..end] {
+        if c == b'.' {
+            seen_point = true;
+        } else if seen_digit || c != b'0' {
+            seen_digit = true;
+            digits += 1;
+            if !seen_point {
+                whole_digits += 1;
+            }
+        } else if seen_point {
+            zeros_after_point += 1;
+        }
+    }
+    if !seen_digit {
+        return true;
+    }
+    if digits > 15 {
+        return false;
+    }
+    if end < b.len() {
+        let adjusted: i64 = std::str::from_utf8(&b[end + 1..]).ok().and_then(|e| e.parse().ok()).unwrap_or(1000);
+        return (-307..=307).contains(&adjusted);
+    }
+    if whole_digits > 0 { whole_digits <= 308 } else { zeros_after_point < 307 }
+}
+
+/// The double jq gives a literal: one of at most 17 digits is read as it is; a longer one is rounded
+/// to 17 first (see `Decimal::to_double`).
+pub fn text_double(text: &str) -> f64 {
+    let counted = text.bytes().take_while(|&c| c != b'e' && c != b'E').filter(u8::is_ascii_digit).count();
+    if counted <= 17 {
+        return text.parse::<f64>().unwrap_or(0.0);
+    }
+    Decimal::parse(text.as_bytes()).map_or(0.0, |d| d.to_double())
 }
 
 /// The text of a literal negated, as decNumber's minus gives it: zero loses its sign.

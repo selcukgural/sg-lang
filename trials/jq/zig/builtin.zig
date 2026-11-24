@@ -270,7 +270,7 @@ pub fn index(ctx: *Context, t: Value, key: Value) Raised!Value {
             }
         },
         .null => switch (key) {
-            .string, .number, .literal, .object, .null => return .null,
+            .string, .number, .exact, .literal, .object, .null => return .null,
             else => {},
         },
         .string => if (key == .object) return slice(ctx, t, sliceBound(key, "start"), sliceBound(key, "end")),
@@ -612,7 +612,7 @@ pub fn format(ctx: *Context, f: parse.Format, v: Value) Raised!Value {
                 if (i > 0) list.append(gpa, if (f == .csv) ',' else '\t') catch oom();
                 switch (item) {
                     .null => {},
-                    .true, .false, .number, .literal => value.appendCompact(&list, item),
+                    .true, .false, .number, .exact, .literal => value.appendCompact(&list, item),
                     .string => |s| if (f == .csv) {
                         list.append(gpa, '"') catch oom();
                         for (s.bytes.items) |ch| {
@@ -840,7 +840,7 @@ fn join(ctx: *Context, v: Value, separator: Value) Raised!Value {
         const part: Value = switch (item) {
             .null => value.string(""),
             .string => retain(item),
-            .true, .false, .number, .literal => value.toJson(item),
+            .true, .false, .number, .exact, .literal => value.toJson(item),
             else => return ctx.fail("Cannot join with {s}", .{value.kindName(item)}),
         };
         const joined = result;
@@ -856,6 +856,7 @@ fn length(ctx: *Context, v: Value) Raised!Value {
         .null => value.number(0),
         .true, .false => ctx.fail("{f} has no length", .{shown(v)}),
         .number => |d| value.number(@abs(d)),
+        .exact => |d| .{ .exact = @abs(d) },
         .literal => |l| if (value.literalIsNegative(l)) value.negate(v) else retain(v),
         .string => |s| value.number(@floatFromInt(value.codepointCount(s.bytes.items))),
         .array => |a| value.number(@floatFromInt(a.items.items.len)),

@@ -22,12 +22,30 @@ impl Borrow<str> for Key {
 /// The members of an object, in the order their names came in.
 pub type Map = IndexMap<Key, Value>;
 
-/// A number's literal: its text as decNumber writes it, and its double. A literal too large for
-/// decNumber is its infinity: written as the double is, compared as an infinity.
+/// A number's literal: its text as decNumber writes it, and its double once it has been wanted
+/// (choice 1824). A literal too large for decNumber is its infinity: written as the double is,
+/// compared as an infinity.
 pub struct Text {
-    pub value: f64,
+    value: Cell<Option<f64>>,
     pub text: Box<str>,
     pub infinite: bool,
+}
+
+impl Text {
+    /// A literal whose double is worked out when it is wanted.
+    pub fn new(text: Box<str>) -> Text {
+        Text { value: Cell::new(None), text, infinite: false }
+    }
+
+    /// Its double, worked out the first time it is wanted and kept.
+    pub fn double(&self) -> f64 {
+        if let Some(d) = self.value.get() {
+            return d;
+        }
+        let d = number::text_double(&self.text);
+        self.value.set(Some(d));
+        d
+    }
 }
 
 #[derive(Clone)]
@@ -104,14 +122,27 @@ impl Value {
     pub fn literal(decimal: number::Decimal) -> Value {
         match number::literal(decimal) {
             Literal::Exact(d) => Value::Exact(d),
-            Literal::Text(d, text) => Value::Literal(Rc::new(Text { value: d, text: text.into(), infinite: false })),
+            Literal::Text(text) => Value::Literal(Rc::new(Text::new(text.into()))),
             Literal::Infinite(d) => Value::infinite_literal(d),
         }
     }
 
+    /// A number of JSON's input, from its text (choices 1824, 1837): a whole number of at most 15
+    /// digits is its double; one written as decNumber writes it keeps its text as it is; any other
+    /// is made decNumber's form. `None` when it is not a number.
+    pub fn read_number(text: &str) -> Option<Value> {
+        if let Some(d) = number::small_whole(text.as_bytes()) {
+            return Some(Value::Exact(d));
+        }
+        if number::written_as_decnumber(text.as_bytes()) {
+            return Some(Value::Literal(Rc::new(Text::new(text.into()))));
+        }
+        number::Decimal::parse(text.as_bytes()).map(Value::literal)
+    }
+
     /// decNumber's infinity, which jq writes as the largest double.
     pub fn infinite_literal(d: f64) -> Value {
-        Value::Literal(Rc::new(Text { value: d, text: number::double_text(d).into(), infinite: true }))
+        Value::Literal(Rc::new(Text { value: Cell::new(Some(d)), text: number::double_text(d).into(), infinite: true }))
     }
 
     pub fn truthy(&self) -> bool {
@@ -121,7 +152,7 @@ impl Value {
     pub fn number(&self) -> Option<f64> {
         match self {
             Value::Number(d) | Value::Exact(d) => Some(*d),
-            Value::Literal(l) => Some(l.value),
+            Value::Literal(l) => Some(l.double()),
             _ => None,
         }
     }
@@ -182,8 +213,9 @@ impl Value {
             Value::Exact(d) => Value::Exact(if *d == 0.0 { 0.0 } else { -d }),
             Value::Literal(l) => {
                 let text = number::negate_text(&l.text);
-                let value = if text.starts_with('-') { -l.value.abs() } else { l.value.abs() };
-                Value::Literal(Rc::new(Text { value, text: text.into(), infinite: l.infinite }))
+                let negative = text.starts_with('-');
+                let value = l.value.get().map(|d| if negative { -d.abs() } else { d.abs() });
+                Value::Literal(Rc::new(Text { value: Cell::new(value), text: text.into(), infinite: l.infinite }))
             }
             _ => return None,
         })
@@ -298,8 +330,14 @@ fn compare_numbers(a: &Value, b: &Value) -> Ordering {
             let o = infinite(a).cmp(&infinite(b));
             return if da < 0.0 { o.reverse() } else { o };
         }
+        // Two of at most 15 digits whose doubles are the same are the same number (choice 1837).
+        let short = |v: &Value| match v {
+            Value::Exact(_) => true,
+            Value::Literal(l) => number::ordered_by_double(&l.text),
+            _ => false,
+        };
         if let (Some(ta), Some(tb)) = (a.literal_text(), b.literal_text())
-            && !(matches!(a, Value::Exact(_)) && matches!(b, Value::Exact(_))) {
+            && !(short(a) && short(b)) {
                 return number::compare_texts(&ta, &tb);
             }
         return Ordering::Equal;

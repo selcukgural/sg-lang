@@ -158,9 +158,14 @@ difference is never one of algorithm (1819):
    `StreamDeserializer` with a `DeserializeSeed` of the program's value (`arbitrary_precision` for the
    literal of each number), Zig `std.json.Scanner`.
 2. **Values**: null, false, true, a number (a `double` and, when it was read and not changed, its literal),
-   a text, an array, an object keeping the order its names came in. A value is 16 bytes: a number's
-   `double` is held in it, and a literal the `double` does not write the same is held apart, with the
-   texts, arrays and objects. Texts, arrays and objects are shared by
+   a text, an array, an object keeping the order its names came in. A value is 16 bytes. **A number read**
+   (choices 1824, 1837): a whole number of at most 15 digits is its `double`, found from its digits and
+   held in the value; any other keeps its literal apart, with the texts, arrays and objects, as it was
+   written when that is decNumber's form already, and its `double` is worked out the first time it is
+   wanted and kept. **Two numbers read** are compared by their `double`s first, which a literal's `double`
+   orders as the literals are ordered; only when the `double`s are the same and one of the two has more
+   than 15 digits (or lies beyond 1E±307) are the literals compared exactly. A number computed is a
+   `double`, and a whole one below 10^16 is written as an integer (1825). Texts, arrays and objects are shared by
    a count of their holders and changed in place when there is only one (jq's copy on write), so
    `reduce range(0; n) as $i ([]; . + [$i])` takes linear time. Rust: `Rc` and `Rc::make_mut`; Zig: a count
    kept by hand; SG: `shared` and `makeUnique` (choice 1813).

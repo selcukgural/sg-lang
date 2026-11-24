@@ -447,93 +447,87 @@ string repairUtf8(read byte[] bytes) {
     return out
 }
 
-// A number of the input: its `double`, and its literal where the `double` writes another text.
+// A number of the input (choices 1824, 1837): a whole number of at most 15 digits is its `double`,
+// found from its digits; any other keeps its literal as decNumber writes it, and its `double` is
+// worked out the first time it is wanted.
 Jv numberFromLiteral(read string text) {
     var bytes = text.asBytes()
-    // A whole number of up to 15 digits is written the same either way.
-    if bytes.length() <= 15 {
-        bool plain = true
+    nint start = 0
+    if bytes[0] == '-' {
+        start = 1
+    }
+    if bytes.length() - start <= 15 {
+        bool whole = true
         long n = 0
-        nint start = 0
-        if bytes[0] == '-' {
-            start = 1
-        }
         for i in start..bytes.length() {
             byte c = bytes[i]
             if c < '0' || c > '9' {
-                plain = false
+                whole = false
                 break
             }
             n = n * 10 + (long)(c - '0')
         }
-        // A zero keeps its literal: jq's negation of it is the literal without a sign.
-        if plain && n != 0 {
+        // A zero keeps its literal: jq's negation of it is the literal without a sign. A leading
+        // zero is no part of decNumber's form, and is left to it.
+        if whole && n != 0 && (bytes[start] != '0') {
             if start == 1 {
                 n = -n
             }
             return Jv.Exact((double)n)
         }
     }
-    double d = doubleOfLiteral(text)
-    if writtenAsDouble(bytes) {
-        return Jv.Exact(d)
+    if writtenAsDecNumber(read bytes) {
+        return jvLiteral(text.clone())
     }
     var literal = canonicalLiteral(text)
     if literal is null {
-        return jvNumber(d)
+        // Past what decNumber holds: an infinity.
+        return jvNumber(doubleOfLiteral(text))
     }
-    // A literal the `double` writes the same is kept as `Exact`, without its text: compared with
-    // another literal, it is written out again (`literalText`), so `0.1` and `0.10000000000000000001`
-    // are still two numbers. A zero keeps its text: its negation is the literal without a sign.
-    string shortest = string.withCapacity(24)
-    writeDouble(ref shortest, d)
-    if shortest == literal && d != 0.0 {
-        return Jv.Exact(d)
-    }
-    return jvLiteral(d, literal)
+    return jvLiteral(literal)
 }
 
-// Whether a number with a point and no exponent is written by its `double` as it is, so that no
-// literal is kept: at most 15 digits that count (a `double` gives such digits back), no 0 at the end
-// of the fraction, a whole part that is `0` only alone, and at least 0.0001, where the writing of a
-// `double` turns to an exponent.
-bool writtenAsDouble(read byte[] b) {
+// Whether a number is written already as decNumber writes it, so that its text is its literal: no
+// exponent and no `+`, no leading zero before other digits, and at least 0.000001, where
+// decNumber turns to an exponent. Most numbers are.
+bool writtenAsDecNumber(read byte[] b) {
     nint i = 0
     if i < b.length() && b[i] == '-' {
         i += 1
     }
-    nint start = i
-    nint point = -1
-    nint digits = 0
-    bool leading = true
-    nint zerosAfterPoint = 0
-    while i < b.length() {
-        byte c = b[i]
-        if c == '.' {
-            point = i
-        } else if c >= '0' && c <= '9' {
-            if c != '0' || !leading {
-                leading = false
-                digits += 1
-            } else if point >= 0 {
-                zerosAfterPoint += 1
-            }
-        } else {
-            return false
-        }
+    nint wholeStart = i
+    while i < b.length() && b[i] >= '0' && b[i] <= '9' {
         i += 1
     }
-    if point < 0 || digits == 0 || digits > 15 || b[b.length() - 1] == '0' || b[b.length() - 1] == '.' {
+    nint wholeDigits = i - wholeStart
+    if wholeDigits == 0 || (wholeDigits > 1 && b[wholeStart] == '0') {
         return false
     }
-    // `0.5` and `12.5`, not `012.5`; at least 0.0001.
-    if b[start] == '0' && point != start + 1 {
+    if i == b.length() {
+        return true
+    }
+    if b[i] != '.' {
         return false
     }
-    if b[start] == '0' && zerosAfterPoint > 3 {
+    i += 1
+    nint fractionStart = i
+    while i < b.length() && b[i] >= '0' && b[i] <= '9' {
+        i += 1
+    }
+    if i != b.length() || i == fractionStart {
         return false
     }
-    return true
+    if b[wholeStart] != '0' {
+        return true
+    }
+    // `0.` and zeros: plain while the first digit that is not 0 is at most the sixth after the point,
+    // and a zero while it has at most six zeros after the point (`0.0000000` is `0E-7`).
+    for k in fractionStart..b.length() {
+        if b[k] != '0' {
+            return k - fractionStart <= 5
+        }
+    }
+    return b.length() - fractionStart <= 6
 }
 
 // `tonumber` of a text, as jq 1.8 reads it with decNumber: a JSON number, and also a `+`, leading
@@ -636,6 +630,18 @@ Result<Jv, string> parseOne(read string s) {
 // The `double` of a literal as jq 1.8 finds it: rounded first to 17 significant digits, half to
 // even, as decNumber gives it to `strtod`; `128218505994187403` is `128218505994187400`.
 double doubleOfLiteral(read string text) {
+    // At most 17 digits, counted without making anything: read as it is.
+    nint counted = 0
+    for c in text.asBytes() {
+        if c >= '0' && c <= '9' {
+            counted += 1
+        } else if c == 'e' || c == 'E' {
+            break
+        }
+    }
+    if counted <= 17 {
+        return double.parse(text) ?? 0.0
+    }
     var parts = decimalOf(text)
     if parts is null || parts.coefficient.length() <= 17 {
         return double.parse(text) ?? 0.0

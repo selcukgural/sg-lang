@@ -22,6 +22,9 @@ pub const Value = union(enum) {
     false,
     true,
     number: f64,
+    /// A whole number of at most 15 digits read and not changed: its double, found from its
+    /// digits, writes it as it was written (choice 1837).
+    exact: f64,
     literal: *Literal,
     string: *String,
     array: *Array,
@@ -328,7 +331,7 @@ pub fn kind(v: Value) Kind {
         .null => .null,
         .false => .false,
         .true => .true,
-        .number, .literal => .number,
+        .number, .exact, .literal => .number,
         .string => .string,
         .array => .array,
         .object => .object,
@@ -347,12 +350,12 @@ pub fn kindName(v: Value) []const u8 {
 }
 
 pub fn isNumber(v: Value) bool {
-    return v == .number or v == .literal;
+    return v == .number or v == .exact or v == .literal;
 }
 
 pub fn toDouble(v: Value) f64 {
     return switch (v) {
-        .number => |d| d,
+        .number, .exact => |d| d,
         .literal => |l| l.double(),
         else => unreachable,
     };
@@ -416,14 +419,24 @@ pub fn numberFromText(text: []const u8, words: bool) ?Value {
     }
     if (i != text.len) return null;
 
+    // A whole number of at most 15 digits is its double, found from its digits (choice 1837).
+    if (i == int_start + int_digits.len and i == text.len and text[0] != '+' and int_digits.len > 0 and
+        int_digits.len <= 15 and int_digits[0] != '0')
+    {
+        var n: i64 = 0;
+        for (int_digits) |c| n = n * 10 + (c - '0');
+        return .{ .exact = @floatFromInt(if (negative) -n else n) };
+    }
+
     // Most numbers are written as decNumber would write them already: no exponent, no `+`, no
     // leading zero before other digits, and not too small for the plain form.
     if (!words and exponent == 0 and std.mem.indexOfAny(u8, text, "eE+") == null and int_digits.len > 0 and
         (int_digits.len == 1 or int_digits[0] != '0') and (frac_digits.len > 0 or text[text.len - 1] != '.'))
     {
+        // A zero is plain with at most six zeros after its point: `0.0000000` is `0E-7`.
         const plain = int_digits[0] != '0' or for (frac_digits, 0..) |c, k| {
             if (c != '0') break k <= 5;
-        } else true;
+        } else frac_digits.len <= 6;
         if (plain) return .{ .literal = Literal.create(null, text) };
     }
 
@@ -650,6 +663,7 @@ pub fn negate(v: Value) Value {
             return .{ .literal = Literal.create(null, text.items) };
         },
         .number => |d| return number(-d),
+        .exact => |d| return .{ .exact = -d },
         else => unreachable,
     }
 }
@@ -718,13 +732,74 @@ fn compareAt(a: Value, b: Value, depth: usize) std.math.Order {
 }
 
 fn compareNumbers(a: Value, b: Value) std.math.Order {
-    if (a == .literal and b == .literal) return compareLiterals(a.literal.text(), b.literal.text());
     const x = toDouble(a);
     const y = toDouble(b);
     // A NaN is below every number, itself too, as jq has it.
     if (std.math.isNan(x)) return .lt;
     if (std.math.isNan(y)) return .gt;
-    return std.math.order(x, y);
+    // The doubles first: a literal's double is rounded in the order of the literals, so two whose
+    // doubles differ are in that order (choice 1837).
+    const order = std.math.order(x, y);
+    if (order != .eq) return order;
+    // The same double: two numbers read are compared exactly when one keeps its text, but two of
+    // at most 15 digits, whose doubles keep them apart, are equal.
+    const read_a = a == .literal or a == .exact;
+    const read_b = b == .literal or b == .exact;
+    if (read_a and read_b and (a == .literal or b == .literal) and !(orderedAsDouble(a) and orderedAsDouble(b))) {
+        var buffer_a: [32]u8 = undefined;
+        var buffer_b: [32]u8 = undefined;
+        return compareLiterals(readText(a, &buffer_a), readText(b, &buffer_b));
+    }
+    return .eq;
+}
+
+/// Whether a number read is in the order of its double: a whole number of at most 15 digits
+/// always is, a literal when it is short. Looked at only when two doubles are the same.
+fn orderedAsDouble(v: Value) bool {
+    return switch (v) {
+        .exact => true,
+        .literal => |l| orderedByDouble(l.text()),
+        else => false,
+    };
+}
+
+/// The literal of a number read: its text, or the digits of a whole number held as its double.
+fn readText(v: Value, buffer: *[32]u8) []const u8 {
+    return switch (v) {
+        .literal => |l| l.text(),
+        .exact => |d| std.fmt.bufPrint(buffer, "{d}", .{@as(i64, @intFromFloat(d))}) catch unreachable,
+        else => unreachable,
+    };
+}
+
+/// Whether a literal (as decNumber writes it) is ordered exactly by its double: at most 15 digits
+/// in its coefficient, and its adjusted exponent within 307 of 0 (choice 1837).
+fn orderedByDouble(text: []const u8) bool {
+    const b = if (text.len > 0 and text[0] == '-') text[1..] else text;
+    const end = std.mem.indexOfScalar(u8, b, 'E') orelse b.len;
+    var digits: usize = 0;
+    var whole_digits: usize = 0;
+    var zeros_after_point: usize = 0;
+    var seen_point = false;
+    var seen_digit = false;
+    for (b[0..end]) |c| {
+        if (c == '.') {
+            seen_point = true;
+        } else if (seen_digit or c != '0') {
+            seen_digit = true;
+            digits += 1;
+            if (!seen_point) whole_digits += 1;
+        } else if (seen_point) {
+            zeros_after_point += 1;
+        }
+    }
+    if (!seen_digit) return true;
+    if (digits > 15) return false;
+    if (end < b.len) {
+        const adjusted = std.fmt.parseInt(i64, b[end + 1 ..], 10) catch return false;
+        return adjusted >= -307 and adjusted <= 307;
+    }
+    return if (whole_digits > 0) whole_digits <= 308 else zeros_after_point < 307;
 }
 
 /// `a == b`, as jq's `jv_equal`: the same value in memory is equal at once; otherwise the items
@@ -755,7 +830,7 @@ fn equalAt(a: Value, b: Value, depth: usize) bool {
             }
             return true;
         },
-        .number, .literal => return compareNumbers(a, b) == .eq,
+        .number, .exact, .literal => return compareNumbers(a, b) == .eq,
         .string => |x| return std.mem.eql(u8, x.bytes.items, b.string.bytes.items),
         else => return true,
     }
@@ -800,6 +875,9 @@ pub const Style = struct {
 pub fn writeDouble(w: *Io.Writer, d_: f64) Io.Writer.Error!void {
     if (std.math.isNan(d_)) return w.writeAll("null");
     const d = std.math.clamp(d_, -std.math.floatMax(f64), std.math.floatMax(f64));
+    // A whole number below 10^16 is written as an integer, as jq writes it (choice 1825); a zero
+    // goes on below, which keeps the sign of `-0`.
+    if (d != 0 and @abs(d) < 1e16 and d == @trunc(d)) return w.print("{d}", .{@as(i64, @intFromFloat(d))});
     var buffer: [64]u8 = undefined;
     // Ryu's shortest digits, as `d.ddde±n`.
     const sci = std.fmt.float.render(&buffer, d, .{ .mode = .scientific }) catch unreachable;
@@ -888,7 +966,7 @@ pub fn write(w: *Io.Writer, v: Value, style: Style, level: usize) Io.Writer.Erro
         .null => try w.writeAll("null"),
         .false => try w.writeAll("false"),
         .true => try w.writeAll("true"),
-        .number => |d| try writeDouble(w, d),
+        .number, .exact => |d| try writeDouble(w, d),
         .literal => |l| {
             // A literal too large for a double still writes its digits; NaN cannot be one.
             try w.writeAll(l.text());

@@ -1240,11 +1240,13 @@ fn the_trial_of_jq() {
     std::fs::write(dir.join("bad.json"), b"\"a\xc3b\" \"\xed\xa0\x80f\" \"ok\xe4\" \"\\ud800\"\n").unwrap();
     std::fs::write(dir.join("nums.json"), b"[1e1000, -0, 1.10, 100000000000000000001, 0.10000000000000000001, 15e-1147483647, 0.1]\n").unwrap();
     std::fs::write(dir.join("mid.json"), b"{\"a\":1}\n{\"a\":\"x\"}\n{\"a\":3}\n").unwrap();
+    // At the bounds of how a number read is held and compared (choice 1837).
+    std::fs::write(dir.join("bounds.json"), b"[123456789012345, 1234567890123456, 123456789012345.5, 0.0000000, 0.000001, 1E-307, 1.0000000000000001E-307, 1E+307, 2E+307, 5, 5.00000000000000000001, 99999999999999.99, 1e16]\n").unwrap();
     let source = trials.join("jq").join("sg").to_string_lossy().into_owned();
     let built = program(&dir, "jq").to_string_lossy().into_owned();
     assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
     // The arguments, whether the interpreter runs it too, the exit code and what is printed.
-    let cases: [(&[&str], bool, i32, &str); 15] = [
+    let cases: [(&[&str], bool, i32, &str); 17] = [
         (&["-c", "[.[] | select(.active and .score > 5000)] | length", "records.json"], true, 0, "667\n"),
         (&["-c", "group_by(.address.city) | map({c: .[0].address.city, n: length}) | .[0:3]", "records.json"], false, 0, "[{\"c\":\"Ankara\",\"n\":346},{\"c\":\"Kraków\",\"n\":319},{\"c\":\"Lyon\",\"n\":368}]\n"),
         (&["-r", ".[0:2][] | [.id, .name, .score] | @csv", "records.json"], false, 0, "7919,\"dennis278\",8417.856\n15838,\"linus688\",9524.804\n"),
@@ -1258,6 +1260,12 @@ fn the_trial_of_jq() {
         // Literals kept as written, numbers computed as doubles, the order of literals exact.
         (&["-c", "., map(. + 0), (.[4] > .[6]), (map(-.) | .[1])", "nums.json"], true, 0,
          "[1E+1000,-0,1.10,100000000000000000001,0.10000000000000000001,2E-1147483646,0.1]\n[1.7976931348623157e+308,0,1.1,1e+20,0.1,0,0.1]\ntrue\n0\n"),
+        // A whole number of 15 digits is its double, of 16 a literal; a zero with seven zeros after
+        // its point is `0E-7`; two of 15 digits are ordered by their doubles, two with the same
+        // double and more digits exactly (1837); a whole double is written as an integer (1825).
+        (&["-c", "., map(. + 0), (sort | .[0:3]), (.[9] == .[10]), (.[9] < .[10]), (.[5] < .[6]), (unique | length)", "bounds.json"], true, 0,
+         "[123456789012345,1234567890123456,123456789012345.5,0E-7,0.000001,1E-307,1.0000000000000001E-307,1E+307,2E+307,5,5.00000000000000000001,99999999999999.99,1E+16]\n[123456789012345,1234567890123456,123456789012345.5,0,1e-06,1e-307,1.0000000000000001e-307,1e+307,2e+307,5,5,99999999999999.98,1e+16]\n[0E-7,1E-307,1.0000000000000001E-307]\nfalse\ntrue\ntrue\n13\n"),
+        (&["-n", "-c", "[range(4) | . * 1e15, . / 2]"], true, 0, "[0,0,1000000000000000,0.5,2000000000000000,1,3000000000000000,1.5]\n"),
         // An error in the middle: the others are worked, and the last input decides the exit code.
         (&["-c", ".a + 1", "mid.json"], true, 0, "2\n4\n"),
         (&["-n", "-c", "reduce range(10001) as $i (0; [.]) | (. == .), ([.] | length)"], true, 0, "true\n1\n"),

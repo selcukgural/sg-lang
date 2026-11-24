@@ -112,24 +112,22 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 - **`jq`: a call of a function of the filter** (choice 1819, slice 166): the machine of SG's `jq` makes
   each call of a `def` with a frame of `shared` values on the heap, and its continuation with them; a `def`
-  ten million deep in tail position takes 1.23 s against Rust's 0.40 s and Zig's 0.43 s, a million deep
-  0.20 s against 0.09 s, and a million `.[$k] = $i` 0.64 s against 0.37 s. A quarter of the first was the
-  touching of the stack at each call of the machine, whose frame may take more than a page: touched now
-  only near the bottom of the stack (choice 1836, slice 170), it takes 0.88 s, and the third 0.61 s (the
-  table of `benchmarks/programs.md` is measured again with slice 171). The machines are the same
-  algorithm; Rust's and Zig's frames are cheaper to make and let go. What would fix it: frames kept in a
-  list of the machine's own and reused, a count changed without an atomic where a frame never leaves its
-  thread.
-- **`jq`: reading numbers** (slice 166): `[.. | numbers] | add` over 100 MB of numbers takes SG 3.05 s,
-  Zig 0.98 s (Rust 3.37 s); reading alone is 1.62 s against 0.51 s. Each number read is rounded to 17
-  digits, made a `double` and its literal made canonical at once; Zig keeps the text and works out the
-  `double` the first time it is wanted. That is a way of working the other two do not have (choice 1819
-  asks that all three have it, or none), so it is put to the author.
-- **`jq`: ten million lines written** (`-n -c 'range(10000000)'`): 0.66 s against Rust's 0.40 s and Zig's
-  0.46 s. SG finds a number's shortest digits by writing it into a text of its own, one allocation for
-  each number; Zig writes them with Ryu into a buffer on the stack, and Rust writes a whole number as an
-  integer before anything else, a way of working the other two do not have (1819), put to the author with
-  Zig's `double` worked out late.
+  ten million deep in tail position takes 0.91 s against Rust's 0.39 s and Zig's 0.43 s, a million deep
+  0.16 s against 0.09 s, and a million `.[$k] = $i` 0.56 s against 0.31 s (slice 171's table). A quarter of
+  the first was the touching of the stack at each call of the machine, whose frame may take more than a
+  page, until slice 170 (choice 1836) touched it only near the bottom of the stack (1.23 s before). The
+  same machine walks `..`: of `every number added`, 2.03 s against Zig's 0.98 s, the numbers are no longer
+  the part that differs. The machines are the same algorithm; Rust's and Zig's frames are cheaper to make
+  and let go. What would fix it: frames kept in a list of the machine's own and reused, a count changed
+  without an atomic where a frame never leaves its thread.
+- **`jq`: the memory of numbers read** (slice 171, choice 1837): a number read that is not a whole
+  number of up to 15 digits keeps its literal, in all three. SG holds it in two blocks, the `shared`
+  value and its text, where Zig holds the text in the same block: 100 MB of coordinates of 17 digits take
+  859 MB against Zig's 589 MB, and the records, whose fractions are such numbers too, 713 MB against
+  558 MB (614 MB before, when a fraction of up to 15 digits was its `double`; its `sort_by` 1.44 s, 1.23 s
+  before). What would fix it, put to the author and left: a fraction of up to 15 digits held as its
+  `double` in the three (its `double` found from its digits by one division, as for whole numbers), and
+  SG's short literal kept in a `byte[24]` of its value.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
   331 MB): the text is read whole into the reader's buffer and then copied into the value; Zig unescapes
   it from the buffer into the value once.

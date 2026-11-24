@@ -67,44 +67,54 @@ The jq people use (`trials/jq/README.md`, choices 1804-1822), held byte for byte
 `measure.py jq --check` (every build gives jq's output and exit code), by a suite of 3,681 cases written with
 the Rust version and one of 6,128 written with the Zig version. jq 1.8.2 (Homebrew) and jaq 3.2.0 are
 measured beside them; jaq is another algorithm and is not held to jq's output. Apple M3 Max, macOS, 24
-November 2026; 100 MB of records, of a record a line and of numbers from
+November 2026, after slice 171; 100 MB of records, of a record a line and of numbers from
 [`trials/inputs/json.sg`](../trials/inputs/json.sg) (seed 1), 1 GB of records, and the inputs that break
 things written by `measure.py`; the best of five.
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe | jq 1.8.2 | jaq 3.2.0 |
 |---|---|---|---|---|---|---|---|
-| records, written back | 1.121 s, 614.0 MB | 1.205 s, 810.5 MB | 2.369 s, 1031.6 MB | 0.878 s, 588.1 MB | 1.036 s, 639.0 MB | 4.505 s, 1183.0 MB | 1.585 s, 1216.1 MB |
-| select and an object | 0.911 s, 614.1 MB | 1.003 s, 810.7 MB | 2.157 s, 1031.7 MB | 0.741 s, 588.3 MB | 0.904 s, 639.1 MB | 1.496 s, 1131.4 MB | 1.077 s, 1216.3 MB |
-| group_by | 1.305 s, 654.0 MB | 1.531 s, 863.0 MB | 2.433 s, 1060.1 MB | 1.027 s, 654.9 MB | 1.242 s, 710.0 MB | 2.135 s, 1155.4 MB | 1.136 s, 1270.5 MB |
-| sort_by | 1.231 s, 650.8 MB | 1.335 s, 859.9 MB | 2.467 s, 1060.5 MB | 1.427 s, 654.4 MB | 1.694 s, 709.6 MB | 1.940 s, 1152.1 MB | 1.217 s, 1241.3 MB |
-| csv, raw | 0.962 s, 614.0 MB | 1.056 s, 810.5 MB | 2.270 s, 1031.6 MB | 0.763 s, 588.4 MB | 0.940 s, 639.2 MB | 1.615 s, 1146.0 MB | 1.226 s, 1216.3 MB |
-| counted by city | 0.970 s, 613.9 MB | 1.071 s, 810.5 MB | 2.210 s, 1031.6 MB | 0.753 s, 588.2 MB | 0.919 s, 639.2 MB | 1.965 s, 1129.4 MB | 0.874 s, 1220.4 MB |
-| every number added | 3.048 s, 325.1 MB | 3.262 s, 444.1 MB | 3.365 s, 864.9 MB | 0.980 s, 589.2 MB | 1.154 s, 628.6 MB | 6.063 s, 1545.0 MB | 4.613 s, 1043.4 MB |
-| a record a line | 0.806 s, 3.8 MB | 0.875 s, 3.9 MB | 0.851 s, 3.8 MB | 0.665 s, 3.1 MB | 0.828 s, 3.1 MB | 1.311 s, 3.3 MB | 0.851 s, 99.7 MB |
-| 1 GB written back | 10.783 s, 6085.3 MB | 11.581 s, 8052.9 MB | 21.408 s, 10288.8 MB | 8.369 s, 5842.9 MB | 10.048 s, 6350.3 MB | 33.739 s, 11852.7 MB | 13.301 s, 12125.4 MB |
-| ten million lines out | 0.662 s, 2.7 MB | 0.710 s, 2.7 MB | 0.397 s, 3.0 MB | 0.464 s, 2.3 MB | 0.542 s, 2.5 MB | 1.930 s, 3.1 MB | 8.448 s, 4.3 MB |
-| a text of 100 MB | 0.303 s, 222.1 MB | 0.336 s, 222.1 MB | 0.130 s, 331.0 MB | 0.214 s, 112.6 MB | 0.244 s, 112.8 MB | 0.702 s, 222.4 MB | 0.106 s, 337.1 MB |
-| an object of ten million | 3.410 s, 1067.8 MB | 3.469 s, 1068.2 MB | 3.566 s, 1468.1 MB | 2.025 s, 1764.1 MB | 2.332 s, 1831.6 MB | 3.560 s, 2313.5 MB | 1.284 s, 1477.8 MB |
-| ten million sorted | 0.112 s, 157.1 MB | 0.159 s, 157.2 MB | 0.237 s, 310.2 MB | 0.261 s, 309.1 MB | 0.379 s, 385.6 MB | 1.244 s, 1417.5 MB | 0.174 s, 413.2 MB |
-| added to, a million times | 0.099 s, 19.8 MB | 0.113 s, 19.8 MB | 0.103 s, 20.3 MB | 0.071 s, 19.2 MB | 0.078 s, 19.5 MB | 0.259 s, 95.2 MB | 0.133 s, 34.8 MB |
-| set by name, a million times | 0.640 s, 122.0 MB | 0.692 s, 122.0 MB | 0.374 s, 126.8 MB | 0.333 s, 123.3 MB | 0.412 s, 125.2 MB | 1.017 s, 164.5 MB | 0.431 s, 138.3 MB |
-| a def a million deep | 0.200 s, 109.9 MB | 0.230 s, 156.3 MB | 0.088 s, 125.6 MB | 0.084 s, 156.2 MB | 0.094 s, 156.4 MB | 0.253 s, 150.3 MB | fails |
-| a def ten million in tail | 1.226 s, 2.4 MB | 1.340 s, 2.4 MB | 0.395 s, 3.0 MB | 0.434 s, 2.3 MB | 0.470 s, 2.5 MB | 1.723 s, 3.1 MB | 1.437 s, 4.4 MB |
-| nested ten million deep | 0.804 s, 1073.5 MB | 0.992 s, 1536.6 MB | 1.046 s, 1074.2 MB | 0.699 s, 1847.4 MB | 0.782 s, 2001.4 MB | 1.608 s, 309.6 MB | fails |
-| Size, stripped | 472 KB | 521 KB | 2255 KB | 636 KB | 765 KB | — | — |
-| Lines | 6323 | 6323 | 4927 | 5456 | 5456 | — | — |
+| records, written back | 1.019 s, 713.2 MB | 1.119 s, 959.2 MB | 2.170 s, 1114.2 MB | 0.866 s, 557.7 MB | 1.027 s, 608.7 MB | 4.495 s, 1183.0 MB | 1.568 s, 1216.1 MB |
+| select and an object | 0.888 s, 713.3 MB | 0.991 s, 959.3 MB | 2.057 s, 1114.2 MB | 0.726 s, 557.9 MB | 0.893 s, 608.8 MB | 1.478 s, 1131.4 MB | 1.062 s, 1216.3 MB |
+| group_by | 1.326 s, 753.2 MB | 1.557 s, 1011.6 MB | 2.348 s, 1142.8 MB | 1.018 s, 624.5 MB | 1.237 s, 679.6 MB | 2.137 s, 1155.4 MB | 1.174 s, 1270.5 MB |
+| sort_by | 1.435 s, 750.1 MB | 1.506 s, 1008.4 MB | 2.468 s, 1143.2 MB | 1.122 s, 624.0 MB | 1.326 s, 679.2 MB | 1.926 s, 1152.2 MB | 1.210 s, 1241.3 MB |
+| csv, raw | 0.931 s, 713.3 MB | 1.036 s, 959.3 MB | 2.143 s, 1114.3 MB | 0.764 s, 557.8 MB | 0.930 s, 608.8 MB | 1.604 s, 1145.9 MB | 1.216 s, 1216.3 MB |
+| counted by city | 0.958 s, 713.2 MB | 1.089 s, 959.3 MB | 2.093 s, 1114.2 MB | 0.748 s, 557.8 MB | 0.904 s, 608.8 MB | 1.950 s, 1129.4 MB | 0.865 s, 1220.3 MB |
+| every number added | 2.033 s, 859.0 MB | 2.366 s, 1206.1 MB | 2.438 s, 965.8 MB | 0.975 s, 588.9 MB | 1.169 s, 628.2 MB | 6.019 s, 1545.1 MB | 4.563 s, 1043.4 MB |
+| a record a line | 0.782 s, 3.8 MB | 0.880 s, 3.8 MB | 0.800 s, 3.8 MB | 0.658 s, 3.1 MB | 0.815 s, 3.2 MB | 1.307 s, 3.3 MB | 0.844 s, 99.7 MB |
+| 1 GB written back | 9.711 s, 7080.6 MB | 10.813 s, 9540.0 MB | 19.643 s, 11115.0 MB | 8.293 s, 5536.8 MB | 9.907 s, 6028.8 MB | 33.841 s, 11852.7 MB | 13.394 s, 12125.4 MB |
+| ten million lines out | 0.151 s, 2.5 MB | 0.134 s, 2.6 MB | 0.390 s, 3.1 MB | 0.165 s, 2.2 MB | 0.206 s, 2.5 MB | 1.912 s, 3.1 MB | 8.301 s, 4.4 MB |
+| a text of 100 MB | 0.304 s, 222.1 MB | 0.334 s, 222.1 MB | 0.130 s, 331.1 MB | 0.217 s, 112.6 MB | 0.246 s, 112.8 MB | 0.701 s, 222.4 MB | 0.106 s, 337.1 MB |
+| an object of ten million | 3.512 s, 1068.0 MB | 3.561 s, 1127.6 MB | 3.629 s, 1468.2 MB | 1.857 s, 1447.1 MB | 2.120 s, 1514.6 MB | 3.660 s, 2313.5 MB | 1.307 s, 1477.8 MB |
+| ten million sorted | 0.132 s, 157.0 MB | 0.130 s, 157.1 MB | 0.266 s, 310.3 MB | 0.285 s, 309.0 MB | 0.396 s, 385.6 MB | 1.238 s, 1417.5 MB | 0.173 s, 413.2 MB |
+| added to, a million times | 0.076 s, 19.7 MB | 0.089 s, 19.8 MB | 0.107 s, 20.4 MB | 0.073 s, 19.2 MB | 0.082 s, 19.4 MB | 0.259 s, 95.2 MB | 0.136 s, 34.8 MB |
+| set by name, a million times | 0.555 s, 121.8 MB | 0.614 s, 121.8 MB | 0.377 s, 127.2 MB | 0.312 s, 123.3 MB | 0.408 s, 125.2 MB | 1.024 s, 164.5 MB | 0.437 s, 138.3 MB |
+| a def a million deep | 0.164 s, 109.8 MB | 0.194 s, 156.2 MB | 0.087 s, 125.6 MB | 0.085 s, 156.2 MB | 0.100 s, 156.5 MB | 0.255 s, 150.3 MB | fails |
+| a def ten million in tail | 0.906 s, 2.3 MB | 1.036 s, 2.4 MB | 0.389 s, 3.0 MB | 0.430 s, 2.3 MB | 0.520 s, 2.6 MB | 1.720 s, 3.1 MB | 1.448 s, 4.4 MB |
+| nested ten million deep | 0.704 s, 1073.5 MB | 0.891 s, 1536.6 MB | 1.043 s, 1074.2 MB | 0.700 s, 1847.4 MB | 0.808 s, 2001.4 MB | 1.616 s, 309.6 MB | fails |
+| Size, stripped | 488 KB | 537 KB | 2255 KB | 652 KB | 749 KB | — | — |
+| Lines | 6394 | 6394 | 5027 | 5517 | 5517 | — | — |
 
 What it shows:
 
-- **SG is ahead of jq 1.8.2 in every case and of Rust in all but five**; Rust's `serde_json` builds a
+- **SG is ahead of jq 1.8.2 in every case and of Rust in all but four**; Rust's `serde_json` builds a
   `Value` of its own before the program's, where SG's `JsonReader` (1814) and Zig's `Scanner` hand the
-  tokens straight to the program. **Zig is ahead of SG in most cases**, by 20 to 30% where records are read
-  and written; SG holds less memory in the object of ten million (1,068 MB against 1,764 MB) and in ten
-  million sorted.
-- **Where SG is behind** (in [Slower than C](slower-than-c.md)): a call of a `def` (the two cases of `def`, 1.2 s against 0.4 s in tail position, and
-  `set by name`, 0.64 s against 0.37 s), the numbers of `every number added` (Zig works out a `double` the first time it is
-  wanted, which the others do not, 1819), ten million lines written (0.66 s against Rust's 0.40 s), and a
-  text of 100 MB, which SG holds twice while it is read (222 MB against Zig's 113 MB).
+  tokens straight to the program. **Zig is ahead of SG in most cases**, by 18 to 30% where records are read
+  and written; SG is ahead in ten million lines out and ten million sorted, and holds less memory in the
+  object of ten million (1,068 MB against 1,447 MB), in ten million sorted and nested ten million deep.
+- **Where SG is behind** (in [Slower than C](slower-than-c.md)): a call of a `def` (0.91 s against 0.43 s
+  in tail position, and `set by name`, 0.56 s against 0.31 s); `every number added`, 2.03 s against
+  0.98 s, where the rest is the machine of `..` and not the numbers, and 859 MB against 589 MB; the
+  memory of the records (713 MB against 558 MB), where SG holds each fraction read with its literal in two
+  blocks; and a text of 100 MB, which SG holds twice while it is read (222 MB against Zig's 113 MB).
+- **Slices 170 and 171** (choices 1836, 1824, 1825, 1837): a function whose values may take a page of its
+  stack touches it only near the bottom of the stack (a `def` ten million deep in tail position 1.23 s →
+  0.91 s), and the three read and write numbers one way: a whole number of up to 15 digits is its
+  `double`, any other keeps its literal and works out its `double` when wanted, two are compared by their
+  `double`s first, and a whole `double` is written as an integer. SG had written every long number into
+  text as it read it: every number added 3.05 s → 2.03 s, ten million lines out 0.66 s → 0.15 s (Zig
+  0.46 s → 0.17 s). The fractions of the records are literals now, so SG holds 713 MB where it held 614 MB
+  and its `sort_by` takes 1.44 s where it took 1.23 s; Zig's whole numbers no longer take a block (558 MB
+  where 588 MB), and its `sort_by` compares `double`s (1.12 s where 1.43 s).
 - **Found and fixed in the slice, from these cases**: a `shared` value was copied whole at each change
   (`makeUnique`, 1813: `added to, a million times` did not end in 300 s); `sort` merged pairs of one item,
   then two, whatever the order (it now merges the runs the items make: ten million sorted 1.16 s → 0.11 s);

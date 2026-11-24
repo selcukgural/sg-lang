@@ -19,12 +19,12 @@ enum Jv : Clonable, Comparable {
     True
     // A number computed.
     Number(double value)
-    // A number read (in the input or the filter) and not changed, which its `double` writes as
-    // it was written.
+    // A whole number of at most 15 digits read (in the input or the filter) and not changed: its
+    // `double`, found from its digits, writes it as it was written (choice 1837).
     Exact(double value)
     // A number read and not changed, with its literal (choice 1805): one value is 16 bytes, as
-    // Rust's and Zig's are.
-    Literal(shared NumberText number)
+    // Rust's and Zig's are. Its `double` is worked out the first time it is wanted (1824).
+    Literal(shared checked NumberText number)
     String(shared string text)
     Array(shared List<Jv> items)
     Object(shared JvObject members)
@@ -61,15 +61,70 @@ Jv jvNumber(double d) {
     return Jv.Number(d)
 }
 
-// A number read, with its literal as decNumber writes it.
-Jv jvLiteral(double d, string text) {
-    return Jv.Literal(new shared NumberText { value = d, text = text })
+// A number read, with its literal as decNumber writes it; its `double` worked out when wanted.
+Jv jvLiteral(string text) {
+    return Jv.Literal(new shared checked NumberText { text = text, value = 0.0, known = false })
 }
 
-// The literal of a number read and its `double`.
-struct NumberText : Clonable {
-    double value
+// A number read whose `double` is known already.
+Jv jvLiteralKnown(double d, string text) {
+    return Jv.Literal(new shared checked NumberText { text = text, value = d, known = true })
+}
+
+// The literal of a number read, and its `double` once it has been wanted (choice 1824).
+struct NumberText {
     string text
+    double value
+    bool known
+}
+
+// Whether the literal `text` (as decNumber writes it) is ordered exactly by its `double`: at most
+// 15 digits in its coefficient, and its adjusted exponent within 307 of 0. Two such numbers are in
+// the order of their `double`s, which a `double` keeps apart to 15 digits (choice 1837).
+bool orderedByDouble(read string text) {
+    var b = text.asBytes()
+    nint i = 0
+    if i < b.length() && b[i] == '-' {
+        i += 1
+    }
+    nint digits = 0
+    nint wholeDigits = 0
+    nint zerosAfterPoint = 0
+    bool seenPoint = false
+    bool seenDigit = false
+    while i < b.length() && b[i] != 'E' {
+        byte c = b[i]
+        if c == '.' {
+            seenPoint = true
+        } else if seenDigit || c != '0' {
+            seenDigit = true
+            digits += 1
+            if !seenPoint {
+                wholeDigits += 1
+            }
+        } else if seenPoint {
+            zerosAfterPoint += 1
+        }
+        i += 1
+    }
+    if !seenDigit {
+        // A zero.
+        return true
+    }
+    if digits > 15 {
+        return false
+    }
+    if i < b.length() {
+        // `d.dddE+n`: the exponent is the adjusted one.
+        var rest = text[i + 1..text.length()]
+        long adjusted = long.parse(read rest) ?? 1000
+        return adjusted >= -307 && adjusted <= 307
+    }
+    // Plain: digits before the point, or zeros after it before the first digit.
+    if wholeDigits > 0 {
+        return wholeDigits <= 308
+    }
+    return zerosAfterPoint < 307
 }
 
 Jv jvText(string s) {
@@ -244,11 +299,6 @@ int compareBytes(read string a, read string b) {
 int compareNumbers(read Jv x, read Jv y) {
     bool lx = isLiteral(x)
     bool ly = isLiteral(y)
-    // Two numbers read are compared exactly when one keeps its text; one read without its text
-    // is what its `double` writes.
-    if isRead(x) && isRead(y) && (lx || ly) {
-        return compareLiterals(read literalText(x), read literalText(y))
-    }
     double a = numberOf(x)
     double b = numberOf(y)
     // jq puts NaN below every number, and does not take it for equal to itself.
@@ -258,24 +308,31 @@ int compareNumbers(read Jv x, read Jv y) {
     if b.isNaN() {
         return 1
     }
+    // The `double`s first: a literal's `double` is rounded in the order of the literals, so two
+    // whose `double`s differ are in that order (choice 1837).
     if a < b {
         return -1
     }
-    if a == b {
-        // A literal is finite however large: `1E+999999999` is below the infinity it rounds to.
-        if !a.isFinite() && lx != ly {
-            int finiteFirst = 1
-            if a > 0.0 {
-                finiteFirst = -1
-            }
-            if lx {
-                return finiteFirst
-            }
-            return -finiteFirst
-        }
-        return 0
+    if a > b {
+        return 1
     }
-    return 1
+    // The same `double`: two numbers read are compared exactly when one keeps its text, but two of
+    // at most 15 digits, whose `double`s keep them apart, are equal.
+    if isRead(x) && isRead(y) && (lx || ly) && !(orderedAsDouble(x) && orderedAsDouble(y)) {
+        return compareLiterals(read literalText(x), read literalText(y))
+    }
+    // A literal is finite however large: `1E+999999999` is below the infinity it rounds to.
+    if !a.isFinite() && lx != ly {
+        int finiteFirst = 1
+        if a > 0.0 {
+            finiteFirst = -1
+        }
+        if lx {
+            return finiteFirst
+        }
+        return -finiteFirst
+    }
+    return 0
 }
 
 // How deep jq compares: an array or an object entered past this many levels is an error,
@@ -301,6 +358,16 @@ Jv? tooDeep() {
 bool isLiteral(read Jv v) {
     match v {
         Literal(_) => return true
+        _ => return false
+    }
+}
+
+// Whether a number read is in the order of its `double` (see `orderedByDouble`): a whole number
+// of at most 15 digits always is. Looked at only when two `double`s are the same.
+bool orderedAsDouble(read Jv v) {
+    match v {
+        Exact(_) => return true
+        Literal(n) => return orderedByDouble(read n.text)
         _ => return false
     }
 }

@@ -2141,6 +2141,9 @@ fn identical(a: Value, b: Value) bool {
         .false => b == .false,
         .true => b == .true,
         .number => |d| b == .number and @as(u64, @bitCast(d)) == @as(u64, @bitCast(b.number)),
+        // A number read is a value of its own each time in jq, as a literal is here: never the
+        // same one as another.
+        .exact => false,
         .literal => |l| b == .literal and l == b.literal,
         .string => |x| b == .string and x == b.string,
         .array => |x| b == .array and x == b.array,

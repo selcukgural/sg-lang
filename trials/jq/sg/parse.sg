@@ -833,7 +833,7 @@ Result<nint, string> parseNumber(ref Parser r, ref Program p) {
     if literal is null {
         return Ok(addConst(ref p, jvNumber(value)))
     }
-    return Ok(addConst(ref p, jvLiteral(value, literal)))
+    return Ok(addConst(ref p, jvLiteralKnown(value, literal)))
 }
 
 // A text in quotes, with `\(...)` inside; `format` is applied to what goes inside (`@csv "..."`), -1 for none.

@@ -363,14 +363,14 @@ Result<Jv, Jv> negate(read Jv v) {
             // jq writes the negation of a literal zero without its sign: `-(0.0)` is `0.0`.
             if isZeroLiteral(read n.text) {
                 if n.text[0] == '-' {
-                    return Ok(jvLiteral(0.0, n.text[1..n.text.length()].clone()))
+                    return Ok(jvLiteralKnown(0.0, n.text[1..n.text.length()].clone()))
                 }
                 return Ok(Jv.Literal(share n))
             }
             if n.text.length() > 0 && n.text[0] == '-' {
-                return Ok(jvLiteral(-n.value, n.text[1..n.text.length()].clone()))
+                return Ok(jvLiteral(n.text[1..n.text.length()].clone()))
             }
-            return Ok(jvLiteral(-n.value, $"-{n.text}".toString()))
+            return Ok(jvLiteral($"-{n.text}".toString()))
         }
         _ => return fail($"{describe(v)} cannot be negated".toString())
     }
@@ -380,7 +380,14 @@ Result<Jv, Jv> negate(read Jv v) {
 double numberOf(read Jv v) {
     match v {
         Number(d) or Exact(d) => return d
-        Literal(n) => return n.value
+        Literal(n) => {
+            // Worked out the first time it is wanted, and kept (choice 1824).
+            if !n.known {
+                n.value = doubleOfLiteral(read n.text)
+                n.known = true
+            }
+            return n.value
+        }
         _ => return 0.0
     }
 }
@@ -813,7 +820,7 @@ Result<Jv, Jv> nativeOnce(ref Machine m, int id, read Jv v, read List<Jv> args) 
             Exact(d) => return Ok(Jv.Exact(d.abs()))
             Literal(n) => {
                 if n.text.length() > 0 && n.text[0] == '-' {
-                    return Ok(jvLiteral(-n.value, n.text[1..n.text.length()].clone()))
+                    return Ok(jvLiteral(n.text[1..n.text.length()].clone()))
                 }
                 return Ok(Jv.Literal(share n))
             }

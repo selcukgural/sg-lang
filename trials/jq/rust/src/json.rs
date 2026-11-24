@@ -174,6 +174,6 @@ impl<'de> Visitor<'de> for NumberSeed {
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Value, E> {
-        Decimal::parse(s.as_bytes()).map(Value::literal).ok_or_else(|| E::custom("Invalid numeric literal"))
+        Value::read_number(s).ok_or_else(|| E::custom("Invalid numeric literal"))
     }
 }

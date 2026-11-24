@@ -75,6 +75,15 @@ void writeDouble(ref string out, double value) {
         }
         return
     }
+    // A whole number below 10^16 is written as an integer, as jq writes it (choice 1825): no text of
+    // its own is made for its digits.
+    if d > -1e16 && d < 1e16 {
+        long whole = (long)d
+        if (double)whole == d {
+            out.write(whole)
+            return
+        }
+    }
     if d < 0.0 {
         out.write('-')
     }

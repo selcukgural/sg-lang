@@ -475,6 +475,13 @@ and 64 KB more at every call, so that a frame larger than the stack ends at the 
 touches only where the frame may reach the bottom eighth of the stack, below the mark of 1833. A `def` of
 SG's `jq` called ten million times took 1.24 s, now 0.88 s.
 
+Slice 171 (1824, 1825, 1837) made the numbers of the three versions of `jq` one way, as 1819 asks: a whole
+number of up to 15 digits read is its `double`, any other keeps its literal and works out its `double`
+when it is wanted, two numbers read are compared by their `double`s first, and a whole `double` is written
+as an integer. SG had written every long number into text as it read it: the numbers of 100 MB are written
+back in 0.77 s, where they took 2.11 s (Zig 0.61 s, Rust 1.90 s), and ten million whole numbers in
+0.16 s, where they took 0.70 s.
+
 ## Next
 
 Next comes the heavy level of
