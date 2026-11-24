@@ -258,3 +258,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [171](2026-11-24.md#slice-171) | A number's `double` worked out when wanted, a whole number written as an integer, in the three versions of `jq` | 1824, 1825, 1837 |
 | [172](2026-11-24.md#slice-172) | The three versions of `jq` pass each other's suites, kept in `trials/jq/tests` | 1839 |
 | [173](2026-11-24.md#slice-173) | `Regex` held to Rust's `regex` and PCRE2; lines and patterns of bytes that may not be UTF-8 | 1840–1843 |
+| [174](2026-11-24.md#slice-174) | A search in any case by its two rarest bytes; a text that starts every match | none |

@@ -54,15 +54,26 @@ void main() {
     // `k` and `s` are not looked for as ASCII under `(?i)`: they also match `K` (Kelvin) and `ſ`.
     print(Regex.of("(?i)ask").isMatch("A\u{17F}\u{212A}"))
     print(Regex.of("(?i)error").findAll("ERROR, Error, eRRoR, err"))
-    // Sixteen places at a time by their first two bytes: a match inside a block, one across the
-    // edge of two, a place where only the first bytes agree, and one in the places past the last
-    // block, looked at one at a time; a byte that is no letter matches only itself. `(?i)error` is
-    // that text alone, found without the DFAs; `(?i)ror \d+` holds it.
-    var long = "--------------ErRor----------------------------ERRORer-------erRoXOr-Error"
+    // Sixteen places at a time by the two rarest bytes of the text, `rr` of `error`: a match inside
+    // a block, one across the edge of two, places where only those two bytes agree (`xRRor`) or only
+    // the first two (`er`), and a match in the last block, which overlaps the one before it; a text
+    // of fewer than sixteen places is looked at one at a time. A byte that is no letter matches only
+    // itself. `(?i)error` is that text alone, found without the DFAs; `(?i)ror \d+` holds it.
+    var long = "--------------ErRor----------------------------ERRORer-------erRoXOr-xRRor--Error"
     print(Regex.of("(?i)error").findAll(read long))
+    print(Regex.of("(?i)error").findAll("er-er-er-er-er-er-er-eRROR"))
+    print(Regex.of("(?i)error").findAll("er-xrror-ERROr"))
     print(Regex.of("(?i)r-e").findAll(read long))
     print(Regex.of("(?i)r-e").isMatch("--------------------r\re r_e R-"))
     print(Regex.of("""(?i)ror \d+""").findAll("a long line of text in which the code is ERROR 42, then error 7"))
+    // Every match starts with `error`, in any case: the DFAs go from their first state straight to
+    // where it is next.
+    var errors = "an ERROR here, an error, then Error found and eRRor x; errorless, ERRORS"
+    print(Regex.of("(?i)error [a-z]+").findAll(read errors))
+    print(Regex.of("""(?i)error\w*""").findAll(read errors))
+    // One byte is a poor text to look for first, found far more often than a longer one: `x+error`
+    // looks for `error`, then reads back for the `x`s.
+    print(Regex.of("x+error").findAll("xerror, an error, xxERROR, xxerror, x error"))
 
     // The groups, found by Pike's machine from where the DFAs say the match starts.
     var c = Regex.of("""(\w+)@(\w+)\.com""").captures("write to ada@example.com today") ?? panic("a match")

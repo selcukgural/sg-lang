@@ -297,6 +297,13 @@ public struct Regex : Formattable {
     // looked for whatever the case of its ASCII letters (`(?i)error`).
     string inner
     bool innerFolded
+    // The two places of `inner`, the first before the second, whose bytes are the rarest in text:
+    // a folded `inner` is looked for sixteen places at a time by these two bytes alone.
+    nint innerRare
+    nint innerRareToo
+    // Every match starts with `inner` and there is no `prefix`, as in `(?i)error \w+`: the DFAs
+    // go from their first state straight to where `inner` is next, as they do to `prefix`.
+    bool innerStarts
     // The whole pattern is `inner`, folded, with no group: a match is where the search for it
     // finds it, and the machine never runs (`(?i)error`).
     bool foldedLiteral
@@ -361,6 +368,10 @@ public struct Regex : Formattable {
             regexCompile(ref innerBack, read parser, parser.nodes.length() - 1, true)
             _ = regexEmit(ref innerBack, RegexOpMatch, 0, 0)
         }
+        nint innerRare = 0
+        nint innerRareToo = 0
+        bool innerStarts = prefix.length() == 0 && inner.best.length() > 0 && inner.bestKid == 0
+        regexRarePair(inner.best.asBytes(), ref innerRare, ref innerRareToo)
         nint size = code.length()
         nint backSize = back.length()
         nint innerBackSize = innerBack.length()
@@ -374,6 +385,9 @@ public struct Regex : Formattable {
             anchored = anchored,
             inner = inner.best,
             innerFolded = inner.bestFolded,
+            innerRare = innerRare,
+            innerRareToo = innerRareToo,
+            innerStarts = innerStarts,
             foldedLiteral = foldedLiteral,
             asserts = asserts,
             back = back,
@@ -1936,6 +1950,11 @@ void regexOffer(ref RegexInner inner, read string run, bool folded, nint kid) {
             rarest = r
         }
     }
+    // One byte alone stops a search far more often than a longer text of bytes as rare: it counts
+    // as one step commoner (`x+error` looks for `error`, not `x`).
+    if run.length() == 1 && rarest > 0 {
+        rarest -= 1
+    }
     int score = rarest * 100000 + (int)run.length().min(99999)
     if score > inner.bestScore {
         inner.bestScore = score
@@ -2128,31 +2147,41 @@ nint regexInnerAt(read Regex re, read byte[] bytes, nint from) {
     var needle = re.inner.asBytes()
     nint last = bytes.length() - needle.length()
     nint i = from
-    if needle.length() >= 2 {
-        // Sixteen places at a time, each held to the first two bytes of the text with no branch,
-        // which the C compiler makes vector code of; only a block with a place that may match is
-        // looked at a place at a time.
-        byte n0 = needle[0]
+    if needle.length() >= 2 && last - from >= 15 {
+        // Sixteen places at a time, each held to the two rarest bytes of the text with no branch,
+        // which the C compiler makes vector code of; only a place where both are found is looked
+        // at whole. The last block overlaps the one before it, whose places had no match: the
+        // outer loop gives it to the inner one, which stays free of that test.
+        nint r0 = re.innerRare
+        nint r1 = re.innerRareToo
+        byte n0 = needle[r0]
         byte m0 = regexFoldMask(n0)
-        byte n1 = needle[1]
+        byte n1 = needle[r1]
         byte m1 = regexFoldMask(n1)
-        while i + 16 <= last {
-            var window = bytes[i..i + 17]
-            int maybe = 0
-            for k in 0..16 {
-                if (((window[k] | m0) ^ n0) | ((window[k + 1] | m1) ^ n1)) == 0 {
-                    maybe += 1
-                }
+        while i <= last {
+            if i + 15 > last {
+                i = last - 15
             }
-            if maybe > 0 {
+            while i + 15 <= last {
+                var first = bytes[i + r0..i + r0 + 16]
+                var second = bytes[i + r1..i + r1 + 16]
+                int maybe = 0
                 for k in 0..16 {
-                    if regexFoldedAt(bytes, i + k, needle) {
-                        return i + k
+                    if (((first[k] | m0) ^ n0) | ((second[k] | m1) ^ n1)) == 0 {
+                        maybe += 1
                     }
                 }
+                if maybe > 0 {
+                    for k in 0..16 {
+                        if (((first[k] | m0) ^ n0) | ((second[k] | m1) ^ n1)) == 0 && regexFoldedAt(bytes, i + k, needle) {
+                            return i + k
+                        }
+                    }
+                }
+                i += 16
             }
-            i += 16
         }
+        return -1
     }
     while i <= last {
         if regexFoldedAt(bytes, i, needle) {
@@ -2161,6 +2190,55 @@ nint regexInnerAt(read Regex re, read byte[] bytes, nint from) {
         i += 1
     }
     return -1
+}
+
+// The two places of `text` whose bytes are the rarest in text, by `regexByteRank`, the first
+// before the second; 0 and 1 for a text shorter than two bytes.
+void regexRarePair(read byte[] text, ref nint first, ref nint second) {
+    first = 0
+    second = 1
+    if text.length() < 2 {
+        return
+    }
+    nint a = 0
+    for i in 1..text.length() {
+        if regexByteRank(text[i]) > regexByteRank(text[a]) {
+            a = i
+        }
+    }
+    nint b = -1
+    for i in 0..text.length() {
+        if i != a && (b < 0 || regexByteRank(text[i]) > regexByteRank(text[b])) {
+            b = i
+        }
+    }
+    first = a.min(b)
+    second = a.max(b)
+}
+
+// How rare a byte is in text, roughly, the higher the rarer: space, then the lower case letters
+// in the order of how often they are found in English, then digits and the commonest marks,
+// upper case letters, other marks and controls, and a byte past ASCII.
+int regexByteRank(byte b) {
+    if b == ' ' {
+        return 0
+    }
+    if b >= 0x80 {
+        return 60
+    }
+    if b >= 'A' && b <= 'Z' {
+        return 30 + regexByteRank(b | 0x20)
+    }
+    var order = "etaoinsrhldcumfpgwybvkxjqz".asBytes()
+    for i in 0..order.length() {
+        if order[i] == b {
+            return 1 + (int)i
+        }
+    }
+    if b >= '0' && b <= '9' || b == '.' || b == ',' || b == '-' || b == '/' || b == ':' || b == '_' || b == '\n' {
+        return 15
+    }
+    return 58
 }
 
 // What a byte of a folded inner text is joined with by `|` before it is compared: 0x20 for a letter,
@@ -2644,10 +2722,10 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read byte[] bytes, nint from
     }
     int s = regexDfaStart(ref d, regexFlagsAfter(re, before))
     // In the first state no step is alive but those that start a match, and every match starts with
-    // `prefix`: the search goes straight to where it is next (RE2's acceleration of the first
-    // state). Not with assertions, whose first states differ by what came before.
+    // `prefix`, or with `inner`: the search goes straight to where it is next (RE2's acceleration of
+    // the first state). Not with assertions, whose first states differ by what came before.
     int idle = -1
-    if re.prefix.length() > 0 && !re.asserts && !re.anchored && !d.anchored {
+    if (re.prefix.length() > 0 || re.innerStarts) && !re.asserts && !re.anchored && !d.anchored {
         idle = s
     }
     nint end = -1
@@ -2658,12 +2736,21 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read byte[] bytes, nint from
                 d.reached = length
                 return end
             }
-            nint? next = bytes[i..].indexOf(re.prefix.asBytes())
-            if next is null {
-                d.reached = length
-                return end
+            if re.innerStarts {
+                nint next = regexInnerAt(re, bytes, i)
+                if next < 0 {
+                    d.reached = length
+                    return end
+                }
+                i = next
+            } else {
+                nint? next = bytes[i..].indexOf(re.prefix.asBytes())
+                if next is null {
+                    d.reached = length
+                    return end
+                }
+                i += next
             }
-            i += next
         }
         nint hit = -1
         i = regexDfaRun(read d.table, bytes, i, ref s, d.dead, idle, ref hit)

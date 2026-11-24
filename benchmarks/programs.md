@@ -25,20 +25,27 @@ millisecond.
 
 ## grep
 
-Measured again on 24 November 2026 (slice 173), when the three began to read a line as bytes and search it
-as bytes, so that a line that is not UTF-8 is written as it is (choice 1840): SG with `readLineBytes` and
-`isMatchBytes`, Rust with `read_until` and `regex::bytes`, Zig with PCRE2's `MATCH_INVALID_UTF`.
+Measured again on 24 November 2026 (slice 174), after the search in any case was made faster. Since slice 173
+the three read a line as bytes and search it as bytes, so that a line that is not UTF-8 is written as it is
+(choice 1840): SG with `readLineBytes` and `isMatchBytes`, Rust with `read_until` and `regex::bytes`, Zig with
+PCRE2's `MATCH_INVALID_UTF`.
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |
 |---|---|---|---|---|---|
-| `-c ERROR` | 0.035 s, 2.0 MB | 0.034 s, 2.0 MB | 0.041 s, 2.8 MB | 0.035 s, 3.4 MB | 0.036 s, 3.6 MB |
-| `-n timeout` | 0.043 s, 2.2 MB | 0.043 s, 2.2 MB | 0.045 s, 2.8 MB | 0.045 s, 3.5 MB | 0.046 s, 3.6 MB |
-| `-c -i error` | 0.065 s, 2.0 MB | 0.066 s, 2.0 MB | 0.063 s, 3.0 MB | 0.045 s, 3.5 MB | 0.049 s, 3.6 MB |
-| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.127 s, 2.1 MB | 0.139 s, 2.1 MB | 0.129 s, 3.1 MB | 0.104 s, 3.4 MB | 0.105 s, 3.6 MB |
-| `'in [0-9]{4} ms: .*日本'` | 0.049 s, 2.2 MB | 0.051 s, 2.2 MB | 0.086 s, 3.2 MB | 0.048 s, 3.5 MB | 0.049 s, 3.6 MB |
-| `-v -c INFO` | 0.036 s, 2.0 MB | 0.037 s, 2.0 MB | 0.045 s, 2.8 MB | 0.038 s, 3.4 MB | 0.040 s, 3.6 MB |
+| `-c ERROR` | 0.036 s, 2.0 MB | 0.036 s, 2.0 MB | 0.043 s, 2.8 MB | 0.036 s, 3.4 MB | 0.037 s, 3.6 MB |
+| `-n timeout` | 0.044 s, 2.2 MB | 0.044 s, 2.1 MB | 0.046 s, 2.8 MB | 0.045 s, 3.5 MB | 0.047 s, 3.6 MB |
+| `-c -i error` | 0.042 s, 2.0 MB | 0.048 s, 2.0 MB | 0.063 s, 3.0 MB | 0.047 s, 3.5 MB | 0.048 s, 3.6 MB |
+| `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.127 s, 2.1 MB | 0.139 s, 2.1 MB | 0.128 s, 3.1 MB | 0.105 s, 3.4 MB | 0.106 s, 3.6 MB |
+| `'in [0-9]{4} ms: .*日本'` | 0.049 s, 2.2 MB | 0.052 s, 2.2 MB | 0.086 s, 3.2 MB | 0.049 s, 3.5 MB | 0.049 s, 3.6 MB |
+| `-v -c INFO` | 0.037 s, 2.0 MB | 0.038 s, 2.0 MB | 0.046 s, 2.8 MB | 0.039 s, 3.4 MB | 0.040 s, 3.6 MB |
 | Size, stripped | 181 KB | 181 KB | 1684 KB | 362 KB | 442 KB |
 | Lines | 104 | 104 | 145 | 146 | 146 |
+
+`-c -i error` took 0.065 s in slice 173 (checked 0.066 s), 1.44 times Zig's. It looked for the first two bytes
+of `error` sixteen places at a time, and `er` is found about once a line; it now looks for the two rarest,
+`rr`, found only where `error` is, and a last block that overlaps the one before it takes the place of the
+places looked at one at a time at the end of each line. Reading the lines is 0.033 s of the 0.042 s. The
+other cases moved by a millisecond at most.
 
 Each line is no longer checked to be UTF-8, which each of the three did before searching it. Beside the
 SG of the slice before, built from its own source the same day, best of nine: `-c ERROR` 0.044 → 0.034 s,

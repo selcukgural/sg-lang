@@ -10,16 +10,24 @@ says what is slower, by how much and against what, the choice that measured it, 
 ## The library
 
 - **A regular expression where the DFA reads every byte** (`grep` on the address, 1.22 times Zig's PCRE2,
-  choices 1535, 1536, 1541, 1803, slices 164, 165 and 173): since the hundred-and-sixty-fifth slice SG
+  choices 1535, 1536, 1541, 1803, slices 164, 165, 173 and 174): since the hundred-and-sixty-fifth slice SG
   searches from the inner text (`@example.com `) as Rust's `regex` does and is at Rust's time (0.127 s
   against 0.129 s, a line read as bytes since slice 173); PCRE2's JIT, which makes machine code of the
-  pattern and, since 173, checks no byte of the line, takes 0.104 s. `findAll` over 100 MB is now at about
-  Rust's time where a pattern has a rare inner text (`\bcache\b` 0.032 s against 0.037 s), but 1.42 times Rust's
-  on `[a-z]+ [a-z]+`, whose inner text, a space, is almost everywhere (0.301 s against 0.212 s), and 1.26 times
-  on `(?i)error` (0.063 s against 0.050 s). For the first the search from the space costs what the search
-  before it cost (0.303 s); the candidate is a cheaper loop of the DFA. The second is not looked into yet.
-  In `grep -c -i error` over 100 MB, since slice 173 read as bytes in all three, SG takes 1.44 times Zig's
-  PCRE2 (0.065 s against 0.045 s; Rust 0.063 s): PCRE2's JIT gained most when the check of each line went.
+  pattern and, since 173, checks no byte of the line, takes 0.104 s. `findAll` over 100 MB (measured again
+  in slice 174, best of five against Rust's `regex::bytes`) is at about Rust's time where a pattern has a rare
+  inner text (`\bcache\b` 0.009 s against 0.008 s), and ahead of it in any case since slice 174 (`(?i)error`
+  0.013 s against 0.021 s), but behind it where the DFA reads most of the text: 1.85 times on
+  `in [0-9]{4} ms: .*日本` (0.104 s against 0.056 s), 1.6 times on `GET /[a-z]+[0-9]+` (0.029 s against
+  0.018 s), 1.4 times on `[a-z]+ [a-z]+`, whose inner text, a space, is almost everywhere (0.259 s against
+  0.181 s), 1.55 times on `(?i)error [a-z]+` (0.039 s against 0.025 s) and 1.15 times on the address (0.102 s
+  against 0.089 s). The candidate is a cheaper loop of the DFA; for `日本`, whose inner text is rare, where
+  the time goes is not looked into yet.
+- **A text in any case found nowhere** (`findAll` of `(?i)qz` over 100 MB, 1.22 times Rust's `regex`, slice
+  174): 0.0061 s against 0.0050 s. The search holds sixteen places at a time to the two rarest bytes of the
+  text, read from two slices made for each block; read from one window, the release build took Rust's time,
+  but the checked build checked each sum of the index and lost its vector code. The candidate is a form that
+  needs neither: one slice whose two places the compiler can see. `grep -c -i` of a word found nowhere is
+  not slower (0.038 s against 0.044 s before; Zig 0.034 s, Rust 0.055 s).
 
 - **Decomposing a text** (NFD of 16 MB in eight languages, 1.24 times Rust's `icu_normalizer`, choice
   1612, 1613): SG looks up the record of each character a decomposition gives, for its class, and pushes the
