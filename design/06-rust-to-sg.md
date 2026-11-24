@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836).
 
 ## Functions and variables
 
@@ -152,7 +152,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
 | `v.partition_point(\|y\| *y < x)`, `v.partition_point(\|y\| *y <= x)` | `xs.lowerBound(x)`, `xs.upperBound(x)` | built | By the order of the items; with a function of its own (`binary_search_by`, `partition_point` on any test) not yet |
 | `[i32; 3]`, `[0u8; 16]`, `[255u8; 16]` | `int[3]`, `byte[16]`, `byte[16](255)` | built | |
-| *values of the type `[u8; N]` are too big for the target architecture* | an error: *a `byte[N]` is too big: a value takes at most 2 305 843 009 213 693 951 bytes* | built | Rust's bound is `isize::MAX`; SG's is 2^61 - 1, what Clang allows an array on a machine of 64 bits. Both touch a large frame page by page before it is used (Rust's stack probes, SG's `sg_probe_stack`) |
+| *values of the type `[u8; N]` are too big for the target architecture* | an error: *a `byte[N]` is too big: a value takes at most 2 305 843 009 213 693 951 bytes* | built | Rust's bound is `isize::MAX`; SG's is 2^61 - 1, what Clang allows an array on a machine of 64 bits. Both touch a large frame page by page before it is used (Rust's stack probes, SG's `sg_probe_stack`); SG only where the frame may reach the bottom eighth of its thread's stack |
 | `&[T]`, `&mut [T]` | `read T[]`, `ref T[]` | built | `read xs` gives one where a slice is expected |
 | `HashMap<K, V>` | `HashMap<K, V>` | built | A hash table with a random key (SipHash), no order |
 | `m.insert(k, v)` (on a new key) | `map.add(k, v)` | built | A key that is there already is a panic; `map[k] = v` changes it |

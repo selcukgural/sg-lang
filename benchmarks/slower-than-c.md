@@ -113,7 +113,10 @@ says what is slower, by how much and against what, the choice that measured it, 
 - **`jq`: a call of a function of the filter** (choice 1819, slice 166): the machine of SG's `jq` makes
   each call of a `def` with a frame of `shared` values on the heap, and its continuation with them; a `def`
   ten million deep in tail position takes 1.23 s against Rust's 0.40 s and Zig's 0.43 s, a million deep
-  0.20 s against 0.09 s, and a million `.[$k] = $i` 0.64 s against 0.37 s. The machines are the same
+  0.20 s against 0.09 s, and a million `.[$k] = $i` 0.64 s against 0.37 s. A quarter of the first was the
+  touching of the stack at each call of the machine, whose frame may take more than a page: touched now
+  only near the bottom of the stack (choice 1836, slice 170), it takes 0.88 s, and the third 0.61 s (the
+  table of `benchmarks/programs.md` is measured again with slice 171). The machines are the same
   algorithm; Rust's and Zig's frames are cheaper to make and let go. What would fix it: frames kept in a
   list of the machine's own and reused, a count changed without an atomic where a frame never leaves its
   thread.

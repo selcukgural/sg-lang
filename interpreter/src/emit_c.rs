@@ -1619,10 +1619,21 @@ static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
    made all at once could start beyond it, in the memory of another thread, and write there.
    Touched from the top, the stack ends on that page, as deep recursion does. Rust's stack
    probes do the same; GCC and Clang do it on Linux with `-fstack-clash-protection`, Apple's
-   Clang and Windows on their own, but not every Clang on macOS. */
-__attribute__((noinline, unused)) static void sg_probe_stack(size_t bytes) {
+   Clang and Windows on their own, but not every Clang on macOS.
+   A frame that lies wholly above the mark of the thread (an eighth of its stack above the bottom,
+   `sg_stack_mark`) cannot reach the guard, and is not touched (choice 1836): touching every page
+   of it at each call took a quarter of the time of a recursion whose function holds a large value.
+   A thread that set no mark, and one below its mark, touch as before. */
+__attribute__((noinline, unused)) static void sg_touch_stack(size_t bytes) {
     volatile unsigned char* room = (volatile unsigned char*)__builtin_alloca(bytes);
     for (size_t at = bytes; at > 0; at = at > 4096 ? at - 4096 : 0) room[at - 1] = 0;
+}
+__attribute__((always_inline, unused)) static inline void sg_probe_stack(size_t bytes) {
+#if !SG_FREESTANDING
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0), mark = sg_stack_mark;
+    if (mark != 0 && here > mark && here - mark > bytes) return;
+#endif
+    sg_touch_stack(bytes);
 }
 
 /* Threads, locks and conditions, the one way the runtime reaches them (`SG_SYNC`: a program with

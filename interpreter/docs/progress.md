@@ -470,6 +470,11 @@ and the walks stay on their list (1835): every one is as fast as the recursion o
 and `map.add` wrote every key into text in case it panicked, calling a key's own `format`, which compiled
 code calls only for the panic.
 
+Slice 170 (1836): a function of compiled code whose values may take a page of its stack touched the frame
+and 64 KB more at every call, so that a frame larger than the stack ends at the page below it (1345); it now
+touches only where the frame may reach the bottom eighth of the stack, below the mark of 1833. A `def` of
+SG's `jq` called ten million times took 1.24 s, now 0.88 s.
+
 ## Next
 
 Next comes the heavy level of

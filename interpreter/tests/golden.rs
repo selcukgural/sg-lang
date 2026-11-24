@@ -2639,6 +2639,31 @@ fn large_frames_touch_their_stack() {
     }
 }
 
+/// A frame above the mark of its thread is not touched (choice 1836), and one below it still is: a
+/// recursion whose function holds 100 KB in a branch that never runs goes down a stack of 8 MB
+/// untouched, and is touched near the bottom, where it ends at the guard and is told as a stack
+/// that overflowed. Compiled without `-fstack-clash-protection`, so that only `sg_probe_stack`
+/// touches the frames.
+#[test]
+fn large_frames_are_touched_near_the_bottom() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("large-frames-deep");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    // The work after the call keeps the C compiler from making the recursion a loop.
+    let source = "long deep(bool never, int at, int n) {\n    if n == 2000000000 {\n        return 0\n    }\n    long sum = deep(never, at, n + 1)\n    if never {\n        var big = byte[100000]\n        big[at] = 1\n        sum += (long)big[at / 2]\n    }\n    return sum + (long)n\n}\n\nvoid main(List<string> args) {\n    var task = Task.run(deep, args.length() > 5, (int)args.length() + 100, 0)\n    print(task.wait())\n}\n";
+    let code = sg::emit_c_sources(&sg::Sources::single(source, "deep.sg"), false).unwrap();
+    let c_file = work.join("deep.c");
+    std::fs::write(&c_file, code).unwrap();
+    let binary = program_at(&work, "deep");
+    let cc = c_command().args(["-std=c11", "-O2", "-DSG_THREAD_STACK=((size_t)8<<20)", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&binary).output().unwrap();
+    let said = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert!(!run.status.success() && run.stdout.is_empty(), "a recursion of 100 KB frames on 8 MB ended: {said}");
+    assert!(said.contains("panic: stack overflow"), "the overflow was not told: {said}");
+}
+
 /// A delay waits about as long as it was asked for, also a short one: fifty delays of one
 /// millisecond end well within half a second. A clock that wakes only at the ticks of the
 /// system's timer (about 16 ms on Windows, where `Task.delay` takes a timer of high resolution)
