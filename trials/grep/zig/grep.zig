@@ -2,8 +2,10 @@
 //! PCRE2's syntax (a C library, compiled once with its JIT; Zig's standard library has no regular
 //! expressions). `-i` ignores case, `-v` gives the lines that do not match, `-n` writes each line's
 //! number in front of it, `-c` gives only how many lines there were. With more than one file, each
-//! line starts with its file's name. A line is read as UTF-8 text without its `\n` or `\r\n`, and
-//! may be up to 1 MB long. The exit code is 0 when a line was given, 1 when none was, 2 when a file
+//! line starts with its file's name. A line is read as bytes without its `\n` or `\r\n`, searched
+//! with PCRE2's `MATCH_INVALID_UTF`, where a byte that is not UTF-8 matches nothing in the pattern,
+//! and written as it is (choice 1840); a line longer than the buffer of 1 MB is gathered in memory of
+//! its own. The exit code is 0 when a line was given, 1 when none was, 2 when a file
 //! could not be read or the pattern is not one (as GNU grep's).
 
 const std = @import("std");
@@ -22,22 +24,30 @@ const Pattern = struct {
     data: *c.pcre2_match_data_8,
 
     fn isMatch(p: Pattern, line: []const u8) bool {
-        const rc = c.pcre2_match_8(p.code, line.ptr, line.len, 0, c.PCRE2_NO_UTF_CHECK, p.data, null);
+        const rc = c.pcre2_match_8(p.code, line.ptr, line.len, 0, 0, p.data, null);
         return rc >= 0;
     }
 };
 
 /// Writes the lines of `file` that are wanted; how many there were.
-fn search(io: Io, file: Io.File, p: Pattern, o: Options, name: []const u8, out: *Io.Writer, buffer: []u8) !u64 {
+fn search(io: Io, file: Io.File, p: Pattern, o: Options, name: []const u8, out: *Io.Writer, buffer: []u8, long: *Io.Writer.Allocating) !u64 {
     var file_reader = file.readerStreaming(io, buffer);
     const r = &file_reader.interface;
     var number: u64 = 0;
     var found: u64 = 0;
-    while (try r.takeDelimiter('\n')) |taken| {
+    while (true) {
+        const taken = r.takeDelimiter('\n') catch |err| switch (err) {
+            error.StreamTooLong => blk: {
+                long.clearRetainingCapacity();
+                _ = try r.streamDelimiterEnding(&long.writer, '\n');
+                if (r.seek < r.end) r.toss(1);
+                break :blk long.written();
+            },
+            else => |e| return e,
+        } orelse break;
         var line = taken;
         if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
         number += 1;
-        if (!std.unicode.utf8ValidateSlice(line)) return error.InvalidText;
         if (p.isMatch(line) == o.invert) continue;
         found += 1;
         if (o.count) continue;
@@ -106,7 +116,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     var error_code: c_int = 0;
     var error_offset: usize = 0;
-    const code = c.pcre2_compile_8(pattern.ptr, pattern.len, c.PCRE2_UTF, &error_code, &error_offset, null) orelse {
+    const code = c.pcre2_compile_8(pattern.ptr, pattern.len, c.PCRE2_UTF | c.PCRE2_MATCH_INVALID_UTF, &error_code, &error_offset, null) orelse {
         var message: [256]u8 = undefined;
         const n = c.pcre2_get_error_message_8(error_code, &message, message.len);
         std.debug.print("grep: column {d}: {s}\n", .{ error_offset + 1, message[0..@intCast(@max(n, 0))] });
@@ -119,13 +129,14 @@ pub fn main(init: std.process.Init) !u8 {
     const p: Pattern = .{ .code = code, .data = data };
 
     const buffer = try arena.alloc(u8, 1 << 20);
+    var long: Io.Writer.Allocating = .init(arena);
     var out_buffer: [65536]u8 = undefined;
     var out_file: Io.File.Writer = .init(.stdout(), io, &out_buffer);
     const out = &out_file.interface;
     var found: u64 = 0;
     var failed = false;
     if (files.len == 0) {
-        if (search(io, .stdin(), p, o, "", out, buffer)) |n| {
+        if (search(io, .stdin(), p, o, "", out, buffer, &long)) |n| {
             found += n;
         } else |err| {
             try out.flush();
@@ -137,7 +148,7 @@ pub fn main(init: std.process.Init) !u8 {
         const result = blk: {
             const file = Io.Dir.cwd().openFile(io, name, .{}) catch |err| break :blk err;
             defer file.close(io);
-            break :blk search(io, file, p, o, name, out, buffer);
+            break :blk search(io, file, p, o, name, out, buffer, &long);
         };
         if (result) |n| {
             found += n;

@@ -2,8 +2,9 @@
 # which uses libfuzzer-sys), the extension for VS Code (`editors/vscode`, which uses
 # vscode-languageclient), the web site (`website/`, Docusaurus), the Rust versions of the trials
 # (`trials/`: Rust's `regex`, the crates the library is measured against, `tokio` and hyper for the
-# servers; the Zig versions use only Zig's library and PCRE2 of the system), and the interpreter, which has no dependencies today and is watched for
-# the day it gets one.
+# servers; the Zig versions use only Zig's library and PCRE2 of the system), the Rust side of the
+# differential test of `Regex` (`interpreter/tests/regex-suite/differ/rust`, `regex`), and the
+# interpreter, which has no dependencies today and is watched for the day it gets one.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -43,5 +44,6 @@ updates:
       - /trials/std/unicode/rust
       - /trials/std/zip/rust
       - /trials/wc/rust
+      - /interpreter/tests/regex-suite/differ/rust
     schedule:
       interval: weekly

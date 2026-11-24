@@ -1,9 +1,10 @@
 // `grep`: the lines of each file named, or of the input, that a regular expression matches, with
 // RE2's syntax. `-i` ignores case, `-v` gives the lines that do not match, `-n` writes each line's
 // number in front of it, `-c` gives only how many lines there were. With more than one file, each
-// line starts with its file's name. A line is read as UTF-8 text without its `\n` or `\r\n`.
-// The exit code is 0 when a line was given, 1 when none was, 2 when a file could not be read or
-// the pattern is not one (as GNU grep's).
+// line starts with its file's name. A line is read as bytes without its `\n` or `\r\n`, searched
+// with `isMatchBytes`, where a byte that is not UTF-8 matches nothing in the pattern, and written as
+// it is (choice 1840). The exit code is 0 when a line was given, 1 when none was, 2 when a file
+// could not be read or the pattern is not one (as GNU grep's).
 
 struct Options : Copyable {
     bool count
@@ -14,28 +15,31 @@ struct Options : Copyable {
 
 // Writes the lines of `reader` that are wanted; how many there were.
 Result<long, IoError> search(ref StreamReader reader, read Regex regex, Options options, read string name) {
-    string line = ""
+    var line = List<byte>()
     string out = string.withCapacity(256)
     long number = 0
     long found = 0
-    while try reader.readLine(ref line) {
+    while try reader.readLineBytes(ref line) {
         number += 1
-        if regex.isMatch(read line) == options.invert {
+        if regex.isMatchBytes(read line) == options.invert {
             continue
         }
         found += 1
         if options.count {
             continue
         }
-        out.clear()
-        if options.names {
-            out.write($"{name}:")
+        if options.names || options.numbers {
+            out.clear()
+            if options.names {
+                out.write($"{name}:")
+            }
+            if options.numbers {
+                out.write($"{number}:")
+            }
+            try Stdout.write(read out)
         }
-        if options.numbers {
-            out.write($"{number}:")
-        }
-        out.write(read line)
-        print(out)
+        line.add('\n')
+        try Stdout.writeBytes(read line)
     }
     if options.count {
         if options.names {

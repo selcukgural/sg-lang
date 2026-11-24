@@ -11038,7 +11038,7 @@ static int64_t sg_sock_wait(sg_reader* r, int need, int64_t want, bool now) {
     }
 }
 /* `readLine` of the reader of a connection, as `sg_read_line_at`. */
-static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now) {
+static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now, bool text) {
     line->len = 0;
     int64_t n = sg_sock_wait(r, SG_NEED_LINE, 0, now);
     if (n < 0) return (int)n;
@@ -11048,7 +11048,7 @@ static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad,
         keep--;
         if (keep > 0 && from[keep - 1] == '\r') keep--;
     }
-    int64_t at = sg_block_bad(r, r->at, r->at + keep);
+    int64_t at = text ? sg_block_bad(r, r->at, r->at + keep) : -1;
     r->at += n;
     r->done += n;
     *more = n > 0;
@@ -11078,9 +11078,11 @@ static int sg_reader_fill(sg_reader* r) {
    the code the system gave, or -1 with `*bad` where the line is not UTF-8. With `now`, the line
    is read only if the block holds all of it, or the end was met: otherwise -2, and nothing of
    the reader is used (the async read done in place, see `ASYNC_IO_RUNTIME`). */
-static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now) {
+/* The next line into `line`, without its `\n` or `\r\n`; with `text`, checked to be UTF-8 (-1 and
+   `bad` when it is not), otherwise its bytes as they are (`readLineBytes`, choice 1840). */
+static int sg_read_line_any(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now, bool text) {
 #if SG_NET
-    if (r->sock) return sg_sock_line(r, line, more, bad, now);
+    if (r->sock) return sg_sock_line(r, line, more, bad, now, text);
 #endif
     line->len = 0;
     int64_t start = r->done;
@@ -11112,10 +11114,12 @@ static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* b
         line->len--;
         if (line->len > 0 && line->ptr[line->len - 1] == '\r') line->len--;
     }
+    if (!text) return 0;
     int64_t at = first >= 0 ? sg_block_bad(r, first, first + line->len) : sg_utf8_bad(line->ptr, line->len);
     if (at >= 0) { line->len = 0; *bad = start + at; return -1; }
     return 0;
 }
+static inline int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now) { return sg_read_line_any(r, line, more, bad, now, true); }
 static inline int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad) { return sg_read_line_at(r, line, more, bad, false); }
 /* What is left. */
 static int sg_read_rest(sg_reader* r, sg_string* text) {
@@ -13608,6 +13612,12 @@ fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
     }
 }
 
+/// Whether an argument is a run of bytes lent to look at, `read byte[]`, as `indexOf` of bytes
+/// takes one (choice 1843).
+fn is_byte_run(ty: &Ty) -> bool {
+    matches!(ty, Ty::Read(inner) if matches!(&**inner, Ty::Slice(of) if **of == Ty::Int(IntTy::Byte)))
+}
+
 /// The list a value is or leads to, behind borrows and pointers, and how many pointers.
 fn list_behind(ty: &Ty) -> Option<(&Ty, usize)> {
     let mut ty = ty.strip_borrow();
@@ -15805,6 +15815,27 @@ impl<'a> Emitter<'a> {
                 Ok(format!("{helper}({address})"))
             }
         }
+    }
+
+    /// `data.indexOf(read part)` of bytes: where the run first lies, found by the search of a
+    /// text, `sg_find` (choice 1843). The receiver, a list, an array or a slice, is looked at as a
+    /// slice.
+    fn find_run(&mut self, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
+        let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        let given = self.ctype(&bytes, expr.span)?;
+        if self.made.insert("sg_find_run".to_string()) {
+            let _ = writeln!(
+                self.glue,
+                "static inline int64_t sg_find_run({given} h, {given} n) {{ return sg_find((sg_str){{ h.ptr, h.len }}, (sg_str){{ n.ptr, n.len }}); }}"
+            );
+            self.sigs.insert("sg_find_run".to_string(), vec![bytes.clone()]);
+        }
+        let before = self.mark();
+        let window = self.window(recv)?;
+        let receiver = self.part(recv, &bytes, window, before);
+        let called = self.call("sg_find_run".to_string(), Some(receiver), args, false, &Ty::Int(IntTy::Long))?;
+        let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+        Ok(format!("({{ int64_t {temp} = {called}; (({ctype}){{ {temp} >= 0, {temp} }}); }})"))
     }
 
     /// Writes, once, the helpers of a window that are needed only where they are used: `get`
@@ -19893,7 +19924,7 @@ impl<'a> Emitter<'a> {
                     done(&put)
                 ))
             }
-            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::WriteBytes => {
+            StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::WriteBytes => {
                 let (fname, params) = self.stream_glue(call, &expr.ty, false, span)?;
                 let mut receiver = self.list_address(recv)?;
                 if call != StreamCall::WriteBytes {
@@ -19957,6 +19988,15 @@ impl<'a> Emitter<'a> {
                     failed("sg_io_error(code)"),
                     give(format!("({gives}){{ .tag = 0, .u.v0 = {{ more }} }}"))
                 ),
+                // The list of bytes is grown as a text is, both blocks of `malloc` with a length and
+                // a room; no byte is checked.
+                StreamCall::ReadLineBytes => format!(
+                    "bool more = false; int64_t bad = 0; sg_string s = {{ a1->ptr, 0, a1->cap }}; {take}int code = sg_read_line_any(a0, &s, &more, &bad, {now}, false); {put}\
+                     a1->ptr = s.ptr; a1->len = s.len; a1->cap = s.cap; {}if (code) {} {}",
+                    if now { "if (code == -2) return false; " } else { "" },
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ more }} }}"))
+                ),
                 StreamCall::ReadLine => format!(
                     "bool more = false; int64_t bad = 0; {take}int code = sg_read_line_at(a0, a1, &more, &bad, {now}); {put}{}if (code == -1) {} if (code) {} {}",
                     if now { "if (code == -2) return false; " } else { "" },
@@ -19979,6 +20019,7 @@ impl<'a> Emitter<'a> {
             StreamCall::ReadSome => ("sg_reader_some_r", vec![reader, bytes(Ty::Ref)]),
             StreamCall::WriteBytes => ("sg_writer_bytes_r", vec![reader, bytes(Ty::Read)]),
             StreamCall::ReadLine => ("sg_reader_line_r", vec![reader, Ty::Ref(Box::new(Ty::Str))]),
+            StreamCall::ReadLineBytes => ("sg_reader_line_bytes_r", vec![reader, Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))]),
             StreamCall::Fill => ("sg_reader_fill_r", vec![reader, Ty::Int(IntTy::Long)]),
             _ => ("sg_reader_text_r", vec![reader]),
         };
@@ -20255,7 +20296,7 @@ impl<'a> Emitter<'a> {
                 let gives = self.chan_gives(*call, *told, &item, &format!("({wait}.state == SG_CANCELLED ? -1 : {wait}.gave)"), &slot, inner.span)?;
                 result(self, gives)
             }
-            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) => {
+            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) => {
                 let value = self.await_writer(*call, recv, args, expr)?;
                 result(self, value)
             }
@@ -20536,7 +20577,7 @@ impl<'a> Emitter<'a> {
                 }
                 "NULL, 0".to_string()
             }
-            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
+            StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
             StreamCall::Buffered | StreamCall::Consume => unreachable!("the checker gives these no async form"),
             // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
             StreamCall::Seek => {
@@ -20625,7 +20666,7 @@ impl<'a> Emitter<'a> {
             // The reader of a connection receives into its block, waiting on the loop of the
             // network while nothing comes (`sg_reader_net`), until the block can answer.
             let need = match fname {
-                "sg_reader_line_r" => "SG_NEED_LINE, 0",
+                "sg_reader_line_r" | "sg_reader_line_bytes_r" => "SG_NEED_LINE, 0",
                 "sg_reader_text_r" => "SG_NEED_TEXT, 0",
                 "sg_reader_bytes_r" => "SG_NEED_BYTES, x->a1.len",
                 "sg_reader_fill_r" => "SG_NEED_MORE, x->a1",
@@ -22623,6 +22664,7 @@ impl<'a> Emitter<'a> {
                         _ => Ok(called),
                     }
                 }
+                Callee::Plain if list_behind(&recv.ty).is_some() && name == "indexOf" && is_byte_run(&args[0].ty) => self.find_run(recv, args, expr),
                 Callee::Plain if list_behind(&recv.ty).is_some() => {
                     let (list, _) = list_behind(&recv.ty).expect("just tested");
                     let list = list.clone();
@@ -22670,6 +22712,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
                 // An array and a window have the methods of a list that only look.
+                Callee::Plain if items_behind(&recv.ty).is_some() && name == "indexOf" && is_byte_run(&args[0].ty) => self.find_run(recv, args, expr),
                 Callee::Plain if items_behind(&recv.ty).is_some() => {
                     let items = items_behind(&recv.ty).expect("just tested").clone();
                     let (Ty::Array(item, _) | Ty::Slice(item)) = &items else { unreachable!("it is an array or a slice") };

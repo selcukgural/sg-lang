@@ -1027,6 +1027,9 @@ impl IoCall {
 pub enum StreamCall {
     /// `reader.readLine(ref line)`: the next line into `line`, `false` at the end.
     ReadLine,
+    /// `reader.readLineBytes(ref line)`: the next line into a `List<byte>`, its bytes as they
+    /// are, with no check that they are text; `false` at the end (choice 1840).
+    ReadLineBytes,
     /// `reader.readText()`: what is left, as text.
     ReadText,
     /// `reader.lines()`: each line as a text of its own.

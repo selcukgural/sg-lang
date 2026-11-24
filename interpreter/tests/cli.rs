@@ -1211,6 +1211,26 @@ fn the_trials() {
     // The lines of the last case: 660, each with its number.
     assert_eq!(printed[4].lines().count(), 660);
     assert!(printed[4].lines().all(|line| line.split_once(':').is_some_and(|(n, _)| n.parse::<u32>().is_ok())));
+    // Bytes that are not UTF-8, of each kind, do not stop `grep`: each line is searched with
+    // `isMatchBytes`, where they match nothing, `.` neither, and written as it is (choice 1840).
+    let bad: &[u8] = b"first ok\nbad \xff\xfe ok\r\n\xe6\x97 cut ok\n\xc0\x80 long\n\xed\xa0\x80 surrogate ok\nok.\xf4\x90\x80\x80\nlast ok";
+    std::fs::write(dir.join("bad.log"), bad).unwrap();
+    let cases: [(&[&str], &[u8]); 3] = [
+        (&["-n", "ok", "bad.log"], b"1:first ok\n2:bad \xff\xfe ok\n3:\xe6\x97 cut ok\n5:\xed\xa0\x80 surrogate ok\n6:ok.\xf4\x90\x80\x80\n7:last ok\n"),
+        // `bad` is one, and the three bad bytes before ` surrogate` are no three characters.
+        (&["-c", "^.{3} ", "bad.log"], b"1\n"),
+        (&["-v", "ok", "bad.log"], b"\xc0\x80 long\n"),
+    ];
+    let script = source("grep");
+    for (args, expected) in cases {
+        let mut words = vec![script.as_str()];
+        words.extend_from_slice(args);
+        let interpreted = sg(&dir, &words);
+        let compiled = Command::new(&built[0]).args(args).current_dir(&dir).stdin(Stdio::null()).finished();
+        assert_eq!(interpreted.stdout, expected, "grep {args:?} interpreted");
+        assert_eq!(compiled.stdout, expected, "grep {args:?} compiled");
+        assert_eq!((interpreted.status.code(), compiled.status.code()), (Some(0), Some(0)), "grep {args:?}");
+    }
 }
 
 /// The trial of `jq` (choices 1804-1822): `trials/jq/sg`, a folder of files, built and run on the

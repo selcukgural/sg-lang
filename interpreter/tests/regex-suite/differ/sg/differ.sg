@@ -1,0 +1,67 @@
+// The SG side of the differential test of `Regex` (choice 1841): reads cases from the input, a case
+// a line, the hex of a pattern, a space, the hex of a text, and writes a line for each: `E` and the
+// error when the pattern does not compile, else `y` or `n` for `isMatch`, the places of `findAll`,
+// `|`, and those of the groups of `captures`, `-` for a group that took no part. With `bytes`, the
+// text is bytes that may not be UTF-8, searched with `isMatchBytes`, `findAllBytes` and
+// `capturesBytes` (choice 1840).
+
+List<byte> decoded(read string digits) {
+    return Hex.decode(read digits) ?? panic("not hex")
+}
+
+void found(ref string out, bool matched) {
+    if matched {
+        out.write("y ")
+    } else {
+        out.write("n ")
+    }
+}
+
+void write(ref string out, read List<Match> all, Captures? caps) {
+    bool first = true
+    for m in read all {
+        if !first {
+            out.write(',')
+        }
+        first = false
+        out.write($"{m.start}-{m.end}")
+    }
+    out.write(" |")
+    if caps is not null {
+        for g in 0..caps.length() {
+            var found = caps.get(g)
+            if found is null {
+                out.write(" -")
+            } else {
+                out.write($" {found.start}-{found.end}")
+            }
+        }
+    }
+}
+
+void main(List<string> args) {
+    bool bytes = args.length() > 0 && args[0] == "bytes"
+    string line = ""
+    string out = string.withCapacity(256)
+    while Stdin.readLine(ref line) ?? panic("cannot read the cases") {
+        nint space = line.indexOf(" ") ?? panic("a case has a space")
+        var patternBytes = decoded(line[0..space])
+        var pattern = (string.fromUtf8(read patternBytes) ?? panic("a pattern is UTF-8")).clone()
+        var text = decoded(line[space + 1..])
+        match Regex.compile(read pattern) {
+            Ok(re) => {
+                out.clear()
+                if bytes {
+                    found(ref out, re.isMatchBytes(read text))
+                    write(ref out, read re.findAllBytes(read text), re.capturesBytes(read text))
+                } else {
+                    var s = string.fromUtf8(read text) ?? panic("a text is UTF-8 without `bytes`")
+                    found(ref out, re.isMatch(s))
+                    write(ref out, read re.findAll(s), re.captures(s))
+                }
+                print(out)
+            }
+            Error(e) => print($"E {e}")
+        }
+    }
+}

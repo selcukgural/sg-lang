@@ -115,6 +115,7 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 |---|---|
 | `Result<StreamReader, IoError> File.openText(read string path)` | A reader of the file |
 | `Result<bool, IoError> readLine(ref this, ref string line)` | The next line into `line`, without its `\n` or `\r\n`; `false` at the end |
+| `Result<bool, IoError> readLineBytes(ref this, ref List<byte> line)` | The same with the bytes of the line as they are, none checked to be UTF-8, for a search with `isMatchBytes` |
 | `Result<string, IoError> readText(ref this)` | All that is left |
 | `lines(ref this)` | Each line as a `Result<string, IoError>`, for a `for` |
 | `Result<nint, IoError> readBytes(ref this, ref byte[] buffer)` | Fills the buffer unless the end comes first; how many bytes |
@@ -124,7 +125,8 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | `consume(ref this, nint n)` | Gives out the first `n` bytes of the block; more than it holds is a panic |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Moves, inside its block when it can; gives the new place |
 
-Text that is not UTF-8 is `IoError.InvalidText(position)`, counted from the start of the file. `SeekFrom` is
+Text that is not UTF-8 is `IoError.InvalidText(position)`, counted from the start of the file; a program
+that must go on past such a line, as `grep` does, reads it with `readLineBytes`. `SeekFrom` is
 `Start(long offset)`, `End(long offset)` or `Current(long offset)`; a place before the start is
 `InvalidInput`.
 
@@ -227,8 +229,9 @@ end
 
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`;
-on a reader `readLineAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`, `fillAsync`; on a writer `writeAsync`,
-`writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`, and `seekAsync` on both. Each may take a
+on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
+`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`, and
+`seekAsync` on both. Each may take a
 `read CancellationToken` last (not `closeAsync`). In an async function the calls without `Async` are an error,
 since they would hold the thread. `buffered` and `consume` do not wait, and are called as they are.
 

@@ -82,6 +82,7 @@ a{2,1}: column 2: invalid repeat count: at most 1000, and the second not below t
 | `Match? find(read this, read string text)` | The first match; `null` when there is none |
 | `List<Match> findAll(read this, read string text)` | Every match, one after another, none overlapping |
 | `Captures? captures(read this, read string text)` | Where each group of the first match matched |
+| `bool isMatchBytes(read this, read byte[] text)`, `findBytes`, `findAllBytes`, `capturesBytes` | The same in bytes that may not be UTF-8 ([below](#bytes)) |
 | `string replaceAll(read this, read string text, read string replacement)` | `text` with each match replaced |
 | `List<string> split(read this, read string text)` | The parts of `text` between the matches |
 | `nint groupCount(read this)` | How many groups the pattern has |
@@ -143,6 +144,36 @@ It prints:
 costs $5
 ["a", "b", "c", "d"]
 ```
+
+## Bytes
+
+A file, a pipe or a connection may give bytes that are not UTF-8: a log with a line cut short, a name in
+an old encoding. `isMatchBytes`, `findBytes`, `findAllBytes` and `capturesBytes` search a `read byte[]`,
+such as a line `readLineBytes` reads, and give places in bytes. A byte that starts no character of UTF-8
+is read alone and matches nothing in the pattern, not `.` and not `[^a]`; a word boundary takes it for no
+letter; an empty match is never inside a character. A text that is UTF-8 gives what the methods of
+`string` give. Rust's `regex::bytes` and PCRE2's `MATCH_INVALID_UTF` work the same way.
+
+```sg
+void main() {
+    var line = Hex.decode("6b65793dff2076616c75653d3432") ?? panic("hex")
+    var pair = Regex.of("""(\w+)=(\S+)""")
+    for m in pair.findAllBytes(read line) {
+        print($"{m}: {Hex.encode(line[m.start..m.end])}")
+    }
+    print(Regex.of("key=.").isMatchBytes(read line))
+}
+```
+
+It prints:
+
+```text
+6..14: 76616c75653d3432
+false
+```
+
+`key=` is followed by the byte `ff`, which is no character: `.` does not take it, and `\S+` neither, so the
+first pair has no value and the match is `value=42`.
 
 ## The syntax
 
@@ -208,9 +239,9 @@ and the groups are found over the match alone after it. Plain text that every ma
 it is passed over at the speed of a search for text. Where that text comes after the first piece of the
 pattern and nothing before it can read its first character, the search starts from it, as Rust's `regex`
 does: what comes before it is read backwards to where a match starts, and the pattern forwards from there.
-Over 100 MB of a log, `isMatch` of `[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 0.90 times
-what Rust's `regex` takes and 1.03 times what PCRE2 takes with its JIT; a pattern with a rarer inner text,
-such as `in [0-9]{4} ms: .*日本`, takes less than either.
+Over 100 MB of a log, `isMatchBytes` of `[a-z]+[0-9]+@example\.com (PUT|DELETE)` on each line takes 0.98
+times what Rust's `regex::bytes` takes and 1.22 times what PCRE2 takes with its JIT; a pattern with a rarer
+inner text, such as `in [0-9]{4} ms: .*日本`, takes what PCRE2 takes and less than Rust's.
 
 What a pattern may cost is bounded before it runs: its program has at most 100,000 steps, each repetition
 counted with every copy it writes (`x*` writes its `x` once, `x{1000}` a thousand times), so a pattern above
@@ -222,5 +253,5 @@ it takes 13.9 s on an Apple M3 Max; Rust's `regex` takes 13.8 s and 2.6 GB at it
 
 ## What it leaves out
 
-A `string` is matched, not bytes; `\p` names the general categories and not the scripts (`\p{Greek}`); there
+`\p` names the general categories and not the scripts (`\p{Greek}`); there
 is no leftmost-longest match of POSIX, and no replacement made by a function.

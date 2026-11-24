@@ -1,0 +1,34 @@
+// `indexOf` of bytes given a run of bytes (choice 1843): where the run first lies, in a list, an
+// array or a slice of bytes, the place counted from the start of what is searched; a byte alone is
+// still an item. An empty run is at 0, one longer than the bytes nowhere, and a run that starts
+// over itself (`aab` in `aaab`) is found where it is.
+
+void main() {
+    var data = List<byte>()
+    data.addAll("GET / HTTP/1.1\r\nHost: a\r\n\r\nbody".asBytes())
+    print(data.indexOf(read "\r\n".asBytes()) ?? -1)
+    print(data.indexOf(read "\r\n\r\n".asBytes()) ?? -1)
+    print(data.indexOf(read "missing".asBytes()) ?? -1)
+    print(data.indexOf(read "".asBytes()) ?? -1)
+    print(data.indexOf('\n') ?? -1)
+    byte[4] needle = byte[4]
+    needle[0] = 'H'
+    needle[1] = 'o'
+    needle[2] = 's'
+    needle[3] = 't'
+    print(data.indexOf(read needle) ?? -1)
+    var window = data[5..]
+    print(window.indexOf(needle[0..2]) ?? -1)
+    print(needle.indexOf(read "st".asBytes()) ?? -1)
+    print(needle.indexOf(read "Hosts".asBytes()) ?? -1)
+    print("aaab".asBytes().indexOf(read "aab".asBytes()) ?? -1)
+    var many = List<byte>()
+    for i in 0..100000 {
+        many.add((byte)(i % 251))
+    }
+    var run = many[70000..70040]
+    print(many.indexOf(run) ?? -1)
+    var rows = List<List<byte>>()
+    rows.add(List<byte>())
+    print(rows.indexOf(read rows[0]) ?? -1)
+}

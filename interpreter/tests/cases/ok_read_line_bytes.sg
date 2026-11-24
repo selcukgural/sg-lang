@@ -1,0 +1,51 @@
+// `readLineBytes` (choice 1840): each line into a `List<byte>`, its bytes as they are, with no check
+// that they are UTF-8, without its `\n` or `\r\n`; a lone `\r` stays, an empty line is one, the last
+// line needs no `\n`, and a line longer than the block of 64 KB comes whole. The list keeps its room.
+// `readLine` on the same bytes stops at the first line that is not text.
+
+Result<void, IoError> run() {
+    var path = try File.createTemp()
+    var data = List<byte>()
+    data.addAll("first\r\n".asBytes())
+    var bad = Hex.decode("626164ff20c0af20eda080200a") ?? panic("hex")
+    data.addAll(read bad)
+    data.addAll("\n\r\nlone\rcr\n".asBytes())
+    for i in 0..100000 {
+        data.add((byte)('a' + i % 26))
+    }
+    data.addAll("\nlast ".asBytes())
+    data.add(0xE6)
+    data.add(0x97)
+    try File.writeBytes(read path, read data)
+
+    var reader = try File.openText(read path)
+    var line = List<byte>()
+    long count = 0
+    while try reader.readLineBytes(ref line) {
+        count += 1
+        if line.length() > 64 {
+            print($"{count}: {line.length()} bytes, ends {Hex.encode(line[line.length() - 4..])}")
+        } else {
+            print($"{count}: {Hex.encode(read line)}")
+        }
+    }
+    print($"{count} lines, the list empty at the end: {line.length() == 0}")
+
+    var text = try File.openText(read path)
+    string first = ""
+    print(try text.readLine(ref first))
+    print(first)
+    match text.readLine(ref first) {
+        Ok(more) => print($"a line: {more}")
+        Error(e) => print($"readLine: {e}")
+    }
+    try File.delete(read path)
+    return Ok()
+}
+
+void main() {
+    match run() {
+        Ok => {}
+        Error(e) => print($"error: {e}")
+    }
+}

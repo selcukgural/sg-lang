@@ -12,3 +12,6 @@ leftmost-longest match of POSIX are not tried: `Regex` has no such match (choice
 where RE2 looks between the bytes of a character and Go and SG do not; a text that is not UTF-8,
 which is no `string`; and `\p{Greek}`, a script of Unicode, which `\p` does not name yet.
 `tests/cli.rs` (`a_regex_suite`) runs it interpreted and compiled.
+
+[`differ/`](differ/README.md) holds `Regex` to Rust's `regex` and to PCRE2 on random patterns and texts,
+of text and of bytes (choice 1841), run by hand when `Regex` changes.

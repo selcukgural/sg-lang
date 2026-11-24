@@ -11921,7 +11921,7 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         let count = match (target, base) {
             (Ty::Reader(_), "readText" | "fill") => 0,
-            (Ty::Reader(_), "readLine" | "readBytes" | "readSome") => 1,
+            (Ty::Reader(_), "readLine" | "readLineBytes" | "readBytes" | "readSome") => 1,
             (Ty::Reader(_), "buffered" | "consume") => {
                 let reader = &self.src[recv.span.start..recv.span.end];
                 return Err(Diag::error(name_span, format!("a `StreamReader` has no `{name}`: `{base}` does not wait"))
@@ -11965,7 +11965,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLineAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
+                    Ty::Reader(_) => &["readLineAsync", "readLineBytesAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
                     _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -12615,7 +12615,7 @@ impl<'a> Checker<'a> {
                     (_, "close" | "shutdown" | "dispose") => diag.note(format!("a `{target}` has nothing to lose: it is closed when it ends")),
                     (Ty::Listener, "receive" | "send") => diag.note("a `TcpListener` takes connections: `listener.accept()` gives a `TcpStream`, which receives and sends"),
                     (Ty::Socket, "accept") => diag.note("a `TcpListener` takes connections: `TcpListener.bind(address)`, then `listener.accept()`"),
-                    (Ty::Socket, "readLine" | "readText" | "lines") => {
+                    (Ty::Socket, "readLine" | "readLineBytes" | "readText" | "lines") => {
                         let conn = &self.src[recv.span.start..recv.span.end];
                         diag.note("a `TcpStream` receives bytes; a `StreamReader` reads lines and text")
                             .hint(format!("`var reader = {conn}.reader()`, then `reader.{name}(...)`"))
@@ -14162,6 +14162,16 @@ impl<'a> Checker<'a> {
             (Ty::List(item), "indexOf") => {
                 arity(1)?;
                 compares(item, "Equatable")?;
+                // Bytes look for a run of bytes too, lent with `read`, as a text looks for a text:
+                // `data.indexOf(read "\r\n".asBytes())` (choice 1843).
+                let byte = Ty::Int(IntTy::Byte);
+                if **item == byte {
+                    let found = self.expr(&mut args[0], Some(&byte))?;
+                    let run = matches!(found.strip_borrow(), Ty::List(of) | Ty::Array(of, _) | Ty::Slice(of) if **of == byte);
+                    let wanted = if run { Ty::Read(Box::new(Ty::Slice(Box::new(byte)))) } else { byte };
+                    self.coerce(&mut args[0], found, &wanted)?;
+                    return Ok(nullable(&Ty::Int(IntTy::Nint)));
+                }
                 self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(nullable(&Ty::Int(IntTy::Nint)))
             }
@@ -14311,6 +14321,7 @@ impl<'a> Checker<'a> {
         let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let call = match (target, name) {
             (Ty::Reader(_), "readLine") => StreamCall::ReadLine,
+            (Ty::Reader(_), "readLineBytes") => StreamCall::ReadLineBytes,
             (Ty::Reader(_), "readText") => StreamCall::ReadText,
             (Ty::Reader(_), "lines") => StreamCall::Lines,
             (Ty::Reader(_), "readBytes") => StreamCall::ReadBytes,
@@ -14326,7 +14337,7 @@ impl<'a> Checker<'a> {
             (_, "seek") => StreamCall::Seek,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek"],
+                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek"],
                     _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -14337,7 +14348,7 @@ impl<'a> Checker<'a> {
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
                     (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
-                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
+                    (Ty::Writer, "readLine" | "readLineBytes" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
             }
@@ -14393,6 +14404,10 @@ impl<'a> Checker<'a> {
         let ty = match call {
             StreamCall::ReadLine => {
                 self.args(shown, args, &[Ty::Ref(Box::new(Ty::Str))], span)?;
+                result(Ty::Bool)
+            }
+            StreamCall::ReadLineBytes => {
+                self.args(shown, args, &[Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
                 result(Ty::Bool)
             }
             StreamCall::ReadText => {

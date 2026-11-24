@@ -1,0 +1,5 @@
+error: expected `read byte[]`, found `List<byte>`
+  --> error_index_of_bytes_lend.sg:6:24
+ 6 |     print(data.indexOf(part) ?? -1)
+   |                        ^^^^
+  hint: lend it with `read`: `read part`

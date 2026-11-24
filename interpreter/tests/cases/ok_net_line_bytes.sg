@@ -1,0 +1,63 @@
+// `readLineBytes` and `readLineBytesAsync` on the reader of a connection (choice 1840): each line
+// with its bytes as they are, those that are not UTF-8 too, without `\n` or `\r\n`; the last line
+// needs no `\n`, and a line past the limit of the reader is `LineTooLong`, as with `readLine`.
+
+Result<void, IoError> send(TcpListener listener, string hex) {
+    var conn = try listener.accept()
+    var bytes = Hex.decode(read hex) ?? panic("hex")
+    try conn.send(read bytes)
+    return Ok()
+}
+
+Result<void, IoError> lines(read string address, nint limit) {
+    var conn = try TcpStream.connect(address)
+    var reader = conn.reader(limit)
+    var line = List<byte>()
+    while true {
+        match reader.readLineBytes(ref line) {
+            Ok(more) => {
+                if !more {
+                    break
+                }
+                print(Hex.encode(read line))
+            }
+            Error(cause) => {
+                print($"limit {limit}: {cause}")
+                break
+            }
+        }
+    }
+    return Ok()
+}
+
+async Result<void, IoError> linesAsync(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var reader = conn.reader()
+    var line = List<byte>()
+    while try await reader.readLineBytesAsync(ref line) {
+        print($"async {Hex.encode(read line)}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    // `a\xffb\r\n`, an empty line, a cut `日` and `x`, then `last` with no `\n`.
+    var hex = "61ff620d0a0ae6977a0a6c617374"
+    for limit in 0..2 {
+        var listener = try TcpListener.bind("127.0.0.1:0")
+        var address = $"127.0.0.1:{listener.port()}".toString()
+        var server = Task.run(send, listener, hex.clone())
+        if limit == 0 {
+            try lines(read address, 1024)
+        } else {
+            try lines(read address, 2)
+        }
+        try server.wait()
+    }
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(send, listener, hex.clone())
+    try linesAsync(address).wait()
+    try server.wait()
+    return Ok()
+}

@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836); the hundred-and-seventy-third (`regex::bytes`, `read_until` and `memmem` of bytes, 1840-1843).
 
 ## Functions and variables
 
@@ -148,6 +148,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
 | `dst.copy_from_slice(&src)` | `dst.copyFrom(src)` | built | For `Copyable` items; lengths that differ are a panic, as in Rust. `dst` is a list, an array, a `ref T[]` or a range (`buf[0..n].copyFrom(...)`) (1597) |
 | `v.copy_within(k..k + n, 0)` | `v[0..n].copyFrom(v[k..k + n])` | built | The two may be windows of one place: copied as `memmove` copies (1609) |
+| `memchr::memmem::find(&bytes, b"\r\n")` | `bytes.indexOf(read "\r\n".asBytes())` | built | Of a list, an array or a slice of bytes, by the search of text |
 | `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable; a `compare` that gives no single order leaves the items in some order and does not panic, where Rust's `sort_by` may |
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
 | `v.partition_point(\|y\| *y < x)`, `v.partition_point(\|y\| *y <= x)` | `xs.lowerBound(x)`, `xs.upperBound(x)` | built | By the order of the items; with a function of its own (`binary_search_by`, `partition_point` on any test) not yet |
@@ -404,6 +405,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `fs::read(p)`, `fs::write(p, b)` | `File.readBytes(p)`, `File.writeBytes(p, b)` | built | |
 | `BufReader::new(File::open(p)?)` | `File.openText(p)` | built | A `StreamReader` |
 | `reader.read_line(&mut s)`, `reader.lines()` | `reader.readLine(ref line)`, `reader.lines()` | built | |
+| `reader.read_until(b'\n', &mut bytes)` | `reader.readLineBytes(ref line)` | built | A `List<byte>` without its `\n` or `\r\n`, none of its bytes checked; `readLineBytesAsync` too |
 | `BufWriter::new(File::create(p)?)` | `File.createText(p)` | built | A `StreamWriter` |
 | `OpenOptions::new().write(true).create(true).open(p)?` | `File.openWrite(p)` | built | A `StreamWriter` from the start, over what the file holds |
 | `file.seek(SeekFrom::Start(n))?` | `try reader.seek(SeekFrom.Start(n))`, `try writer.seek(...)` | built | `End(n)` and `Current(n)` too; gives the new place as a `long`. `Start` holds a `long`, and a place before the start is `InvalidInput`. A reader moves inside its block without the system for `Start` too, where `BufReader` does only for `seek_relative`; a writer writes what it holds first, as `BufWriter` does |
@@ -639,7 +641,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | `\d`, `\w`, `\s` (Unicode) | `\d`, `\w`, `\s` (ASCII) | built | `\p{Nd}`, `\pL` for Unicode |
 | `(?x)` | `(?x)` | built | Spaces and `#` comments outside a class passed over; in a class they stay, as in Perl and PCRE, where Rust passes over them there too (1822) |
 | `\p{Greek}`, `\p{Letter}` | none yet | | `\p` names the general categories by their short names |
-| `regex::bytes::Regex` | none yet | | A `string` is matched |
+| `regex::bytes::Regex`, `re.is_match(&bytes)`, `re.find_iter(&bytes)` | `re.isMatchBytes(read bytes)`, `re.findAllBytes(read bytes)`, `findBytes`, `capturesBytes` | built | The same `Regex` searches text and bytes; a byte that is not UTF-8 matches nothing, and no empty match lies inside a character (Rust's `regex::bytes` gives one there) |
 | `replace_all(text, \|caps\| ...)` | none | | No closures |
 | `fancy-regex` (back references, look-around) | none | not planned | A match grows with the text and no more |
 

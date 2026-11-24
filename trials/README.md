@@ -14,7 +14,7 @@ that keep it fair, in [How it is measured](../benchmarks/method.md). This folder
 | Trial | What it is | Slice |
 |---|---|---|
 | [wc](wc) | The lines, words and bytes of files, read in pieces of 64 KB | 133 |
-| [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v` | 133 |
+| [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v`; a line is read and searched as bytes, so one that is not UTF-8 is written as it is (choice 1840) | 133, 173 |
 | [jq](jq) | The jq people use, held byte for byte to jq 1.8.2, on records, lines and numbers of JSON and on inputs that break things (choices 1804-1822); jq and jaq measured beside it | 166 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
@@ -52,8 +52,10 @@ an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
   calendar and its ISO 8601 are written by hand (1667). SG uses only what comes with the language.
 - The three give the same output, byte for byte, on the same input; their errors are worded each in its
   own language's way. `tests/cli.rs` (`the_trials`) runs the SG versions interpreted and compiled on a
-  megabyte and holds them to what Rust and Zig print; `the_trial_of_jq` holds `jq` to what jq 1.8.2
-  prints. A trial written in several files has its SG version as a folder, `sg/`, built whole.
+  megabyte and holds them to what Rust and Zig print, and `grep` to the bytes of lines that are not
+  UTF-8; `the_trial_of_jq` holds `jq` to what jq 1.8.2 prints. `Regex`, which `grep` leans on, is held
+  to Rust's `regex` and PCRE2 by `interpreter/tests/regex-suite/differ` (1841). A trial written in
+  several files has its SG version as a folder, `sg/`, built whole.
 - The trials are ruthless: each pushes the language as far as the world will (a text of 100 MB, ten
   million members, 10,000 levels and one more, bad UTF-8 of each kind, numbers past a `double`, a million
   calls deep, a file cut off), and no case is left out because SG is weak there (choice 1809).

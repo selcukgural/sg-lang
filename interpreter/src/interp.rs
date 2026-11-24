@@ -1138,7 +1138,7 @@ impl NetReader {
         let held = rest.len();
         let fits = |content: usize, taken: usize| Some(if content > self.limit { None } else { Some(taken) });
         match call {
-            StreamCall::ReadLine => match rest.iter().position(|byte| *byte == b'\n') {
+            StreamCall::ReadLine | StreamCall::ReadLineBytes => match rest.iter().position(|byte| *byte == b'\n') {
                 Some(end) => fits(end - usize::from(end > 0 && rest[end - 1] == b'\r'), end + 1),
                 // A line of `limit` bytes may still end with `\r\n`.
                 None if held > self.limit.saturating_add(1) => Some(None),
@@ -2150,6 +2150,25 @@ fn cells_of(value: &Value) -> Rc<Vec<Cell>> {
         Value::Str(text) => Rc::new(text.bytes().map(byte_cell).collect()),
         Value::Bytes(text, start, end) => Rc::new(text.as_bytes()[*start..*end].iter().copied().map(byte_cell).collect()),
         _ => unreachable!("the checker only lets a slice look at items"),
+    }
+}
+
+/// Puts a line that was read into the `string` or the `List<byte>` of `readLine` or
+/// `readLineBytes`, which keeps its room; the bytes of a text were checked.
+fn put_line(slot: &Cell, line: &[u8]) {
+    let mut current = slot.borrow_mut();
+    match &mut *current {
+        Value::Str(text) => {
+            let text = Rc::make_mut(text);
+            text.clear();
+            text.push_str(std::str::from_utf8(line).expect("the line was checked to be text"));
+        }
+        Value::List(items) => {
+            let mut items = items.borrow_mut();
+            items.clear();
+            items.extend(line.iter().map(|byte| byte_cell(*byte)));
+        }
+        _ => unreachable!("the checker makes the line a `string` or a `List<byte>`"),
     }
 }
 
@@ -4065,7 +4084,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// block. `None` when the read can be done now.
     fn input_wait(&mut self, call: StreamCall, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Option<Value>> {
         let need = match call {
-            StreamCall::ReadLine => crate::input::Need::Line,
+            StreamCall::ReadLine | StreamCall::ReadLineBytes => crate::input::Need::Line,
             StreamCall::ReadText => crate::input::Need::End,
             StreamCall::ReadBytes => crate::input::Need::Bytes(cells_of(&owned(self.expr(&args[0], frame)?)).len()),
             StreamCall::ReadSome => crate::input::Need::Some,
@@ -6016,7 +6035,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill) { 0 } else { 1 };
                 let token = args.get(given);
                 // The input that can make the program wait is waited for outside the run.
-                if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
+                if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
                     let reader = match owned(self.expr(recv, frame)?) {
                         Value::Reader(reader) if reader.borrow().is_stdin() => Some(reader),
                         _ => None,
@@ -6174,6 +6193,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                     (Value::Array(cells) | Value::Slice(cells), "get", [Value::Int(_, at)]) => {
                         return Ok(usize::try_from(*at).ok().and_then(|at| cells.get(at).cloned()).map_or(Value::Null, Value::Borrow));
+                    }
+                    // A run of bytes looked for in bytes (choice 1843); a single byte is an item.
+                    (_, "indexOf", [part]) if matches!(args[0].ty.strip_borrow(), Ty::Slice(of) if **of == Ty::Int(IntTy::Byte)) => {
+                        let found = find_bytes(&byte_values(&recv), &byte_values(part), false);
+                        return Ok(found.map_or(Value::Null, |at| Value::Int(IntTy::Nint, at as i128)));
                     }
                     _ => {}
                 }
@@ -8086,7 +8110,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
         if let Value::Reader(reader) = &stream {
-            if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill | StreamCall::Buffered) {
+            if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill | StreamCall::Buffered) {
                 self.input_held(reader, matches!(call, StreamCall::Fill | StreamCall::Buffered), at)?;
             }
         }
@@ -8114,9 +8138,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         if let Value::Reader(reader) = &stream {
             if reader.borrow().net.is_some() && call != StreamCall::Lines {
                 let (slot, cells) = match call {
-                    StreamCall::ReadLine => match self.expr(&args[0], frame)? {
+                    StreamCall::ReadLine | StreamCall::ReadLineBytes => match self.expr(&args[0], frame)? {
                         Value::Borrow(slot) => (Some(behind_borrows(slot)), Rc::new(Vec::new())),
-                        _ => unreachable!("the checker makes the line a `ref string`"),
+                        _ => unreachable!("the checker makes the line a `ref string` or a `ref List<byte>`"),
                     },
                     StreamCall::ReadBytes | StreamCall::ReadSome => (None, cells_of(&owned(self.expr(&args[0], frame)?))),
                     _ => (None, Rc::new(Vec::new())),
@@ -8132,12 +8156,12 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         match (call, stream) {
-            (StreamCall::ReadLine, Value::Reader(reader)) => {
-                let Value::Borrow(slot) = self.expr(&args[0], frame)? else { unreachable!("the checker makes the line a `ref string`") };
+            (StreamCall::ReadLine | StreamCall::ReadLineBytes, Value::Reader(reader)) => {
+                let Value::Borrow(slot) = self.expr(&args[0], frame)? else { unreachable!("the checker makes the line a `ref string` or a `ref List<byte>`") };
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }
-                self.read_line(&reader, &behind_borrows(slot), recv.span)
+                self.read_line(&reader, &behind_borrows(slot), call == StreamCall::ReadLine, recv.span)
             }
             (StreamCall::ReadText, Value::Reader(reader)) => {
                 if self.cancelled(token, frame)? {
@@ -8360,11 +8384,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn net_read(&mut self, call: StreamCall, reader: &Rc<RefCell<Reader>>, slot: Option<&Cell>, cells: &[Cell], source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Value> {
         let put = |line: &str| {
             if let Some(slot) = slot {
-                let mut current = slot.borrow_mut();
-                let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
-                let text = Rc::make_mut(text);
-                text.clear();
-                text.push_str(line);
+                put_line(slot, line.as_bytes());
             }
         };
         let taken = loop {
@@ -8393,9 +8413,19 @@ impl<'a, 'e> Interp<'a, 'e> {
         net.at += count;
         held.done += count as u64;
         Ok(match call {
-            StreamCall::ReadLine if bytes.is_empty() => {
+            StreamCall::ReadLine | StreamCall::ReadLineBytes if bytes.is_empty() => {
                 put("");
                 ok(Value::Bool(false))
+            }
+            StreamCall::ReadLineBytes => {
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                    if bytes.last() == Some(&b'\r') {
+                        bytes.pop();
+                    }
+                }
+                put_line(slot.expect("a line is given"), &bytes);
+                ok(Value::Bool(true))
             }
             StreamCall::ReadLine => {
                 if bytes.last() == Some(&b'\n') {
@@ -8546,9 +8576,10 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// The next line into `slot`, without its `\n` or `\r\n`: `Ok(true)`, `Ok(false)` at the
     /// end, or `Error`. A line that is not text is used up, and `slot` is left empty.
-    fn read_line(&mut self, reader: &Rc<RefCell<Reader>>, slot: &Cell, at: Span) -> Res<Value> {
+    fn read_line(&mut self, reader: &Rc<RefCell<Reader>>, slot: &Cell, text: bool, at: Span) -> Res<Value> {
         if reader.borrow().net.is_some() {
-            return self.net_read(StreamCall::ReadLine, reader, Some(slot), &[], None, at);
+            let call = if text { StreamCall::ReadLine } else { StreamCall::ReadLineBytes };
+            return self.net_read(call, reader, Some(slot), &[], None, at);
         }
         let mut bytes = Vec::new();
         let read = match reader.borrow_mut().file.as_mut() {
@@ -8562,14 +8593,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let start = reader.borrow().done;
         reader.borrow_mut().done += bytes.len() as u64;
-        // The line goes into the text that is there, which keeps its room.
-        let put = |line: &str| {
-            let mut current = slot.borrow_mut();
-            let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
-            let text = Rc::make_mut(text);
-            text.clear();
-            text.push_str(line);
-        };
+        // The line goes into the text (or the list of bytes) that is there, which keeps its room.
+        let put = |line: &str| put_line(slot, line.as_bytes());
         Ok(match read {
             Err(error) => {
                 put("");
@@ -8585,6 +8610,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     if bytes.last() == Some(&b'\r') {
                         bytes.pop();
                     }
+                }
+                if !text {
+                    put_line(slot, &bytes);
+                    return Ok(ok(Value::Bool(true)));
                 }
                 match std::str::from_utf8(&bytes) {
                     Ok(line) => {
@@ -8608,7 +8637,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let reader = lines.borrow().reader.clone();
         self.input_held(&reader, false, at)?;
         let line = cell(Value::Str(Rc::new(String::new())));
-        let result = self.read_line(&reader, &line, at)?;
+        let result = self.read_line(&reader, &line, true, at)?;
         Ok(match result {
             Value::Enum(_, 0, fields) if matches!(*fields[0].borrow(), Value::Bool(true)) => Some(ok(line.borrow().clone())),
             Value::Enum(_, 0, _) => {

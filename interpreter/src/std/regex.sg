@@ -71,6 +71,9 @@ const int RegexExtended = 16
 const int RegexAllCategories = 0x3FFFFFFF
 // The last code point a simple case folding changes or gives.
 const int RegexLastFolded = 0x1E943
+// What a search reads where the bytes of a `byte[]` start no character of UTF-8, one byte at a time:
+// a code past Unicode, which no step of a pattern takes, not `.` and not `[^a]` (choice 1840).
+const int RegexNotText = 0x110000
 
 // Why a pattern is not a regular expression.
 public enum RegexErrorKind : Equatable, Formattable {
@@ -419,84 +422,45 @@ public struct Regex : Formattable {
 
     // Whether the pattern matches anywhere in `text`.
     public bool isMatch(read this, read string text) {
-        if this.literal {
-            return text.contains(read this.prefix)
-        }
-        if this.foldedLiteral {
-            return regexInnerAt(read this, text, 0) >= 0
-        }
-        int fromInner = 3
-        if this.fromInner {
-            nint start = 0
-            nint stop = 0
-            lock this.cache as c {
-                fromInner = regexFromInner(this, ref c, text, 0, true, ref start, ref stop)
-            }
-            if fromInner < 2 {
-                return fromInner == 1
-            }
-        }
-        if fromInner == 3 && this.inner.length() > 0 && regexInnerAt(read this, text, 0) < 0 {
-            return false
-        }
-        nint end = -2
-        if fromInner == 3 {
-            lock this.cache as c {
-                end = regexDfaForward(this, ref c.any, text, 0)
-            }
-        }
-        if end != -2 {
-            return end >= 0
-        }
-        var found = List<nint>()
-        return regexRun(this, text, 0, true, 0, ref found)
+        return regexIsMatch(this, text.asBytes())
+    }
+
+    // Whether the pattern matches anywhere in `text`, bytes that may hold some that are not UTF-8,
+    // which nothing in a pattern matches (choice 1840).
+    public bool isMatchBytes(read this, read byte[] text) {
+        return regexIsMatch(this, text)
     }
 
     // The first match, leftmost, and of those the one the pattern prefers (`a|ab` takes `a`, `a+`
     // takes as many as there are, `a+?` one).
     public Match? find(read this, read string text) {
-        if this.literal {
-            var m = regexMachine(this, 0)
-            return regexFindAt(this, text, 0, ref m)
-        }
-        Match? found = null
-        lock this.cache as c {
-            var m = c.two.take() ?? regexMachine(this, 2)
-            found = regexNext(this, ref c, text, 0, ref m)
-            c.two = m
-        }
-        return found
+        return regexFirst(this, text.asBytes())
+    }
+
+    // The first match in bytes, its places counted in bytes.
+    public Match? findBytes(read this, read byte[] text) {
+        return regexFirst(this, text)
     }
 
     // Every match, one after the other, none overlapping; an empty match right after another
     // match is left out, as Go does.
     public List<Match> findAll(read this, read string text) {
-        var all = List<Match>()
-        lock this.cache as c {
-            var m = c.two.take() ?? regexMachine(this, 2)
-            regexAll(this, ref c, text, ref m, ref all)
-            c.two = m
-        }
-        return all
+        return regexEvery(this, text.asBytes())
+    }
+
+    // Every match in bytes; an empty match is never inside a character of UTF-8.
+    public List<Match> findAllBytes(read this, read byte[] text) {
+        return regexEvery(this, text)
     }
 
     // Where each group matched in the first match; `null` when there is no match.
     public Captures? captures(read this, read string text) {
-        var slots = List<nint>()
-        bool matched = false
-        lock this.cache as c {
-            var m = c.groups.take() ?? regexMachine(this, 2 * this.names.length())
-            matched = regexGroups(this, ref c, text, 0, ref m, ref slots)
-            c.groups = m
-        }
-        if !matched {
-            return null
-        }
-        var names = List<string>()
-        for name in read this.names {
-            names.add(name.clone())
-        }
-        return Captures { slots = slots, names = names }
+        return regexCaptures(this, text.asBytes())
+    }
+
+    // Where each group matched in the first match in bytes.
+    public Captures? capturesBytes(read this, read byte[] text) {
+        return regexCaptures(this, text)
     }
 
     // `text` with each match replaced. In `replacement`, `$1` or `${1}` is what group 1 matched,
@@ -543,11 +507,190 @@ public struct Regex : Formattable {
 }
 
 // The bytes of the character that starts at `position`; 1 past the end.
-nint regexWidthAt(read string text, nint position) {
+// `isMatch` and `isMatchBytes`.
+bool regexIsMatch(read Regex re, read byte[] text) {
+    if re.literal {
+        return text.indexOf(re.prefix.asBytes()) is not null
+    }
+    if re.foldedLiteral {
+        return regexInnerAt(re, text, 0) >= 0
+    }
+    int fromInner = 3
+    if re.fromInner {
+        nint start = 0
+        nint stop = 0
+        lock re.cache as c {
+            fromInner = regexFromInner(re, ref c, text, 0, true, ref start, ref stop)
+        }
+        if fromInner < 2 {
+            return fromInner == 1
+        }
+    }
+    if fromInner == 3 && re.inner.length() > 0 && regexInnerAt(re, text, 0) < 0 {
+        return false
+    }
+    nint end = -2
+    if fromInner == 3 {
+        lock re.cache as c {
+            end = regexDfaForward(re, ref c.any, text, 0)
+        }
+    }
+    if end != -2 {
+        return end >= 0
+    }
+    var found = List<nint>()
+    return regexRun(re, text, 0, true, 0, ref found)
+}
+
+// `find` and `findBytes`.
+Match? regexFirst(read Regex re, read byte[] text) {
+    if re.literal {
+        var m = regexMachine(re, 0)
+        return regexFindAt(re, text, 0, ref m)
+    }
+    Match? found = null
+    lock re.cache as c {
+        var m = c.two.take() ?? regexMachine(re, 2)
+        found = regexNext(re, ref c, text, 0, ref m)
+        c.two = m
+    }
+    return found
+}
+
+// `findAll` and `findAllBytes`.
+List<Match> regexEvery(read Regex re, read byte[] text) {
+    var all = List<Match>()
+    lock re.cache as c {
+        var m = c.two.take() ?? regexMachine(re, 2)
+        regexAll(re, ref c, text, ref m, ref all)
+        c.two = m
+    }
+    return all
+}
+
+// `captures` and `capturesBytes`.
+Captures? regexCaptures(read Regex re, read byte[] text) {
+    var slots = List<nint>()
+    bool matched = false
+    lock re.cache as c {
+        var m = c.groups.take() ?? regexMachine(re, 2 * re.names.length())
+        matched = regexGroups(re, ref c, text, 0, ref m, ref slots)
+        c.groups = m
+    }
+    if !matched {
+        return null
+    }
+    var names = List<string>()
+    for name in read re.names {
+        names.add(name.clone())
+    }
+    return Captures { slots = slots, names = names }
+}
+
+// The bytes of the character a search reads at `position`; 1 past the end and for a byte that
+// starts no character of UTF-8.
+nint regexWidthAt(read byte[] text, nint position) {
     if position >= text.length() {
         return 1
     }
-    return regexWidth(text[position])
+    if text[position] < 0x80 {
+        return 1
+    }
+    nint width = 1
+    _ = regexDecode(text, position, ref width)
+    return width
+}
+
+// The code of the character that starts at `position` of what a search reads, which may be bytes
+// that are not UTF-8, its bytes in `width`: `RegexNotText` and 1 for a byte that starts no
+// character, as a byte after which the next is not a continuation, an encoding longer than it
+// needs, a surrogate or a code past Unicode (choice 1840).
+int regexDecode(read byte[] bytes, nint position, ref nint width) {
+    int first = bytes[position]
+    width = 1
+    if first < 0x80 {
+        return first
+    }
+    if first < 0xC2 || first > 0xF4 {
+        return RegexNotText
+    }
+    nint length = bytes.length()
+    if first < 0xE0 {
+        if position + 1 >= length {
+            return RegexNotText
+        }
+        int b1 = bytes[position + 1]
+        if b1 & 0xC0 != 0x80 {
+            return RegexNotText
+        }
+        width = 2
+        return (first & 0x1F) << 6 | (b1 & 0x3F)
+    }
+    // The second byte of a character of three or four is held to the range that keeps it the
+    // shortest encoding of a code of Unicode that is no surrogate.
+    int low = 0x80
+    int high = 0xBF
+    if first == 0xE0 {
+        low = 0xA0
+    } else if first == 0xED {
+        high = 0x9F
+    } else if first == 0xF0 {
+        low = 0x90
+    } else if first == 0xF4 {
+        high = 0x8F
+    }
+    if first < 0xF0 {
+        if position + 2 >= length {
+            return RegexNotText
+        }
+        int b1 = bytes[position + 1]
+        int b2 = bytes[position + 2]
+        if b1 < low || b1 > high || b2 & 0xC0 != 0x80 {
+            return RegexNotText
+        }
+        width = 3
+        return (first & 0x0F) << 12 | (b1 & 0x3F) << 6 | (b2 & 0x3F)
+    }
+    if position + 3 >= length {
+        return RegexNotText
+    }
+    int b1 = bytes[position + 1]
+    int b2 = bytes[position + 2]
+    int b3 = bytes[position + 3]
+    if b1 < low || b1 > high || b2 & 0xC0 != 0x80 || b3 & 0xC0 != 0x80 {
+        return RegexNotText
+    }
+    width = 4
+    return (first & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)
+}
+
+// Where the character a search reads that ends at `position` starts: the longest character of
+// UTF-8 that ends there, else the byte before it alone. A character of UTF-8 starts with a byte
+// that is no continuation, so where the bytes are read forwards a character starts there too.
+nint regexStartBefore(read byte[] bytes, nint position) {
+    nint q = position - 1
+    if bytes[q] < 0x80 {
+        return q
+    }
+    for k in 2..5 {
+        nint s = position - k
+        if s < 0 {
+            break
+        }
+        byte b = bytes[s]
+        if b < 0x80 {
+            break
+        }
+        nint width = 1
+        _ = regexDecode(bytes, s, ref width)
+        if width == k {
+            return s
+        }
+        if b >= 0xC0 {
+            break
+        }
+    }
+    return q
 }
 
 nint regexWidth(byte first) {
@@ -1971,13 +2114,12 @@ bool regexMayRead(read RegexParser p, nint node, int ch) {
 
 // Where the inner text of `re` is first found in `text` from `from`, a place where a character
 // starts; -1 when it is not there.
-nint regexInnerAt(read Regex re, read string text, nint from) {
-    var bytes = text.asBytes()
+nint regexInnerAt(read Regex re, read byte[] bytes, nint from) {
     if from > bytes.length() {
         return -1
     }
     if !re.innerFolded {
-        nint? at = text[from..].indexOf(read re.inner)
+        nint? at = bytes[from..].indexOf(re.inner.asBytes())
         if at is null {
             return -1
         }
@@ -2296,6 +2438,9 @@ int regexFlagsAfter(read Regex re, int ch) {
 
 // Whether step `inst` takes the character `ch`.
 bool regexTakes(read Regex re, RegexInst inst, int ch) {
+    if ch == RegexNotText {
+        return false
+    }
     int op = inst.op
     if op == RegexOpChar {
         return ch == inst.a
@@ -2490,9 +2635,8 @@ nint regexDfaRun(read int[] table, read byte[] bytes, nint at, ref int s, int de
 // Reads `text` forwards from `from`: with the DFA of `isMatch`, where a match first ends; with
 // the other, where the match the pattern prefers ends. -1 when there is none; -2 when the cache was
 // emptied too often, and Pike's machine is to answer.
-nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from) {
+nint regexDfaForward(read Regex re, ref RegexDfa d, read byte[] bytes, nint from) {
     d.resets = 0
-    var bytes = text.asBytes()
     nint length = bytes.length()
     int before = -1
     if from > 0 {
@@ -2514,7 +2658,7 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from)
                 d.reached = length
                 return end
             }
-            nint? next = text[i..].indexOf(read re.prefix)
+            nint? next = bytes[i..].indexOf(re.prefix.asBytes())
             if next is null {
                 d.reached = length
                 return end
@@ -2541,7 +2685,8 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from)
             continue
         }
         // A move not made yet, or a character past ASCII.
-        int ch = regexCodeAt(bytes, i)
+        nint width = 1
+        int ch = regexDecode(bytes, i, ref width)
         int resets = d.resets
         int t = regexDfaMove(re, read re.code, ref d, s, ch)
         if t == -2 {
@@ -2558,7 +2703,7 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from)
             end = i
         }
         s = t >> 1
-        i += regexWidth(bytes[i])
+        i += width
         if s == d.dead {
             d.reached = i
             return end
@@ -2578,23 +2723,30 @@ nint regexDfaForward(read Regex re, ref RegexDfa d, read string text, nint from)
 // Reads `text` backwards from `end` down to `from` with the reverse program `code`: the leftmost
 // place where a match that ends at `end` starts; -1 when there is none, -2 when the cache was emptied
 // too often.
-nint regexDfaBackward(read Regex re, read List<RegexInst> code, ref RegexDfa d, read string text, nint from, nint end) {
+nint regexDfaBackward(read Regex re, read List<RegexInst> code, ref RegexDfa d, read byte[] bytes, nint from, nint end) {
     d.resets = 0
-    var bytes = text.asBytes()
     // What lies after `end` is what comes before, read backwards.
     int after = -1
     if end < bytes.length() {
-        after = regexCodeAt(bytes, end)
+        after = bytes[end]
+        if after >= 0x80 {
+            nint width = 1
+            after = regexDecode(bytes, end, ref width)
+        }
     }
     int s = regexDfaStart(ref d, regexFlagsAfter(re, after))
     nint start = -1
     nint p = end
     while p > from {
+        // ASCII is read as it is; only a byte past it looks for where its character starts.
         nint q = p - 1
-        while bytes[q] >= 0x80 && bytes[q] < 0xC0 {
-            q -= 1
+        int ch = bytes[q]
+        if ch >= 0x80 {
+            q = regexStartBefore(bytes, p)
+            nint width = 1
+            ch = regexDecode(bytes, q, ref width)
         }
-        int t = regexDfaMove(re, code, ref d, s, regexCodeAt(bytes, q))
+        int t = regexDfaMove(re, code, ref d, s, ch)
         if t == -2 {
             return -2
         }
@@ -2624,11 +2776,12 @@ nint regexDfaBackward(read Regex re, read List<RegexInst> code, ref RegexDfa d, 
 
 // The character that ends at `position`, where one ends.
 int regexCodeBefore(read byte[] bytes, nint position) {
-    nint q = position - 1
-    while bytes[q] >= 0x80 && bytes[q] < 0xC0 {
-        q -= 1
+    int last = bytes[position - 1]
+    if last < 0x80 {
+        return last
     }
-    return regexCodeAt(bytes, q)
+    nint width = 1
+    return regexDecode(bytes, regexStartBefore(bytes, position), ref width)
 }
 
 // The leftmost match from `from`, found from the inner text (1804), as Rust's `regex` finds it:
@@ -2638,7 +2791,7 @@ int regexCodeBefore(read byte[] bytes, nint position) {
 // `end`; 0 when there is none, 1 when there is, 2 when a DFA gave up and Pike's machine is to
 // search, 3 when the inner text is next found where a forward read already went, and the search
 // is to go the usual way, so that no text is read again and again.
-int regexFromInner(read Regex re, ref RegexCache c, read string text, nint from, bool any, ref nint start, ref nint end) {
+int regexFromInner(read Regex re, ref RegexCache c, read byte[] text, nint from, bool any, ref nint start, ref nint end) {
     nint at = from
     nint reached = -1
     while true {
@@ -2679,7 +2832,7 @@ int regexFromInner(read Regex re, ref RegexCache c, read string text, nint from,
 // The leftmost match from `from` that the pattern prefers, by the two DFAs, written to `found`
 // (start and end); 0 when there is none, 1 when there is, 2 when they gave up and Pike's machine is
 // to search.
-int regexDfaFind(read Regex re, ref RegexCache c, read string text, nint from, ref nint start, ref nint end) {
+int regexDfaFind(read Regex re, ref RegexCache c, read byte[] text, nint from, ref nint start, ref nint end) {
     if re.fromInner {
         int r = regexFromInner(re, ref c, text, from, false, ref start, ref end)
         if r != 3 {
@@ -2709,7 +2862,7 @@ int regexDfaFind(read Regex re, ref RegexCache c, read string text, nint from, r
 }
 
 // The next match from `from`, by the DFAs, or by Pike's machine `m` when they gave up.
-Match? regexNext(read Regex re, ref RegexCache c, read string text, nint from, ref RegexMachine m) {
+Match? regexNext(read Regex re, ref RegexCache c, read byte[] text, nint from, ref RegexMachine m) {
     if re.literal {
         return regexFindAt(re, text, from, ref m)
     }
@@ -2734,7 +2887,7 @@ Match? regexNext(read Regex re, ref RegexCache c, read string text, nint from, r
 
 // The matches of `findAll` added to `all`, one after the other, none overlapping; an empty match
 // right after another match is left out, as Go does.
-void regexAll(read Regex re, ref RegexCache c, read string text, ref RegexMachine m, ref List<Match> all) {
+void regexAll(read Regex re, ref RegexCache c, read byte[] text, ref RegexMachine m, ref List<Match> all) {
     nint position = 0
     nint previousEnd = -1
     while position <= text.length() {
@@ -2761,7 +2914,7 @@ void regexAll(read Regex re, ref RegexCache c, read string text, ref RegexMachin
 // The slots of the first match from `from` added to `found`, as Rust finds them: where the match
 // starts and ends first, by the DFAs or, when they gave up, by Pike's machine with two slots,
 // which copies little; then the machine of every group's slots runs only there.
-bool regexGroups(read Regex re, ref RegexCache c, read string text, nint from, ref RegexMachine m, ref List<nint> found) {
+bool regexGroups(read Regex re, ref RegexCache c, read byte[] text, nint from, ref RegexMachine m, ref List<nint> found) {
     nint start = 0
     nint end = 0
     int kind = regexDfaFind(re, ref c, text, from, ref start, ref end)
@@ -2788,7 +2941,7 @@ void regexReplaceAll(read Regex re, ref RegexCache c, read string text, read str
     nint position = 0
     while position <= text.length() {
         slots.clear()
-        if !regexGroups(re, ref c, text, position, ref m, ref slots) {
+        if !regexGroups(re, ref c, text.asBytes(), position, ref m, ref slots) {
             break
         }
         nint start = slots[0]
@@ -2798,7 +2951,7 @@ void regexReplaceAll(read Regex re, ref RegexCache c, read string text, read str
             regexExpand(re, ref out, text, read slots, replacement)
         }
         lastEnd = end
-        nint width = regexWidthAt(text, position)
+        nint width = regexWidthAt(text.asBytes(), position)
         if position + width > end {
             position += width
         } else if position + 1 > end {
@@ -2813,17 +2966,17 @@ void regexReplaceAll(read Regex re, ref RegexCache c, read string text, read str
 // ---- Running the program: Pike's machine ----
 
 // The machine is made for this one search.
-bool regexRun(read Regex re, read string text, nint start, bool any, nint slotCount, ref List<nint> found) {
+bool regexRun(read Regex re, read byte[] text, nint start, bool any, nint slotCount, ref List<nint> found) {
     var m = regexMachine(re, slotCount)
     return regexSearch(re, text, start, -1, any, ref m, ref found)
 }
 
-Match? regexFindAt(read Regex re, read string text, nint start, ref RegexMachine m) {
+Match? regexFindAt(read Regex re, read byte[] text, nint start, ref RegexMachine m) {
     if re.literal {
         if start > text.length() {
             return null
         }
-        var at = text[start..].indexOf(read re.prefix)
+        var at = text[start..].indexOf(re.prefix.asBytes())
         if at is null {
             return null
         }
@@ -2998,8 +3151,7 @@ RegexMachine regexMachine(read Regex re, nint slotCount) {
 // are added to `found`. With `any`, stops at the first match of any kind. An `end` of 0 or more
 // is where the DFAs found that the match starting at `start` ends, as Rust does: the threads
 // start there only and stop at `end`, though the assertions still see the text around them.
-bool regexSearch(read Regex re, read string text, nint start, nint end, bool any, ref RegexMachine m, ref List<nint> found) {
-    var bytes = text.asBytes()
+bool regexSearch(read Regex re, read byte[] bytes, nint start, nint end, bool any, ref RegexMachine m, ref List<nint> found) {
     nint length = bytes.length()
     nint stop = length
     if end >= 0 {
@@ -3024,7 +3176,7 @@ bool regexSearch(read Regex re, read string text, nint start, nint end, bool any
         }
         if !matched && begin {
             if m.counts[side] == 0 && end < 0 && re.inner.length() > 0 && innerAt < position {
-                innerAt = regexInnerAt(re, text, position)
+                innerAt = regexInnerAt(re, bytes, position)
                 if innerAt < 0 {
                     break
                 }
@@ -3034,7 +3186,7 @@ bool regexSearch(read Regex re, read string text, nint start, nint end, bool any
                 if position > length {
                     break
                 }
-                var next = text[position..].indexOf(read re.prefix)
+                var next = bytes[position..].indexOf(re.prefix.asBytes())
                 if next is null {
                     break
                 }
@@ -3048,8 +3200,7 @@ bool regexSearch(read Regex re, read string text, nint start, nint end, bool any
         int c = -1
         nint width = 1
         if position < length {
-            c = regexCodeAt(bytes, position)
-            width = regexWidth(bytes[position])
+            c = regexDecode(bytes, position, ref width)
         }
         nint other = 1 - side
         m.counts[other] = 0
@@ -3071,7 +3222,7 @@ bool regexSearch(read Regex re, read string text, nint start, nint end, bool any
                 break
             }
             bool ok = false
-            if c >= 0 {
+            if c >= 0 && c != RegexNotText {
                 if op == RegexOpChar {
                     ok = c == inst.a
                 } else if op == RegexOpFoldChar {

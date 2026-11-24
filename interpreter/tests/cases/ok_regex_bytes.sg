@@ -1,0 +1,74 @@
+// `isMatchBytes`, `findBytes`, `findAllBytes` and `capturesBytes` (choices 1840, 1842): bytes that may
+// hold some that are not UTF-8, of each kind, which nothing in a pattern matches, not `.`, not `[^a]`,
+// not `\PL`; a word boundary sees them as no letter; an empty match is never inside a character of
+// UTF-8, and the places are counted in bytes. A literal, a literal in any case, an inner text, a
+// pattern run by the DFAs and one with groups each take their own way. What it prints was checked
+// against Rust's `regex::bytes` and PCRE2 with `MATCH_INVALID_UTF`.
+
+List<byte> bytesOf(read string hex) {
+    return Hex.decode(read hex) ?? panic("hex")
+}
+
+void show(read string pattern, read string hex) {
+    var re = Regex.compile(read pattern) ?? panic("a pattern")
+    var text = bytesOf(read hex)
+    var first = "none"
+    var found = re.findBytes(read text)
+    if found is not null {
+        first = $"{found}".toString()
+    }
+    var groups = "none"
+    var caps = re.capturesBytes(read text)
+    if caps is not null {
+        groups = ""
+        for g in 0..caps.length() {
+            var m = caps.get(g)
+            if m is null {
+                groups.write(" -")
+            } else {
+                groups.write($" {m}")
+            }
+        }
+    }
+    print($"{pattern} on {hex}: {re.findAllBytes(read text)} first {first} isMatch {re.isMatchBytes(read text)} groups{groups}")
+}
+
+void main() {
+    // `a\xffb`, a lone continuation, an overlong `/`, a surrogate, a code past Unicode, a cut `日`.
+    show("a.b", "61ff62")
+    show("a[^x]b", "61ff62")
+    show("""a\PLb""", "618062")
+    show("a.b|a..b", "61c0af62")
+    show("""\w+""", "6162eda08063")
+    show("ok", "6f6bf4908080206f6b")
+    show("(?i)OK", "6f6be697206f4b")
+    show("""(?i)[0-9]+ error""", "ff313220455252f2a0ff3132204552524f52ff")
+    show("""[a-z]+@x\.com""", "ff6162407e2e636f6d20616240782e636f6d")
+    show("""(\w+)=(\d+)?""", "6b3dff2078793d3132")
+    // An empty match: at each character, a bad byte one, never inside `é` (c3 a9).
+    show("", "c3a9ff61")
+    show("x*", "61ffc3a9")
+    // Word boundaries: a bad byte is no letter of `\w`.
+    show("""\b""", "61ff62")
+    show("""\B""", "ffc3a9ff")
+    // Anchors and lines around bad bytes.
+    show("""(?m)^\S+$""", "ff0a61620ae6970a")
+    show("""\A.|.\z""", "ff61ff")
+    // A text that is UTF-8 gives what the methods of `string` give.
+    var re = Regex.of("""(?i)stra(ss|ß)e""")
+    var text = "Straße STRASSE strasse"
+    print($"{re.findAll(read text)} {re.findAllBytes(text.asBytes())}")
+    var caps = re.captures(read text) ?? panic("a match")
+    var bytesCaps = re.capturesBytes(text.asBytes()) ?? panic("a match")
+    print($"{caps.get(1) ?? panic("a group")} {bytesCaps.get(1) ?? panic("a group")} {re.isMatch("xx")} {re.isMatchBytes("xx".asBytes())}")
+    // A long text, run by the DFAs, with bad bytes every so often.
+    var long = List<byte>()
+    for i in 0..20000 {
+        if i % 97 == 0 {
+            long.add(0xFF)
+        }
+        long.add((byte)('a' + i % 26))
+    }
+    var abc = Regex.of("""[a-z]{30}""")
+    print($"{abc.findAllBytes(read long).length()} {abc.findBytes(read long) ?? panic("a match")}")
+}

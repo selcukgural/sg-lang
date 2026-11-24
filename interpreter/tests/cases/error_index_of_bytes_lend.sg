@@ -1,0 +1,7 @@
+void main() {
+    var data = List<byte>()
+    data.addAll("abc".asBytes())
+    var part = List<byte>()
+    part.add('b')
+    print(data.indexOf(part) ?? -1)
+}

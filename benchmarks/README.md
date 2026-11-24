@@ -36,19 +36,19 @@ The time of SG divided by the time of the same program in C, both built by the s
 ## At a glance: against Rust and Zig
 
 Every case of every trial and module, SG's release build against the fastest of Rust and Zig in their
-release builds; below 1 SG is faster. SG is faster in 8 of the 25 cases, slower in 14. The
+release builds; below 1 SG is faster. SG is faster in 8 of the 25 cases, slower in 16, as fast in one. The
 memory each held, the size of each program, and the builds with checks are on the pages of each.
 
 | Area | Case | SG | Fastest of the others | SG / fastest |
 |---|---|---|---|---|
 | wc | 100 MB | 0.088 s | 0.067 s (Rust) | 1.31 |
 | wc | 100 MB from the input | 0.088 s | 0.067 s (Rust) | 1.31 |
-| grep | `-c ERROR` | 0.046 s | 0.060 s (Zig) | 0.77 |
-| grep | `-n timeout` | 0.051 s | 0.069 s (Zig) | 0.74 |
-| grep | `-c -i error` | 0.075 s | 0.068 s (Zig) | 1.10 |
-| grep | `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.133 s | 0.129 s (Zig) | 1.03 |
-| grep | `'in [0-9]{4} ms: .*日本'` | 0.061 s | 0.073 s (Zig) | 0.84 |
-| grep | `-v -c INFO` | 0.049 s | 0.062 s (Zig) | 0.79 |
+| grep | `-c ERROR` | 0.035 s | 0.035 s (Zig) | 1.00 |
+| grep | `-n timeout` | 0.043 s | 0.045 s (Rust) | 0.96 |
+| grep | `-c -i error` | 0.065 s | 0.045 s (Zig) | 1.44 |
+| grep | `-c '[a-z]+[0-9]+@example\.com (PUT\|DELETE)'` | 0.127 s | 0.104 s (Zig) | 1.22 |
+| grep | `'in [0-9]{4} ms: .*日本'` | 0.049 s | 0.048 s (Zig) | 1.02 |
+| grep | `-v -c INFO` | 0.036 s | 0.038 s (Zig) | 0.95 |
 | json | Records, read and summed | 0.495 s | 0.548 s (Zig) | 0.90 |
 | json | Records, read and written back | 0.645 s | 0.716 s (Zig) | 0.90 |
 | json | A document a line, each read and summed | 0.412 s | 0.471 s (Zig) | 0.87 |

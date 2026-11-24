@@ -89,6 +89,7 @@ For the same reason a collection that a `for` goes over by borrowing cannot be c
 | `void clear(ref this)` | Removes every item, and keeps the memory |
 | `void reverse(ref this)` | Puts the items in the other order |
 | `nint? indexOf(read this, read T item)`, `bool contains(read this, read T item)` | Where the first equal item is; for `Equatable` items |
+| `nint? indexOf(read this, read byte[] run)` | Of bytes: where the run of bytes first lies, as `indexOf` of a text finds a text: `data.indexOf(read "\r\n".asBytes())` |
 | `void sort(ref this)` | Puts `Comparable` items in order (numbers and text are) |
 | `void copyFrom(ref this, read T[] items)` | Copies `Copyable` items over as many; a panic if the lengths differ. The two may look at one place, as `memmove` |
 | `nint? binarySearch(read this, read T item)` | On items in order: the place of the first equal one, or `null`, found by halving |

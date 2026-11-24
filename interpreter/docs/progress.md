@@ -487,10 +487,18 @@ differed in 101 cases, each taken back to jq 1.8.2 and made one way, with more f
 three had alike (jq's grammar of `as` and of `-`, constant keys, paths through `reduce`, ties of doubles in
 Rust, SIGPIPE). The suites are kept in `trials/jq/tests` and run by hand against jq.
 
+Slice 173 (1840-1843) looked at `grep` and `wc` as `jq` was (1812): `Regex`, held to Rust's `regex` and
+PCRE2 on two million random patterns and texts, differed from neither where the two agreed; a line that
+is not UTF-8 stopped the three `grep`s at its first bad byte. A line is now read as bytes with
+`readLineBytes` and searched with `isMatchBytes`, `findBytes`, `findAllBytes` and `capturesBytes`, where a
+byte that is not UTF-8 matches nothing, and bytes look for a run of bytes with `indexOf`. The three
+`grep`s go on past such a line and write it as it is; the test of `Regex` against the two is kept in
+`interpreter/tests/regex-suite/differ`.
+
 ## Next
 
 Next comes the heavy level of
-the stand, run at night, the other trials looked at as `jq` was (1812), a key-value store with a write-ahead log, a pool of workers,
+the stand, run at night, a key-value store with a write-ahead log, a pool of workers,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
