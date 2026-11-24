@@ -511,7 +511,9 @@ sync that failed stays the writer's error. And a `List<T>` is a key when `T` is,
 what it holds, so a part of the buffer a line lies in finds its key without a copy. The trial found the hash tables of
 compiled code slow where a map is large: a slot now keeps 32 bits of its key's hash, so a search compares only
 keys whose hash agrees and growing hashes nothing again; ten million keys are compacted in 4.3 s, ahead of
-Rust's 5.4 s, and the table benchmark takes the time of C.
+Rust's 5.4 s, and the table benchmark takes the time of C. On Windows the trial found compiled `File.replace` refused
+where its target was open, as the log is when it is compacted; it now renames over it with POSIX semantics, as
+Rust and the interpreter do.
 
 ## Next
 

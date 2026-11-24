@@ -9841,8 +9841,34 @@ static int sg_fs_delete(sg_str path) {
     free(name);
     return code;
 }
+/* A rename that takes the place of `to` while another handle has it open, or while it may only be
+   read, as `rename` does on Linux and macOS (POSIX semantics, from Windows 10 1809): what
+   `MoveFileExW` refuses as `ERROR_ACCESS_DENIED`. Rust's `fs::rename` does the same. The code of
+   the system, or 0. */
+static int sg_win_rename_over(const wchar_t* from, const wchar_t* to) {
+    HANDLE h = sg_win_itself(from, DELETE, SG_SHARE_ALL);
+    if (h == INVALID_HANDLE_VALUE) return sg_win_error();
+    DWORD full = GetFullPathNameW(to, 0, NULL, NULL);
+    if (full == 0) { int code = sg_win_error(); CloseHandle(h); return code; }
+    size_t size = sizeof(FILE_RENAME_INFO) + (size_t)full * sizeof(wchar_t);
+    FILE_RENAME_INFO* info = calloc(1, size);
+    if (!info) abort();
+    DWORD got = GetFullPathNameW(to, full, info->FileName, NULL);
+    int code = 0;
+    if (got == 0 || got >= full) code = got == 0 ? sg_win_error() : ERROR_FILENAME_EXCED_RANGE;
+    else {
+        info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        info->RootDirectory = NULL;
+        info->FileNameLength = got * (DWORD)sizeof(wchar_t);
+        if (!SetFileInformationByHandle(h, FileRenameInfoEx, info, (DWORD)size)) code = sg_win_error();
+    }
+    free(info);
+    CloseHandle(h);
+    return code;
+}
 /* A rename. Without `replace` a target that is there is `AlreadyExists`, told in the same step of
-   the system as the rename. */
+   the system as the rename. With it, a target another handle has open is replaced too, as on Linux
+   and macOS; a file system without POSIX semantics (FAT) keeps the code `MoveFileExW` gave. */
 static int sg_fs_move(sg_str from, sg_str to, bool replace) {
     int code = 0;
     wchar_t* a = sg_wide(from, &code);
@@ -9850,7 +9876,14 @@ static int sg_fs_move(sg_str from, sg_str to, bool replace) {
     wchar_t* b = sg_wide(to, &code);
     if (!b) { free(a); return code; }
     if (!replace && sg_win_same(a, b)) code = ERROR_ALREADY_EXISTS;
-    else if (!MoveFileExW(a, b, replace ? MOVEFILE_REPLACE_EXISTING : 0)) code = sg_win_refine(a, sg_win_error());
+    else if (!MoveFileExW(a, b, replace ? MOVEFILE_REPLACE_EXISTING : 0)) {
+        code = sg_win_error();
+        if (replace && code == ERROR_ACCESS_DENIED) {
+            int again = sg_win_rename_over(a, b);
+            if (again == 0 || again == ERROR_DIR_NOT_EMPTY) code = again;
+        }
+        if (code != 0) code = sg_win_refine(a, code);
+    }
     free(a);
     free(b);
     return code;

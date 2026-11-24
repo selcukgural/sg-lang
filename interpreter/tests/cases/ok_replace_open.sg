@@ -1,0 +1,38 @@
+// `File.replace` takes the place of a file that is open, on every system: one a writer still holds
+// and one a reader is reading. The name is the new file's at once; a reader that was open goes on
+// reading the old one. The folder is the first word of the command line.
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "log")
+    var fresh = Path.join(read args[0], "log.new")
+
+    // A writer holds the file it writes at the end of.
+    var w = try File.createText(read path)
+    try w.write("old\n")
+    try w.flush()
+    var n = try File.createText(read fresh)
+    try n.write("new\n")
+    try n.close()
+    try File.replace(read fresh, read path)
+    print(try File.readText(read path))
+    print(File.exists(read fresh))
+    try w.close()
+    print(try File.readText(read path))
+
+    // A reader holds it: the name is the new file's, and the reader reads the old one.
+    var r = try File.openText(read path)
+    var m = try File.createText(read fresh)
+    try m.write("newer\n")
+    try m.close()
+    try File.replace(read fresh, read path)
+    var line = string.withCapacity(16)
+    _ = try r.readLine(ref line)
+    print(line)
+    print(try File.readText(read path))
+
+    // The file that was replaced again opened, and the new one written at its end.
+    var a = try File.openAppend(read path)
+    try a.write("more\n")
+    try a.close()
+    print(try File.readText(read path))
+    return Ok()
+}

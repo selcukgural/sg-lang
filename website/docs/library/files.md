@@ -28,7 +28,7 @@ The programs on this page write into the folder they run in and remove what they
 | `Result<void, IoError> File.appendText(read string path, read string text)` | Writes after what the file holds; a missing file is made |
 | `Result<void, IoError> File.delete(read string path)` | Removes the file |
 | `Result<void, IoError> File.move(read string from, read string to)` | Renames it; never takes the place of a file (`AlreadyExists`, told in the same step) |
-| `Result<void, IoError> File.replace(read string from, read string to)` | Renames it over `to`, in one step |
+| `Result<void, IoError> File.replace(read string from, read string to)` | Renames it over `to`, in one step, even while `to` is open, on Windows as well |
 | `Result<void, IoError> File.copy(read string from, read string to)` | A new file with the bytes and the permissions; `to` must not be there |
 | `Result<FileInfo, IoError> File.info(read string path)` | What the system knows of it, a link followed |
 | `bool File.exists(read string path)` | Whether the path names a file (a folder is not one) |

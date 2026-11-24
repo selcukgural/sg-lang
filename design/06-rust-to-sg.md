@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836); the hundred-and-seventy-third (`regex::bytes`, `read_until` and `memmem` of bytes, 1840-1843); the hundred-and-seventy-fourth (`Regex` faster in any case: nothing of Rust changes); the hundred-and-seventy-fifth (`sync_data`, `set_len`, a folder synced, `Vec<u8>` as a key, 1852-1853).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834); the hundred-and-sixty-ninth (the walks of the interpreter measured, 1835: nothing of Rust changes); the hundred-and-seventieth (a large frame touched only near the bottom of the stack, 1836); the hundred-and-seventy-third (`regex::bytes`, `read_until` and `memmem` of bytes, 1840-1843); the hundred-and-seventy-fourth (`Regex` faster in any case: nothing of Rust changes); the hundred-and-seventy-fifth (`sync_data`, `set_len`, a folder synced, `Vec<u8>` as a key, 1852-1853), and after it `fs::rename` over a file that is open, on Windows too.
 
 ## Functions and variables
 
@@ -422,7 +422,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 | a `BufWriter` dropped (its error lost) | `try w.close()` | built | A writer not closed on every path is a compile error |
 | `io::stdin()`, `io::stdout()` | `Stdin`, `Stdout`, `Stderr` | built | |
 | `fs::remove_file(p)` | `File.delete(read p)` | built | A missing file is `NotFound`, as in Rust; a folder is `IsDirectory` on every system |
-| `fs::rename(a, b)` | `File.replace(read a, read b)` | built | Takes the place of `b` in one step |
+| `fs::rename(a, b)` | `File.replace(read a, read b)` | built | Takes the place of `b` in one step, even while `b` is open, on Windows as Rust does too |
 | `fs::rename(a, b)` after a test that `b` is missing | `File.move(read a, read b)` | built | `AlreadyExists` when `b` is there, told in the same step as the rename (`RENAME_NOREPLACE`, `RENAME_EXCL`); Rust's `rename` has no such form |
 | `fs::copy(a, b)` | `File.copy(read a, read b)` | built | Never takes the place of `b`: `AlreadyExists`, where Rust's `copy` writes over it. The permissions come along without setuid, setgid and sticky |
 | `fs::metadata(p)?.len()`, `.is_file()`, `.modified()` | `var info = try File.info(read p)`, `info.size`, `info.kind`, `info.modified` | built | `modified` is a `DateTime`; a link is followed, as `metadata` does |
