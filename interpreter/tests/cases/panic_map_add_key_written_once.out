@@ -1,0 +1,7 @@
+2
+format called
+panic: key #1 is already in the map
+  to change what is kept under a key, write `map[key] = value`
+  --> panic_map_add_key_written_once.sg:16:5
+ 16 |     names.add(Id { value = 1 }, "again")
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

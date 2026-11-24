@@ -1469,6 +1469,35 @@ impl Copying {
     }
 }
 
+/// Whether a value is copied as it is: it owns nothing, and its copy is the value itself.
+fn copied_as_it_is(value: &Value) -> bool {
+    matches!(value, Value::Int(..) | Value::Float(..) | Value::Bool(_) | Value::Char(_) | Value::Str(_) | Value::Null)
+}
+
+/// The copy that `Interp::cloned` makes of a struct, an enum, a list or an array whose parts
+/// are all copied as they are, made without its list; `None` for any other. A struct or an
+/// enum with a `clone` of its own never comes here.
+fn flat_copy(value: &Value) -> Option<Value> {
+    let copies = |cells: &[Cell]| -> Option<Vec<Cell>> {
+        let mut made = Vec::with_capacity(cells.len());
+        for part in cells {
+            let part = part.borrow();
+            if !copied_as_it_is(&part) {
+                return None;
+            }
+            made.push(cell(part.clone()));
+        }
+        Some(made)
+    };
+    Some(match value {
+        Value::Struct(name, fields) => Value::Struct(name.clone(), Fields::plain(copies(&fields.cells)?)),
+        Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, Rc::new(copies(fields)?)),
+        Value::Array(items) => Value::Array(Rc::new(copies(items)?)),
+        Value::List(items) => Value::List(Rc::new(RefCell::new(copies(&items.borrow())?))),
+        _ => return None,
+    })
+}
+
 /// The value of a cell no other place holds.
 fn taken(part: Cell) -> Value {
     Rc::try_unwrap(part).map(RefCell::into_inner).unwrap_or_else(|part| part.borrow().clone())
@@ -1555,6 +1584,20 @@ fn float_literal(text: &str, ty: FloatTy) -> f64 {
 }
 
 fn key_of(value: &Value) -> Key {
+    // A key of one part, and a struct or an enum whose fields are all of one part, are made
+    // here: most keys are, and the walk below makes a list for each and copies every field.
+    if let Some(key) = leaf_key(value) {
+        return key;
+    }
+    if let Some(key) = flat_key(value) {
+        return key;
+    }
+    if let Value::Borrow(inner) = value {
+        let inner = inner.borrow();
+        if let Some(key) = leaf_key(&inner).or_else(|| flat_key(&inner)) {
+            return key;
+        }
+    }
     let value = behind_pointers(value.clone());
     let mut parts = Vec::new();
     // The fields still to be gone over, the next last; `None` is the end of a struct or an enum.
@@ -1577,6 +1620,37 @@ fn key_of(value: &Value) -> Key {
         }
     }
     Key::Parts(parts)
+}
+
+/// The key of a value that is not made of parts, as `part_key` makes it; `None` for any other.
+fn leaf_key(value: &Value) -> Option<Key> {
+    Some(match value {
+        Value::Bool(value) => Key::Bool(*value),
+        Value::Int(_, value) => Key::Int(*value),
+        Value::Char(value) => Key::Int(*value as i128),
+        Value::Float(_, value) => Key::Float(float_key(*value)),
+        Value::Str(text) => Key::Str(text.clone()),
+        Value::Null => Key::Null,
+        _ => return None,
+    })
+}
+
+/// The key of a struct or an enum whose fields are all of one part, as the walk of `key_of`
+/// makes it; `None` for any other.
+fn flat_key(value: &Value) -> Option<Key> {
+    let (index, fields): (Option<usize>, &[Cell]) = match value {
+        Value::Struct(_, fields) => (None, &fields.cells),
+        Value::Enum(_, index, fields) => (Some(*index), fields),
+        _ => return None,
+    };
+    let mut parts = Vec::with_capacity(fields.len() + 1);
+    if let Some(index) = index {
+        parts.push(Key::Int(index as i128));
+    }
+    for field in fields {
+        parts.push(leaf_key(&field.borrow())?);
+    }
+    Some(Key::Parts(parts))
 }
 
 /// The value a key is made of, behind any pointers and borrows.
@@ -1617,14 +1691,21 @@ fn part_key(value: &Value) -> Key {
 }
 
 /// `map.add(key, value)`: a key that is already there is a mistake, not a silent overwrite.
-fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span: Span) -> Result<(), Diag> {
+/// The key comes back when it is; it is written into the panic only then, as compiled code
+/// does (`sg_fail_*`), and not at every `add`.
+fn map_add(entries: &mut Entries, key: Value, value: Value) -> Result<(), Value> {
     let under = key_of(&key);
     if entries.contains_key(&under) {
-        return Err(Diag::panic(span, format!("key {shown} is already in the map")).as_written()
-            .note("to change what is kept under a key, write `map[key] = value`"));
+        return Err(key);
     }
     entries.insert(under, (key, cell(value)));
     Ok(())
+}
+
+/// The panic of a `map.add` whose key is already there, the key written as `shown`.
+fn already_in_map(shown: &str, span: Span) -> Diag {
+    Diag::panic(span, format!("key {shown} is already in the map")).as_written()
+        .note("to change what is kept under a key, write `map[key] = value`")
 }
 
 /// `IoError.Cancelled(Cancelled { })`
@@ -5063,8 +5144,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             for item in given {
                 let key = strip(self.expr(&item.values[0], frame)?);
                 let value = self.expr(&item.values[1], frame)?;
-                let shown = self.show(&key, true, item.span)?;
-                map_add(&mut entries, key, value, shown, item.span)?;
+                if let Err(key) = map_add(&mut entries, key, value) {
+                    let shown = self.show(&key, true, item.span)?;
+                    return Err(already_in_map(&shown, item.span).into());
+                }
             }
             Ok(Value::Map(Rc::new(RefCell::new(entries))))
         }
@@ -6996,6 +7079,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 return Ok(Ok(self.call(func, Some(Value::Borrow(cell(value.clone()))), Vec::new(), span)?));
             }
         }
+        // A value whose parts own nothing is copied here at once: most are, and the walk
+        // below would take each part through it.
+        if let Some(copy) = flat_copy(&value) {
+            return Ok(Ok(copy));
+        }
         let (kind, from) = match value {
             Value::Struct(name, fields) => (CopyOf::Struct(name), CopyFrom::Fields(fields)),
             Value::Enum(name, index, fields) => (CopyOf::Enum(name, index), CopyFrom::Cells(fields)),
@@ -7126,10 +7214,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 while place > start && less(self, &from, end, place - 1)? {
                     place -= 1;
                 }
-                if place != end {
-                    let item = from.remove(end);
-                    from.insert(place, item);
-                }
+                // Only the run moves, as `memmove` in `sg_sort`: a `remove` and an `insert`
+                // moved every item after it, which made sorting a long list quadratic.
+                from[place..=end].rotate_right(1);
                 end += 1;
             }
             bounds.push(start);
@@ -7229,8 +7316,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             (Value::Map(entries), "add") => {
                 let value = args.remove(1);
                 let key = args.remove(0);
-                let shown = self.show(&key, true, span)?;
-                map_add(&mut entries.borrow_mut(), key, value, shown, span)?;
+                let added = map_add(&mut entries.borrow_mut(), key, value);
+                if let Err(key) = added {
+                    let shown = self.show(&key, true, span)?;
+                    return Err(already_in_map(&shown, span).into());
+                }
                 Ok(Value::Void)
             }
             _ => Ok(collection_method(recv, name, args)),

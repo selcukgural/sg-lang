@@ -462,6 +462,14 @@ take the same time, where the list took 1% to 5% more. The interpreter no longer
 when a recursion passes its `ref` on, which made each step read through all the ones before it: 10,000
 levels of `Json.parse` took 125 s, now 0.64 s.
 
+Slice 169 (1835) measured the walks of the interpreter that 167 put on a list, against the recursion of
+before: writing took half the time and `==` a tenth less, but `clone`, keys and sorting 8% to 20% more, the
+list being made for every small value. A key or a copy of a value with no deeper parts is now made at once,
+and the walks stay on their list (1835): every one is as fast as the recursion or faster, but letting go, at
+4%. On the way: a long list was sorted in the square of its length (100,000 numbers in 1.15 s, now 0.09 s),
+and `map.add` wrote every key into text in case it panicked, calling a key's own `format`, which compiled
+code calls only for the panic.
+
 ## Next
 
 Next comes the heavy level of

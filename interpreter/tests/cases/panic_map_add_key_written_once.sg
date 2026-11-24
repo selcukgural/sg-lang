@@ -1,0 +1,17 @@
+// A key is written into the text of a panic only when there is one: `add` does not call the
+// key's `format` to have its text ready, in the interpreter as in compiled code.
+struct Id : Copyable, Equatable, Hashable, Formattable {
+    int value
+
+    void format(read this, ref Formatter f) {
+        print("format called")
+        f.write($"#{this.value}")
+    }
+}
+
+void main() {
+    var names = HashMap<Id, string> { {Id { value = 1 }, "one"} }
+    names.add(Id { value = 2 }, "two")
+    print(names.length())
+    names.add(Id { value = 1 }, "again")
+}
