@@ -5,7 +5,7 @@
 use crate::builtins::Native;
 use crate::single::is_single;
 use crate::parser::{Assign, Ast, Def, Op, Piece, parse};
-use crate::value::{KIND_ARRAY, KIND_BOOLEAN, KIND_NULL, KIND_NUMBER, KIND_OBJECT, KIND_STRING, Value};
+use crate::value::{KIND_ARRAY, KIND_BOOLEAN, KIND_NULL, KIND_NUMBER, KIND_OBJECT, KIND_STRING, Key, Map, Value};
 
 /// The built-ins jq 1.8.2 defines in jq (from its `builtin.jq`), those of them this jq has.
 const PRELUDE: &str = r#"
@@ -37,13 +37,13 @@ def test($val): ($val|type) as $vt | if $vt == "string" then test($val; null)
    elif $vt == "array" and ($val | length) > 1 then test($val[0]; $val[1])
    elif $vt == "array" and ($val | length) > 0 then test($val[0]; null)
    else error( $vt + " not a string or array") end;
-def while(cond; update):
+def _while(cond; update):
      def _while:
          if cond then ., (update | _while) else empty end;
      _while;
 def range($init; $upto; $by):
-    if $by > 0 then $init|while(. < $upto; . + $by)
-  elif $by < 0 then $init|while(. > $upto; . + $by)
+    if $by > 0 then $init|_while(. < $upto; . + $by)
+  elif $by < 0 then $init|_while(. > $upto; . + $by)
   else empty end;
 def all(generator; condition): isempty(generator|condition and empty);
 def any(generator; condition): isempty(generator|condition or empty)|not;
@@ -274,11 +274,12 @@ impl Compiler {
             Ast::Object(entries) => {
                 let mut out = Vec::with_capacity(entries.len());
                 for (k, v) in entries {
-                    let key = self.compile(k)?;
-                    if let Ir::Literal(v) = &key
+                    // A key that is a constant, as jq folds them, and not a text is refused here.
+                    if let Some(v) = constant_of(&k)
                         && !matches!(v, Value::String(_)) {
                             return Err(format!("Cannot use {} as object key", v.type_name()));
                         }
+                    let key = self.compile(k)?;
                     out.push((key, self.compile(v)?));
                 }
                 Ir::Object(out)
@@ -404,5 +405,47 @@ impl Compiler {
                 None => return Err(format!("{name}/{arity} is not defined")),
             },
         })
+    }
+}
+
+/// The value of `ast` if it is a constant as jq folds them when it reads a filter: a literal, an
+/// operator on two constants that gives no error, `[c, ...]` and `{"name": c, ...}`. A `-` before
+/// one is not folded.
+fn constant_of(ast: &Ast) -> Option<Value> {
+    match ast {
+        Ast::Literal(v) => Some(v.clone()),
+        Ast::Binary(op, a, b) => crate::builtins::binary(*op, constant_of(a)?, constant_of(b)?).ok(),
+        Ast::Array(None) => Some(Value::array(Vec::new())),
+        Ast::Array(Some(body)) => {
+            let mut items = Vec::new();
+            constant_items(body, &mut items).then(|| Value::array(items))
+        }
+        Ast::Object(entries) => {
+            let mut map = Map::new();
+            for (k, v) in entries {
+                let Value::String(name) = constant_of(k)? else { return None };
+                map.insert(Key(name), constant_of(v)?);
+            }
+            Some(Value::Object(std::rc::Rc::new(map)))
+        }
+        _ => None,
+    }
+}
+
+/// The items of `a, b, ...` when each is a constant. jq folds the chain `,` makes on its own, which
+/// leans left: `[1, (2, 3)]` is not folded, `[(1, 2), 3]` is.
+fn constant_items(ast: &Ast, items: &mut Vec<Value>) -> bool {
+    if let Ast::Comma(a, b) = ast {
+        if matches!(**b, Ast::Comma(..)) {
+            return false;
+        }
+        return constant_items(a, items) && constant_items(b, items);
+    }
+    match constant_of(ast) {
+        Some(v) => {
+            items.push(v);
+            true
+        }
+        None => false,
     }
 }

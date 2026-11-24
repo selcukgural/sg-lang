@@ -391,8 +391,11 @@ pub fn write_double(out: &mut Vec<u8>, d: f64) {
             count += 1;
         }
     }
-    let digits = &digits[..count];
     let exponent: i64 = std::str::from_utf8(&text[e + 1..]).unwrap().parse().unwrap();
+    if count >= 16 && digits[count - 1] & 1 == 1 && halfway_below(d.abs(), &digits[..count], exponent) {
+        digits[count - 1] -= 1;
+    }
+    let digits = &digits[..count];
     let point = exponent + 1;
     let count = count as i64;
     if point <= -4 || point > count + 15 {
@@ -426,6 +429,40 @@ pub fn write_double(out: &mut Vec<u8>, d: f64) {
         out.push(b'.');
         out.extend_from_slice(&digits[point as usize..]);
     }
+}
+
+/// Whether `d` stands exactly halfway between the shortest `digits` Rust found (`d.ddd` times
+/// 10^`exponent`) and the same digits with the last one less. Rust's shortest digits round such a
+/// tie up; jq's (David Gay's `dtoa`) round it to the even one, which is then the lower. A tie needs
+/// 16 or 17 digits, as only then do two neighbours both read back as `d`.
+fn halfway_below(d: f64, digits: &[u8], exponent: i64) -> bool {
+    let bits = d.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i64;
+    let fraction = bits & ((1 << 52) - 1);
+    let (mut m, mut q) = if biased == 0 { (fraction, -1074) } else { (fraction | 1 << 52, biased - 1075) };
+    let shift = m.trailing_zeros();
+    m >>= shift;
+    q += shift as i64;
+    // d = m * 2^q with m odd; the halfway point is (2D - 1) / 2 * 10^k, D the digits as a whole
+    // number. They are equal when the powers of two agree and m * 5^-k == 2D - 1 (k < 0) or
+    // m == (2D - 1) * 5^k (k >= 0); 2D - 1 is odd and below 2^58, so 5^|k| stays small.
+    let whole = digits.iter().fold(0u128, |n, &c| n * 10 + (c - b'0') as u128);
+    let odd = 2 * whole - 1;
+    let k = exponent - digits.len() as i64 + 1;
+    if q + 1 != k || k.abs() > 27 {
+        return false;
+    }
+    let tie = if k < 0 { m as u128 * 5u128.pow(-k as u32) == odd } else { m as u128 == odd * 5u128.pow(k as u32) };
+    if !tie {
+        return false;
+    }
+    // At the bottom of a binade the interval below is half as wide: the lower one must still read back.
+    let mut lower = [0u8; 24];
+    lower[..digits.len()].copy_from_slice(digits);
+    lower[digits.len() - 1] -= 1;
+    let mut small = Small { bytes: [0; 40], length: 0 };
+    let _ = write!(small, "{}e{}", std::str::from_utf8(&lower[..digits.len()]).unwrap(), k);
+    std::str::from_utf8(&small.bytes[..small.length]).unwrap().parse::<f64>() == Ok(d)
 }
 
 /// A double as jq writes it, in a `String`.

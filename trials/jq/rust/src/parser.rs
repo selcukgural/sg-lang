@@ -411,12 +411,32 @@ impl Parser {
     }
 
     fn comma(&mut self) -> Result<Ast> {
-        let mut left = self.alternative()?;
+        let mut left = self.bound()?;
         while self.eat_op(",") {
-            let right = self.alternative()?;
+            let right = self.bound()?;
             left = Ast::Comma(boxed(left), boxed(right));
         }
         Ok(left)
+    }
+
+    /// An expression, or one of jq's two forms of a query that take the rest of it: `def f: g; body`
+    /// and `Expr as $x | body`. The bound expression is a whole one, so `1 + .a as $x | $x` binds
+    /// `1 + .a`; either may stand after `,` (`1, .a as $x | $x, 2` binds over `$x, 2`).
+    fn bound(&mut self) -> Result<Ast> {
+        if !self.no_binding && self.peek_ident("def") {
+            self.at += 1;
+            let def = self.def()?;
+            let rest = self.pipe()?;
+            return Ok(Ast::Def(Box::new(def), boxed(rest)));
+        }
+        let source = self.alternative()?;
+        if !self.no_binding && self.eat_ident("as") {
+            let name = self.variable()?;
+            self.expect_op("|")?;
+            let body = self.pipe()?;
+            return Ok(Ast::As(boxed(source), name, boxed(body)));
+        }
+        Ok(source)
     }
 
     fn alternative(&mut self) -> Result<Ast> {
@@ -517,11 +537,11 @@ impl Parser {
             let operand = self.unary()?;
             return Ok(Ast::Neg(boxed(operand)));
         }
-        self.postfix(true)
+        self.postfix()
     }
 
-    /// A term and what follows it: `.name`, `[...]`, `?`, and `as $x | body` when allowed.
-    fn postfix(&mut self, allow_as: bool) -> Result<Ast> {
+    /// A term and what follows it: `.name`, `[...]`, `?`.
+    fn postfix(&mut self) -> Result<Ast> {
         let mut term = self.primary()?;
         loop {
             match self.peek() {
@@ -547,12 +567,6 @@ impl Parser {
                 }
                 _ => break,
             }
-        }
-        if allow_as && !self.no_binding && self.eat_ident("as") {
-            let name = self.variable()?;
-            self.expect_op("|")?;
-            let body = self.pipe()?;
-            return Ok(Ast::As(boxed(term), name, boxed(body)));
         }
         Ok(term)
     }
@@ -683,7 +697,7 @@ impl Parser {
                 "false" => Ast::Literal(Value::False),
                 "if" => self.conditional()?,
                 "reduce" => {
-                    let source = self.postfix(false)?;
+                    let source = self.alternative()?;
                     self.expect_ident("as")?;
                     let name = self.variable()?;
                     self.expect_op("(")?;
@@ -694,7 +708,7 @@ impl Parser {
                     Ast::Reduce(boxed(source), name, boxed(init), boxed(update))
                 }
                 "foreach" => {
-                    let source = self.postfix(false)?;
+                    let source = self.alternative()?;
                     self.expect_ident("as")?;
                     let name = self.variable()?;
                     self.expect_op("(")?;
@@ -711,7 +725,7 @@ impl Parser {
                     Ast::Def(Box::new(def), boxed(rest))
                 }
                 "try" => {
-                    let body = self.postfix(false)?;
+                    let body = self.unary()?;
                     if self.peek_ident("catch") {
                         return Err("try ... catch is not supported".into());
                     }

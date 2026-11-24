@@ -107,7 +107,8 @@ const State = struct {
     mark: usize = 0,
     count: f64 = 0,
     limit: f64 = 0,
-    /// `?`: waiting for an error; `//`: an output was given; `all`: is `all`.
+    /// `?`: waiting for an error; `//`: an output was given; `all`: is `all`; `reduce`: its
+    /// accumulator is given at the end.
     flag: bool = false,
     how: parse.Assign = .update,
 };
@@ -379,7 +380,7 @@ const Choice = struct {
     kind: union(enum) {
         comma: struct { node: *Node, input: Value, path: Path, env: ?*Env },
         iterate: struct { container: Value, index: usize, path: Path },
-        range: struct { current: f64, end: f64, step: f64 },
+        range: struct { current: f64, end: f64, step: f64, by: bool },
         collect_end: *State,
         reduce_end: *State,
         foreach_end: *State,
@@ -1124,7 +1125,9 @@ pub const Machine = struct {
                         path = .off;
                         const is_reduce = x.node.kind == .reduce;
                         const source = if (is_reduce) x.node.kind.reduce.source else x.node.kind.foreach.source;
-                        const s = newState(.{ .acc = out });
+                        // `flag`: whether to give the accumulator at the end; `last(f)` gives it
+                        // only once an item came.
+                        const s = newState(.{ .acc = out, .flag = !(is_reduce and x.node.kind.reduce.last) });
                         if (is_reduce) {
                             m.push(cont, .{ .reduce_end = s });
                             cont = newCont(.{ .reduce_step = .{ .node = x.node, .state = stateRetain(s), .env = envRetain(x.env) } }, null);
@@ -1141,6 +1144,7 @@ pub const Machine = struct {
                         pathRelease(path);
                         path = .off;
                         const update = x.node.kind.reduce.update;
+                        x.state.flag = true;
                         const item_env = newEnv(x.env, out);
                         const acc = value.take(&x.state.acc);
                         if (update.simple) {
@@ -1471,8 +1475,8 @@ pub const Machine = struct {
                     },
                     .range => |x| {
                         const current = x.current + x.step;
-                        if ((x.step > 0 and current < x.end) or (x.step < 0 and current > x.end)) {
-                            m.push(contRetain(cont), .{ .range = .{ .current = current, .end = x.end, .step = x.step } });
+                        if (rangeGoesOn(current, x.end, x.step, x.by)) {
+                            m.push(contRetain(cont), .{ .range = .{ .current = current, .end = x.end, .step = x.step, .by = x.by } });
                             out = value.number(current);
                             path = .off;
                             continue :loop .emit;
@@ -1487,6 +1491,12 @@ pub const Machine = struct {
                         continue :loop .emit;
                     },
                     .reduce_end => |s| {
+                        if (!s.flag) {
+                            // `last(f)` of no output.
+                            stateRelease(s);
+                            contRelease(cont);
+                            continue :loop .backtrack;
+                        }
                         out = value.take(&s.acc);
                         stateRelease(s);
                         path = .off;
@@ -1678,14 +1688,15 @@ pub const Machine = struct {
                 envRelease(env.*);
                 env.* = null;
                 const first = value.toDouble(from);
-                if (!((step > 0 and first < end) or (step < 0 and first > end))) {
+                const by = vals.len == 3;
+                if (!rangeGoesOn(first, end, step, by)) {
                     pathRelease(path.*);
                     path.* = .off;
                     contRelease(cont.*);
                     input.* = .null;
                     return .backtrack;
                 }
-                m.push(contRetain(cont.*), .{ .range = .{ .current = first, .end = end, .step = step } });
+                m.push(contRetain(cont.*), .{ .range = .{ .current = first, .end = end, .step = step, .by = by } });
                 input.* = retain(from);
                 if (path.* != .off) {
                     pathRelease(path.*);
@@ -2132,6 +2143,17 @@ pub const Machine = struct {
         return value.stringFromList(list);
     }
 };
+
+/// Whether `range` goes on to `current`. `range(a; b)` stops once `current` is at or past `end`
+/// as doubles compare, so a NaN never stops it, as jq's `RANGE` has it; `range(a; b; by)` goes on
+/// while `current` is below `end` (`by` > 0) or above it (`by` < 0) in jq's order, where NaN is
+/// below every number, as jq's `def range` with `while` has it, and never when `by` is 0 or NaN.
+fn rangeGoesOn(current: f64, end: f64, step: f64, by: bool) bool {
+    if (!by) return !(current >= end);
+    if (step > 0) return std.math.isNan(current) or (!std.math.isNan(end) and current < end);
+    if (step < 0) return !std.math.isNan(current) and (std.math.isNan(end) or current > end);
+    return false;
+}
 
 /// Whether two values are the same one, as jq's `jv_identical` tells: the same scalar, or the
 /// same text, array or object in memory.

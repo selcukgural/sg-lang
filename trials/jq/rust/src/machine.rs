@@ -103,17 +103,23 @@ fn path_push(path: &PathList, key: Value) -> PathList {
 enum Track {
     Off,
     Path(PathList),
-    /// Made by a filter that is not a path: where the path stood, and whether the value there was
-    /// null, false or true (jq lets a path go on from a value identical to it).
-    Broken(PathList, u8),
+    /// Made by a filter that is not a path: where the path stood, and the value there (jq lets a
+    /// path go on from a value identical to it). Behind an `Rc`, so that a track stays two words.
+    Broken(Rc<(PathList, Value)>),
 }
 
-fn singleton(v: &Value) -> u8 {
-    match v {
-        Value::Null => 1,
-        Value::False => 2,
-        Value::True => 3,
-        _ => 0,
+/// Whether two values are the same one, as jq's `jv_identical` tells: the same `null`, `false`,
+/// `true` or computed number, or the same literal, text, array or object in memory. A whole number
+/// read is held by its value here and in jq is a value of its own each time: never the same one.
+fn identical(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) | (Value::False, Value::False) | (Value::True, Value::True) => true,
+        (Value::Number(x), Value::Number(y)) => x.to_bits() == y.to_bits(),
+        (Value::Literal(x), Value::Literal(y)) => Rc::ptr_eq(x, y),
+        (Value::String(x), Value::String(y)) => Rc::ptr_eq(x, y),
+        (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
+        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+        _ => false,
     }
 }
 
@@ -122,7 +128,7 @@ impl Track {
     fn broken(&self, input: &Value) -> Track {
         match self {
             Track::Off => Track::Off,
-            Track::Path(p) => Track::Broken(p.clone(), singleton(input)),
+            Track::Path(p) => Track::Broken(Rc::new((p.clone(), input.clone()))),
             Track::Broken(..) => self.clone(),
         }
     }
@@ -132,7 +138,7 @@ impl Track {
         match self {
             Track::Off => None,
             Track::Path(p) => Some(p.clone()),
-            Track::Broken(p, kind) => (*kind != 0 && singleton(value) == *kind).then(|| p.clone()),
+            Track::Broken(b) => identical(value, &b.1).then(|| b.0.clone()),
         }
     }
 

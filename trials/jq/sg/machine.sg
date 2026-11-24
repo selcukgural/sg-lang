@@ -93,6 +93,8 @@ struct Fork {
     long count
     Jv value
     Jv path
+    // A `reduce` in a path: the input it started from.
+    Jv at
     bool tracking
     shared Env? env
     shared Cont? k
@@ -129,7 +131,7 @@ struct Machine {
 
 Fork fork(int kind) {
     return Fork {
-        kind = kind, node = -1, index = 0, count = 0, value = Jv.Null, path = Jv.Null, tracking = false,
+        kind = kind, node = -1, index = 0, count = 0, value = Jv.Null, path = Jv.Null, at = Jv.Null, tracking = false,
         env = null, k = null, items = List<Jv>(), more = List<Jv>(), places = List<nint>(), active = true, found = false,
         from = 0.0, upto = 0.0, step = 0.0,
     }
@@ -245,7 +247,7 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                 Const => {
                     // jq keeps the path when the constant is the value already there (`path(null)`,
                     // `.a | true` where `.a` is `true`): they are the same `null`, `true` or `false`.
-                    if tracking && sameAtom(read value, read p.constants[n.x]) {
+                    if tracking && identical(read value, read p.constants[n.x]) {
                         mode = ModeDeliver
                     } else if tracking {
                         error = invalidPath(read p.constants[n.x])
@@ -376,7 +378,11 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                     tracking = false
                 }
                 Reduce => {
-                    k = frame(KReduceStart, node, 0, dup(read value), Jv.Null, tracking, read env, read k)
+                    var startPath = Jv.Null
+                    if tracking {
+                        startPath = dup(read path)
+                    }
+                    k = frame(KReduceStart, node, 0, dup(read value), startPath, tracking, read env, read k)
                     node = n.b
                     tracking = false
                 }
@@ -391,18 +397,18 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                     tracking = false
                 }
                 Var => {
-                    if tracking {
-                        error = jvText("Invalid path expression with result of a variable")
+                    var link = linkAt(read env, n.c)
+                    if tracking && !identical(read link.value, read value) {
+                        error = invalidPath(read link.value)
                         mode = ModeRaise
                     } else {
-                        var link = linkAt(read env, n.c)
                         value = dup(read link.value)
                         mode = ModeDeliver
                     }
                 }
                 GlobalVar => {
-                    if tracking {
-                        error = jvText("Invalid path expression with result of a variable")
+                    if tracking && !identical(read m.globals[n.x], read value) {
+                        error = invalidPath(read m.globals[n.x])
                         mode = ModeRaise
                     } else {
                         value = dup(read m.globals[n.x])
@@ -756,6 +762,12 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                 f.value = value
                 f.k = nextOf(read k)
                 f.tracking = k.tracking
+                f.node = k.node
+                if kind == KReduceStart && k.tracking {
+                    // In a path, the result of a `reduce` stands where its input did if it is that input.
+                    f.at = dup(read k.value)
+                    f.path = dup(read k.path)
+                }
                 m.forks.add(f)
                 nint h = m.forks.length() - 1
                 int item = KReduceItem
@@ -770,6 +782,7 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                 mode = ModeEval
             } else if kind == KReduceItem || kind == KForeachItem {
                 nint h = k.index
+                m.forks[h].found = true
                 var item = value
                 var state = m.forks[h].value.replace(Jv.Null)
                 env = new shared Env { value = item, node = -1, closure = null, parent = envOf(read k.env) }
@@ -1106,7 +1119,14 @@ string? run(ref Machine m, read Program p, nint root, Jv input) {
                 var f = m.forks.removeLast() ?? panic("a fork")
                 k = f.k ?? panic("a fork keeps where it goes")
                 value = f.value
-                if f.tracking {
+                if !f.found && p.nodes[f.node].x == ReduceLast {
+                    // `last(f)` of no output has none.
+                    value = Jv.Null
+                } else if f.tracking && identical(read value, read f.at) {
+                    path = f.path
+                    tracking = true
+                    mode = ModeDeliver
+                } else if f.tracking {
                     error = invalidPath(read value)
                     mode = ModeRaise
                 } else {
@@ -1246,9 +1266,48 @@ void appendItems(ref List<Jv> args, read Jv items) {
     }
 }
 
-bool sameAtom(read Jv a, read Jv b) {
-    int ra = kindRank(a)
-    return ra <= 2 && ra == kindRank(b)
+// Whether two values are the same one, as jq's `jv_identical` tells: the same `null`, `false`,
+// `true` or computed number, or the same literal, text, array or object in memory. A whole number
+// read is held by its value here and in jq is a value of its own each time: never the same one. In
+// a path, a value made by a filter that is not a path stands where its input does when it is the
+// input itself (`path(null)`, `path(reduce empty as $x (.; .))`).
+bool identical(read Jv a, read Jv b) {
+    match read a {
+        Null => return b is Null
+        False => return b is False
+        True => return b is True
+        Number(x) => {
+            match read b {
+                Number(y) => return (x == y && x.isSignNegative() == y.isSignNegative()) || (x.isNaN() && y.isNaN())
+                _ => return false
+            }
+        }
+        Exact(_) => return false
+        Literal(x) => {
+            match read b {
+                Literal(y) => return same(x, y)
+                _ => return false
+            }
+        }
+        String(x) => {
+            match read b {
+                String(y) => return same(x, y)
+                _ => return false
+            }
+        }
+        Array(x) => {
+            match read b {
+                Array(y) => return same(x, y)
+                _ => return false
+            }
+        }
+        Object(x) => {
+            match read b {
+                Object(y) => return same(x, y)
+                _ => return false
+            }
+        }
+    }
 }
 
 // An index that fails: nothing more when it was made optional with `?`, an error otherwise.

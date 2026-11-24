@@ -259,6 +259,10 @@ fn run() -> i32 {
                     let mut source = Source { reader: &mut reader, slurp: false };
                     ret = process(&mut machine, program, &env, value, &mut source, &mut out, &options);
                     record(ret, &mut last_result);
+                    // Once a file could not be opened or read, jq's loop stops after the value it was reading.
+                    if reader.file_error {
+                        break;
+                    }
                 }
                 Next::End => break,
                 Next::Error(message) => {

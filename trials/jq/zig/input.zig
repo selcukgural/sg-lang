@@ -150,9 +150,10 @@ fn repair(bytes: []const u8, start: Place, ended: bool, out: *std.ArrayList(u8))
                 }
                 const left = bytesLeft(bytes, i + 1, length - 1, ended) orelse return i;
                 if (left.text_ends and 1 + left.count < length) {
-                    // The text ends inside the sequence: one U+FFFD for all that is left.
+                    // The text ends inside the sequence: one U+FFFD for all that is left, its
+                    // escapes too (`\"` is a byte of the text, not its end).
                     out.appendSlice(gpa, replacement) catch oom();
-                    while (i < bytes.len and bytes[i] != '"') i += 1;
+                    while (i < bytes.len and bytes[i] != '"') i = @min(bytes.len, i + @as(usize, if (bytes[i] == '\\') 2 else 1));
                     continue;
                 }
                 // Escapes never give a continuation byte first, so a sequence is raw bytes.
@@ -374,9 +375,14 @@ pub const Input = struct {
             if (self.at_start) {
                 if (self.end < 3 and !self.ended) continue;
                 self.at_start = false;
-                if (std.mem.startsWith(u8, self.buffer[0..self.end], "\xEF\xBB\xBF")) {
-                    std.mem.copyForwards(u8, self.buffer, self.buffer[3..self.end]);
-                    self.end -= 3;
+                // The mark, or, when the input ends there, the first bytes of one, as jq's
+                // parser takes them.
+                const bom = "\xEF\xBB\xBF";
+                var marked: usize = 0;
+                while (marked < 3 and marked < self.end and self.buffer[marked] == bom[marked]) marked += 1;
+                if (marked == 3 or (marked > 0 and marked == self.end and self.ended)) {
+                    std.mem.copyForwards(u8, self.buffer, self.buffer[marked..self.end]);
+                    self.end -= marked;
                 }
             }
             const bytes = self.buffer[0..self.end];

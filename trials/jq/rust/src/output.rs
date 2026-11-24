@@ -74,7 +74,19 @@ impl Output {
         let mut lock = self.stdout.lock();
         if let Err(e) = lock.write_all(bytes).and_then(|_| lock.flush()) {
             if e.kind() == io::ErrorKind::BrokenPipe {
-                // The reader has gone: jq ends here too (by SIGPIPE).
+                // The reader has gone: jq ends here too, killed by SIGPIPE (status 141 in a shell).
+                // Rust's runtime ignores SIGPIPE, so the default is put back and the signal raised.
+                #[cfg(unix)]
+                unsafe {
+                    unsafe extern "C" {
+                        fn signal(signal: i32, handler: usize) -> usize;
+                        fn raise(signal: i32) -> i32;
+                    }
+                    const SIGPIPE: i32 = 13;
+                    const SIG_DFL: usize = 0;
+                    signal(SIGPIPE, SIG_DFL);
+                    raise(SIGPIPE);
+                }
                 std::process::exit(0);
             }
             eprintln!("jq: error: could not write: {e}");

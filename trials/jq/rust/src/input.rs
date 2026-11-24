@@ -46,6 +46,9 @@ pub struct Reader {
     scan: (usize, bool, bool),
     /// A file could not be opened or read.
     pub file_error: bool,
+    /// A file has just ended: what is kept is tried before the next file is opened, as jq hands on
+    /// a value the moment its last byte is read.
+    file_ended: bool,
 }
 
 impl Reader {
@@ -65,6 +68,7 @@ impl Reader {
             failed: false,
             scan: (0, false, false),
             file_error: false,
+            file_ended: false,
         }
     }
 
@@ -112,6 +116,10 @@ impl Reader {
                 Ok(0) => {
                     self.buf.truncate(length);
                     self.source = None;
+                    if self.next_file < self.files.len() {
+                        self.file_ended = true;
+                        return;
+                    }
                 }
                 Ok(n) => {
                     self.buf.truncate(length + n);
@@ -154,9 +162,15 @@ impl Reader {
                 }
             }
             self.check_utf8();
-            let blanks =
-                self.buf[self.start..self.checked].iter().take_while(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')).count();
-            self.start += blanks;
+            // Blanks are passed over only once the mark is looked for: a byte after them is not at
+            // the start of the input (` \xEF` is an error, `\xEF` alone is nothing).
+            if self.bom_looked_for {
+                let blanks = self.buf[self.start..self.checked]
+                    .iter()
+                    .take_while(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                    .count();
+                self.start += blanks;
+            }
             let kept = self.checked - self.start;
             if kept == 0 || !self.bom_looked_for {
                 if self.complete() {
@@ -165,10 +179,11 @@ impl Reader {
                 self.read_more();
                 continue;
             }
-            if !self.complete() && kept < self.retry_at && !(self.last_short && kept < SMALL) {
+            if !self.complete() && kept < self.retry_at && !(self.last_short && kept < SMALL) && !self.file_ended {
                 self.read_more();
                 continue;
             }
+            self.file_ended = false;
             let slice = &self.buf[self.start..self.checked];
             let mut deserializer = serde_json::Deserializer::from_slice(slice);
             deserializer.disable_recursion_limit();

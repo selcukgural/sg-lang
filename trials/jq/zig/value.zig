@@ -39,6 +39,10 @@ pub const Literal = struct {
     len: u32,
     value: f64,
     ready: bool,
+    /// decNumber's infinity: a number read past its largest exponent, or `"infinity"` read by
+    /// `tonumber`. Its double is infinite and its text the largest double; it is above every
+    /// other literal (below, when negative).
+    infinite: bool = false,
 
     pub fn double(l: *Literal) f64 {
         if (!l.ready) {
@@ -59,6 +63,13 @@ pub const Literal = struct {
         const l: *Literal = @ptrCast(memory.ptr);
         l.* = .{ .len = @intCast(bytes.len), .value = value_ orelse 0, .ready = value_ != null };
         @memcpy(memory[@sizeOf(Literal)..], bytes);
+        return l;
+    }
+
+    /// decNumber's infinity, with the sign of `d`.
+    fn createInfinite(d: f64) *Literal {
+        const l = create(d, if (d < 0) "-1.7976931348623157e+308" else "1.7976931348623157e+308");
+        l.infinite = true;
         return l;
     }
 
@@ -387,7 +398,7 @@ pub fn numberFromText(text: []const u8, words: bool) ?Value {
         const rest = text[i..];
         if (std.ascii.eqlIgnoreCase(rest, "nan") or std.ascii.eqlIgnoreCase(rest, "snan")) return number(std.math.nan(f64));
         if (std.ascii.eqlIgnoreCase(rest, "inf") or std.ascii.eqlIgnoreCase(rest, "infinity")) {
-            return number(if (negative) -std.math.inf(f64) else std.math.inf(f64));
+            return .{ .literal = Literal.createInfinite(if (negative) -std.math.inf(f64) else std.math.inf(f64)) };
         }
     }
     const int_start = i;
@@ -460,7 +471,7 @@ pub fn numberFromText(text: []const u8, words: bool) ?Value {
         exponent = std.math.clamp(exponent, tiny_exponent, max_exponent);
     } else {
         if (exponent + @as(i64, @intCast(coefficient.len)) - 1 > max_exponent) {
-            return number(if (negative) -std.math.inf(f64) else std.math.inf(f64));
+            return .{ .literal = Literal.createInfinite(if (negative) -std.math.inf(f64) else std.math.inf(f64)) };
         }
         if (exponent < tiny_exponent) {
             // Rounded half up to the smallest exponent, as decNumber's context does.
@@ -654,6 +665,7 @@ fn compareLiterals(a: []const u8, b: []const u8) std.math.Order {
 pub fn negate(v: Value) Value {
     switch (v) {
         .literal => |l| {
+            if (l.infinite) return .{ .literal = Literal.createInfinite(-l.value) };
             const old = l.text();
             const d = Decimal.read(old);
             var text: std.ArrayList(u8) = .empty;
@@ -713,7 +725,8 @@ fn compareAt(a: Value, b: Value, depth: usize) std.math.Order {
             defer gpa.free(x);
             const y = sortedKeys(b.object);
             defer gpa.free(y);
-            if ((x.len > 0 or y.len > 0) and depth + 2 > max_compare_depth) {
+            // The names are compared one level down, and each pair of names one more.
+            if (depth + 1 > max_compare_depth or (x.len > 0 and y.len > 0 and depth + 2 > max_compare_depth)) {
                 too_deep = true;
                 return .eq;
             }
@@ -741,6 +754,11 @@ fn compareNumbers(a: Value, b: Value) std.math.Order {
     // doubles differ are in that order (choice 1837).
     const order = std.math.order(x, y);
     if (order != .eq) return order;
+    // decNumber's infinity is above a literal whose double is infinite only by rounding.
+    if (x == y and std.math.isInf(x) and a == .literal and b == .literal and a.literal.infinite != b.literal.infinite) {
+        const above: std.math.Order = if (a.literal.infinite) .gt else .lt;
+        return if (x < 0) above.invert() else above;
+    }
     // The same double: two numbers read are compared exactly when one keeps its text, but two of
     // at most 15 digits, whose doubles keep them apart, are equal.
     const read_a = a == .literal or a == .exact;

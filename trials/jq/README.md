@@ -22,7 +22,11 @@ others are read; the exit code is then 2.
   outputs gives as many objects, as jq does. Literals: numbers, texts with `\(...)` inside, `true`, `false`,
   `null`.
 - **Operators**, loosest first: `|`, `,`, `//` (right), `=` `|=` `+=` `-=` `*=` `/=` `%=` `//=`, `or`,
-  `and`, `== != < <= > >=`, `+ -`, `* / %`, unary `-`, postfix. `f as $x | g`.
+  `and`, `== != < <= > >=`, `+ -`, `* / %`, unary `-`, postfix. `e as $x | g`, as jq 1.8.2's grammar has
+  it: `e` is the whole expression on its left (`1 + .a as $x | $x` binds `1 + .a`), `g` the rest of the
+  pipe, and a binding, or a `def`, may stand after `,` (`1, .a as $x | $x, 2`). `-` before a term makes a
+  term (`-1 as $x | $x, 2` binds -1; `- 1 + 2` is 1); `reduce` and `foreach` read from an expression,
+  `try` takes a term.
   Arithmetic is jq's whole: numbers; `+` of texts, arrays and objects (the right one's members win) and
   `null`; `-` of arrays; `*` of objects (deep), of a text by a number; `/` of texts (split); `%`.
   Comparisons and `sort` use jq's order: `null < false < true < numbers < texts < arrays < objects`,
@@ -31,7 +35,7 @@ others are read; the exit code is then 2.
   `foreach f as $x (init; update)` and `foreach f as $x (init; update; extract)`,
   `def name: body;` and `def name(f; $x): body;`, recursive, scoped as jq scopes them (a filter argument
   is a closure over where it was written). `# comments` to the end of the line.
-- **Built in**: `empty`, `error`, `error(m)`, `not`, `length`, `utf8bytelength`, `keys`, `keys_unsorted`,
+- **Built in**: `empty`, `error`, `error(m)`, `not`, `isempty(g)`, `infinite`, `nan`, `length`, `utf8bytelength`, `keys`, `keys_unsorted`,
   `values`, `has(k)`, `in(o)`, `map(f)`, `map_values(f)`, `select(f)`, `recurse`, `to_entries`,
   `from_entries`, `with_entries(f)`, `add`, `add(f)`, `any`, `all`, `any(f)`, `all(f)`, `any(g; c)`,
   `all(g; c)`, `range(n)`, `range(a; b)`, `range(a; b; step)`, `limit(n; f)`, `first`, `last`, `first(f)`,
@@ -68,7 +72,9 @@ Oniguruma's. The cases use patterns the four read alike.
   at most); with an exponent when the decimal point would be 4 or more places left of the first digit, or
   more than 15 places right of the last (`1e-05`, `0.0001`, `1e+16`, `1000000000000000`,
   `12345678901234568`, `1e+21`, `1.5e+300`, `5e-324`, `2e-310`, the exponent of two digits at least, with
-  its sign); whole values without a point (`3`, `-0`); NaN as `null`; infinity as
+  its sign); a `double` exactly halfway between the two shortest that read back as it takes the even one, as
+  jq's `dtoa` does (`1e15 + 0.3`, which is `...000.25`, is `1000000000000000.2`); whole values without a
+  point (`3`, `-0`); NaN as `null`; infinity as
   `1.7976931348623157e+308` and its negative. A literal too large for decNumber (`1e999999999999`) is read
   as a `double` and is infinite.
 
@@ -86,7 +92,7 @@ Oniguruma's. The cases use patterns the four read alike.
 - **Read as RFC 8259**, with jq's departures followed where they are not a quirk: a name twice in an object
   keeps the last value at the first one's place (`{"a":1,"a":2,"b":3,"a":4}` → `{"a":4,"b":3}`); a byte
   order mark at the very start of the stream is skipped, and the start of one followed by the end is read as
-  nothing, with no error.
+  nothing, with no error (after a space it is a bad byte, exit 5).
 - **Depth**, as jq counts it: an array or an object is a level, and the name of a member one more while its
   value is read; the depth is looked at only when an array or an object opens, and what is open then must
   be below 10,000. So `[` 10,000 deep reads, 10,001 does not, `{"a":` 5,000 deep reads and 5,001 does not.
@@ -123,6 +129,20 @@ Found by running jq while the three were written; each is in the tests.
   that is not a number too; `range(a; b; 0)` is empty. `.[] |= empty` takes away every path at the end
   (`[1,2,3]` → `[]`).
 - A member's value in `{...}` is any expression but `,`, `as` and `def` outside brackets: `{a: 1 + 2}`.
+  A key in parentheses that is a constant, as jq folds constants when it reads the filter, and not a text
+  is refused then, with exit code 3: a literal, `[c, ...]` (only the chain `,` makes on its own, which leans
+  left: `[1, (2, 3)]` is not folded), `{"name": c, ...}`, and an operator on two constants that gives no
+  error. `{(1 + 1): 2}` and `{([1]): 3}` are exit 3; `{(-1): 2}`, `{(1 / 0): 2}` and `{(1, "a"): 2}` fail
+  when run, exit 5.
+- **Paths through what is not a path** (`path`, `paths`, `del`, the left of `|=`): a value made by `reduce`,
+  `last(f)`, a variable or a constant stands where its input stood when it is that input, the same value
+  as jq's `jv_identical` tells (the same `null`, `false`, `true` or computed number, the same literal,
+  text, array or object in memory): `path(reduce empty as $x (.; .))` is `[]`, `null | path(last(.a, .b))`
+  is `[]`, `{"a":1} | path(.a | 1)` is an error. A whole number of at most 15 digits read is held as its
+  value (choice 1837), never as the same value as another: `1 | path(. as $v | $v)` is an error here where
+  jq gives `[[]]`.
+- `last(f)` of no output gives none, as jq 1.8.2's own `last` does; `..` calls the program's own `def
+  recurse` when it has one.
 - Values nested deeper than 10,000 are written `<skipped: too deep>`, by `tojson` too. Comparing past
   10,000 levels of arrays and objects is an error: `Equality check too deep` for `==` and `!=`, where a value
   held twice is equal to itself at once at any depth, and `Comparison too deep` for `<`, `sort`, `group_by`
@@ -188,7 +208,8 @@ difference is never one of algorithm (1819):
    three did, the others do). `..` is worked out by the machine with a stack of its own, depth first,
    not as jq's `def recurse: recurse(.[]?)`; `sort` of an array held once sorts it where it lies.
 5. **Writing** into a block of 64 KB of the program's own, given to the system when full and at the end; a
-   closed pipe ends the program at once, as jq ends.
+   closed pipe ends the program at once by SIGPIPE, as jq ends (Rust's runtime ignores the signal, so the
+   Rust version puts it back and raises it).
 
 ## Cases (choice 1808)
 
@@ -206,3 +227,24 @@ Inputs from [`inputs/json.sg`](../inputs/json.sg), seed 1, and the hostile ones 
   with `\r\n`; 1 GB cut off inside its last value; an error in the middle of the stream (what came before
   printed, exit 5); `1e1000`, `-0`, `1e-400`, `18446744073709551617`, `0.1 + 0.2`, a literal of a hundred
   digits; jq's quirks above.
+
+## Tests against jq 1.8.2
+
+Two suites compare a version with jq 1.8.2 case by case, the bytes of the standard output and the exit
+code; each version passes both (choice 1839). They are run by hand, with jq 1.8.2 on the `PATH` (or named by
+`JQ=`), not by `cargo test`:
+
+```
+python3 -I trials/jq/tests/filters.py <jq>    # 3,681 cases, written with the Rust version
+python3 -I trials/jq/tests/streams.py <jq>    # 6,389 cases, written with the Zig version
+```
+
+[`filters.py`](tests/filters.py) runs filters on several inputs, numbers, output styles, input and its
+errors, bad UTF-8, the language, deep nesting, flags and files. [`streams.py`](tests/streams.py) runs
+documents under many filters, numbers and doubles written as jq writes them, input with marks and errors,
+nesting, recursion, paths, regular expressions, arguments, jq's grammar, constant keys, ending early,
+files, and inputs of 2 MB made by `json-input` (built with `interpreter/target/release/sg`). What they write
+goes to `trials/target/jq-tests`. The differences they count as meant are jq's quirks of input listed
+above, and `test("(a+)+$")` on a long run of `a`, which jq gives up on (Oniguruma's limit of retries)
+where SG's and Rust's expressions answer `false`. `cargo test the_trial_of_jq` builds the SG version and
+runs a few cases of its own without jq.

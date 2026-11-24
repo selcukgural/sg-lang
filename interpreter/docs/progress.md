@@ -482,6 +482,11 @@ as an integer. SG had written every long number into text as it read it: the num
 back in 0.77 s, where they took 2.11 s (Zig 0.61 s, Rust 1.90 s), and ten million whole numbers in
 0.16 s, where they took 0.70 s.
 
+Slice 172 (1839) ran each suite of `jq` on all three versions, where each had been run on its own: they
+differed in 101 cases, each taken back to jq 1.8.2 and made one way, with more found round them that the
+three had alike (jq's grammar of `as` and of `-`, constant keys, paths through `reduce`, ties of doubles in
+Rust, SIGPIPE). The suites are kept in `trials/jq/tests` and run by hand against jq.
+
 ## Next
 
 Next comes the heavy level of

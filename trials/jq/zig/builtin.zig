@@ -259,7 +259,7 @@ pub fn index(ctx: *Context, t: Value, key: Value) Raised!Value {
                 if (i < 0 or i >= items.len) return .null;
                 return retain(items[@intCast(i)]);
             }
-            if (key == .object) return slice(ctx, t, sliceBound(key, "start"), sliceBound(key, "end"));
+            if (key == .object) return sliceByKey(ctx, t, key);
             if (key == .array) {
                 const found = indices(t, key);
                 checkDepth(ctx) catch |err| {
@@ -270,14 +270,22 @@ pub fn index(ctx: *Context, t: Value, key: Value) Raised!Value {
             }
         },
         .null => switch (key) {
-            .string, .number, .exact, .literal, .object, .null => return .null,
+            .string, .number, .exact, .literal, .object => return .null,
             else => {},
         },
-        .string => if (key == .object) return slice(ctx, t, sliceBound(key, "start"), sliceBound(key, "end")),
+        .string => if (key == .object) return sliceByKey(ctx, t, key),
         else => {},
     }
     if (key == .string) return ctx.fail("Cannot index {s} with \"{s}\"", .{ value.kindName(t), key.string.bytes.items });
     return ctx.fail("Cannot index {s} with {s}", .{ value.kindName(t), value.kindName(key) });
+}
+
+/// `t[{"start": a, "end": b}]`: both names must be there (either may be null).
+fn sliceByKey(ctx: *Context, t: Value, key: Value) Raised!Value {
+    const m = key.object.map;
+    const from = m.get("start") orelse return ctx.fail("Start and end indices of an array slice must be numbers", .{});
+    const to = m.get("end") orelse return ctx.fail("Start and end indices of an array slice must be numbers", .{});
+    return slice(ctx, t, from, to);
 }
 
 fn sliceBound(key: Value, name: []const u8) Value {
@@ -796,8 +804,12 @@ fn has(ctx: *Context, v: Value, key: Value) Raised!Value {
         .object => |o| if (key == .string) return value.boolean(o.map.contains(key.string.bytes.items)),
         .array => |a| if (value.isNumber(key)) {
             const d = value.toDouble(key);
-            return value.boolean(d >= 0 and d < @as(f64, @floatFromInt(a.items.items.len)));
+            // Cut toward zero, as jq makes an index of it.
+            const i = @trunc(d);
+            return value.boolean(!std.math.isNan(d) and i >= 0 and i < @as(f64, @floatFromInt(a.items.items.len)));
         },
+        // Nothing is in null.
+        .null => return .false,
         else => {},
     }
     return ctx.fail("Cannot check whether {s} has a {s} key", .{ value.kindName(v), value.kindName(key) });
@@ -1001,7 +1013,22 @@ fn callFunction(ctx: *Context, id: parse.Native, f: parse.Format, input: Value, 
             return splitText(input.string.bytes.items, args[0].string.bytes.items);
         },
         .join => return join(ctx, input, args[0]),
-        .test_ => return testRegex(ctx, input, args[0], if (args.len > 1) args[1] else .null),
+        .test_ => {
+            if (args.len > 1) return testRegex(ctx, input, args[0], args[1]);
+            // `test(re)` takes a text, or an array of the expression and its flags, as jq's
+            // `def test($val)` does.
+            const val = args[0];
+            switch (val) {
+                .string => return testRegex(ctx, input, val, .null),
+                .array => |a| {
+                    const items = a.items.items;
+                    if (items.len > 1) return testRegex(ctx, input, items[0], items[1]);
+                    if (items.len > 0) return testRegex(ctx, input, items[0], .null);
+                },
+                else => {},
+            }
+            return ctx.fail("{s} not a string or array", .{value.kindName(val)});
+        },
         .ascii_downcase => return caseOf(ctx, input, false),
         .ascii_upcase => return caseOf(ctx, input, true),
         .startswith, .endswith => {

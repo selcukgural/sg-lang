@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const value = @import("value.zig");
+const builtin_mod = @import("builtin.zig");
 const Value = value.Value;
 const gpa = value.gpa;
 const oom = value.oom;
@@ -101,7 +102,8 @@ pub const Kind = union(enum) {
     arith: struct { op: Op, a: *Node, b: *Node },
     assign: struct { how: Assign, lhs: *Node, rhs: *Node },
     if_: struct { cond: *Node, then: *Node, otherwise: *Node },
-    reduce: struct { source: *Node, init: *Node, update: *Node },
+    /// `last`: `last(f)`, which gives nothing when `f` gives nothing.
+    reduce: struct { source: *Node, init: *Node, update: *Node, last: bool = false },
     foreach: struct { source: *Node, init: *Node, update: *Node, extract: ?*Node },
     /// `a as $x | b`
     bind: Binary,
@@ -197,8 +199,6 @@ pub const Parser = struct {
     peeked: ?Token = null,
     scope: std.ArrayList(Scope) = .empty,
     message: []const u8 = "",
-    /// `as` and `def` may begin here: not in the value of an object's member.
-    allow_bind: bool = true,
 
     pub fn init(src: []const u8, globals: []const []const u8) Parser {
         var p: Parser = .{ .src = src };
@@ -405,8 +405,9 @@ pub const Parser = struct {
     }
 
     // -----------------------------------------------------------------------------------------
-    // Grammar, loosest first: `|`, `,`, `//`, the assignments, `or`, `and`, the comparisons,
-    // `+ -`, `* / %`, unary `-`, postfix.
+    // Grammar, loosest first: `|`, `,`, `def f: g; body` and `Expr as $x | body` (which take
+    // the rest), `//`, the assignments, `or`, `and`, the comparisons, `+ -`, `* / %`, unary `-`,
+    // postfix.
 
     pub fn parseProgram(p: *Parser) Error!*Node {
         const n = try p.parsePipe();
@@ -414,10 +415,8 @@ pub const Parser = struct {
         return n;
     }
 
+    /// jq's `Query`: `a | b` of items joined by `,`.
     fn parsePipe(p: *Parser) Error!*Node {
-        const allow = p.allow_bind;
-        p.allow_bind = true;
-        defer p.allow_bind = allow;
         const lhs = try p.parseComma();
         if ((try p.peek()).tag == .pipe) {
             _ = try p.take();
@@ -427,12 +426,36 @@ pub const Parser = struct {
     }
 
     fn parseComma(p: *Parser) Error!*Node {
-        var lhs = try p.parseAlt();
+        var lhs = try p.parseBound();
         while ((try p.peek()).tag == .comma) {
             _ = try p.take();
-            lhs = new(.{ .comma = .{ .a = lhs, .b = try p.parseAlt() } });
+            lhs = new(.{ .comma = .{ .a = lhs, .b = try p.parseBound() } });
         }
         return lhs;
+    }
+
+    /// An expression, or one of jq's two forms of `Query` that take the rest of it:
+    /// `def f: g; body` and `Expr as $x | body`. The bound expression is a whole one, so
+    /// `1 + .a as $x | $x` binds `1 + .a`; either may stand after `,` (`1, .a as $x | $x, 2`
+    /// binds over `$x, 2`).
+    fn parseBound(p: *Parser) Error!*Node {
+        if (isWord(try p.peek(), "def")) {
+            _ = try p.take();
+            const def = try p.parseDef();
+            const body = try p.parsePipe();
+            p.popDef(def);
+            return body;
+        }
+        const source = try p.parseAlt();
+        if (!isWord(try p.peek(), "as")) return source;
+        _ = try p.take();
+        const v = try p.take();
+        if (v.tag != .variable) return p.fail("syntax error: only `as $name` is supported", .{});
+        try p.expect(.pipe, "|");
+        p.scope.append(gpa, .{ .variable = v.text }) catch oom();
+        const body = try p.parsePipe();
+        _ = p.scope.pop();
+        return new(.{ .bind = .{ .a = source, .b = body } });
     }
 
     fn parseAlt(p: *Parser) Error!*Node {
@@ -519,14 +542,14 @@ pub const Parser = struct {
     fn parseUnary(p: *Parser) Error!*Node {
         if ((try p.peek()).tag == .minus) {
             _ = try p.take();
-            // `-` takes what binds tighter than `+`: `-a * b` is `-(a * b)`.
-            return new(.{ .negate = try p.parseMultiplicative() });
+            // `-` binds tighter than `*`: `-a * b` is `(-a) * b` (`-0 * 1` is 0, as in jq).
+            return new(.{ .negate = try p.parseUnary() });
         }
-        return p.parsePostfix(true);
+        return p.parsePostfix();
     }
 
     /// A term and what follows it: `.name`, `[...]`, `?`, and `as $x | body` when `bind` is set.
-    fn parsePostfix(p: *Parser, bind: bool) Error!*Node {
+    fn parsePostfix(p: *Parser) Error!*Node {
         const first = try p.peek();
         var t = try p.parsePrimary();
         // Whether `t` was made by an indexing just now (`.a`, `."a"`, `t[...]`): a `?` after it
@@ -573,17 +596,6 @@ pub const Parser = struct {
                     }
                     indexed = false;
                 },
-                .ident => {
-                    if (!bind or !p.allow_bind or !isWord(tok, "as")) return t;
-                    _ = try p.take();
-                    const v = try p.take();
-                    if (v.tag != .variable) return p.fail("syntax error: only `as $name` is supported", .{});
-                    try p.expect(.pipe, "|");
-                    p.scope.append(gpa, .{ .variable = v.text }) catch oom();
-                    const body = try p.parsePipe();
-                    _ = p.scope.pop();
-                    return new(.{ .bind = .{ .a = t, .b = body } });
-                },
                 else => return t,
             }
         }
@@ -623,7 +635,8 @@ pub const Parser = struct {
                 }
                 return identity();
             },
-            .dotdot => return new(.recurse_all),
+            // `..` is a call of `recurse`: a `def recurse` of the program's own is the one called.
+            .dotdot => return p.resolveCall("recurse", &.{}),
             .field => return new(.{ .index = .{ .a = identity(), .b = textLiteral(t.text) } }),
             .number => return literal(value.numberFromText(t.text, false) orelse return p.fail("bad number {s}", .{t.text})),
             .string => return p.parseString(null),
@@ -657,12 +670,6 @@ pub const Parser = struct {
                 return new(.{ .variable = try p.resolveVariable(t.text) });
             },
             .ident => {
-                if (std.mem.eql(u8, t.text, "def") and p.allow_bind) {
-                    const def = try p.parseDef();
-                    const body = try p.parsePipe();
-                    p.popDef(def);
-                    return body;
-                }
                 if (std.mem.eql(u8, t.text, "null")) return literal(.null);
                 if (std.mem.eql(u8, t.text, "true")) return literal(.true);
                 if (std.mem.eql(u8, t.text, "false")) return literal(.false);
@@ -670,7 +677,8 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, t.text, "reduce")) return p.parseReduce(false);
                 if (std.mem.eql(u8, t.text, "foreach")) return p.parseReduce(true);
                 if (std.mem.eql(u8, t.text, "try")) {
-                    const body = try p.parsePostfix(false);
+                    // `try` takes a term (`try -1`, not `try .a + 1`), as jq's precedence has it.
+                    const body = try p.parsePostfix();
                     if (isWord(try p.peek(), "catch")) return p.fail("try ... catch is not supported", .{});
                     return new(.{ .try_ = body });
                 }
@@ -689,7 +697,7 @@ pub const Parser = struct {
                 }
                 return p.resolveCall(t.text, args.items);
             },
-            .minus => return new(.{ .negate = try p.parsePostfix(false) }),
+            .minus => return new(.{ .negate = try p.parsePostfix() }),
             else => return p.fail("syntax error: unexpected token", .{}),
         }
     }
@@ -715,7 +723,8 @@ pub const Parser = struct {
 
     /// `reduce SOURCE as $x (INIT; UPDATE)` and `foreach SOURCE as $x (INIT; UPDATE[; EXTRACT])`.
     fn parseReduce(p: *Parser, foreach: bool) Error!*Node {
-        const source = try p.parsePostfix(false);
+        // The source is a whole expression: `reduce .b[] * 2 as $x (...)`.
+        const source = try p.parseAlt();
         try p.expectWord("as");
         const v = try p.take();
         if (v.tag != .variable) return p.fail("syntax error: only `as $name` is supported", .{});
@@ -836,6 +845,11 @@ pub const Parser = struct {
                 .lparen => {
                     key = try p.parsePipe();
                     try p.expect(.rparen, ")");
+                    // A constant key that is not a text is an error of the program, as jq finds it.
+                    if (constantOf(key)) |c| {
+                        defer value.release(c);
+                        if (c != .string) return p.fail("Cannot use {s} as object key", .{value.kindName(c)});
+                    }
                 },
                 else => return p.fail("syntax error: bad object key", .{}),
             }
@@ -855,9 +869,6 @@ pub const Parser = struct {
     }
 
     fn parseObjectValue(p: *Parser) Error!*Node {
-        const allow = p.allow_bind;
-        p.allow_bind = false;
-        defer p.allow_bind = allow;
         const lhs = try p.parseAlt();
         if ((try p.peek()).tag == .pipe) {
             _ = try p.take();
@@ -1008,6 +1019,67 @@ fn native(id: Native, args: []const *Node) *Node {
     return new(.{ .native = .{ .id = id, .args = gpa.dupe(*Node, args) catch oom() } });
 }
 
+/// The value of `n` when jq's parser holds it constant, as it folds constants before it checks
+/// an object's key: a literal, `[c, ...]` and `[]`, `{name: c, ...}` with text names and `{}`, and
+/// an operator of two constants that gives no error (`1 / 0` is not one). A unary minus is not
+/// folded, as in jq. Used only for that check; the program still works the key out itself.
+fn constantOf(n: *Node) ?Value {
+    switch (n.kind) {
+        .literal => |v| return value.retain(v),
+        .array => |body| {
+            var items: std.ArrayList(Value) = .empty;
+            if (body) |b| if (!constantItems(b, &items)) {
+                for (items.items) |v| value.release(v);
+                items.deinit(gpa);
+                return null;
+            };
+            return value.arrayFromList(items);
+        },
+        .object => |entries| {
+            const o = value.emptyObject();
+            for (entries) |e| {
+                const k = constantOf(e.key) orelse {
+                    value.release(o);
+                    return null;
+                };
+                defer value.release(k);
+                const v = (if (k == .string) constantOf(e.value) else null) orelse {
+                    value.release(o);
+                    return null;
+                };
+                value.objectPut(o.object, k.string.bytes.items, v);
+            }
+            return o;
+        },
+        .arith => |x| {
+            const a = constantOf(x.a) orelse return null;
+            const b = constantOf(x.b) orelse {
+                value.release(a);
+                return null;
+            };
+            var ctx: builtin_mod.Context = .{ .input = undefined };
+            return builtin_mod.arith(&ctx, x.op, a, b) catch {
+                value.release(ctx.err);
+                return null;
+            };
+        },
+        else => return null,
+    }
+}
+
+/// The items of `[a, b, ...]` when each is constant.
+fn constantItems(n: *Node, items: *std.ArrayList(Value)) bool {
+    // jq folds the chain `,` makes on its own, which leans left: `[1, (2, 3)]` is not folded,
+    // `[(1, 2), 3]` is.
+    if (n.kind == .comma) {
+        if (n.kind.comma.b.kind == .comma) return false;
+        return constantItems(n.kind.comma.a, items) and constantItems(n.kind.comma.b, items);
+    }
+    const v = constantOf(n) orelse return false;
+    items.append(gpa, v) catch oom();
+    return true;
+}
+
 fn array(f: ?*Node) *Node {
     if (f) |body| {
         // `[.[] | f]` with `f` simple: one pass over the input.
@@ -1140,8 +1212,12 @@ fn builtin(name: []const u8, args: []*Node) ?*Node {
             if (eql(u8, name, "all")) return new(.{ .any_all = .{ .gen = pipe(iterate(), a0), .all = true } });
             if (eql(u8, name, "range")) return new(.{ .range = gpa.dupe(*Node, &.{ literal(value.number(0)), a0 }) catch oom() });
             if (eql(u8, name, "first")) return new(.{ .first = a0 });
+            // jq's `def isempty(g): first((g|false), true);`
+            if (eql(u8, name, "isempty")) {
+                return new(.{ .first = new(.{ .comma = .{ .a = pipe(a0, literal(.false)), .b = literal(.true) } }) });
+            }
             if (eql(u8, name, "last")) {
-                return new(.{ .reduce = .{ .source = a0, .init = literal(.null), .update = new(.{ .variable = 0 }) } });
+                return new(.{ .reduce = .{ .source = a0, .init = literal(.null), .update = new(.{ .variable = 0 }), .last = true } });
             }
             if (eql(u8, name, "path")) return new(.{ .path_of = a0 });
             if (eql(u8, name, "getpath")) return new(.{ .getpath = a0 });
