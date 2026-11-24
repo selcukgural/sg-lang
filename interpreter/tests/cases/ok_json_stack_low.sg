@@ -1,0 +1,121 @@
+// `Json.parse` and `toJson` call themselves for what is inside an array or an object, and go on with
+// a list of their own where the stack runs low (choices 1832, 1833). On the stack of 1 GB this is
+// read and written by the recursion; `interp.rs` runs it on a small stack and `cli.rs` compiled on
+// one, where the rest is read and written with the list: the output is the same bytes. Arrays and
+// objects 1,000 deep, whole and broken far down: one level too deep, cut, followed by more text, a
+// wrong byte, a wrong closer, a name given twice with a number and with an object; and arrays
+// alone written with an indent, each line as far in as it is deep.
+string nested(nint depth, bool objects) {
+    var text = string.withCapacity(depth * 40)
+    for i in 0..depth {
+        if objects {
+            text.write($"{{\"n{i % 7}\":{i},\"s\":\"aé\\n\\\"{i % 3}\",\"e\":[],\"v\":")
+        } else {
+            text.write($"[{i},-1.5,\"x\\\"y\",{{}},true,null,")
+        }
+    }
+    text.write("[]")
+    for i in 0..depth {
+        if objects {
+            text.write($",\"z\":{i}}}")
+        } else {
+            text.write($",[{i}],\"w\"]")
+        }
+    }
+    return text
+}
+
+void tell(read string kind, read string what, read string text, JsonOptions options) {
+    match Json.parse(read text, options) {
+        Ok(value) => {
+            var back = value.toJson(options)
+            print($"{kind} {what}: {text.length()} bytes, written back {back == text}")
+        }
+        Error(e) => print($"{kind} {what}: {e}")
+    }
+}
+
+// `text` with `put` written in front of the first byte that is `at` or after `from`.
+string spliced(read string text, nint from, byte at, read string put) {
+    var bytes = text.asBytes()
+    nint place = from
+    while bytes[place] != at {
+        place += 1
+    }
+    var out = string.withCapacity(text.length() + put.length())
+    out.write(text[0..place])
+    out.write(put)
+    out.write(text[place..text.length()])
+    return out
+}
+
+void main() {
+    nint depth = 1000
+    for objects in (List<bool> { false, true }) {
+        var text = nested(depth, objects)
+        var kind = "arrays"
+        if objects {
+            kind = "objects"
+        }
+        var roomy = JsonOptions { maxDepth = (int)depth + 1 }
+        tell(read kind, "whole", read text, roomy)
+        tell(read kind, "one too deep", read text, JsonOptions { maxDepth = (int)depth })
+        tell(read kind, "cut", text[0..text.length() - 7], roomy)
+        var trailing = $"{text} x".toString()
+        tell(read kind, "trailing", read trailing, roomy)
+        // A wrong byte and a wrong closer far down, past where the stack ran low.
+        var bad = spliced(read text, text.length() / 2, ',', "@")
+        tell(read kind, "wrong byte", read bad, roomy)
+        var bytes = text.asBytes()
+        nint close = text.length() / 2
+        while bytes[close] != ']' {
+            close += 1
+        }
+        var swapped = string.withCapacity(text.length())
+        swapped.write(text[0..close])
+        swapped.write("}")
+        swapped.write(text[close + 1..text.length()])
+        tell(read kind, "wrong closer", read swapped, roomy)
+    }
+    // A name given twice deep down, with a number and with an object as its value: the second
+    // is told where the object it is in ends.
+    var twice = nested(depth, true)
+    var roomy = JsonOptions { maxDepth = (int)depth + 1 }
+    var numberTwice = spliced(read twice, twice.length() * 2 / 3, 'e', "s\":5,\"")
+    tell("a number", "named twice", read numberTwice, roomy)
+    var objectTwice = spliced(read twice, twice.length() * 2 / 3, 'e', "v\":{\"q\":[1]},\"")
+    tell("an object", "named twice", read objectTwice, roomy)
+    // Arrays alone, written with breaks and an indent of one, which the deep path counts too.
+    var plain = string.withCapacity(depth * 2)
+    for _ in 0..depth {
+        plain.write("[")
+    }
+    for _ in 0..depth {
+        plain.write("]")
+    }
+    var lined = JsonOptions { maxDepth = (int)depth, indent = 1 }
+    match Json.parse(read plain, lined) {
+        Ok(value) => {
+            var wide = value.toJson(lined)
+            // Each `[` on a line of its own, as far in as it is deep, the innermost `[]`.
+            var expected = string.withCapacity(depth * depth)
+            var pad = string.withCapacity(depth)
+            for _ in 0..depth - 1 {
+                expected.write(pad)
+                expected.write("[\n")
+                pad.write(' ')
+            }
+            expected.write(pad)
+            expected.write("[]")
+            nint k = depth - 1
+            while k > 0 {
+                k -= 1
+                expected.write('\n')
+                expected.write(pad[0..k])
+                expected.write(']')
+            }
+            print($"indented: {wide.length()} bytes, as expected {wide == expected}")
+        }
+        Error(e) => print($"indented: {e}")
+    }
+}

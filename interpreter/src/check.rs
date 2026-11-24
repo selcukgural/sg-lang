@@ -12371,6 +12371,7 @@ impl<'a> Checker<'a> {
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
             "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
+            "stackLow" => (SystemCall::StackLow, Vec::new(), Ty::Bool),
             "charCategory" => (SystemCall::CharCategory, vec![Ty::Char], Ty::Int(IntTy::Int)),
             "charFold" => (SystemCall::CharFold, vec![Ty::Char], Ty::Char),
             "normalize" => (SystemCall::Normalize, vec![text(), Ty::Bool, Ty::Bool], Ty::Str),

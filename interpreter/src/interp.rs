@@ -2904,30 +2904,48 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
 }
 
 thread_local! {
-    /// Where the stack of this thread of the interpreter begins (`crate::STACK_BYTES` long);
-    /// 0 on a thread that did not mark it.
-    static STACK_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The addresses on the stack of this thread of the interpreter below which a sixteenth and
+    /// an eighth of it are left (see `mark_stack`); 0 on a thread that did not mark its stack.
+    static STACK_MARKS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
-/// What is kept free at the end of the stack: more than one step of the recursion below
-/// takes between two looks.
-const STACK_SPARE: usize = 64 << 20;
+/// How many times `System.stackLow()` said yes, for the tests that make sure the deep paths of
+/// `std` are taken.
+#[cfg(test)]
+pub(crate) static STACK_LOW_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Marks where the stack of this thread begins: the first thing a thread of the interpreter
-/// does.
-pub(crate) fn mark_stack() {
+/// Marks the stack of this thread, `bytes` long, as beginning here: the first thing a thread of
+/// the interpreter does. A sixteenth of it is kept free at its end, which more than one step of
+/// the recursion below takes between two looks: 64 MB of the stack of 1 GB.
+pub(crate) fn mark_stack(bytes: usize) {
     let here = 0u8;
-    STACK_BASE.set(std::hint::black_box(&here) as *const u8 as usize);
+    let base = std::hint::black_box(&here) as *const u8 as usize;
+    STACK_MARKS.set((base.saturating_sub(bytes - bytes / 16), base.saturating_sub(bytes - bytes / 8)));
 }
 
-/// Whether no more than `STACK_SPARE` of the stack of this thread is left; never on a thread
-/// that did not mark where its stack begins.
+/// The address of a local of the caller, a little below where its frame is.
+#[inline(always)]
+fn stack_here() -> usize {
+    let here = 0u8;
+    std::hint::black_box(&here) as *const u8 as usize
+}
+
+/// Whether no more than a sixteenth of the stack of this thread is left; never on a thread that
+/// did not mark where its stack begins.
 #[inline(always)]
 fn stack_spent() -> bool {
-    let base = STACK_BASE.get();
-    let here = 0u8;
-    let used = base.saturating_sub(std::hint::black_box(&here) as *const u8 as usize);
-    base != 0 && used > crate::STACK_BYTES - STACK_SPARE
+    stack_here() < STACK_MARKS.get().0
+}
+
+/// Whether no more than an eighth of the stack of this thread is left, as compiled code tells it
+/// (`System.stackLow()`, choice 1833); never on a thread that did not mark where its stack begins.
+fn stack_low() -> bool {
+    let low = stack_here() < STACK_MARKS.get().1;
+    #[cfg(test)]
+    if low {
+        STACK_LOW_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    low
 }
 
 /// `100000000` as `100 000 000`.
@@ -4245,7 +4263,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         });
         let spawned = std::thread::Builder::new().stack_size(crate::STACK_BYTES).spawn_scoped(self.scope, move || {
-            mark_stack();
+            mark_stack(crate::STACK_BYTES);
             let work = work;
             (work.0)()
         });
@@ -4880,7 +4898,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             // The value of `base`, owned here, with the fields written given anew: what they
             // held is dropped as each is replaced.
             ExprKind::With { .. } => self.with_value(expr, frame),
-            ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(self.place(inner, frame)?)),
+            // A borrow of a place that is itself a borrow (`ref position` with a `ref nint position`)
+            // is one of what that looks at, as its type says: a chain of borrows a recursion passes
+            // on made each step read through every one before it.
+            ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(behind_borrows(self.place(inner, frame)?))),
             ExprKind::IsNull { expr: inner, negated } => {
                 let is_null = matches!(strip(self.expr(inner, frame)?), Value::Null);
                 Ok(Value::Bool(is_null != *negated))
@@ -7350,6 +7371,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         if call == SystemCall::ColourTerminal {
             return Ok(Value::Bool(self.io.world.borrow().err_colour));
         }
+        if call == SystemCall::StackLow {
+            return Ok(Value::Bool(stack_low()));
+        }
         if call == SystemCall::CharCategory {
             let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
             return Ok(Value::Int(IntTy::Int, i128::from(crate::unicode::category(c))));
@@ -7489,6 +7513,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalRaise
             | SystemCall::SignalNumber
             | SystemCall::ColourTerminal
+            | SystemCall::StackLow
             | SystemCall::CharCategory
             | SystemCall::CharFold
             | SystemCall::Normalize
@@ -9402,6 +9427,29 @@ pub(crate) fn lonely_wait<'i>(cond: &str, items: &'i [LockItem], text: impl Fn(&
 /// The hint of `lonely_wait`: the task that gives says, inside the value, that it is done.
 pub(crate) fn lonely_hint(value: &str, name: &str) -> String {
     format!("a task with no more to give says so inside the value before it lets it go, `lock {value} as {name} {{ {name}.done = true }}`, and the condition looks at it: `when ... || {name}.done`")
+}
+
+#[cfg(test)]
+mod stack_low_tests {
+    use super::STACK_LOW_SEEN;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// `ok_json_stack_low` on a stack of 16 MB in a debug build and 3 MB in a release build, where
+    /// `Json.parse` and `toJson` go on with a list of their own 300 to 400 and 450 to 700 levels
+    /// down (choices 1832, 1833), and the errors of the program are found further down than that: the output is the one the recursion gives on
+    /// the stack of 1 GB, byte for byte, and each of the 18 texts read or written past that depth
+    /// was taken over by the list, most of them twice (an array or an object empty beside it).
+    #[test]
+    fn json_goes_on_with_a_list_where_the_stack_runs_low() {
+        let before = STACK_LOW_SEEN.load(Relaxed);
+        let mut out = Vec::new();
+        let bytes = if cfg!(debug_assertions) { 16 << 20 } else { 3 << 20 };
+        let ran = crate::run_on_stack(include_str!("../tests/cases/ok_json_stack_low.sg"), &mut out, bytes);
+        let seen = STACK_LOW_SEEN.load(Relaxed) - before;
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert_eq!(String::from_utf8(out).unwrap(), include_str!("../tests/cases/ok_json_stack_low.out"));
+        assert!(seen >= 18, "the stack was low {seen} times");
+    }
 }
 
 #[cfg(test)]

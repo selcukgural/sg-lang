@@ -683,6 +683,12 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #endif
 #endif
 
+#if !SG_FREESTANDING
+/* The address below which no more than an eighth of this thread's stack is left (choice 1832), set
+   with the guard of the stack; 0 on a thread that did not set it, which is never short. */
+static _Thread_local uintptr_t sg_stack_mark;
+#endif
+
 #if defined(_WIN32) && !SG_FREESTANDING
 /* The output and the standard error on Windows. A stream that is a console is written with
    `WriteConsoleW`, the UTF-8 turned into UTF-16 there: a character split between two writes is
@@ -954,6 +960,9 @@ static LONG CALLBACK sg_on_overflow(EXCEPTION_POINTERS* e) {
 static void sg_guard_thread(void) {
     ULONG room = 64 << 10;
     SetThreadStackGuarantee(&room);
+    ULONG_PTR low, high;
+    GetCurrentThreadStackLimits(&low, &high);
+    sg_stack_mark = (uintptr_t)low + ((uintptr_t)high - (uintptr_t)low) / 8;
 }
 static void sg_start(int* argc, char*** argv) {
     sg_guard_thread();
@@ -1006,13 +1015,18 @@ static __thread void* sg_alt_stack;
 static void sg_guard_thread(void) {
 #if defined(__APPLE__)
     pthread_t self = pthread_self();
-    sg_stack_low = (uintptr_t)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
+    size_t size = pthread_get_stacksize_np(self);
+    sg_stack_low = (uintptr_t)pthread_get_stackaddr_np(self) - size;
+    sg_stack_mark = sg_stack_low + size / 8;
 #else
     pthread_attr_t attr;
     if (pthread_getattr_np(pthread_self(), &attr) == 0) {
         void* base;
         size_t size;
-        if (pthread_attr_getstack(&attr, &base, &size) == 0) sg_stack_low = (uintptr_t)base;
+        if (pthread_attr_getstack(&attr, &base, &size) == 0) {
+            sg_stack_low = (uintptr_t)base;
+            sg_stack_mark = sg_stack_low + size / 8;
+        }
         pthread_attr_destroy(&attr);
     }
 #endif
@@ -1065,6 +1079,15 @@ static void sg_start(int* argc, char*** argv) {
 #else
 #define sg_start(argc, argv) ((void)0)
 #endif
+/* `System.stackLow()` (choice 1833): whether no more than an eighth of this thread's stack is left,
+   where `std` goes on with a list of its own what it walked by calling itself. */
+static inline bool sg_stack_short(void) {
+#if SG_FREESTANDING
+    return false;
+#else
+    return (uintptr_t)__builtin_frame_address(0) < sg_stack_mark;
+#endif
+}
 #if !SG_FREESTANDING
 /* The program's `main` runs on a thread whose stack is 1 GB (choice 1821), as the interpreter runs
    it: the system takes a page of it when it is first touched, so a stack that is not used costs
@@ -19645,6 +19668,7 @@ impl<'a> Emitter<'a> {
                 self.made.insert("io".to_string());
                 ("sg_system_colour", Vec::new(), "return sg_sys_colour();".to_string())
             }
+            SystemCall::StackLow => ("sg_system_stack_low", Vec::new(), "return sg_stack_short();".to_string()),
             SystemCall::CharCategory => {
                 self.made.insert("unicode".to_string());
                 ("sg_system_char_category", vec![Ty::Char], "return sg_uni_category(a0);".to_string())

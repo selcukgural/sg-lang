@@ -28,13 +28,18 @@ of seventeen digits, as `canada.json`. Apple M3 Max, 24 November 2026:
 | Records, read and written back | 0.645 s, 881 MB | 0.662 s, 881 MB | 0.760 s, 1286 MB | 0.716 s, 1074 MB | 0.884 s, 1191 MB |
 | A document a line, each read and summed | 0.412 s, 2.4 MB | 0.445 s, 2.4 MB | 0.545 s, 2.9 MB | 0.471 s, 2.1 MB | 0.589 s, 2.3 MB |
 | Coordinates, read and summed | 0.363 s, 518 MB | 0.360 s, 518 MB | 0.413 s, 1117 MB | 0.455 s, 942 MB | 0.585 s, 1066 MB |
-| Size, stripped | 100 KB | 116 KB | 485 KB | 426 KB | 522 KB |
+| Size, stripped | 116 KB | 116 KB | 485 KB | 426 KB | 522 KB |
 | Lines | 130 | 130 | 111 | 110 | 110 |
 
-Since slice 167 `Json.parse` and `toJson` keep the arrays and objects open on a list, not in a recursion, so
-that `maxDepth` is the only bound (1829); against the recursion, measured side by side, reading takes 1% to 6%
-longer, most in a document a line, which takes a list for each (best of nine, on the
-build of the day before it: 0.471 s to 0.485 s, 0.611 s to 0.634 s, 0.391 s to 0.414 s, 0.348 s to 0.352 s).
+Since slice 167 `maxDepth` is the only bound of `Json.parse` and `toJson` (1829); since slice 168 they call
+themselves until no more than an eighth of the thread's stack is left and go on with a list of their own below
+that (1832-1834), about 1.7 million levels down. The times above were measured on slice 167, which read with
+the list alone. Measured side by side, best of nine, on a build of `trials/std/json` that also looks a member
+up and adds one, as a program does: against the recursion of before 167, slice 168 takes -0.2%, -1.5%, -0.5%
+and +0.2% in the four cases, and the list of 167 +1.4%, +1.4%, +4.8% and +3.4%. On `trials/std/json` itself,
+which never calls `get` or `add`, the recursion alone is 1.4% to 2.6% faster than 168: Clang puts
+`JsonObject.find` and `append` into it while it is their only caller. The deep path makes the program 16 KB
+larger.
 
 Rust is `serde_json` 1.0.154 into a `Value`, with `preserve_order` and `float_roundtrip` (1638); without
 them the coordinates take 0.386 s and come out other numbers. Zig is `std.json` into a `Value`, in an arena

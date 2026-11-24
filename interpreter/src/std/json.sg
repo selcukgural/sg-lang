@@ -112,7 +112,7 @@ public enum JsonValue : Equatable, Formattable {
     public string toJson(read this, JsonOptions options = JsonOptions {}) {
         options.check()
         var text = string.withCapacity(64)
-        writeJsonValue(ref text, this, options.indent ?? -1, options.maxDepth)
+        writeJsonValue(ref text, this, options.indent ?? -1, 0, options.maxDepth)
         return text
     }
 
@@ -464,7 +464,7 @@ public struct Json {
         options.check()
         var bytes = text.asBytes()
         nint position = 0
-        var parsed = jsonValue(text, bytes, ref position, options.maxDepth)
+        var parsed = jsonValue(text, bytes, ref position, 0, options.maxDepth)
         match parsed {
             Ok(value) => {
                 jsonSkipSpaces(bytes, ref position)
@@ -560,12 +560,11 @@ struct JsonOpen {
     nint nameAt
 }
 
-// The value at `position`. The arrays and objects open are kept on a list, not in a recursion, so
-// that a text however deep is read (choice 1820), up to `limit`. The items of one are read in a
-// loop of its own, as a recursion reads them, until an array or an object that is not empty
-// starts in it; a member whose value is one is put in the object at once, and its value given it
-// once it is read.
-Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref nint position, int limit) {
+// The value at `position`, inside `depth` arrays and objects. What is in an array or an object is
+// read by calling this again, the fastest way to read it; where the stack runs low, which is looked
+// at every 16 levels, the rest of the value is read by `jsonValueDeep` with a list of its own, so
+// that a text however deep is read up to `limit` (choices 1820, 1832).
+Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
     jsonSkipSpaces(bytes, ref position)
     if position >= bytes.length() {
         return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
@@ -574,6 +573,96 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
     if c != '[' && c != '{' {
         return jsonScalar(text, bytes, ref position)
     }
+    if depth >= limit {
+        return Error(jsonFault(position, JsonErrorKind.TooDeep(limit)))
+    }
+    if (depth & 15) == 15 && System.stackLow() {
+        return jsonValueDeep(text, bytes, ref position, depth, limit)
+    }
+    if c == '{' {
+        return jsonObject(text, bytes, ref position, depth + 1, limit)
+    }
+    return jsonArray(text, bytes, ref position, depth + 1, limit)
+}
+
+Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
+    position += 1
+    var items = List<JsonValue>()
+    jsonSkipSpaces(bytes, ref position)
+    if position < bytes.length() && bytes[position] == ']' {
+        position += 1
+        return Ok(JsonValue.Array(items))
+    }
+    while true {
+        var item = try jsonValue(text, bytes, ref position, depth, limit)
+        items.add(item)
+        jsonSkipSpaces(bytes, ref position)
+        if position < bytes.length() {
+            byte c = bytes[position]
+            if c == ',' {
+                position += 1
+                continue
+            }
+            if c == ']' {
+                position += 1
+                return Ok(JsonValue.Array(items))
+            }
+        }
+        return Error(jsonUnexpected(bytes, position))
+    }
+    return Error(jsonUnexpected(bytes, position))
+}
+
+Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
+    position += 1
+    var members = JsonObject()
+    jsonSkipSpaces(bytes, ref position)
+    if position < bytes.length() && bytes[position] == '}' {
+        position += 1
+        return Ok(JsonValue.Object(members))
+    }
+    while true {
+        jsonSkipSpaces(bytes, ref position)
+        if position >= bytes.length() || bytes[position] != '"' {
+            return Error(jsonUnexpected(bytes, position))
+        }
+        nint keyPosition = position
+        var name = try jsonString(text, bytes, ref position)
+        jsonSkipSpaces(bytes, ref position)
+        if position >= bytes.length() || bytes[position] != ':' {
+            return Error(jsonUnexpected(bytes, position))
+        }
+        position += 1
+        var value = try jsonValue(text, bytes, ref position, depth, limit)
+        if members.find(read name) is not null {
+            return Error(jsonFault(keyPosition, JsonErrorKind.DuplicateKey(name)))
+        }
+        members.append(name, value)
+        jsonSkipSpaces(bytes, ref position)
+        if position < bytes.length() {
+            byte c = bytes[position]
+            if c == ',' {
+                position += 1
+                continue
+            }
+            if c == '}' {
+                position += 1
+                return Ok(JsonValue.Object(members))
+            }
+        }
+        return Error(jsonUnexpected(bytes, position))
+    }
+    return Error(jsonUnexpected(bytes, position))
+}
+
+// The array or the object whose `[` or `{` is at `position`, inside `depth` others, read where the
+// stack runs low, up to `limit` arrays and objects open with it and those around it. The arrays and objects open are kept on a list,
+// not in a recursion, so that a text however deep is read (choice 1820). The items of one are read
+// in a loop of its own, as a recursion reads them, until an array or an object that is not empty
+// starts in it; that one goes on the list, with the name of its member if it is one, and is given
+// to its own when it ends.
+Result<JsonValue, JsonFault> jsonValueDeep(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
+    byte c = bytes[position]
     position += 1
     jsonSkipSpaces(bytes, ref position)
     if position < bytes.length() && bytes[position] == jsonCloser(c) {
@@ -599,7 +688,7 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
                     }
                     byte first = bytes[position]
                     if first == '[' || first == '{' {
-                        if outer.length() + 1 >= limit {
+                        if depth + outer.length() + 1 >= limit {
                             return Error(jsonFault(position, JsonErrorKind.TooDeep(limit)))
                         }
                         position += 1
@@ -611,7 +700,7 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
                         position += 1
                         items.add(jsonOpened(first))
                     } else {
-                        var item = try jsonScalar(text, bytes, ref position)
+                        var item = try jsonValue(text, bytes, ref position, depth, limit)
                         items.add(item)
                     }
                     jsonSkipSpaces(bytes, ref position)
@@ -649,7 +738,7 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
                     byte first = bytes[position]
                     bool empty = false
                     if first == '[' || first == '{' {
-                        if outer.length() + 1 >= limit {
+                        if depth + outer.length() + 1 >= limit {
                             return Error(jsonFault(position, JsonErrorKind.TooDeep(limit)))
                         }
                         position += 1
@@ -663,11 +752,11 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
                         position += 1
                         empty = true
                     }
-                    var value = try jsonItem(text, bytes, ref position, first, empty)
-                    if members.find(read key) is not null {
-                        return Error(jsonFault(keyPosition, JsonErrorKind.DuplicateKey(key)))
+                    var value = try jsonItem(text, bytes, ref position, first, empty, limit)
+                    var twice = jsonMember(ref members, key, value)
+                    if twice is not null {
+                        return Error(jsonFault(keyPosition, JsonErrorKind.DuplicateKey(twice)))
                     }
-                    members.append(key, value)
                     jsonSkipSpaces(bytes, ref position)
                     if position < bytes.length() {
                         byte after = bytes[position]
@@ -702,11 +791,10 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
             match ref container {
                 Array(items) => items.add(current)
                 Object(members) => {
-                    var key = names.removeLast() ?? ""
-                    if members.find(read key) is not null {
-                        return Error(jsonFault(around.nameAt, JsonErrorKind.DuplicateKey(key)))
+                    var twice = jsonMember(ref members, names.removeLast() ?? "", current)
+                    if twice is not null {
+                        return Error(jsonFault(around.nameAt, JsonErrorKind.DuplicateKey(twice)))
                     }
-                    members.append(key, current)
                     end = '}'
                 }
                 _ => {}
@@ -731,12 +819,23 @@ Result<JsonValue, JsonFault> jsonValue(read string text, read byte[] bytes, ref 
 }
 
 // The item that starts with `first`: an empty array or object when `empty`, whose bytes are read,
-// else a value that is not an array or an object.
-Result<JsonValue, JsonFault> jsonItem(read string text, read byte[] bytes, ref nint position, byte first, bool empty) {
+// else a value that is not an array or an object, read by `jsonValue`, so that the deep path
+// repeats none of what the recursion reads (choice 1832).
+Result<JsonValue, JsonFault> jsonItem(read string text, read byte[] bytes, ref nint position, byte first, bool empty, int limit) {
     if empty {
         return Ok(jsonOpened(first))
     }
-    return jsonScalar(text, bytes, ref position)
+    return jsonValue(text, bytes, ref position, 0, limit)
+}
+
+// Puts a member of an object read on the deep path into it; its name back when the object has a
+// member of that name already.
+string? jsonMember(ref JsonObject members, string key, JsonValue value) {
+    if members.find(read key) is not null {
+        return key
+    }
+    members.append(key, value)
+    return null
 }
 
 // The byte that ends what `opening` starts: `]` for `[`, `}` for `{`.
@@ -1092,11 +1191,78 @@ void jsonCheckDepth(int level, int limit) {
     }
 }
 
-// `spaces` is -1 for one line with no spaces. The arrays and objects open are kept on lists, not
-// in a recursion, so that a value however deep is written (choice 1820), up to `limit`. The items
-// of one are written in a loop of its own, until an array or an object starts in it.
-void writeJsonValue(ref string target, read JsonValue value, int spaces, int limit) {
-    if !writeJsonStart(ref target, value, 0, limit) {
+// `spaces` is -1 for one line with no spaces. What is in an array or an object is written by calling
+// this again, the fastest way to write it; where the stack runs low, which is looked at every 16
+// levels, the rest of the value is written by `writeJsonDeep` with lists of its own, so that a value
+// however deep is written up to `limit` (choices 1820, 1832). An array or an object at `level`
+// `limit` would be nested one deeper than `limit`, which a reader with the same limit refuses.
+void writeJsonValue(ref string target, read JsonValue value, int spaces, int level, int limit) {
+    match value {
+        Null => target.write("null")
+        Bool(b) => {
+            if b {
+                target.write("true")
+            } else {
+                target.write("false")
+            }
+        }
+        Integer(n) => target.write(n)
+        Number(d) => writeJsonNumber(ref target, d)
+        String(s) => writeJsonString(ref target, s)
+        Array(items) => {
+            if (level & 15) == 15 && System.stackLow() {
+                writeJsonDeep(ref target, value, spaces, level, limit)
+                return
+            }
+            jsonCheckDepth(level, limit)
+            target.write('[')
+            for i in 0..items.length() {
+                if i > 0 {
+                    target.write(',')
+                }
+                writeJsonBreak(ref target, spaces, level + 1)
+                writeJsonValue(ref target, items[i], spaces, level + 1, limit)
+            }
+            if items.length() > 0 {
+                writeJsonBreak(ref target, spaces, level)
+            }
+            target.write(']')
+        }
+        Object(members) => {
+            if (level & 15) == 15 && System.stackLow() {
+                writeJsonDeep(ref target, value, spaces, level, limit)
+                return
+            }
+            jsonCheckDepth(level, limit)
+            target.write('{')
+            // The members read here, not through `names()`: see `JsonObject.equals`. An empty
+            // object has none.
+            var inner = read members.inner
+            if inner is not null {
+                for i in 0..inner.keys.length() {
+                    if i > 0 {
+                        target.write(',')
+                    }
+                    writeJsonBreak(ref target, spaces, level + 1)
+                    writeJsonString(ref target, inner.keys[i])
+                    target.write(':')
+                    if spaces >= 0 {
+                        target.write(' ')
+                    }
+                    writeJsonValue(ref target, inner.values[i], spaces, level + 1, limit)
+                }
+                writeJsonBreak(ref target, spaces, level)
+            }
+            target.write('}')
+        }
+    }
+}
+
+// The array or the object `value` at `level`, written where the stack runs low. The arrays and
+// objects open are kept on lists, not in a recursion (choice 1820). The items of one are written in
+// a loop of its own, until an array or an object starts in it.
+void writeJsonDeep(ref string target, read JsonValue value, int spaces, int base, int limit) {
+    if !writeJsonOpens(ref target, value, base, limit) {
         return
     }
     // The arrays and objects open, the innermost last, and the place of the item each writes next.
@@ -1105,10 +1271,11 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lim
     open.add(value)
     next.add(0)
     while open.length() > 0 {
-        nint level = open.length()
-        nint at = next[level - 1]
+        nint last = open.length() - 1
+        nint level = base + open.length()
+        nint at = next[last]
         bool inside = false
-        match open[level - 1] {
+        match open[last] {
             Array(items) => {
                 while at < items.length() {
                     if at > 0 {
@@ -1117,8 +1284,8 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lim
                     writeJsonBreak(ref target, spaces, (int)level)
                     var item = items[at]
                     at += 1
-                    if writeJsonStart(ref target, item, (int)level, limit) {
-                        next[level - 1] = at
+                    if writeJsonOpens(ref target, item, (int)level, limit) {
+                        next[last] = at
                         open.add(item)
                         next.add(0)
                         inside = true
@@ -1149,8 +1316,8 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lim
                         }
                         var item = inner.values[at]
                         at += 1
-                        if writeJsonStart(ref target, item, (int)level, limit) {
-                            next[level - 1] = at
+                        if writeJsonOpens(ref target, item, (int)level, limit) {
+                            next[last] = at
                             open.add(item)
                             next.add(0)
                             inside = true
@@ -1174,22 +1341,12 @@ void writeJsonValue(ref string target, read JsonValue value, int spaces, int lim
     }
 }
 
-// Writes a value at `level` that is not an array or an object, or the `[` or `{` that opens one;
-// whether it opened one. An array or an object at `level` `limit` would be nested one deeper than
+// Writes the `[` or the `{` that opens an array or an object at `level`, and gives `true`; any other
+// value is written by `writeJsonValue`, so that the deep path repeats none of what the recursion
+// writes (choice 1832). An array or an object at `level` `limit` would be nested one deeper than
 // `limit`, which a reader with the same limit refuses.
-bool writeJsonStart(ref string target, read JsonValue value, int level, int limit) {
+bool writeJsonOpens(ref string target, read JsonValue value, int level, int limit) {
     match value {
-        Null => target.write("null")
-        Bool(b) => {
-            if b {
-                target.write("true")
-            } else {
-                target.write("false")
-            }
-        }
-        Integer(n) => target.write(n)
-        Number(d) => writeJsonNumber(ref target, d)
-        String(s) => writeJsonString(ref target, s)
         Array(_) => {
             jsonCheckDepth(level, limit)
             target.write('[')
@@ -1200,6 +1357,7 @@ bool writeJsonStart(ref string target, read JsonValue value, int level, int limi
             target.write('{')
             return true
         }
+        _ => writeJsonValue(ref target, value, -1, level, limit)
     }
     return false
 }

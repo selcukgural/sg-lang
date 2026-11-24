@@ -1,0 +1,15 @@
+arrays whole: 40782 bytes, written back true
+arrays one too deep: line 1, column 29878: nested deeper than 1000
+arrays cut: line 1, column 40776: the text ends before the value
+arrays trailing: line 1, column 40784: text after the value
+arrays wrong byte: line 1, column 20397: unexpected character '@'
+arrays wrong closer: line 1, column 29892: unexpected character '}'
+objects whole: 44782 bytes, written back true
+objects one too deep: line 1, column 34884: nested deeper than 1000
+objects cut: line 1, column 43776: the text ends before the value
+objects trailing: line 1, column 43784: text after the value
+objects wrong byte: line 1, column 21775: unexpected character '@'
+objects wrong closer: line 1, column 21795: unexpected character '}'
+a number named twice: line 1, column 29035: duplicate key "s"
+an object named twice: line 1, column 29056: duplicate key "v"
+indented: 1001999 bytes, as expected true

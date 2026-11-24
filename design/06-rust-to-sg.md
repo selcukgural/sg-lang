@@ -15,7 +15,7 @@ The details of each line are in [the decisions by topic](rules/README.md) and in
 [choices of each slice](decisions/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829).
+Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`derive(Clone)`, `Rc::make_mut`, a reader of JSON's tokens, `(?x)`, the stack, 1813-1822), and after it 1823 and 1826; the hundred-and-sixty-seventh (JSON read and written with a loop, 1829); the hundred-and-sixty-eighth (JSON read and written by a recursion, with a list where the stack runs low, 1832-1834).
 
 ## Functions and variables
 
@@ -594,7 +594,7 @@ Last brought up to date: 24 November 2026, the hundred-and-sixty-sixth slice (`d
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `serde_json::from_str::<Value>(text)` | `Json.parse(read text)` | built | A `Result<JsonValue, JsonError>`; strict, a name twice is an error; 128 levels, as serde_json |
+| `serde_json::from_str::<Value>(text)` | `Json.parse(read text)` | built | A `Result<JsonValue, JsonError>`; strict, a name twice is an error; 128 levels, as serde_json; with `JsonOptions { maxDepth = n }` as deep as memory holds, a recursion that goes on with a list where the stack runs low, where serde_json's `unbounded_depth` needs `serde_stacker` |
 | `Deserializer::from_str(text)` with `disable_recursion_limit()` | `Json.parse(read text, JsonOptions { maxDepth = 10000 })` | built | A depth of the program's choice, never none; read and written with a loop, so a depth of a million takes no stack (1829) |
 | `Value::Null`, `Bool`, `Number`, `String`, `Array`, `Object` | `JsonValue.Null`, `Bool`, `Integer`, `Number`, `String`, `Array`, `Object` | built | A whole number that fits a `long` is an `Integer`, every other a `Number` |
 | `serde_json::Map` (with `preserve_order`) | `JsonObject` | built | Members in order; `add` panics on a name that is there, `set` replaces |

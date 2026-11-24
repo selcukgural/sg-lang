@@ -544,6 +544,41 @@ fn a_stack_that_overflows_is_told() {
     assert_eq!(ran(&sg(&dir, &["fits_interpreted.sg"])), (0, "100000\n".into(), String::new()));
 }
 
+/// Where the system gives no thread a stack of 1 GB, compiled code runs `main` on the stack it
+/// has; `ok_json_stack_low` on 1 MB of it reads and writes the deep part of its texts with the list
+/// of `Json.parse` and `toJson` (choices 1832, 1833), and prints what the recursion prints on 1 GB.
+/// That the stack is that small is seen from a recursion a million calls deep, which fits 1 GB.
+#[cfg(target_os = "linux")]
+#[test]
+fn json_compiled_goes_on_with_a_list_where_the_stack_runs_low() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("json_compiled_goes_on_with_a_list_where_the_stack_runs_low");
+    let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cases");
+    let source = std::fs::read_to_string(cases.join("ok_json_stack_low.sg")).unwrap();
+    let expected = std::fs::read_to_string(cases.join("ok_json_stack_low.out")).unwrap();
+    write(&dir, "json.sg", &source);
+    write(&dir, "fits.sg", "int sum(int n) {\n    if n == 0 {\n        return 0\n    }\n    return sum(n - 1) + 1\n}\n\nvoid main() {\n    print(sum(1000000))\n}\n");
+    // 800 MB of address space leaves no room for a stack of 1 GB.
+    let small = |stem: &str| {
+        let line = format!("ulimit -s 1024 && ulimit -v 800000 && exec '{}'", program(&dir, stem).display());
+        ran(&Command::new("sh").arg("-c").arg(line).output().unwrap())
+    };
+    for release in [false, true] {
+        let mut words = vec!["build", "json.sg"];
+        if release {
+            words.push("--release");
+        }
+        assert_eq!(ran(&sg(&dir, &words)).0, 0);
+        assert_eq!(small("json"), (0, expected.clone(), String::new()), "release: {release}");
+    }
+    assert_eq!(ran(&sg(&dir, &["build", "fits.sg"])).0, 0);
+    let (code, out, err) = small("fits");
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.starts_with("panic: stack overflow"), "{err}");
+}
+
 /// A `try` inside a statement is computed first, under a name, only where all that comes before
 /// it reads (choice 1817); elsewhere compiled code asks for a name, as before.
 #[test]

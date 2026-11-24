@@ -329,8 +329,9 @@ out, as `shift_remove` of Rust's `IndexMap` does.
 
 `toJson` writes as many levels as `Json.parse` reads, 128, and a value made in the program that is nested
 deeper is a panic, as NaN is: what is written is read back. `JsonOptions { maxDepth = n }` given to both
-writes and reads deeper. There is no upper bound: both keep the arrays and objects open on a list, not in a
-recursion, so a level takes no stack, and `maxDepth = 1000000` reads and writes a million levels:
+writes and reads deeper. There is no upper bound: both call themselves for what is inside an array or an
+object, the fastest way, and where the stack of the thread runs low they go on with a list of their own, so
+`maxDepth = 3000000` reads and writes three million levels, as the memory of the value allows:
 
 ```sg
 void main() {

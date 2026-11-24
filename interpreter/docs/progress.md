@@ -454,6 +454,14 @@ own, so it walks a chain of a million links as compiled code does (writing one w
 a channel are let go with the list too. `Json.parse` and `toJson` keep what is open on a list, so `maxDepth`
 is the only bound: a million levels read and written compiled in 0.8 s, at a cost of 1% to 6% in reading.
 
+Slice 168 (1832-1834) gave that cost back: `Json.parse` and `toJson` call themselves again, and where no more
+than an eighth of the thread's stack is left (`System.stackLow()`, for `std` alone, looked at every 16
+levels) the rest of the value goes to the list of 167. Compiled, the list takes over about 1.7 million levels
+down; side by side with the recursion of before, in a program that looks members up, reading and writing
+take the same time, where the list took 1% to 5% more. The interpreter no longer makes a borrow of a borrow
+when a recursion passes its `ref` on, which made each step read through all the ones before it: 10,000
+levels of `Json.parse` took 125 s, now 0.64 s.
+
 ## Next
 
 Next comes the heavy level of

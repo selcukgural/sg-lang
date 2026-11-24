@@ -906,6 +906,9 @@ pub enum SystemCall {
     /// `System.colourTerminal()`: the standard error is a terminal that shows colours (on Windows,
     /// a console that takes the escape sequences, turned on if it was not), for `Log` (choice 1455).
     ColourTerminal,
+    /// `System.stackLow()`: no more than an eighth of this thread's stack is left (choice 1833),
+    /// where `std` goes on with a list of its own what it walked by calling itself (1832).
+    StackLow,
     /// `System.charCategory(c)`: the general category of a character, its place among the
     /// variants of `UnicodeCategory` (choice 1476), from the Unicode tables.
     CharCategory,

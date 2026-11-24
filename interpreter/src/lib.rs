@@ -391,11 +391,28 @@ pub fn missing_library(sources: &Sources, tests: bool, library: bool) -> Option<
 }
 
 fn on_large_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
+    on_stack(STACK_BYTES, work)
+}
+
+/// Runs a program as `run` does, on a stack of `bytes`: what a program does where the stack runs
+/// low (choice 1832) is tested without making it a billion bytes deep.
+#[cfg(test)]
+pub(crate) fn run_on_stack(src: &str, out: &mut (dyn Write + Send), bytes: usize) -> Result<(), Stop> {
+    let sources = Sources::single(src, "");
+    let mut err = std::io::stderr();
+    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+    on_stack(bytes, || {
+        let prog = check_all(&sources, false)?;
+        interp::run_program(&prog, &sources, out, world)
+    })
+}
+
+fn on_stack<T: Send>(bytes: usize, work: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
+            .stack_size(bytes)
             .spawn_scoped(scope, || {
-                crate::interp::mark_stack();
+                crate::interp::mark_stack(bytes);
                 work()
             })
             .expect("could not start the interpreter thread")
