@@ -85,7 +85,8 @@ says what is slower, by how much and against what, the choice that measured it, 
 - **SHA-256 one call at a time** (`std/hash`, 1.16 times Zig on ten million hashes of 32 bytes, 0.331 s
   against 0.284 s, as Rust's `sha2` takes; 1.22 times Zig on an HMAC of each line of the log, 0.138 s
   against 0.113 s, faster than Rust's 0.144 s; 1.20 times Zig on 100 MB, 0.049 s against 0.041 s; `sha256`
-  1.17 times OpenSSL on macOS; choices 1422, 1657): since 1657 the blocks go through the SHA instructions
+  1.17 times OpenSSL on macOS; in `hashsum` 1.14 times Zig on a file of 1 GB, 0.527 s against 0.463 s, and 1.02 times
+  Rust's 0.515 s; choices 1422, 1657): since 1657 the blocks go through the SHA instructions
   of the processor, 8.93 times OpenSSL before. The C of those instructions takes a hash of one block in
   25 ns alone, where the whole call takes 33 in SG and 28 in Zig: the rest is the way to it, the eight
   words lent as a slice, a call of the system for each run of blocks that asks again whether the

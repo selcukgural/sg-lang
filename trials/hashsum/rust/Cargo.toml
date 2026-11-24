@@ -1,0 +1,11 @@
+[package]
+name = "hashsum"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The channel people use in Rust for a pool of workers: one with several receivers and a bound.
+crossbeam-channel = "0.5"
+# The SHA-256 people use in Rust, with the instructions of the processor where it has them.
+sha2 = "0.11"

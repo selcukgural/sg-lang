@@ -551,6 +551,8 @@ pub enum Callee {
     WhenAny,
     /// `OperatingSystem.isWindows()` and its two siblings: known when the program is built.
     Os(Os),
+    /// `Task.processorCount()`: how many processors the program may run on, at least 1 (1856).
+    ProcessorCount,
     /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by. With a
     /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
     /// cancelled, and gives a `Result<void, Cancelled>`.

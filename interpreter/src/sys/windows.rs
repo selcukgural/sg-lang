@@ -74,6 +74,9 @@ extern "system" {
     fn GetStdHandle(which: u32) -> Handle;
     fn GetConsoleMode(console: Handle, mode: *mut u32) -> Bool;
     fn SetConsoleMode(console: Handle, mode: u32) -> Bool;
+    fn GetCurrentProcess() -> Handle;
+    fn GetProcessAffinityMask(process: Handle, mine: *mut usize, system: *mut usize) -> Bool;
+    fn GetActiveProcessorCount(group: u16) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -136,6 +139,20 @@ pub(crate) fn entropy(bytes: &mut [u8]) -> bool {
 
 /// `Clock.monotonic()` and `Clock.wall()` in nanoseconds: `QueryPerformanceCounter`, and the time
 /// since 1970 from `GetSystemTimePreciseAsFileTime`, as compiled code reads them.
+/// `Task.processorCount()` (1856), as the C runtime counts it: the processors of the process's
+/// affinity, or every active one of every group where it has the whole system's. Rust's
+/// `available_parallelism` counts the system's only.
+pub(crate) fn processor_count() -> usize {
+    let (mut mine, mut system) = (0usize, 0usize);
+    // SAFETY: the handle of the process itself, and two places to write to.
+    if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) } != 0 && mine != 0 && mine != system {
+        return mine.count_ones() as usize;
+    }
+    // SAFETY: no pointer; `ALL_PROCESSOR_GROUPS` is 0xFFFF.
+    let all = unsafe { GetActiveProcessorCount(0xFFFF) };
+    if all > 0 { all as usize } else { 1 }
+}
+
 pub(crate) fn clock(wall: bool) -> i128 {
     if wall {
         let mut time = 0u64;

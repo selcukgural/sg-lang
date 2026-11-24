@@ -159,5 +159,5 @@ several times faster in SG. These are small programs on two machines, not proof:
 Real programs are measured too, written the same way in SG, Rust and Zig: [the trials](../benchmarks/programs.md).
 Each module of the library is measured the same way against Rust's crates and Zig's own library, JSON first,
 where SG reads, walks and writes 100 MB faster than `serde_json` and Zig's `std.json`, in less memory. Against
-the faster of Rust and Zig, SG is faster in 14 of the 32 cases and slower in 16:
+the faster of Rust and Zig, SG is faster in 14 of the 36 cases and slower in 20:
 [every case](../benchmarks/index.md#at-a-glance-against-rust-and-zig).

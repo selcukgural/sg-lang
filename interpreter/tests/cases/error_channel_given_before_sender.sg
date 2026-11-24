@@ -1,0 +1,13 @@
+int count(Channel<int> jobs) {
+    nint n = 0
+    for _ in jobs {
+        n += 1
+    }
+    return (int)n
+}
+
+void main() {
+    var jobs = Channel<int>(2)
+    var counted = Task.run(count, jobs)
+    print(counted.wait())
+}

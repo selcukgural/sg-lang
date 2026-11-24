@@ -42,6 +42,12 @@ pub(crate) fn entropy(bytes: &mut [u8]) -> bool {
 /// what a program measures is the time it took. Read with `clock_gettime`, as compiled code reads
 /// them, so that the monotonic clock is the same one: on macOS `CLOCK_UPTIME_RAW`, which stops
 /// while the machine sleeps, as Linux's `CLOCK_MONOTONIC` and Rust's `Instant` (choice 1674).
+/// `Task.processorCount()` (1856): Rust's `available_parallelism`, which the C runtime counts the
+/// same way (the affinity and the cgroup's quota on Linux, the processors on line on macOS).
+pub(crate) fn processor_count() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
 pub(crate) fn clock(wall: bool) -> i128 {
     #[repr(C)]
     struct Timespec {

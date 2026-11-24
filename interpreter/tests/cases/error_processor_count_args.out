@@ -1,0 +1,5 @@
+error: `Task.processorCount` takes no argument, 1 given
+  --> error_processor_count_args.sg:2:11
+ 2 |     print(Task.processorCount(2))
+   |           ^^^^^^^^^^^^^^^^^^^^^^
+  hint: `Task.processorCount()` gives how many processors the program may run on

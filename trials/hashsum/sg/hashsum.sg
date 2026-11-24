@@ -1,0 +1,220 @@
+// `hashsum`: the SHA-256 of each file it is given, worked out by a pool of workers, written in the
+// order the files were given, as GNU's `sha256sum` writes them (choice 1854).
+//
+//     hashsum [-j N] [--] [FILE...]
+//
+// Each line is the hash in hex, two spaces and the name; a name with `\`, a line's end or a CR in it
+// is written with them as `\\`, `\n` and `\r`, and a `\` before the hash. `-`, or no file at all, is
+// the standard input. A file that cannot be read is told on the standard error, the others go on, and
+// the program ends with 1. `-j N` is the number of workers, by default the processors the program may
+// run on (`Task.processorCount()`).
+//
+// The pool (choice 1855): the files go to the workers on a channel with room for twice as many as
+// there are workers, each worker reads a file in blocks of 64 KB into the hash and sends what it found
+// back on a second channel, and the main task writes the answers in the order of the files, holding
+// those that come early. It never gives out more than that room past the first file not yet written,
+// so neither channel is ever full and what waits is bounded. The standard input is read by the main
+// task itself, when its turn comes: a second `-` finds it at its end, as `sha256sum` does.
+
+const nint Block = 65536
+const nint OutputBlock = 65536
+
+struct Job {
+    nint index
+    string path
+}
+
+// What a worker found: the line of the output, or the message of the error.
+struct Done {
+    nint index
+    bool failed
+    string text
+}
+
+// The line `sha256sum` writes for a hash and a name.
+string lineOf(read byte[] digest, read string name) {
+    bool escaped = name.contains('\\') || name.contains('\n') || name.contains('\r')
+    var line = string.withCapacity(68 + name.length())
+    if escaped {
+        line.write('\\')
+    }
+    Hex.encodeInto(ref line, digest)
+    line.write(' ')
+    line.write(' ')
+    if !escaped {
+        line.write(name)
+    } else {
+        for c in name.chars() {
+            if c == '\\' {
+                line.write("\\\\")
+            } else if c == '\n' {
+                line.write("\\n")
+            } else if c == '\r' {
+                line.write("\\r")
+            } else {
+                line.write(c)
+            }
+        }
+    }
+    line.write('\n')
+    return line
+}
+
+Result<byte[32], IoError> hashFile(read string path, ref List<byte> block) {
+    var reader = try File.openText(path)
+    var hash = Sha256()
+    while true {
+        var got = try reader.readSome(ref block[0..Block])
+        if got == 0 {
+            break
+        }
+        hash.update(block[0..got])
+    }
+    return Ok(hash.finish())
+}
+
+Result<byte[32], IoError> hashInput(ref List<byte> block) {
+    var hash = Sha256()
+    while true {
+        var got = try Stdin.readSome(ref block[0..Block])
+        if got == 0 {
+            break
+        }
+        hash.update(block[0..got])
+    }
+    return Ok(hash.finish())
+}
+
+Done doneOf(nint index, read string path, Result<byte[32], IoError> hashed) {
+    match hashed {
+        Ok(digest) => return Done { index = index, failed = false, text = lineOf(read digest, path) }
+        Error(cause) => return Done { index = index, failed = true, text = $"hashsum: {path}: {cause}".toString() }
+    }
+}
+
+void work(Channel<Job> jobs, Sender<Done> done) {
+    var block = List<byte>.repeat(0, Block)
+    for job in jobs {
+        var hashed = hashFile(read job.path, ref block)
+        if !done.send(doneOf(job.index, read job.path, hashed)) {
+            return
+        }
+    }
+}
+
+// Gives the files out and writes the answers in order; whether one could not be read. `jobs` ends
+// with it, so the workers end once they have the last.
+Result<bool, IoError> serve(read List<string> paths, Sender<Job> jobs, Channel<Done> results, nint room) {
+    nint total = paths.length()
+    var held = List<Done?>()
+    for _ in 0..room {
+        held.add(null)
+    }
+    var block = List<byte>()
+    var out = List<byte>.withCapacity(OutputBlock + 4096)
+    nint given = 0
+    nint written = 0
+    bool failed = false
+    while written < total {
+        // What is there in order is written.
+        while written < given && held[written % room] is not null {
+            var done = held[written % room].take() ?? Done { index = 0, failed = true, text = "" }
+            if done.failed {
+                try Stdout.writeBytes(read out)
+                out.clear()
+                printError(done.text)
+                failed = true
+            } else {
+                out.addAll(done.text.asBytes())
+                if out.length() >= OutputBlock {
+                    try Stdout.writeBytes(read out)
+                    out.clear()
+                }
+            }
+            written += 1
+        }
+        if written == total {
+            break
+        }
+        if given < total && given - written < room {
+            if paths[given] == "-" {
+                if block.length() == 0 {
+                    block = List<byte>.repeat(0, Block)
+                }
+                held[given % room] = doneOf(given, "-", hashInput(ref block))
+            } else if !jobs.send(Job { index = given, path = paths[given].clone() }) {
+                break
+            }
+            given += 1
+            continue
+        }
+        var done = results.receive() ?? Done { index = written, failed = true, text = "hashsum: a worker stopped" }
+        nint at = done.index % room
+        held[at] = done
+    }
+    try Stdout.writeBytes(read out)
+    try Stdout.flush()
+    return Ok(failed)
+}
+
+void usage() {
+    printError("usage: hashsum [-j N] [--] [FILE...]")
+    exit(2)
+}
+
+void main(List<string> args) {
+    nint workers = Task.processorCount()
+    var paths = List<string>()
+    bool options = true
+    nint i = 0
+    while i < args.length() {
+        var arg = read args[i]
+        if options && arg == "--" {
+            options = false
+        } else if options && arg == "-j" {
+            if i + 1 >= args.length() {
+                usage()
+            }
+            match nint.parse(read args[i + 1]) {
+                Ok(n) => workers = n
+                Error(_) => usage()
+            }
+            i += 1
+        } else if options && arg.startsWith("-") && arg != "-" {
+            usage()
+        } else {
+            paths.add(arg.clone())
+        }
+        i += 1
+    }
+    if workers < 1 {
+        usage()
+    }
+    if paths.length() == 0 {
+        paths.add("-")
+    }
+    nint room = 2 * workers
+    var jobs = Channel<Job>(room)
+    // The sender is made before the workers start: a channel with no sender has ended, and a worker
+    // that found it so would end at once.
+    var giver = jobs.sender()
+    var results = Channel<Done>(room)
+    var done = results.sender()
+    var pool = List<Task<void>>()
+    for _ in 0..workers {
+        pool.add(Task.run(work, jobs.clone(), done.clone()))
+    }
+    var served = serve(read paths, giver, results, room)
+    Task.whenAll(pool).wait()
+    match served {
+        Ok(failed) => {
+            if failed {
+                exit(1)
+            }
+        }
+        Error(cause) => {
+            printError($"hashsum: {cause}")
+            exit(1)
+        }
+    }
+}

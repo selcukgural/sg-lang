@@ -515,10 +515,21 @@ Rust's 5.4 s, and the table benchmark takes the time of C. On Windows the trial 
 where its target was open, as the log is when it is compacted; it now renames over it with POSIX semantics, as
 Rust and the interpreter do.
 
+Slice 176 (1854-1860) is the trial of a pool of workers, `trials/hashsum`: the SHA-256 of each file it is
+given, worked out by as many workers as there are processors and written in the order given, byte for byte as
+GNU's `sha256sum` writes it, in SG, Rust and Zig, held to GNU itself. The language gained
+`Task.processorCount()`, counted as Rust's `available_parallelism` counts (a cgroup's quota and the affinity
+on Linux, the affinity on Windows too). The trial found a trap: a channel no sender holds has ended, so
+workers given their receivers before the sender was made stopped at once, and one of sixteen did the work;
+using a channel before its first `sender()` is now an error of the compiler. It found too that a `readSome` of
+a file copied every block through the reader's own: a block as large as the reader's now reads straight into
+the caller's, and sixteen workers hold 3.3 MB, the least of the three. The pools scale alike, ten times from
+one worker to sixteen; what is left is SHA-256 on one processor, 1.14 times Zig.
+
 ## Next
 
 Next comes the heavy level of
-the stand, run at night, a pool of workers,
+the stand, run at night,
 an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with

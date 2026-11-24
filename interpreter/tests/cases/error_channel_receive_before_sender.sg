@@ -1,0 +1,4 @@
+void main() {
+    var jobs = Channel<int>(1)
+    print(jobs.receive())
+}

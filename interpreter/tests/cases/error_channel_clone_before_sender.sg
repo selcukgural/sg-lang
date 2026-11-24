@@ -1,0 +1,15 @@
+// A receiver cloned before the channel has a sender: the channel has ended, and the worker would
+// find nothing (1860).
+void work(Channel<int> jobs) {
+    for job in jobs {
+        print(job)
+    }
+}
+
+void main() {
+    var jobs = Channel<int>(4)
+    var worker = Task.run(work, jobs.clone())
+    var tx = jobs.sender()
+    _ = tx.send(1)
+    worker.wait()
+}

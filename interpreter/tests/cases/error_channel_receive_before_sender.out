@@ -1,0 +1,9 @@
+error: `jobs` has no sender yet, and a channel no sender holds has ended: what receives from it now finds nothing and stops
+  --> error_channel_receive_before_sender.sg:3:11
+ 3 |     print(jobs.receive())
+   |           ^^^^
+  the channel is made here:
+  --> error_channel_receive_before_sender.sg:2:9
+ 2 |     var jobs = Channel<int>(1)
+   |         ^^^^
+  hint: make its sender first, before it is cloned, given or received from: `var tx = jobs.sender()`

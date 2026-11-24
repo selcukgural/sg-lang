@@ -9,8 +9,10 @@ void ping(Channel<int> inbox, Sender<int> out) {
 void main() {
     var a = Channel<int>(1)
     var b = Channel<int>(1)
-    var first = Task.run(ping, a.clone(), b.sender())
-    var second = Task.run(ping, b.clone(), a.sender())
+    var toA = a.sender()
+    var toB = b.sender()
+    var first = Task.run(ping, a.clone(), toB)
+    var second = Task.run(ping, b.clone(), toA)
     first.wait()
     second.wait()
 }

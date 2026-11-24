@@ -200,3 +200,47 @@ warming run, being the disk's time: a sync with `F_FULLFSYNC` takes about 4 ms o
   back, since a list is not `Comparable`; Rust and Zig sort references to them. Zig's map grows by hashing
   each key again, which the compaction of ten million keys shows.
 - The checked builds differ by the noise of the disk; with nothing on the disk, by 2% or less either way.
+
+## hashsum
+
+The SHA-256 of each file from a pool of workers, written in the order given, byte for byte as GNU's `sha256sum`
+writes it (`trials/hashsum/README.md`, choices 1854-1860). 22 cases of `measure.py hashsum --check` hold the
+output and exit code of the five builds to each other, and `trials/hashsum/tests/check.py` holds them to a model
+of GNU's `sha256sum`, itself held to GNU on Linux. Apple M3 Max (16 processors), macOS, 24 November 2026, slice
+176. Each worker reads a file in blocks of 64 KB; the files are random bytes Python made, read from the
+system's cache after the warming run; without `-j` each program runs as many workers as there are processors.
+The system's `sha256sum`, which hashes one file after another, is measured beside them for reference; it takes
+no `-j`.
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe | sha256sum |
+|---|---|---|---|---|---|---|
+| 20,000 files of 4 KB | 0.310 s, 4.4 MB | 0.304 s, 4.5 MB | 0.290 s, 4.5 MB | 0.302 s, 6.1 MB | 0.304 s, 7.0 MB | 0.385 s, 2.1 MB |
+| 16 files of 64 MB | 0.049 s, 3.3 MB | 0.055 s, 3.3 MB | 0.052 s, 3.5 MB | 0.048 s, 3.9 MB | 0.048 s, 4.0 MB | 0.569 s, 1.8 MB |
+| A file of 1 GB | 0.527 s, 2.3 MB | 0.528 s, 2.3 MB | 0.515 s, 2.6 MB | 0.463 s, 2.5 MB | 0.467 s, 3.6 MB | 0.569 s, 1.8 MB |
+| 2,000 files of 1 KB to 16 MB | 0.322 s, 3.7 MB | 0.322 s, 3.7 MB | 0.315 s, 3.8 MB | 0.288 s, 4.3 MB | 0.289 s, 4.5 MB | 1.767 s, 1.9 MB |
+| 16 files of 64 MB, `-j 1` | 0.529 s, 2.0 MB | 0.526 s, 2.0 MB | 0.516 s, 2.2 MB | 0.465 s, 2.2 MB | 0.467 s, 2.4 MB | — |
+| 16 files of 64 MB, `-j 2` | 0.268 s, 2.1 MB | 0.269 s, 2.1 MB | 0.262 s, 2.3 MB | 0.239 s, 2.3 MB | 0.238 s, 2.5 MB | — |
+| 16 files of 64 MB, `-j 4` | 0.138 s, 2.3 MB | 0.139 s, 2.2 MB | 0.135 s, 2.5 MB | 0.122 s, 2.5 MB | 0.123 s, 2.7 MB | — |
+| 16 files of 64 MB, `-j 8` | 0.072 s, 2.7 MB | 0.073 s, 2.6 MB | 0.071 s, 2.8 MB | 0.065 s, 3.0 MB | 0.065 s, 3.1 MB | — |
+| 16 files of 64 MB, `-j 16` | 0.052 s, 3.3 MB | 0.050 s, 3.3 MB | 0.051 s, 3.5 MB | 0.045 s, 3.9 MB | 0.046 s, 4.0 MB | — |
+| 2,000 files of 1 KB to 16 MB, `-j 1` | 1.641 s, 2.4 MB | 1.645 s, 2.4 MB | 1.602 s, 2.5 MB | 1.450 s, 2.7 MB | 1.462 s, 2.8 MB | — |
+| 2,000 files of 1 KB to 16 MB, `-j 2` | 1.096 s, 2.5 MB | 1.102 s, 2.5 MB | 1.075 s, 2.6 MB | 0.967 s, 2.8 MB | 0.975 s, 2.9 MB | — |
+| 2,000 files of 1 KB to 16 MB, `-j 4` | 0.740 s, 2.7 MB | 0.741 s, 2.7 MB | 0.722 s, 2.8 MB | 0.652 s, 3.0 MB | 0.655 s, 3.1 MB | — |
+| 2,000 files of 1 KB to 16 MB, `-j 8` | 0.494 s, 3.1 MB | 0.497 s, 3.0 MB | 0.489 s, 3.1 MB | 0.442 s, 3.5 MB | 0.446 s, 3.6 MB | — |
+| 2,000 files of 1 KB to 16 MB, `-j 16` | 0.320 s, 3.7 MB | 0.321 s, 3.8 MB | 0.315 s, 3.9 MB | 0.287 s, 4.3 MB | 0.289 s, 4.5 MB | — |
+| Size, stripped | 85 KB | 85 KB | 436 KB | 361 KB | 458 KB | — |
+| Lines | 185 | 185 | 180 | 160 | 160 | — |
+
+- The pools scale alike: from one worker to sixteen, SG's time on 16 files of 64 MB falls 10.2 times, Rust's
+  10.1, Zig's 10.3. On 20,000 small files the three are within 7%: what a job costs is the opening of a file.
+- What is left between them is the speed of SHA-256 on one processor: a file of 1 GB takes SG 0.527 s, Rust
+  0.515 s, Zig 0.463 s, all three with the processor's SHA instructions. SG's way to them is in
+  [Slower than C](slower-than-c.md) (SHA-256 one call at a time).
+- SG holds the least memory with a worker or more at work: a worker's reads go straight into its own block. Before
+  that, measured the same day, a `readSome` of a file read through the reader's block of 64 KB and copied out:
+  sixteen workers held 4.9 MB and the mixed files took 0.330 s.
+- The first SG version made the channel's sender after the workers had their receivers; the channel had ended
+  for those that started first, and one worker of sixteen hashed every file: 16 files of 64 MB took 0.548 s.
+  Such a program is now an error of the compiler (choice 1860).
+- Rust is measured with `sha2` 0.11, which uses the processor's SHA instructions on this machine; 0.10 does not,
+  and took 2.37 s for the file of 1 GB.

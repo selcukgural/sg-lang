@@ -1,0 +1,5 @@
+error: `Task` has the functions `run`, `delay`, `whenAll`, `whenAny` and `processorCount`, not `processorCont`
+  --> error_processor_count_name.sg:2:16
+ 2 |     print(Task.processorCont())
+   |                ^^^^^^^^^^^^^
+  hint: `Task.processorCount`

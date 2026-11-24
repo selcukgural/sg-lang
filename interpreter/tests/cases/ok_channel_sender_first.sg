@@ -1,0 +1,36 @@
+// The sender made first, then the receivers cloned and given to the workers (1860): every worker
+// takes items, and the channel ends once the sender has.
+int work(Channel<int> jobs) {
+    int sum = 0
+    for job in jobs {
+        sum += job
+    }
+    return sum
+}
+
+void give(Sender<int> tx, int count) {
+    for i in 1..count + 1 {
+        _ = tx.send(i)
+    }
+}
+
+void main() {
+    var jobs = Channel<int>(4)
+    var tx = jobs.sender()
+    var workers = List<Task<int>>()
+    for _ in 0..4 {
+        workers.add(Task.run(work, jobs.clone()))
+    }
+    give(tx, 100)
+    int total = 0
+    for sum in Task.whenAll(workers).wait() {
+        total += sum
+    }
+    print(total)
+    // A sender made by a call inside a branch counts too.
+    var more = Channel<int>(1)
+    if total > 0 {
+        _ = more.sender().send(7)
+    }
+    print(more.receive() ?? -1)
+}

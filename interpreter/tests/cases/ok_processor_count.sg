@@ -1,0 +1,21 @@
+// `Task.processorCount()` gives how many processors the program may run on: at least one, an
+// `nint`, the same each time it is asked.
+void main() {
+    nint n = Task.processorCount()
+    print(n >= 1)
+    print(n == Task.processorCount())
+    // A pool of as many tasks as there are processors, each giving its number back.
+    var tasks = List<Task<nint>>()
+    for i in 0..n {
+        tasks.add(Task.run(itself, i))
+    }
+    nint sum = 0
+    for value in Task.whenAll(tasks).wait() {
+        sum += value
+    }
+    print(sum == n * (n - 1) / 2)
+}
+
+nint itself(nint i) {
+    return i
+}

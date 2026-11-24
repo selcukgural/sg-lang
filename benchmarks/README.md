@@ -10,7 +10,7 @@ wins ([the rules](method.md#fairness)).
 |---|---|
 | [SG against C](against-c.md) | 61 small programs, each written in SG and in C by hand, on macOS |
 | [SG against C on Windows](against-c-windows.md) | The same programs on Windows 11 on Arm |
-| [Programs against Rust and Zig](programs.md) | `wc`, `grep`, `jq` and `kv`, written in SG, Rust and Zig |
+| [Programs against Rust and Zig](programs.md) | `wc`, `grep`, `jq`, `kv` and `hashsum`, written in SG, Rust and Zig |
 | [The library against Rust and Zig](library.md) | The modules of `std` against Rust's crates and Zig's library: JSON, compression, zip, hashes, checksums, hex and Base64, Unicode, time, random numbers, the log, the network |
 | [Servers against Rust, Zig and C](server.md) | A store that speaks Redis's protocol and an HTTP server, on Linux, under one load: answers a second, p99 and p99.9, memory for each connection, idle and under load, the breaking point, and a run of 30 minutes |
 | [What the servers stand](robustness.md) | The same servers against clients that reset, close half, send a byte at a time, do not read, send what is not the protocol, outnumber the descriptors, and SIGTERM |
@@ -36,7 +36,7 @@ The time of SG divided by the time of the same program in C, both built by the s
 ## At a glance: against Rust and Zig
 
 Every case of every trial and module, SG's release build against the fastest of Rust and Zig in their
-release builds; below 1 SG is faster. SG is faster in 14 of the 32 cases, slower in 16, as fast in two. The
+release builds; below 1 SG is faster. SG is faster in 14 of the 36 cases, slower in 20, as fast in two. The
 memory each held, the size of each program, and the builds with checks are on the pages of each.
 
 | Area | Case | SG | Fastest of the others | SG / fastest |
@@ -56,6 +56,10 @@ memory each held, the size of each program, and the builds with checks are on th
 | kv | A value of 100 MB | 0.097 s | 0.099 s (Rust) | 0.98 |
 | kv | A log of 1 GB read back | 2.697 s | 2.374 s (Rust) | 1.14 |
 | kv | Ten million keys read and compacted | 4.285 s | 5.361 s (Rust) | 0.80 |
+| hashsum | 20,000 files of 4 KB | 0.310 s | 0.290 s (Rust) | 1.07 |
+| hashsum | 16 files of 64 MB | 0.049 s | 0.048 s (Zig) | 1.02 |
+| hashsum | A file of 1 GB | 0.527 s | 0.463 s (Zig) | 1.14 |
+| hashsum | 2,000 files of 1 KB to 16 MB | 0.322 s | 0.288 s (Zig) | 1.12 |
 | json | Records, read and summed | 0.495 s | 0.548 s (Zig) | 0.90 |
 | json | Records, read and written back | 0.645 s | 0.716 s (Zig) | 0.90 |
 | json | A document a line, each read and summed | 0.412 s | 0.471 s (Zig) | 0.87 |

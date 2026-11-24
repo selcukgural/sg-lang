@@ -1,0 +1,10 @@
+file: 100000 straight, ending [e input
+]
+then a line: [line 004000 of the input]
+then 10 bytes: [line 00400]
+after 1599 lines: invalid text at byte 140000
+from 23 again: 100000, starting [t
+line 0000]
+input: 65536 straight, ending [e 002621]
+then a line: [ of the input]
+after 2978 lines: invalid text at byte 140000

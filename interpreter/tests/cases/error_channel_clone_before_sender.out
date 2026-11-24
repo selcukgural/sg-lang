@@ -1,0 +1,9 @@
+error: `jobs` has no sender yet, and a channel no sender holds has ended: what receives from it now finds nothing and stops
+  --> error_channel_clone_before_sender.sg:11:33
+ 11 |     var worker = Task.run(work, jobs.clone())
+    |                                 ^^^^
+  the channel is made here:
+  --> error_channel_clone_before_sender.sg:10:9
+ 10 |     var jobs = Channel<int>(4)
+    |         ^^^^
+  hint: make its sender first, before it is cloned, given or received from: `var tx = jobs.sender()`

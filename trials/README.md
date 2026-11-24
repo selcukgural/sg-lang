@@ -17,6 +17,7 @@ that keep it fair, in [How it is measured](../benchmarks/method.md). This folder
 | [grep](grep) | The lines a regular expression matches, with `-c`, `-i`, `-n` and `-v`; a line is read and searched as bytes, so one that is not UTF-8 is written as it is (choice 1840) | 133, 173 |
 | [jq](jq) | The jq people use, held byte for byte to jq 1.8.2, on records, lines and numbers of JSON and on inputs that break things (choices 1804-1822); jq and jaq measured beside it | 166 |
 | [kv](kv) | A store of keys and values with a log written before each change, synced each block, each record or never; read back, cut by a crash, damaged, compacted; held to a model in Python and killed in the middle (choices 1844-1853) | 175 |
+| [hashsum](hashsum) | The SHA-256 of each file from a pool of workers, written in the order given, byte for byte as GNU's `sha256sum` writes it; small files, large ones, one of 1 GB, a load that is not even, and the scaling with the workers (choices 1854-1860) | 176 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
 and their tables are in [The library against Rust and Zig](../benchmarks/library.md):
@@ -39,8 +40,7 @@ Servers are measured in [server](server) (choices 1698-1707): a store that speak
 and an HTTP server, each in SG, Rust, Zig and C, under one load written in C, on Linux, with their tables in
 [Servers against Rust, Zig and C](../benchmarks/server.md).
 
-Still to come, in this order: a pool of workers,
-an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
+Still to come, in this order: an HTTP/1.1 file server under load, a GIF tool, and an interpreter of Lox.
 
 ## How they are written (1525-1532)
 

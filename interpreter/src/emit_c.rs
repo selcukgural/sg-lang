@@ -3738,6 +3738,85 @@ static inline int64_t sg_raw_view(const void* at, int64_t n, size_t align, const
 
 /// The two clocks the language's own module reads (`Clock.monotonic()`, `Clock.wall()`): the
 /// nanoseconds of the monotonic clock, and of the clock of the system since 1970.
+/// `Task.processorCount()` (1856): how many processors the program may run on, at least 1, as
+/// Rust's `available_parallelism` counts them so the interpreter gives the same. On Linux the
+/// processors of its affinity, no more than the quota of its cgroup (`cpu.max` of cgroup v2, under
+/// `/sys/fs/cgroup`, at its own level and each above it); on macOS those on line; on Windows the
+/// processors of its affinity, or every active one of every group where it has the whole system's.
+const PROCESSORS_RUNTIME: &str = r#"
+#if defined(_WIN32)
+static intptr_t sg_processor_count(void) {
+    DWORD_PTR mine = 0, system = 0;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &mine, &system) && mine != 0 && mine != system) {
+        intptr_t n = 0;
+        for (; mine; mine &= mine - 1) n++;
+        return n;
+    }
+    DWORD all = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return all > 0 ? (intptr_t)all : 1;
+}
+#elif defined(__linux__)
+#include <sched.h>
+/* The quota of the cgroup, in whole processors: the least of `cpu.max` on the way from the
+   program's own cgroup up to the root; SIZE_MAX without one. */
+static size_t sg_cgroup_quota(void) {
+    size_t quota = SIZE_MAX;
+    FILE* f = fopen("/proc/self/cgroup", "r");
+    if (!f) return quota;
+    char line[4096], path[4200];
+    char* group = NULL;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "0::", 3) == 0) {
+            group = line + 3;
+            group[strcspn(group, "\n")] = 0;
+            break;
+        }
+    }
+    fclose(f);
+    if (!group || group[0] != '/') return quota;
+    for (;;) {
+        snprintf(path, sizeof path, "/sys/fs/cgroup%s%scpu.max", group, group[strlen(group) - 1] == '/' ? "" : "/");
+        FILE* m = fopen(path, "r");
+        if (m) {
+            char text[64] = { 0 };
+            unsigned long long max = 0, period = 0;
+            if (fgets(text, sizeof text, m) && strncmp(text, "max", 3) != 0 && sscanf(text, "%llu %llu", &max, &period) == 2 && period > 0) {
+                size_t whole = (size_t)(max / period);
+                if (whole < quota) quota = whole;
+            }
+            fclose(m);
+        }
+        char* slash = strrchr(group, '/');
+        if (!slash || slash == group) {
+            if (group[1] == 0) break;
+            group[1] = 0;
+            continue;
+        }
+        *slash = 0;
+    }
+    return quota;
+}
+static intptr_t sg_processor_count(void) {
+    size_t quota = sg_cgroup_quota();
+    if (quota == 0) quota = 1;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    size_t count = 0;
+    if (sched_getaffinity(0, sizeof set, &set) == 0) count = (size_t)CPU_COUNT(&set);
+    if (count == 0) {
+        long online = sysconf(_SC_NPROCESSORS_ONLN);
+        count = online > 0 ? (size_t)online : 1;
+    }
+    return (intptr_t)(count < quota ? count : quota);
+}
+#else
+static intptr_t sg_processor_count(void) {
+    long online = sysconf(_SC_NPROCESSORS_ONLN);
+    return online > 0 ? (intptr_t)online : 1;
+}
+#endif
+"#;
+
 const CLOCK_RUNTIME: &str = r#"
 #if defined(_WIN32)
 /* Windows: `QueryPerformanceCounter`, and `GetSystemTimePreciseAsFileTime` in units of 100 ns
@@ -11330,6 +11409,20 @@ static int sg_read_some(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
     }
 #endif
     if (len == 0) return 0;
+    /* A block as large as the reader's, asked for when the reader's is empty, is read into
+       straight, as Rust's `BufReader` does and as the interpreter reads a file: no copy, and the
+       reader's own block is never touched, so a pool of workers that read files does not hold one
+       more for each. The input keeps its block, which every task shares, as the interpreter's
+       does: one read of it gives at most 64 KB in both. */
+    if (r != &sg_stdin && r->at == r->len && !r->ended && len >= r->cap && !SG_FILL_OUT(r)) {
+        int64_t n = 0;
+        int code = sg_sys_read(r->fd, to, len > 0x40000000 ? 0x40000000 : len, &n);
+        if (code) return code;
+        if (n == 0) r->ended = true;
+        r->done += n;
+        *got = n;
+        return 0;
+    }
     if (r->at == r->len && !r->ended) {
         int code = sg_reader_fill(r);
         if (code) return code;
@@ -12797,6 +12890,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("clock") {
         out.push_str(CLOCK_RUNTIME);
+    }
+    if emitter.made.contains("processors") {
+        out.push_str(PROCESSORS_RUNTIME);
     }
     if emitter.made.contains("hardware hash") {
         out.push_str(HARDWARE_HASH_RUNTIME);
@@ -23207,6 +23303,10 @@ impl<'a> Emitter<'a> {
                 }
                 // Known when the program is built; without an operating system, none of them.
                 Callee::Os(os) => Ok(self.runs_on(*os).to_string()),
+                Callee::ProcessorCount => {
+                    self.made.insert("processors".to_string());
+                    Ok("sg_processor_count()".to_string())
+                }
                 Callee::Clock(ClockCall::OffsetAt) => {
                     self.made.insert("clock".to_string());
                     Ok(format!("sg_local_offset({})", self.first(&args[0], head)?))

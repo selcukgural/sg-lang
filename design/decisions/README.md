@@ -260,3 +260,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [173](2026-11-24.md#slice-173) | `Regex` held to Rust's `regex` and PCRE2; lines and patterns of bytes that may not be UTF-8 | 1840–1843 |
 | [174](2026-11-24.md#slice-174) | A search in any case by its two rarest bytes; a text that starts every match | none |
 | [175](2026-11-24.md#slice-175) | A store of keys and values with a log; `syncData`, `sync`, `setLength` and `Directory.sync`; a `List` as the key of a map | 1844–1853 |
+| [176](2026-11-24.md#slice-176) | A pool of workers that hashes files, as GNU's `sha256sum` writes them; `Task.processorCount()` | 1854–1860 |

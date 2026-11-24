@@ -1,7 +1,8 @@
 # Dependency updates: the GitHub Actions of the CI, the crate that fuzzes the front end (`fuzz/`,
 # which uses libfuzzer-sys), the extension for VS Code (`editors/vscode`, which uses
 # vscode-languageclient), the web site (`website/`, Docusaurus), the Rust versions of the trials
-# (`trials/`: Rust's `regex`, `serde_json` and `indexmap` for `jq`, `crc32fast` for `kv`, the crates the
+# (`trials/`: Rust's `regex`, `serde_json` and `indexmap` for `jq`, `crc32fast` for `kv`, `crossbeam-channel` and `sha2` for
+# `hashsum`, the crates the
 # library is measured against, `tokio` and hyper for the servers; the Zig versions use only Zig's library and PCRE2 of the system), the Rust side of the
 # differential test of `Regex` (`interpreter/tests/regex-suite/differ/rust`, `regex`), and the
 # interpreter, which has no dependencies today and is watched for the day it gets one.
@@ -30,6 +31,7 @@ updates:
   - package-ecosystem: cargo
     directories:
       - /trials/grep/rust
+      - /trials/hashsum/rust
       - /trials/jq/rust
       - /trials/kv/rust
       - /trials/server/http/rust

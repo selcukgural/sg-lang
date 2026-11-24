@@ -20,7 +20,7 @@ use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::check::float_fits;
 use crate::raw::{self, RawPtr};
-use crate::sys::{clock, command_of, local_offset, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
+use crate::sys::{clock, command_of, processor_count, local_offset, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Cell = Rc<RefCell<Value>>;
@@ -5921,6 +5921,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             Callee::Clock(ClockCall::WallSeconds) => Ok(Value::Int(IntTy::Long, clock(true).div_euclid(1_000_000_000))),
             Callee::Clock(call) => Ok(Value::Int(IntTy::Long, clock(*call == ClockCall::Wall))),
             Callee::Os(os) => Ok(Value::Bool(os.here())),
+            Callee::ProcessorCount => Ok(Value::Int(IntTy::Nint, processor_count() as i128)),
             Callee::Entropy => {
                 let cells = cells_of(&owned(self.expr(&args[0], frame)?));
                 let mut bytes = vec![0u8; cells.len()];

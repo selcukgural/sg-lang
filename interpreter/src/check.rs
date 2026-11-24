@@ -4203,6 +4203,10 @@ struct Var {
     /// one), the `id` of the channel's variable: a `for` over that channel while this one lives
     /// would never end.
     sender_of: Option<usize>,
+    /// For a channel made here (`var jobs = Channel<T>(n)`) that has no `Sender` yet, where it is
+    /// made: until `jobs.sender()`, any other use of it is an error (1860), since a channel no
+    /// sender holds has ended, and a receiver given it would find nothing and stop.
+    unsent: Option<Span>,
     /// A name `lock` or `read ... as` gives what it opened: what it lends is closed at the
     /// end of the block, as a value that is gone there.
     opened: bool,
@@ -4587,7 +4591,7 @@ impl<'a> Checker<'a> {
         let id = self.borrows.next_id;
         self.borrows.next_id += 1;
         let decl_loops = self.borrows.loops.clone();
-        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span, sender_of: None, opened: false });
+        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span, sender_of: None, unsent: None, opened: false });
         Ok(())
     }
 
@@ -5317,6 +5321,11 @@ impl<'a> Checker<'a> {
                     .hint(format!("lend it where it is needed: `ref {name}`; for numbers of their own, another `Random.fromSeed(seed)` or `Random.fromSystem()`")));
             }
             return Err(diag);
+        }
+        if let Some(made) = var.unsent {
+            return Err(Diag::error(span, format!("`{name}` has no sender yet, and a channel no sender holds has ended: what receives from it now finds nothing and stops"))
+                .related(made, "the channel is made here")
+                .hint(format!("make its sender first, before it is cloned, given or received from: `var tx = {name}.sender()`")));
         }
         var.unopened = None;
         let id = var.id;
@@ -6321,9 +6330,11 @@ impl<'a> Checker<'a> {
                 };
                 self.kept_unnamed(&loans, init, &format!("`{name}`"))?;
                 let sender_of = self.sender_of(init);
+                let unsent = (matches!(ty, Ty::Channel(_)) && matches!(init.kind, ExprKind::Collection { .. })).then_some(*name_span);
                 self.declare_local(name, ty, *name_span)?;
                 self.find(name).expect("just declared").loans = loans;
                 self.find(name).expect("just declared").sender_of = sender_of;
+                self.find(name).expect("just declared").unsent = unsent;
                 if holds_result {
                     self.find(name).expect("just declared").unopened = Some(*name_span);
                 }
@@ -8576,6 +8587,18 @@ impl<'a> Checker<'a> {
                 return Ok(ty);
             }
             ExprKind::Method { recv, name, name_span, args, .. } => {
+                // `jobs.sender()` gives the channel its first sender: from here it may be used (1860).
+                if name == "sender" && args.is_empty() {
+                    let channel = match &recv.kind {
+                        ExprKind::Borrow { expr, .. } => &expr.kind,
+                        kind => kind,
+                    };
+                    if let ExprKind::Var(channel) = channel {
+                        if let Some(var) = self.find(channel) {
+                            var.unsent = None;
+                        }
+                    }
+                }
                 // `Shape.unit()`: a function of the enum, not a variant.
                 // `IoError.fromCode(n)` is a function of the built-in enum, checked with the calls.
                 let built_in = matches!(name.as_str(), "fromCode" | "fromErrno") && matches!(&recv.kind, ExprKind::Var(owner) if owner == IO_ERROR);
@@ -11317,9 +11340,18 @@ impl<'a> Checker<'a> {
         if name == "whenAll" || name == "whenAny" {
             return self.when(name, args, callee, span, awaited);
         }
+        // `Task.processorCount()`: how many processors the program may run on (1856).
+        if name == "processorCount" {
+            if !args.is_empty() {
+                return Err(Diag::error(span, format!("`Task.processorCount` takes no argument, {} given", args.len()))
+                    .hint("`Task.processorCount()` gives how many processors the program may run on"));
+            }
+            *callee = Callee::ProcessorCount;
+            return Ok(Ty::Int(IntTy::Nint));
+        }
         if name != "run" {
-            let diag = Diag::error(name_span, format!("`Task` has the functions `run`, `delay`, `whenAll` and `whenAny`, not `{name}`"));
-            return Err(match nearest(name, ["run", "delay", "whenAll", "whenAny"].into_iter()) {
+            let diag = Diag::error(name_span, format!("`Task` has the functions `run`, `delay`, `whenAll`, `whenAny` and `processorCount`, not `{name}`"));
+            return Err(match nearest(name, ["run", "delay", "whenAll", "whenAny", "processorCount"].into_iter()) {
                 Some(close) => diag.hint(format!("`Task.{close}`")),
                 None => diag.hint("`Task.run(work, x)` starts `work(x)` as a task"),
             });

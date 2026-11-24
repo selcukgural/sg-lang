@@ -1,0 +1,71 @@
+// `readSome` into a block as large as the reader's, or larger, reads straight into it, the reader's
+// own block left alone; what is read after it, by lines, bytes or `seek`, goes on from where it
+// stopped, and a byte that is not UTF-8 is found where it lies. The same on a file and on the input
+// (`ok_read_some_large.in`: lines, a byte that is not UTF-8 at 140,000). The folder is the first
+// word of the command line.
+Result<void, IoError> afterIt(ref StreamReader r) {
+    var big = List<byte>.repeat(0, 100000)
+    var got = try r.readSome(ref big[0..100000])
+    print($"file: {got} straight, ending [{string.fromUtf8(big[got - 8..got]) ?? "?"}]")
+    var line = string.withCapacity(32)
+    _ = try r.readLine(ref line)
+    print($"then a line: [{line}]")
+    var small = List<byte>.repeat(0, 10)
+    var some = try r.readSome(ref small[0..10])
+    print($"then {some} bytes: [{string.fromUtf8(small[0..some]) ?? "?"}]")
+    nint count = 0
+    while true {
+        match r.readLine(ref line) {
+            Ok(more) => {
+                if !more {
+                    break
+                }
+                count += 1
+            }
+            Error(cause) => {
+                print($"after {count} lines: {cause}")
+                break
+            }
+        }
+    }
+    _ = try r.seek(SeekFrom.Start(23))
+    var again = try r.readSome(ref big[0..100000])
+    print($"from 23 again: {again}, starting [{string.fromUtf8(big[0..11]) ?? "?"}]")
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var data = List<byte>()
+    for i in 0..7000 {
+        data.addAll($"line {i:D6} of the input\n".toString().asBytes())
+    }
+    data[140000] = 255
+    var path = Path.join(read args[0], "data")
+    try File.writeBytes(read path, data[0..150000])
+    var reader = try File.openText(read path)
+    try afterIt(ref reader)
+
+    // The input, the same bytes.
+    var big = List<byte>.repeat(0, 70000)
+    var got = try Stdin.readSome(ref big[0..70000])
+    print($"input: {got} straight, ending [{string.fromUtf8(big[got - 8..got]) ?? "?"}]")
+    var line = string.withCapacity(32)
+    _ = try Stdin.readLine(ref line)
+    print($"then a line: [{line}]")
+    nint count = 0
+    while true {
+        match Stdin.readLine(ref line) {
+            Ok(more) => {
+                if !more {
+                    break
+                }
+                count += 1
+            }
+            Error(cause) => {
+                print($"after {count} lines: {cause}")
+                break
+            }
+        }
+    }
+    return Ok()
+}

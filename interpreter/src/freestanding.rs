@@ -80,6 +80,7 @@ fn needs(expr: &Expr) -> Option<(Span, String)> {
                 Callee::TaskRun => "`Task.run` starts a thread of the system".to_string(),
                 Callee::Wait => "`wait` waits for a thread of the system".to_string(),
                 Callee::WhenAll | Callee::WhenAny | Callee::Delay(_) => "a task runs on the threads of the system".to_string(),
+                Callee::ProcessorCount => "it asks the system how many processors there are".to_string(),
                 Callee::Cancel(_) => "cancellation belongs to the tasks of the system".to_string(),
                 Callee::Chan(..) | Callee::ChanAsync(..) => "a channel goes between the tasks of the system".to_string(),
                 Callee::Clock(_) => "it reads the clock of the system".to_string(),

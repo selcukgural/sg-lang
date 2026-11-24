@@ -28,7 +28,11 @@ be the same everywhere (1670). Every program runs with `TZ=Europe/Istanbul` and 
 `RUST_LOG` (1668, 1670). The addresses `std/net` writes into `{out}` are held to what Python's
 `ipaddress` writes of each line of the input (1681). `kv` runs in a folder made anew before each run, empty or
 with a log Python wrote (`{kvdir}`), and the log it leaves is held to be the same, byte for byte, in every
-build (1845); a case marked `once` is measured once after its warming run, being the disk's time (1849). A help each library words its own way is held
+build (1845); a case marked `once` is measured once after its warming run, being the disk's time (1849). `hashsum`
+runs in the folder of its inputs, each `{hs:NAME}` being every file of the folder `NAME` there, given by its
+name in that folder so that 20,000 of them stay within the length of a command line; the system's
+`sha256sum` is measured beside it for reference, and left out of a case marked `pool`, which gives `-j`
+(1857). A help each library words its own way is held
 only to its exit code (1798). `std/environment` reads `SG_TRIAL_TEXT` and `SG_TRIAL_BYTES` (not
 UTF-8), which every program is given, and `SG_TRIAL_MISSING`, which none is (1799).
 Measured:
@@ -50,6 +54,7 @@ than 0 stops it too, so that a program that gave up early is never counted fast 
 import argparse
 import functools
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -160,6 +165,64 @@ KV_INPUTS = {
     "kv-small-gets": "kv-small-gets.txt",
 }
 KV_SEED = 1
+
+# The inputs of `hashsum` (choice 1857), files of random bytes Python makes from a seed, each folder
+# in `trials/target/hashsum-inputs`: name -> (count, smallest size, largest size); sizes between the
+# two are drawn evenly on a scale of logarithms.
+HASHSUM_FOLDERS = {
+    "s": (20_000, 4096, 4096),
+    "l": (16, 64 << 20, 64 << 20),
+    "o": (1, 1 << 30, 1 << 30),
+    "m": (2_000, 1024, 16 << 20),
+    "c": (300, 0, 1 << 20),
+}
+HASHSUM_DIR = OUT / "hashsum-inputs"
+
+
+def hashsum_inputs():
+    """Makes the folders of `hashsum` that are not there yet, and the folder of names at their edges
+    (`e`): a name with a line's end, a `\\`, a CR and a space, an empty file and a folder."""
+    import random
+    for name, (count, low, high) in HASHSUM_FOLDERS.items():
+        folder = HASHSUM_DIR / name
+        if folder.exists():
+            continue
+        partial = HASHSUM_DIR / (name + ".part")
+        if partial.exists():
+            shutil.rmtree(partial)
+        partial.mkdir(parents=True)
+        rng = random.Random(f"hashsum-{name}")
+        width = len(str(count - 1))
+        for n in range(count):
+            size = low if low == high else int(round(math.exp(rng.uniform(math.log(max(low, 1)), math.log(high)))))
+            if low == 0 and n % 50 == 0:
+                size = 0
+            with open(partial / f"{n:0{width}d}", "wb") as f:
+                left = size
+                while left > 0:
+                    f.write(rng.randbytes(min(left, 1 << 24)))
+                    left -= min(left, 1 << 24)
+        partial.rename(folder)
+    edges = HASHSUM_DIR / "e"
+    if not edges.exists():
+        partial = HASHSUM_DIR / "e.part"
+        if partial.exists():
+            shutil.rmtree(partial)
+        partial.mkdir(parents=True)
+        for name, data in (("plain", b"plain"), ("a line\nends", b"x"), ("back\\slash", b"y"),
+                           ("c\rr", b"z"), ("all\\three\n\r", b"w"), ("with space", b"v" * 70000),
+                           ("empty", b"")):
+            (partial / name).write_bytes(data)
+        (partial / "folder").mkdir()
+        partial.rename(edges)
+    (HASHSUM_DIR / "input.txt").write_bytes(b"what the input holds\n" * 5000)
+    return HASHSUM_DIR
+
+
+def hashsum_words(word):
+    """`{hs:NAME}`: the names of the files of a folder of the inputs, in order."""
+    folder = hashsum_inputs() / word[len("{hs:"):-1]
+    return [f"{folder.name}/{entry}" for entry in sorted(os.listdir(folder))]
 
 
 def kv_record(op, key, value):
@@ -502,6 +565,28 @@ TRIALS_CASES = {
             ("ten million keys read and compacted", ["{kvdir}"], "{kv-compact}", "kv", "log:kv-log-10m"),
         ],
     },
+    # Each case runs in the folder of the inputs; `{hs:NAME}` is every file of its folder `NAME`.
+    # A case marked `pool` gives `-j`, which the system's `sha256sum` does not take.
+    "hashsum": {
+        "check": [
+            ("names to escape, an empty file, a folder, a missing one and the input",
+             ["{hs:e}", "missing", "-"], str(HASHSUM_DIR / "input.txt")),
+            ("the same file twice and the input twice", ["e/plain", "e/plain", "-", "-"], str(HASHSUM_DIR / "input.txt")),
+            ("a name after --", ["--", "e/plain"], None),
+            ("more workers than files", ["-j", "64", "{hs:e}"], None, "pool"),
+            ("one worker", ["-j", "1", "{hs:c}"], None, "pool"),
+            ("three workers", ["-j", "3", "{hs:c}"], None, "pool"),
+            ("no workers", ["-j", "0", "e/plain"], None, "pool"),
+            ("an option not known", ["-x", "e/plain"], None, "pool"),
+        ],
+        "measure": [
+            ("20,000 files of 4 KB", ["{hs:s}"], None),
+            ("16 files of 64 MB", ["{hs:l}"], None),
+            ("a file of 1 GB", ["{hs:o}"], None),
+            ("2,000 files of 1 KB to 16 MB", ["{hs:m}"], None),
+        ] + [(f"16 files of 64 MB, -j {j}", ["-j", str(j), "{hs:l}"], None, "pool") for j in (1, 2, 4, 8, 16)]
+          + [(f"2,000 files of 1 KB to 16 MB, -j {j}", ["-j", str(j), "{hs:m}"], None, "pool") for j in (1, 2, 4, 8, 16)],
+    },
     "std/json": {
         "check": [
             ("records, summed", ["sum", "{small-records}"], None),
@@ -767,6 +852,8 @@ RUST_LEFT_OUT = {
 
 # The trials whose time is not shown, only their memory and size (1553, 1801).
 NO_TIME = {"std/command_line", "std/environment"}
+# The folder a trial's programs run in, where it is not the one `measure.py` runs in.
+TRIAL_CWD = {"hashsum": OUT / "hashsum-inputs"}
 
 
 def fresh_copy(source, target):
@@ -877,11 +964,17 @@ def UTF8_ENVIRONMENT():
 
 
 JAQ_VERSION = "3.2.0"
-REFERENCES = {"jq": jq_references}
+def hashsum_references():
+    # GNU's on Linux, the system's own on macOS, which writes a name as it is (`\`, a line's end):
+    # loose, so a case with such a name is marked, not failed.
+    return {"sha256sum": Path(shutil.which("sha256sum") or "sha256sum")}
+
+
+REFERENCES = {"jq": jq_references, "hashsum": hashsum_references}
 # References whose output is not held to the others: their runs are measured, and a case where one
 # writes another output or exit code is marked in the table.
-LOOSE = {"jaq"}
-REFERENCE_NAMES = {"jq 1.8.2", "jaq"}
+LOOSE = {"jaq", "sha256sum"}
+REFERENCE_NAMES = {"jq 1.8.2", "jaq", "sha256sum"}
 
 
 def expand(words, trial):
@@ -897,6 +990,7 @@ def expand(words, trial):
              for w in words]
     words = [str(OUT / "kv" / "store") + w[len("{kvdir}"):] if w.startswith("{kvdir}") else w for w in words]
     words = [str(kv_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in KV_INPUTS else w for w in words]
+    words = [x for w in words for x in (hashsum_words(w) if w.startswith("{hs:") else [w])]
     return [str(other_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in OTHER_INPUTS else w
             for w in words]
 
@@ -924,16 +1018,16 @@ def kv_log():
     return f"log {len(data)} bytes, {hashlib.sha256(data).hexdigest()}".encode()
 
 
-def run_once(program, args, stdin_path, capture, errors=None):
+def run_once(program, args, stdin_path, capture, errors=None, cwd=None):
     """Runs a program once: (exit code, standard output or None, seconds, peak memory in bytes).
-    With `errors`, a list, the standard error is added to it."""
+    With `errors`, a list, the standard error is added to it; with `cwd`, it runs in that folder."""
     stdin = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
     stdout = subprocess.PIPE if capture else subprocess.DEVNULL
     # A file, not a pipe, so that a program writing much to both cannot wait on the other.
     stderr = tempfile.TemporaryFile() if errors is not None else subprocess.DEVNULL
     start = time.perf_counter()
     env = UTF8_ENVIRONMENT() if str(program) in NEEDS_UTF8_ENVIRONMENT else None
-    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr, env=env)
+    process = subprocess.Popen([program, *args], stdin=stdin, stdout=stdout, stderr=stderr, env=env, cwd=cwd)
     hung = []
     watch = threading.Timer(HUNG_SECONDS, report_hung, (process, [program, *args], hung))
     watch.start()
@@ -1066,11 +1160,15 @@ def check(trial, built, cases, notes):
             errors = []
             if kind and kind[0] == "kv":
                 kv_prepare(kind)
-            code, output = run_once(path, args, stdin_path, True, errors)[:2]
+            if "pool" in kind and build in REFERENCE_NAMES:
+                continue
+            code, output = run_once(path, args, stdin_path, True, errors, TRIAL_CWD.get(trial))[:2]
             if kind and kind[0] == "kv":
                 output += kv_log()
             elif kind == ["own"]:
                 output = b""
+            elif kind == ["pool"]:
+                pass
             elif kind == ["quirk"]:
                 # jq takes what the three refuse (its quirks, in `trials/jq/README.md`).
                 if build == "jq 1.8.2":
@@ -1111,6 +1209,9 @@ def measure(trial, built, cases, runs):
         errors = [] if kind == ["log"] else None
         row = {}
         for build, path in built.items():
+            if "pool" in kind and build in REFERENCE_NAMES:
+                row[build] = "left out"
+                continue
             best_time, best_peak = None, None
             # One run to warm up, then `runs`; a run that fails stops the measuring, so that a
             # program that gave up early is never counted fast (1685).
@@ -1118,7 +1219,7 @@ def measure(trial, built, cases, runs):
             for run in range((1 if "once" in kind else runs) + 1):
                 if kind and kind[0] == "kv":
                     kv_prepare(kind)
-                code, _, seconds, peak = run_once(path, args, stdin_path, False, errors)
+                code, _, seconds, peak = run_once(path, args, stdin_path, False, errors, TRIAL_CWD.get(trial))
                 if code != 0 and build in LOOSE | REFERENCE_NAMES:
                     # A reference that fails a case is shown so, not counted.
                     failed = True
@@ -1169,7 +1270,8 @@ def report(trial, built, rows, notes):
         if trial in NO_TIME:
             cells = [f"{row[b][1] / 1048576:.2f} MB" if row[b][1] is not None else "fails" for b in builds]
         else:
-            cells = [f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB" if row[b][0] is not None else "fails" for b in builds]
+            cells = ["—" if row[b] == "left out" else f"{row[b][0]:.3f} s, {row[b][1] / 1048576:.1f} MB"
+                     if row[b][0] is not None else "fails" for b in builds]
         print(f"| {name} | " + " | ".join(cells) + " |")
     sizes = {b: stripped_size(p) for b, p in built.items() if b not in REFERENCE_NAMES}
     print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" if b in sizes else "—" for b in builds) + " |")

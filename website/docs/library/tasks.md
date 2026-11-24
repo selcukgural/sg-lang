@@ -25,6 +25,7 @@ page is built into the language, but `MemoryOrder`, which `std` defines.
 | `Task<Result<void, Cancelled>> Task.delay(int ms, read CancellationToken token)` | One that ends early, with `Cancelled`, when the token is cancelled |
 | `Task<List<R>> Task.whenAll(List<Task<R>> tasks)` | What every task gave, in the order of the list |
 | `Task<R> Task.whenAny(ref List<Task<R>> tasks)` | What the first task to end gave; it is taken out of the list |
+| `nint Task.processorCount()` | How many processors the program may run on, at least 1: on Linux those of its affinity, no more than its cgroup's quota; on macOS those on line; on Windows those of its affinity. The number of workers a pool takes by default |
 
 An `async` function gives a `Task<R>` when it is called, as in C#: `async int count(string path)` is called as
 `var t = count(path)`, and the task runs until it first waits. A list of tasks has only `add` and `length`, and
@@ -317,6 +318,11 @@ it ends once every sender has ended and nothing is left.
 
 A token may come last on all four (`tx.send(x, read token)`), which then give a `Result` whose error is
 `Cancelled`: `Result<bool, Cancelled>` for `send`. An item is never a `T?`, since `null` means the end.
+
+A channel no sender holds has ended, so its first sender is made before anything else is done with it: in the
+function that makes `var jobs = Channel<T>(n)`, using `jobs` in any other way before `jobs.sender()` (a
+`clone()` for a worker, giving it to a task, a `receive`) is an error of the compiler. A worker started first
+would find the channel ended and stop at once.
 
 ```sg
 void produce(Sender<int> out, int count) {

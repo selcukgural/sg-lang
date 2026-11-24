@@ -2827,3 +2827,74 @@ fn a_package_is_not_named_as_a_type() {
     let (code, _, err) = run(&["main.sg"]);
     assert!(code == 2 && err.contains("the folder Hex has the name of a type of the language, and a folder of modules cannot have it"), "{err}");
 }
+
+/// `Task.processorCount()` (1856) gives the same number interpreted and compiled, and on Linux and
+/// macOS the number Rust's `available_parallelism` gives, which counts the same way.
+#[test]
+fn the_processor_count_is_one_number() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_processor_count_is_one_number");
+    let source = write(&dir, "count.sg", "void main() {\n    print(Task.processorCount())\n}\n").to_string_lossy().into_owned();
+    let built = program(&dir, "count").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "-o", &built])), (0, String::new(), String::new()));
+    let interpreted = ran(&sg(&dir, &[&source]));
+    let compiled = ran(&Command::new(&built).current_dir(&dir).stdin(Stdio::null()).finished());
+    assert_eq!(interpreted, compiled);
+    let n: usize = compiled.1.trim().parse().unwrap();
+    assert!(n >= 1);
+    if cfg!(unix) {
+        assert_eq!(n, std::thread::available_parallelism().unwrap().get());
+    }
+}
+
+/// The trial of `hashsum` (choices 1854-1859): the SHA-256 of files from a pool of workers, built and
+/// run interpreted and compiled, with one worker and with several: the lines of GNU's `sha256sum` in
+/// the order of the files, a name with a `\` escaped (not on Windows, where it is a separator), a
+/// missing file told and the others going on with the exit code 1, the input once and then at its end,
+/// and an option not known (2).
+#[test]
+fn the_trial_of_hashsum() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_hashsum");
+    let source = trials.join("hashsum").join("sg").join("hashsum.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "hashsum").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    write(&dir, "a", "a");
+    write(&dir, "empty", "");
+    let input = write(&dir, "input", "a");
+    let (a, b, empty) = (
+        "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+        "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    let mut words = vec!["a", "missing", "empty", "-", "a", "-"];
+    let mut want = format!("{a}  a\n{empty}  empty\n{a}  -\n{a}  a\n{empty}  -\n");
+    if cfg!(unix) {
+        write(&dir, "back\\slash", "b");
+        words.insert(1, "back\\slash");
+        want = format!("{a}  a\n\\{b}  back\\\\slash\n{empty}  empty\n{a}  -\n{a}  a\n{empty}  -\n");
+    }
+    for interpreted in [false, true] {
+        for workers in ["1", "3"] {
+            let mut command = match interpreted {
+                true => {
+                    let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+                    command.arg(&source);
+                    command
+                }
+                false => Command::new(&built),
+            };
+            let out = command.args(["-j", workers]).args(&words).current_dir(&dir).stdin(std::fs::File::open(&input).unwrap()).finished();
+            let (code, stdout, stderr) = ran(&out);
+            assert_eq!((code, stdout.as_str()), (1, want.as_str()), "interpreted {interpreted}, -j {workers}");
+            assert!(stderr.contains("missing"), "{stderr}");
+        }
+    }
+    let out = Command::new(&built).args(["-x", "a"]).current_dir(&dir).stdin(Stdio::null()).finished();
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(2), 0));
+}
