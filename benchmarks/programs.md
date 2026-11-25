@@ -359,37 +359,45 @@ constants in one chunk), and `zoo_batch`, which counts the batches done in ten s
 
 The showcase: gifsicle 1.99 translated file by file into SG, in [a repository of its
 own](https://github.com/selcukgural/sg-gifsicle) under gifsicle's license (choices 1895-1905), held to gifsicle
-byte for byte by a differential test of 54,356 runs and gifsicle's own tests. Its `tests/measure.py` runs 22 cases
+byte for byte by a differential test of 58,767 runs and gifsicle's own tests. Its `tests/measure.py` runs 24 cases
 in three sizes on GIFs made from a seed, against gifsicle as Homebrew builds it and as the same compiler builds it
 with `-O2` and the configuration of its `configure` (vector types and threads); the bytes each writes are held to
 Homebrew's gifsicle. One run to warm up and the best of five. Apple M3 Max, macOS, Apple clang 21, 25 November
-2026. Some of the cases (all 22 are in the repository's README):
+2026. Some of the cases (all 24 are in the repository's README):
 
 | Case | SG | SG, checked | gifsicle | gifsicle, `-O2` here |
 |---|---|---|---|---|
-| 10,000 small GIFs, `-I` | 0.300 s, 96.5 MB | 0.303 s, 96.7 MB | 0.310 s, 78.0 MB | 0.306 s, 78.1 MB |
-| 2,000 frames of 480 by 270, read and written | 0.109 s, 14.8 MB | 0.121 s, 14.9 MB | 0.093 s, 8.8 MB | 0.095 s, 8.8 MB |
-| 2,000 frames, `-O3` | 0.782 s, 36.2 MB | 0.832 s, 35.0 MB | 0.590 s, 22.2 MB | 0.572 s, 22.2 MB |
-| 300 whole frames, `-U -O2` | 0.346 s, 31.8 MB | 0.375 s, 31.7 MB | 0.279 s, 24.4 MB | 0.266 s, 24.5 MB |
-| 2,000 frames, `--lossy=80 -O2` | 1.150 s, 36.6 MB | 1.373 s, 36.3 MB | 1.011 s, 22.2 MB | 0.845 s, 22.3 MB |
-| 4000 by 4000, read and written | 0.108 s, 56.5 MB | 0.124 s, 56.5 MB | 0.100 s, 56.3 MB | 0.116 s, 56.3 MB |
-| 4000 by 4000, `--rotate-90` | 0.144 s, 72.0 MB | 0.164 s, 72.0 MB | 0.125 s, 65.1 MB | 0.139 s, 65.2 MB |
-| 4000 by 3000, `--resize 1920x_ --resize-method lanczos3` | 0.754 s, 367.9 MB | 0.782 s, 368.0 MB | 0.736 s, 358.7 MB | 0.722 s, 358.8 MB |
-| 4000 by 3000, `--colors 64` | 0.265 s, 49.9 MB | 0.276 s, 49.9 MB | 0.235 s, 42.8 MB | 0.245 s, 42.8 MB |
-| 4000 by 3000, `--colors 64 --dither` | 1.168 s, 51.1 MB | 1.293 s, 51.1 MB | 1.233 s, 42.8 MB | 1.149 s, 42.8 MB |
-| 4000 by 3000, `--lossy=80` | 0.436 s, 50.2 MB | 0.468 s, 50.2 MB | 0.421 s, 49.9 MB | 0.389 s, 49.9 MB |
-| Size, stripped | 666 KB | 909 KB | 201 KB | 234 KB |
-| Lines | 12,556 | 12,556 | 12,964 | 12,964 |
+| 10,000 small GIFs, `-I` | 0.307 s, 96.6 MB | 0.305 s, 96.6 MB | 0.312 s, 78.0 MB | 0.304 s, 78.1 MB |
+| 2,000 frames of 480 by 270, read and written | 0.110 s, 15.1 MB | 0.120 s, 14.8 MB | 0.092 s, 8.8 MB | 0.093 s, 8.8 MB |
+| 2,000 frames, `-O3` | 0.769 s, 28.4 MB | 0.827 s, 30.6 MB | 0.589 s, 22.2 MB | 0.572 s, 22.2 MB |
+| 300 whole frames, `-U -O2` | 0.346 s, 32.4 MB | 0.371 s, 32.1 MB | 0.282 s, 24.4 MB | 0.267 s, 24.5 MB |
+| 2,000 frames, `--lossy=80 -O2` | 1.155 s, 31.2 MB | 1.362 s, 30.9 MB | 1.010 s, 22.2 MB | 0.852 s, 22.3 MB |
+| 40 frames of 800 by 600, `--scale 0.5 --resize-method lanczos3` | 1.279 s, 43.4 MB | 1.396 s, 43.5 MB | 1.259 s, 37.5 MB | 1.226 s, 37.6 MB |
+| 40 frames, the same with `-j8` | 0.365 s, 135.8 MB | 0.400 s, 135.9 MB | 0.350 s, 129.4 MB | 0.366 s, 129.2 MB |
+| 4000 by 4000, read and written | 0.105 s, 56.5 MB | 0.127 s, 56.6 MB | 0.098 s, 56.3 MB | 0.113 s, 56.3 MB |
+| 4000 by 4000, `--rotate-90` | 0.146 s, 71.9 MB | 0.171 s, 72.0 MB | 0.124 s, 65.2 MB | 0.139 s, 65.2 MB |
+| 4000 by 3000, `--resize 1920x_ --resize-method lanczos3` | 0.745 s, 367.9 MB | 0.798 s, 367.1 MB | 0.739 s, 358.8 MB | 0.729 s, 358.8 MB |
+| 4000 by 3000, `--colors 64` | 0.259 s, 49.9 MB | 0.279 s, 49.9 MB | 0.235 s, 42.8 MB | 0.245 s, 42.8 MB |
+| 4000 by 3000, `--colors 64 --dither` | 1.159 s, 51.1 MB | 1.318 s, 51.2 MB | 1.238 s, 42.8 MB | 1.158 s, 42.8 MB |
+| 4000 by 3000, `--lossy=80` | 0.434 s, 50.2 MB | 0.464 s, 50.2 MB | 0.413 s, 49.9 MB | 0.389 s, 50.0 MB |
+| Size, stripped | 683 KB | 942 KB | 201 KB | 234 KB |
+| Lines | 12,773 | 12,773 | 12,964 | 12,964 |
 
-- Large frames, turning, resizing and color reduction: 1.03 to 1.19 times Homebrew's gifsicle; the dithers are
-  faster (0.95). Most of the rest is the LZW encoder every write goes through ([Slower than C](slower-than-c.md)).
-- `-O3`, `-U` and `--lossy` on animations: 1.24 to 1.33 times. They compress each frame many times, so the
+- Large frames, turning, resizing and color reduction: 1.01 to 1.17 times Homebrew's gifsicle; the dithers are
+  faster (0.94 and 0.95). Most of the rest is the LZW encoder every write goes through ([Slower than C](slower-than-c.md)).
+- `-O3` and `-U` on animations: 1.23 to 1.31 times, `--lossy=80 -O2` 1.14. They compress each frame many times, so the
   encoder counts more, and each time the port makes a table of codes of 100 KB it must fill, where C takes the
   memory as it is (about 3%). Built in place by hand in the C, the table took the same time: the cost is the
   filling, not copies.
-- Memory: the same on large frames, 1.2 to 1.7 times on animations. The port reads the whole file into memory,
+- Memory: the same on large frames, 1.3 to 1.7 times on animations. The port reads the whole file into memory,
   and the allocator keeps more of what it frees; the most it holds at once in `-O3` is gifsicle's (14.9 MB
   against 14.6).
+- `-j`: the frames of an unoptimized GIF resized on several threads, as gifsicle does, with the bytes of one
+  thread. gifsicle's threads share the stream behind two locks and an atomic counter; in the port each frame is
+  moved, with its local colormap, through a channel to a thread that owns it until it gives it back, and each
+  thread has its own copy of the global colormap, which no thread changes. The thread rule allows no other way,
+  and no lock is needed; a build with ThreadSanitizer finds no race. `-j8` on 40 whole frames: 3.5 times as
+  fast as one thread, as gifsicle (0.365 s against 0.350).
 - The measuring found three things in the port, changed with the same bytes: the GIF written was held whole in
   memory before it went to the file (19.1 MB to 14.8 on the 2,000 frames), `-O` took a new screen for each frame
   disposed to "previous", and turning looked the image up twice for each pixel (0.169 s to 0.144).

@@ -175,8 +175,8 @@ says what is slower, by how much and against what, the choice that measured it, 
   as one array of structs, as C keeps them, were slower (1.33 times). What would fix it: a way for the program
   to keep a function apart, or an encoder written as two functions, the lossy one and the plain one.
 - **`gifsicle`: compressing a frame again and again** (`-O3`, `-U -O2`, `--lossy`, sg-gifsicle's
-  `tests/measure.py`): 1.24 to 1.33 times Homebrew's gifsicle on animations of 300 and 2,000 frames (`-O3` of
-  2,000 0.782 s against 0.590). Sampled: the encoder above is most of it, and about 3% is the table of codes
+  `tests/measure.py`): 1.23 to 1.31 times Homebrew's gifsicle on animations of 300 and 2,000 frames with `-O3`
+  and `-U -O2` (`-O3` of 2,000 0.769 s against 0.589), 1.14 with `--lossy=80 -O2`. Sampled: the encoder above is most of it, and about 3% is the table of codes
   of 100 KB each compression makes and fills (its arrays start at zeros and -1), where C takes the memory as
   it comes. Built in place by hand in the generated C, without the temporaries of the struct literal, it took
   the same time. Screens of 16 bits, as C keeps them for fewer than 65,535 colors, gave 1.5 to 2%.

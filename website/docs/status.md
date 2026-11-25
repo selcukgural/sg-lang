@@ -87,6 +87,6 @@ from the source. The repository keeps the full list:
 
 A well-known program written in SG, one that has not been rewritten in Rust yet, is done:
 [gifsicle](https://www.lcdf.org/gifsicle/) 1.99, translated file by file into
-[sg-gifsicle](https://github.com/selcukgural/sg-gifsicle), writes the same bytes as gifsicle and takes 1.03 to
-1.33 times its time ([the measurements](./benchmarks/programs.md#gifsicle);
+[sg-gifsicle](https://github.com/selcukgural/sg-gifsicle), writes the same bytes as gifsicle and takes 1.01 to
+1.31 times its time ([the measurements](./benchmarks/programs.md#gifsicle);
 [how it got here](./about/history.md#what-comes-next)).

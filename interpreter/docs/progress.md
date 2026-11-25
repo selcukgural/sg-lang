@@ -579,7 +579,10 @@ Slice 182 (1901) is the first gap it found: `isTerminal()` of every reader and w
 write bytes to a terminal, as gifsicle does. The port was finished the same day (resizing, colors, `--lossy`,
 `--transform-colormap`; the same bytes as gifsicle in 54,356 runs) and measured against gifsicle: 1.03 to 1.19 times
 its time on large frames, 1.24 to 1.33 on animations compressed again and again, where the LZW encoder and a table
-the port must fill count most ([the tables](../../benchmarks/programs.md#gifsicle)).
+the port must fill count most ([the tables](../../benchmarks/programs.md#gifsicle)). `-j` came last: the frames
+of an unoptimized GIF resized on several threads, each frame moved with its local colormap through a channel to
+the thread that owns it, with no lock where gifsicle has two and an atomic counter; 3.5 times as fast with eight
+threads, as gifsicle, and the same bytes in 58,767 runs.
 
 ## Next
 
