@@ -267,3 +267,5 @@ while the slice was built and how it was tested. This folder is that record, one
 | [179](2026-11-25.md#slice-179) | A GIF tool in SG, Rust and Zig, held to gifsicle | 1874–1881 |
 | [180](2026-11-25.md#slice-180) | The lookup of a `HashMap` and a `HashSet` as hashbrown's; a key of four bytes hashed in one block | 1882 |
 | [181](2026-11-25.md#slice-181) | An interpreter of Lox held to clox; `toBits` and `fromBits`, `%e` and `%g` in `$"..."`, a hash of a key of a fixed size as foldhash | 1883–1894 |
+| [Showcase](2026-11-25.md#the-showcase) | gifsicle written in SG, in a repository of its own | 1895–1900 |
+| [182](2026-11-25.md#slice-182) | Whether a stream is a terminal: `isTerminal()` | 1901 |

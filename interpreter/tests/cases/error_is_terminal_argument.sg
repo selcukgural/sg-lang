@@ -1,0 +1,4 @@
+// `isTerminal` takes nothing: it asks of the stream it is called on.
+void main() {
+    print(Stdin.isTerminal(0))
+}

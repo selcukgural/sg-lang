@@ -2326,6 +2326,11 @@ pub struct World<'w> {
     /// The standard error is a terminal that shows colours: `System.colourTerminal()`, which
     /// `Log` asks (choice 1455). False where `err` is not the standard error.
     pub err_colour: bool,
+    /// The output and the standard error are terminals: `Stdout.isTerminal()` and
+    /// `Stderr.isTerminal()` (choice 1901). False where the output or `err` is not the
+    /// program's own.
+    pub output_is_terminal: bool,
+    pub err_is_terminal: bool,
     pub err: &'w mut (dyn Write + Send + 'static),
 }
 
@@ -2998,7 +3003,7 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     let sources = crate::source::Sources::single(src, "");
     let mut sink = std::io::sink();
     let mut err = std::io::sink();
-    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
     let io = shared(&mut sink, world, crate::ffi::Library::default(), &sources);
     let steps = counted.then(|| std::cell::Cell::new(CONST_STEPS));
     let mut consts = Consts { inits: HashMap::new(), given, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps, static_values: HashMap::new(), static_inits: HashMap::new(), statics: RefCell::new(HashMap::new()), static_waits: RefCell::new(HashMap::new()) };
@@ -8202,6 +8207,23 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// looked at after the arguments, before the work.
     fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
+        if call == StreamCall::IsTerminal {
+            use std::io::IsTerminal;
+            let world = self.io.world.borrow();
+            let terminal = match &stream {
+                Value::Reader(reader) => match &reader.borrow().file {
+                    Some(block) => block.file.is_terminal(),
+                    None => reader.borrow().is_stdin() && world.input_is_terminal,
+                },
+                Value::Writer(writer) => match &writer.borrow().sink {
+                    Sink::File(file) => !writer.borrow().pipe && file.as_ref().is_some_and(|file| file.is_terminal()),
+                    Sink::Stdout => world.output_is_terminal,
+                    Sink::Stderr => world.err_is_terminal,
+                },
+                _ => unreachable!("the checker makes it a stream"),
+            };
+            return Ok(Value::Bool(terminal));
+        }
         if let Value::Reader(reader) = &stream {
             if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill | StreamCall::Buffered) {
                 self.input_held(reader, matches!(call, StreamCall::Fill | StreamCall::Buffered), at)?;

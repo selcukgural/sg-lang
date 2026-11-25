@@ -1,0 +1,4 @@
+error: `isTerminal` takes 0 argument(s), 1 given
+  --> error_is_terminal_argument.sg:3:11
+ 3 |     print(Stdin.isTerminal(0))
+   |           ^^^^^^^^^^^^^^^^^^^

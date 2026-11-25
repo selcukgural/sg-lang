@@ -273,7 +273,7 @@ pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
 /// and the standard error of this process.
 pub fn run_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
     let mut err = std::io::stderr();
-    run_sources_in(sources, out, World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err })
+    run_sources_in(sources, out, World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err })
 }
 
 /// Parses, checks and runs the program in the world it is given: its command line, its input
@@ -296,7 +296,7 @@ pub fn test_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<b
     on_large_stack(|| {
         let prog = check_all(sources, true)?;
         let mut err = std::io::stderr();
-        let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+        let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
         let (_, failed) = interp::run_tests(&prog, sources, out, world)?;
         Ok(failed == 0)
     })
@@ -400,7 +400,7 @@ fn on_large_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
 pub(crate) fn run_on_stack(src: &str, out: &mut (dyn Write + Send), bytes: usize) -> Result<(), Stop> {
     let sources = Sources::single(src, "");
     let mut err = std::io::stderr();
-    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
     on_stack(bytes, || {
         let prog = check_all(&sources, false)?;
         interp::run_program(&prog, &sources, out, world)

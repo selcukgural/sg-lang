@@ -263,6 +263,45 @@ fn an_output_that_cannot_be_written() {
     }
 }
 
+/// `isTerminal()` on a real terminal (choice 1901), interpreted and compiled: `script` runs the
+/// program on a terminal of its own (a pty), where the input, the output, the standard error and
+/// `/dev/tty` opened as a file are terminals; sent into files they are not, `/dev/tty` still is.
+/// Skipped where there is no `script`.
+#[cfg(unix)]
+#[test]
+fn streams_on_a_terminal() {
+    if Command::new("script").arg("-V").stdin(Stdio::null()).output().is_err() {
+        eprintln!("no `script`: streams on a terminal are not tested");
+        return;
+    }
+    let dir = work("streams_on_a_terminal");
+    let source = "Result<void, IoError> main() {\n    var tty = try File.openText(\"/dev/tty\")\n    var back = try File.openAppend(\"/dev/tty\")\n    printError($\"err {Stderr.isTerminal()}\")\n    print($\"in {Stdin.isTerminal()} out {Stdout.isTerminal()} tty {tty.isTerminal()} {back.isTerminal()}\")\n    try back.close()\n    return Ok()\n}\n";
+    for (command, way) in both_ways(&dir, &[("terminal", source)]) {
+        let program = std::iter::once(command.get_program()).chain(command.get_args()).map(|word| format!("'{}'", word.to_string_lossy())).collect::<Vec<_>>().join(" ");
+        for (line, redirected) in [("", false), (" < /dev/null > out.txt 2> err.txt", true)] {
+            let line = format!("{program}{line}");
+            // macOS's `script` takes the command as its words, util-linux's as `-c`.
+            let mut script = Command::new("script");
+            match cfg!(target_os = "macos") {
+                true => script.args(["-q", "/dev/null", "sh", "-c", &line]),
+                false => script.args(["-qec", &line, "/dev/null"]),
+            };
+            let out = script.current_dir(&dir).stdin(Stdio::null()).finished();
+            let shown = text(&out.stdout);
+            match redirected {
+                false => {
+                    assert!(shown.contains("in true out true tty true true"), "{way}: {shown:?}");
+                    assert!(shown.contains("err true"), "{way}: {shown:?}");
+                }
+                true => {
+                    assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap(), "in false out false tty true true\n", "{way}: {shown:?}");
+                    assert_eq!(std::fs::read_to_string(dir.join("err.txt")).unwrap(), "err false\n", "{way}: {shown:?}");
+                }
+            }
+        }
+    }
+}
+
 /// An output that was never open (`>&-`) takes what is written and drops it, interpreted and
 /// compiled (1547), as Rust's own output does: the program goes on to its end.
 #[cfg(unix)]

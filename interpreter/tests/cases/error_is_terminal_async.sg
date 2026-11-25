@@ -1,0 +1,5 @@
+// `isTerminal` asks the system at once and does not wait: it has no async form.
+async Result<void, IoError> main() {
+    print(await Stdout.isTerminalAsync())
+    return Ok()
+}

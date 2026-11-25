@@ -86,6 +86,7 @@ false
 | `Result<void, IoError> syncData(ref this)` | Writes what it holds, then waits until the system has put the file's bytes on the disk, with what is needed to read them back |
 | `Result<void, IoError> sync(ref this)` | The same, and the rest of what the system keeps of the file, its times among it |
 | `Result<void, IoError> setLength(ref this, long length)` | Writes what it holds, then cuts the file to `length` bytes or makes it longer with zeros; where the writer stands does not move |
+| `bool isTerminal(read this)` | Whether it writes to a terminal (see [below](#stdin-stdout-and-stderr)) |
 
 ### On the disk
 
@@ -171,6 +172,7 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | `consume(ref this, nint n)` | Gives out the first `n` bytes of the block; more than it holds is a panic |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Moves, inside its block when it can; gives the new place |
 | `Result<FileInfo, IoError> info(read this)` | What the system knows of the file it reads, asked of the open file |
+| `bool isTerminal(read this)` | Whether it reads from a terminal (see [below](#stdin-stdout-and-stderr)) |
 
 Text that is not UTF-8 is `IoError.InvalidText(position)`, counted from the start of the file; a program
 that must go on past such a line, as `grep` does, reads it with `readLineBytes`. `SeekFrom` is
@@ -337,6 +339,22 @@ false
 `Stdin` is a `StreamReader` of the input of the program, `Stdout` and `Stderr` are `StreamWriter`s. They are
 lent, never moved or closed: `ref Stdout` gives one to a function that takes a `ref StreamWriter`. `print(x)`
 writes to `Stdout` and `printError(x)` to `Stderr`. `Stdin` cannot `seek` (`NotSeekable`).
+
+`isTerminal()` tells whether a stream is a terminal (choice 1901), as C's `isatty` and Rust's `IsTerminal`
+do: a tool that writes bytes refuses a terminal, and one that colours its output colours it only there.
+Every reader and writer has it, and a file opened on `/dev/tty` is one; a connection and the pipes of
+another program never are. It moves nothing, so a `read` borrow asks it, and it does not wait, so an async
+function calls it as it is. On Windows it asks whether the stream is a console.
+
+```sg
+void main() {
+    if Stdout.isTerminal() {
+        printError("this writes a GIF, not text: send it into a file or a pipe")
+        exit(1)
+    }
+    printError($"the input is typed: {Stdin.isTerminal()}")
+}
+```
 
 ```sg
 Result<void, IoError> count(ref StreamWriter out, int upTo) {

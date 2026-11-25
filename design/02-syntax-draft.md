@@ -1484,6 +1484,16 @@ Stdout.close()                                   // error: Stdout stays open unt
 var Stdin = 3                                    // error: the name of a stream of the program
 ```
 
+`isTerminal()` tells whether a stream is a terminal, as `isatty` does: a program colours its output, or refuses to write
+bytes that are not text, only where a person reads them. Every reader and writer has it, a file opened on `/dev/tty`
+too; a connection and the pipe of another program are never one. It moves nothing, so a `read` borrow asks it, and it
+does not wait, so an async function calls it as it is:
+
+```
+if !Stdout.isTerminal() { ... }                  // the output goes into a file or a pipe
+bool shown = Stdin.isTerminal()                  // a person types the input
+```
+
 `printError` writes like `print`, to the standard error. `exit` ends the program with a code; it takes a `byte`, since
 the system keeps eight bits, and it gives no value, so it can stand where one is needed:
 

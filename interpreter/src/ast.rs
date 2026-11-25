@@ -1113,6 +1113,10 @@ pub enum StreamCall {
     /// `reader.seek(from)`, `writer.seek(from)`: where the next read or write starts, given by a
     /// `SeekFrom`; gives the new place, counted from the start of the file.
     Seek,
+    /// `reader.isTerminal()`, `writer.isTerminal()`: the stream is a terminal (`isatty`; on
+    /// Windows a console, `GetConsoleMode`). A connection or the pipe of another program is not
+    /// (choice 1901).
+    IsTerminal,
 }
 
 /// A type as written: `read Node*?`

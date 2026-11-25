@@ -591,7 +591,8 @@ fn main() -> ExitCode {
             // asked to take the escape sequences.
             let err_colour = std::io::stderr().is_terminal() && sg::colour_console();
             let program_args = words.into_iter().skip(skip + 1).map(bytes).collect();
-            let world = sg::World { args: program_args, input: Box::new(std::io::stdin()), input_is_terminal, input_waits, err_colour, err: &mut err };
+            let (output_is_terminal, err_is_terminal) = (std::io::stdout().is_terminal(), std::io::stderr().is_terminal());
+            let world = sg::World { args: program_args, input: Box::new(std::io::stdin()), input_is_terminal, input_waits, err_colour, output_is_terminal, err_is_terminal, err: &mut err };
             sg::run_sources_in(&sources, &mut out, world)
         }
         true => sg::test_sources(&sources, &mut out).and_then(|passed| match passed {

@@ -385,7 +385,7 @@ fn run_file(path: &Path) -> String {
         true => sg::run_tests(&src, &name, &mut out).map(|_| ()),
         false => {
             let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
-            let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+            let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
             let mut sources = sg::Sources::single(&src, "");
             // A program that tells which folders were looked in is not given those of this
             // machine.
@@ -426,7 +426,7 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
     let result = match tests {
         true => sg::test_sources(&sources, &mut out).map(|_| ()),
         false => {
-            let world = sg::World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
+            let world = sg::World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
             sg::run_sources_in(&sources, &mut out, world)
         }
     };
@@ -1218,7 +1218,7 @@ fn interpreted_input_cancel() {
     let (errors, mut err) = std::io::pipe().unwrap();
     let running = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err_colour: false, err: &mut err };
+        let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err_colour: false, output_is_terminal: false, err_is_terminal: false, err: &mut err };
         let result = sg::run_sources_in(&sg::Sources::single(INPUT_CANCEL, ""), &mut out, world);
         (result.is_ok(), String::from_utf8(out).unwrap())
     });

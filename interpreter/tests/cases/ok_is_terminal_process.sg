@@ -1,0 +1,64 @@
+// `isTerminal()` of a reader and a writer (choice 1901): whether the stream is a terminal. In the
+// tests the input, the output and the standard error are pipes or files, and so are a file, the
+// pipes of another program and a connection: none of them is. A `read` borrow can ask, and the
+// answer does not move the stream: what is read and written after it is all there.
+// `Stdin.isTerminal()` and the others on a real terminal are tested in tests/cli.rs.
+
+void tell(read string what, read StreamReader r) {
+    print($"{what}: {r.isTerminal()}")
+}
+
+void tellWriter(read string what, read StreamWriter w) {
+    print($"{what}: {w.isTerminal()}")
+}
+
+Result<void, IoError> serve(TcpListener listener) {
+    var conn = try listener.accept()
+    try conn.send(read "over the network\n".asBytes())
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    tell("input", read Stdin)
+    tellWriter("output", read Stdout)
+    tellWriter("standard error", read Stderr)
+    print($"asked again: {Stdin.isTerminal()} {Stdout.isTerminal()} {Stderr.isTerminal()}")
+
+    var path = Path.join(read args[0], "terminal.txt")
+    var w = try File.createText(read path)
+    try w.write("first ")
+    tellWriter("a file written", read w)
+    try w.writeLine("second")
+    try w.close()
+    var r = try File.openText(read path)
+    var line = ""
+    _ = try r.readLine(ref line)
+    tell("a file read", read r)
+    print(line)
+
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener)
+    var conn = try TcpStream.connect(read address)
+    var reader = conn.reader()
+    tell("a connection", read reader)
+    _ = try reader.readLine(ref line)
+    print(line)
+    try server.wait()
+
+    var command = Command("sg-test-tool")
+    command.args(read List<string> { "sort" })
+    command.pipeInput()
+    command.pipeOutput()
+    var process = try command.start()
+    var input = process.takeInput() ?? panic("the input was asked for")
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    tellWriter("the input of a program", read input)
+    tell("the output of a program", read output)
+    try input.writeLine("b")
+    try input.writeLine("a")
+    try input.close()
+    print(try output.readText())
+    _ = try process.wait()
+    return Ok()
+}

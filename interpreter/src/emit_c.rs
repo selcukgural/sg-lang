@@ -11843,6 +11843,20 @@ typedef struct { sg_reader* r; bool done; const char* loc; } sg_read_lines;
 typedef struct { int fd; int std; int failed; sg_string buf; int pipe; int append; } sg_writer;
 static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
 static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
+/* `isTerminal()` (choice 1901): whether the stream is a terminal, or on Windows a console. A
+   connection and the pipe of another program are not; the input is fd 0. On Windows the output
+   and the standard error are asked through their handles, which their `fd` does not name. */
+static bool __attribute__((unused)) sg_reader_terminal(const sg_reader* r) { return r->sock == NULL && sg_sys_terminal(r->fd); }
+static bool __attribute__((unused)) sg_writer_terminal(const sg_writer* w) {
+    if (w->pipe || w->fd < 0) return false;
+#if defined(_WIN32)
+    if (w->std != 0) {
+        DWORD mode;
+        return GetConsoleMode(GetStdHandle(w->std == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE), &mode) != 0;
+    }
+#endif
+    return sg_sys_terminal(w->fd);
+}
 #if !defined(_WIN32)
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
@@ -20539,6 +20553,13 @@ impl<'a> Emitter<'a> {
                 let (temp, loc) = (self.temp(), self.loc(span));
                 Ok(format!("({{ sg_reader* {temp} = {}; SG_IN_HOLD({temp}, false, {loc}); (sg_read_lines){{ {temp}, false, {loc} }}; }})", self.list_address(recv)?))
             }
+            StreamCall::IsTerminal => {
+                let ask = match recv.ty.strip_borrow() {
+                    Ty::Reader(_) => "sg_reader_terminal",
+                    _ => "sg_writer_terminal",
+                };
+                Ok(format!("{ask}({})", self.list_address(recv)?))
+            }
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
             StreamCall::SyncData | StreamCall::Sync => {
                 Ok(done(&format!("sg_writer_sync({}, {})", self.list_address(recv)?, call == StreamCall::SyncData)))
@@ -21293,7 +21314,7 @@ impl<'a> Emitter<'a> {
                 return Ok(self.writer_result(&c, &gives));
             }
             StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
-            StreamCall::Buffered | StreamCall::Consume => unreachable!("the checker gives these no async form"),
+            StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal => unreachable!("the checker gives these no async form"),
             // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
             StreamCall::Seek => {
                 let out = self.list_address(recv)?;

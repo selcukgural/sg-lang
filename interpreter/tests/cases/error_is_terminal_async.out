@@ -1,0 +1,5 @@
+error: a `StreamWriter` has no `isTerminalAsync`: `isTerminal` does not wait
+  --> error_is_terminal_async.sg:3:24
+ 3 |     print(await Stdout.isTerminalAsync())
+   |                        ^^^^^^^^^^^^^^^
+  hint: `Stdout.isTerminal()`, in an async function too

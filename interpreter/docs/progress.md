@@ -573,6 +573,11 @@ three gaps, each built in the slice: the bits of a `double` (`toBits`, `fromBits
 the lookups of fields and methods take half the time (a hundred million lookups in a `HashMap<uint, nint>` 0.16 s
 from 0.49, Rust's std 0.39). What is left of the gap to clox is in [the tables](../../benchmarks/programs.md#lox).
 
+Then the showcase (1895-1900): gifsicle written in SG, file by file, in [a repository of its
+own](https://github.com/selcukgural/sg-gifsicle) under gifsicle's license; its core gives what gifsicle 1.99 gives.
+Slice 182 (1901) is the first gap it found: `isTerminal()` of every reader and writer, so that a tool can refuse to
+write bytes to a terminal, as gifsicle does.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

@@ -11991,6 +11991,11 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
                     .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
             }
+            (_, "isTerminal") => {
+                let stream = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, format!("a `{target}` has no `{name}`: `isTerminal` does not wait"))
+                    .hint(format!("`{stream}.isTerminal()`, in an async function too")));
+            }
             (Ty::Writer, "write" | "writeLine" | "writeBytes") => 1,
             (Ty::Writer, "flush" | "syncData" | "sync") => 0,
             (Ty::Writer, "setLength") => 1,
@@ -14494,10 +14499,11 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "sync") => StreamCall::Sync,
             (Ty::Writer, "setLength") => StreamCall::SetLength,
             (_, "seek") => StreamCall::Seek,
+            (_, "isTerminal") => StreamCall::IsTerminal,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info"],
-                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek", "syncData", "sync", "setLength"],
+                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info", "isTerminal"],
+                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -14559,6 +14565,12 @@ impl<'a> Checker<'a> {
             self.not_locked(recv, Access::Read)?;
             return Ok(Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte))))));
         }
+        // Asking the system what the stream is moves nothing: a `read` borrow can ask too.
+        if call == StreamCall::IsTerminal {
+            arity(0)?;
+            self.not_locked(recv, Access::Read)?;
+            return Ok(Ty::Bool);
+        }
         if !writable {
             let what = match call {
                 StreamCall::Seek => "moves the stream",
@@ -14596,7 +14608,7 @@ impl<'a> Checker<'a> {
                 self.args(shown, args, &[Ty::Int(IntTy::Nint)], span)?;
                 Ty::Void
             }
-            StreamCall::Buffered => unreachable!("answered above"),
+            StreamCall::Buffered | StreamCall::IsTerminal => unreachable!("answered above"),
             StreamCall::ReadBytes | StreamCall::ReadSome => {
                 let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
                 self.args(shown, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {
