@@ -558,10 +558,16 @@ flipped, turned, drawn whole or cut to what changed, and written again, with LZW
 The three are within 4% where the work is LZW and the pixels; where colors are looked up in a map SG takes 14% to
 24% more than Rust, its `HashMap` lookup being 2.5 times Rust's ([the tables](../../benchmarks/programs.md#giftool)).
 
+Slice 180 (1882) is what the GIF tool found: a lookup in a `HashMap` took 2.5 times Rust's. The slots are found
+as Rust's hashbrown finds them, eight looked at in one read, and a key of four bytes is hashed in one block: a
+hundred million lookups take 0.48 s where they took 0.97 (Rust 0.39), a log of 1 GB is read back into `kv` 6%
+faster in 9% less memory. From this slice on a change of the language is measured against what SG was, and a
+program against the C program it mirrors, not written again in Rust and Zig.
+
 ## Next
 
-Next comes the lookup of `HashMap`, which the GIF tool found 2.5 times Rust's; the heavy level of the stand and
-the whole table of the file server, run at night; and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
+Next comes an interpreter of Lox, measured against clox, the C one; the heavy level of the stand and the whole
+table of the file server, run at night. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
 `sg doc` (1392).

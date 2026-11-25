@@ -143,15 +143,14 @@ says what is slower, by how much and against what, the choice that measured it, 
 - **`kv`: a log of 1 GB read back** (slice 175): 2.70 s against Rust's 2.37 s (Zig 3.24 s), the map's work
   and not the log's: without the sets and deletes the reading and the CRC-32 take 0.3 s. Slice 175 gave the
   slots of a table 32 bits of each key's hash (2.67 s against Rust's 2.16 s before, measured on a quieter
-  run); what is left is the search itself, one slot after another where Rust's hashbrown looks at sixteen
-  with one instruction. What would fix it: groups of slots looked at together.
-- **`giftool`: colors given indices** (slice 179): `--unoptimize` of 2,000 frames takes 2.22 s against Rust's
-  1.79 s, `-O2` of 300 whole frames 0.288 s against 0.252. Each pixel's color is looked up in a
-  `HashMap<uint, nint>`; one lookup takes 9.4 ns against Rust's 3.8 (a hundred million, 0.94 s against 0.38).
-  Measured on the C SG writes: one round of SipHash fewer for a key of four bytes, as Rust hashes it, 0.86 s;
-  the key kept in the slot so that nothing else is read, no faster; no SipHash at all, 0.54 s, still slower
-  than Rust with it. What is left is the search of `kv` above: one slot after another. What would fix it:
-  groups of slots looked at together, and the shorter hash.
+  run); what was left was the search itself, one slot after another where Rust's hashbrown looks at sixteen
+  with one instruction. Slice 180 (choice 1882) looks at eight at a time, as hashbrown does: 2.45 s in 177 MB,
+  from 2.60 s in 194 MB measured the same day.
+- **`giftool`: colors given indices** (slice 179): `--unoptimize` of 2,000 frames takes 2.08 s against Rust's
+  1.80 s, `-O2` of 300 whole frames 0.275 s against 0.254. Each pixel's color is looked up in a
+  `HashMap<uint, nint>`, whose lookup took 2.5 times Rust's until slice 180 (choice 1882) looked at its slots
+  eight at a time and hashed a key of four bytes in one block: a hundred million lookups 0.48 s, Rust 0.39
+  (before, 2.22 s and 0.288). What is left is the loop that writes each pixel's index, and the encoder.
 - **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
   Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,

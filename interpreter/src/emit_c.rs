@@ -2713,6 +2713,42 @@ static inline uint64_t sg_hash_word(uint64_t h, uint64_t word) {
     SG_SIPROUND SG_SIPROUND SG_SIPROUND
     return v0 ^ v1 ^ v2 ^ v3;
 }
+/* The hash of a key of four bytes or fewer, alone: its bytes and its length make one block, as
+   Rust's SipHash-1-3 takes a `u32` (choice 1882). */
+static inline uint64_t sg_hash_small(uint32_t word) {
+    uint64_t k0 = sg_seed[0], k1 = sg_seed[1];
+    uint64_t v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL, v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
+    uint64_t last = ((uint64_t)4 << 56) | word;
+    v3 ^= last; SG_SIPROUND v0 ^= last;
+    v2 ^= 0xff;
+    SG_SIPROUND SG_SIPROUND SG_SIPROUND
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+/* The control bytes of a hash table (choice 1882), looked at eight at a time: a byte is the top
+   seven bits of a key's hash where an entry is, `SG_EMPTY` where none ever was since the table was
+   made, `SG_GONE` where one was taken out. */
+#define SG_EMPTY 0xFF
+#define SG_GONE 0x80
+#define SG_BYTES_LO 0x0101010101010101ULL
+#define SG_BYTES_HI 0x8080808080808080ULL
+#define SG_BYTES_7F 0x7F7F7F7F7F7F7F7FULL
+static inline uint64_t sg_ctrl_at(const uint8_t* ctrl) {
+    uint64_t group;
+    memcpy(&group, ctrl, 8);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    group = __builtin_bswap64(group);
+#endif
+    return group;
+}
+/* The top bit of each byte that is `tag`, exactly: a byte matched by mistake would send the search
+   to a slot that holds no entry. */
+static inline uint64_t sg_ctrl_tag(uint64_t group, uint8_t tag) {
+    uint64_t x = group ^ (SG_BYTES_LO * tag);
+    return ~(((x & SG_BYTES_7F) + SG_BYTES_7F) | x | SG_BYTES_7F);
+}
+static inline uint64_t sg_ctrl_empty(uint64_t group) { return group & (group << 1) & SG_BYTES_HI; }
+static inline uint64_t sg_ctrl_open(uint64_t group) { return group & SG_BYTES_HI; }
+static inline int sg_ctrl_first(uint64_t bits) { return __builtin_ctzll(bits) >> 3; }
 /* A list that is full gets room for twice as many items. */
 /* Items aligned beyond what `malloc` gives are moved to a new block; the others grow in place
    when they can. */
@@ -3690,13 +3726,14 @@ SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_st
 "#;
 
 /// The hash table behind a `HashMap` or a `HashSet`, written once for each type of table.
-/// The entries lie one after the other in `entries`, in the order they were added; `slots`
-/// says, for each place a hash can point at, which entry is there (its position plus one in the
-/// low 32 bits, 0 for none) and the low 32 bits of its key's hash in the high ones. A key is
-/// compared only with an entry whose hash agrees, so a search does not reach the key of each
-/// entry it passes, and growing places the entries again by the hashes kept, without hashing
-/// their keys, as Rust's hashbrown keeps seven bits of each. An entry that is removed is
-/// replaced by the last one. `@N` is the name of the type,
+/// The entries lie one after the other in `entries`, in the order they were added; the slots
+/// find them as Rust's hashbrown finds its own (choice 1882): `ctrl` holds a byte for each slot,
+/// the top seven bits of the hash of the key of the entry there or a mark for a slot free, with a
+/// copy of the first eight at the end, and `index` the entry's place. A search reads eight bytes
+/// of `ctrl` at once and compares the key only of an entry whose seven bits agree, so it seldom
+/// turns at a branch it did not expect. `room` is how many slots never used may still be taken
+/// before the slots are made anew from the entries. An entry that is removed is replaced by the
+/// last one. `@N` is the name of the type,
 /// `@K` the key, `@P` the key as it is given to look something up; the lines between `@V{`
 /// and `@V}` are for a map only.
 /// Raw memory: `Memory.allocate<T>(n)` is zeroed memory from `calloc`, behind the tests the
@@ -4242,72 +4279,101 @@ pub fn link_flags(code: &str) -> Vec<String> {
 }
 
 const TABLE: &str = r#"
-static int64_t sg_find_@N(const sg_@N* m, @P key) {
-    if (m->len == 0) return -1;
-    uint32_t hash = (uint32_t)sg_khash_@N(key);
-    uint64_t at = hash & (uint64_t)m->mask;
+/* The slot of the entry whose key has this hash, or -1. The groups of eight slots are visited
+   from the hash's place on, each further than the last (0, 8, 24, 48...), which reaches every group
+   of a table whose size is a power of two; a group with a slot never used ends the search. Put
+   where it is called, as hashbrown's is: a call would keep the next search from starting while
+   this one waits on its hash. */
+__attribute__((always_inline)) static inline int64_t sg_slot_@N(const sg_@N* m, @P key, uint64_t hash) {
+    uint64_t mask = (uint64_t)m->mask, at = hash & mask, step = 0;
+    uint8_t tag = (uint8_t)(hash >> 57);
     for (;;) {
-        uint64_t slot = m->slots[at];
-        if (slot == 0) return -1;
-        if ((uint32_t)(slot >> 32) == hash && sg_keq_@N(&m->entries[(uint32_t)slot - 1].m_key, key)) return (int64_t)(uint32_t)slot - 1;
-        at = (at + 1) & (uint64_t)m->mask;
+        uint64_t group = sg_ctrl_at(m->ctrl + at);
+        for (uint64_t hits = sg_ctrl_tag(group, tag); hits; hits &= hits - 1) {
+            uint64_t slot = (at + (uint64_t)sg_ctrl_first(hits)) & mask;
+            if (sg_keq_@N(&m->entries[m->index[slot]].m_key, key)) return (int64_t)slot;
+        }
+        if (sg_ctrl_empty(group)) return -1;
+        step += 8;
+        at = (at + step) & mask;
     }
 }
-/* A slot for the entry whose key has this hash, past those taken. */
-static inline void sg_place_@N(uint64_t* slots, uint64_t mask, uint32_t hash, uint64_t entry) {
-    uint64_t at = hash & mask;
-    while (slots[at] != 0) at = (at + 1) & mask;
-    slots[at] = ((uint64_t)hash << 32) | (entry + 1);
+__attribute__((always_inline)) static inline int64_t sg_find_@N(const sg_@N* m, @P key) {
+    if (m->len == 0) return -1;
+    int64_t slot = sg_slot_@N(m, key, sg_khash_@N(key));
+    return slot < 0 ? -1 : (int64_t)m->index[slot];
 }
-/* Room for one more entry; the slots are kept at most three quarters full. Growing places each
-   entry again by the hash its slot keeps. */
+/* A control byte set, and its copy past the end, which lets a group be read at any slot. */
+static inline void sg_mark_@N(sg_@N* m, uint64_t slot, uint8_t byte) {
+    m->ctrl[slot] = byte;
+    m->ctrl[((slot - 8) & (uint64_t)m->mask) + 8] = byte;
+}
+/* The entry `entry`, whose key has this hash, put in the first slot free on its way. */
+static inline void sg_place_@N(sg_@N* m, uint64_t hash, uint32_t entry) {
+    uint64_t mask = (uint64_t)m->mask, at = hash & mask, step = 0;
+    for (;;) {
+        uint64_t free_ = sg_ctrl_open(sg_ctrl_at(m->ctrl + at));
+        if (free_) {
+            uint64_t slot = (at + (uint64_t)sg_ctrl_first(free_)) & mask;
+            if (m->ctrl[slot] == SG_EMPTY) m->room--;
+            sg_mark_@N(m, slot, (uint8_t)(hash >> 57));
+            m->index[slot] = entry;
+            return;
+        }
+        step += 8;
+        at = (at + step) & mask;
+    }
+}
+/* Room for one more entry. The slots are made anew from the entries, which lie one after the
+   other, when none is left: twice as many when the entries fill more than half of seven eighths
+   of them, as many again (the slots taken out made free) when not. */
 static void sg_room_@N(sg_@N* m) {
     if (m->len == m->cap) {
         if (m->len >= 0x7fffffff) abort();
         m->entries = sg_grow(m->entries, &m->cap, sizeof(sg_E_@N), _Alignof(sg_E_@N));
     }
-    if (!m->slots || (m->len + 1) * 4 > (m->mask + 1) * 3) {
-        int64_t size = m->slots ? (m->mask + 1) * 2 : 8;
-        uint64_t* slots = calloc((size_t)size, sizeof(uint64_t));
-        if (!slots) abort();
-        if (m->slots) {
-            for (int64_t i = 0; i <= m->mask; i++) {
-                uint64_t slot = m->slots[i];
-                if (slot != 0) sg_place_@N(slots, (uint64_t)size - 1, (uint32_t)(slot >> 32), (uint32_t)slot - 1);
-            }
-            free(m->slots);
-        }
-        m->slots = slots;
-        m->mask = size - 1;
-    }
+    if (m->ctrl && m->room > 0) return;
+    int64_t size = m->ctrl ? m->mask + 1 : 8;
+    while ((m->len + 1) * 2 > size / 8 * 7) size *= 2;
+    free(m->ctrl);
+    free(m->index);
+    m->ctrl = malloc((size_t)size + 8);
+    m->index = malloc((size_t)size * sizeof(uint32_t));
+    if (!m->ctrl || !m->index) abort();
+    memset(m->ctrl, SG_EMPTY, (size_t)size + 8);
+    m->mask = size - 1;
+    m->room = size / 8 * 7;
+    for (int64_t i = 0; i < m->len; i++) sg_place_@N(m, sg_khash_@N(sg_kof_@N(&m->entries[i].m_key)), (uint32_t)i);
 }
 /* A key that is known not to be there yet. */
 static inline void sg_put_@N(sg_@N* m, @K key@V{, @W value@V}) {
     sg_room_@N(m);
     m->entries[m->len].m_key = key;@V{
     m->entries[m->len].m_value = value;@V}
-    sg_place_@N(m->slots, (uint64_t)m->mask, (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[m->len].m_key)), (uint64_t)m->len);
+    sg_place_@N(m, sg_khash_@N(sg_kof_@N(&m->entries[m->len].m_key)), (uint32_t)m->len);
     m->len++;
 }
-/* Takes the entry out of the table without freeing what it holds. The slots after it move
-   up so that every key is still found from its own place; the last entry takes its room. */
+/* Takes the entry out of the table without freeing what it holds; the last entry takes its room.
+   Its slot is marked as never used when no search can have passed it on the way to another (a
+   run of eight slots taken, or once taken, around it), as hashbrown does, and as taken out when
+   one may have. */
 static void sg_take_@N(sg_@N* m, int64_t entry) {
     uint64_t mask = (uint64_t)m->mask;
-    uint64_t hole = (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & mask;
-    while ((uint32_t)m->slots[hole] != (uint32_t)entry + 1) hole = (hole + 1) & mask;
-    for (uint64_t next = (hole + 1) & mask; m->slots[next] != 0; next = (next + 1) & mask) {
-        uint64_t home = (m->slots[next] >> 32) & mask;
-        if (((next - home) & mask) >= ((next - hole) & mask)) {
-            m->slots[hole] = m->slots[next];
-            hole = next;
-        }
+    int64_t slot = sg_slot_@N(m, sg_kof_@N(&m->entries[entry].m_key), sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)));
+    uint64_t before = sg_ctrl_empty(sg_ctrl_at(m->ctrl + (((uint64_t)slot - 8) & mask)));
+    uint64_t after = sg_ctrl_empty(sg_ctrl_at(m->ctrl + slot));
+    int lead = before ? __builtin_clzll(before) >> 3 : 8;
+    int trail = after ? __builtin_ctzll(after) >> 3 : 8;
+    if (lead + trail >= 8) {
+        sg_mark_@N(m, (uint64_t)slot, SG_GONE);
+    } else {
+        sg_mark_@N(m, (uint64_t)slot, SG_EMPTY);
+        m->room++;
     }
-    m->slots[hole] = 0;
     int64_t last = m->len - 1;
     if (entry != last) {
-        uint64_t at = (uint32_t)sg_khash_@N(sg_kof_@N(&m->entries[last].m_key)) & mask;
-        while ((uint32_t)m->slots[at] != (uint32_t)last + 1) at = (at + 1) & mask;
-        m->slots[at] = (m->slots[at] & 0xFFFFFFFF00000000ULL) | ((uint64_t)entry + 1);
+        int64_t moved = sg_slot_@N(m, sg_kof_@N(&m->entries[last].m_key), sg_khash_@N(sg_kof_@N(&m->entries[last].m_key)));
+        m->index[moved] = (uint32_t)entry;
         m->entries[entry] = m->entries[last];
     }
     m->len = last;
@@ -4322,14 +4388,18 @@ static inline bool sg_contains_@N(const sg_@N* m, @P key) { return sg_find_@N(m,
 static void sg_drop_from_@N(sg_@N* m, int64_t from) {
     for (int64_t i = from; i < m->len; i++) { @DROPE(m->entries[i]) }
     sg_free_as(m->entries, sg_E_@N);
-    free(m->slots);
+    free(m->ctrl);
+    free(m->index);
 }
 static inline void sg_drop_@N(sg_@N* m) { sg_drop_from_@N(m, 0); }
 static inline sg_@N sg_move_@N(sg_@N* m) { sg_@N out = *m; *m = (sg_@N){ 0 }; return out; }
 static void sg_clear_@N(sg_@N* m) {
     for (int64_t i = 0; i < m->len; i++) { @DROPE(m->entries[i]) }
     m->len = 0;
-    if (m->slots) memset(m->slots, 0, (size_t)(m->mask + 1) * sizeof(uint64_t));
+    if (m->ctrl) {
+        memset(m->ctrl, SG_EMPTY, (size_t)m->mask + 1 + 8);
+        m->room = (m->mask + 1) / 8 * 7;
+    }
 }@V{
 static inline void sg_add_@N(sg_@N* m, @K key, @W value, const char* loc) {
     if (__builtin_expect(sg_find_@N(m, sg_kof_@N(&key)) >= 0, 0)) sg_fail_@N(sg_kof_@N(&key), false, loc);
@@ -14121,6 +14191,17 @@ fn table_behind(ty: &Ty) -> Option<(&Ty, usize)> {
     matches!(ty, Ty::Map(..) | Ty::Set(_)).then_some((ty, boxes))
 }
 
+/// The bytes of a key that is a number, a `bool` or a `char`: up to four are hashed in one block
+/// (choice 1882).
+fn key_bytes(key: &Ty) -> usize {
+    match key {
+        Ty::Bool | Ty::Int(IntTy::Byte | IntTy::Sbyte) => 1,
+        Ty::Int(IntTy::Short | IntTy::Ushort) => 2,
+        Ty::Char | Ty::Int(IntTy::Int | IntTy::Uint) => 4,
+        _ => 8,
+    }
+}
+
 /// The table template for a map (`map`) or for a set: keeps the lines meant for it.
 fn table_lines(map: bool) -> String {
     let mut out = String::new();
@@ -15057,14 +15138,14 @@ impl<'a> Emitter<'a> {
                 // The entry is only pointed at by the table, so a struct can hold a map of
                 // its own kind; what the entry is made of is written after all the structs.
                 let _ = writeln!(self.types, "typedef struct sg_E_{name} sg_E_{name};");
-                let _ = writeln!(self.types, "typedef struct {{ sg_E_{name}* entries; uint64_t* slots; int64_t len; int64_t cap; int64_t mask; }} sg_{name};");
+                let _ = writeln!(self.types, "typedef struct {{ sg_E_{name}* entries; uint8_t* ctrl; uint32_t* index; int64_t len; int64_t cap; int64_t mask; int64_t room; }} sg_{name};");
                 let held = if value.is_some() { format!(" {value_c} m_value;") } else { String::new() };
                 let _ = writeln!(self.late_types, "struct sg_E_{name} {{ {key_c} m_key;{held} }};");
                 // How a key is given, hashed, compared and written.
                 let (given, hash, equal, of, show) = match &**key {
                     Ty::Int(_) | Ty::Bool | Ty::Char => (
                         key_c.clone(),
-                        "sg_hash_word(0, (uint64_t)key)".to_string(),
+                        if key_bytes(key) <= 4 { "sg_hash_small((uint32_t)key)".to_string() } else { "sg_hash_word(0, (uint64_t)key)".to_string() },
                         "*held == key".to_string(),
                         "*held".to_string(),
                         match &**key {

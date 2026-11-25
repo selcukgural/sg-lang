@@ -1,0 +1,123 @@
+// Maps and sets under many adds and removes (choice 1882): keys of four bytes (hashed in one block),
+// of eight and texts, a table grown, emptied and filled again, slots taken out and used again, the
+// last entry moved into the room of one removed. Each is held to a list of what must be there.
+
+struct Model {
+    List<bool> there
+    List<long> value
+}
+
+Model fresh(nint keys) {
+    return Model { there = List<bool>.repeat(false, keys), value = List<long>.repeat(0, keys) }
+}
+
+uint next(ref uint seed) {
+    seed = seed.wrappingMultiply(1103515245).wrappingAdd(12345)
+    return seed >> 8
+}
+
+string named(nint k) {
+    return $"key-{k}".toString()
+}
+
+// Whether the map holds what the model says, key by key, and its entries add up.
+bool agrees(read HashMap<uint, long> small, read HashMap<long, long> wide, read HashMap<string, long> texts, read HashSet<int> set, read Model m) {
+    long total = 0
+    nint count = 0
+    for k in 0..m.there.length() {
+        var a = small.get(((uint)k).wrappingMultiply(2654435761))
+        var b = wide.get((long)k * -7919)
+        var c = texts.get(read named(k))
+        bool d = set.contains((int)k - 1000)
+        if m.there[k] {
+            if a is null || b is null || c is null || !d {
+                print($"missing {k}")
+                return false
+            }
+            if a != m.value[k] || b != m.value[k] || c != m.value[k] {
+                print($"wrong value at {k}")
+                return false
+            }
+            total += m.value[k]
+            count += 1
+        } else if a is not null || b is not null || c is not null || d {
+            print($"there but removed {k}")
+            return false
+        }
+    }
+    long seen = 0
+    for item in read small {
+        seen += item.value
+    }
+    return seen == total && small.length() == count && wide.length() == count && texts.length() == count && set.length() == count
+}
+
+void main() {
+    nint keys = 3000
+    var small = HashMap<uint, long>()
+    var wide = HashMap<long, long>()
+    var texts = HashMap<string, long>()
+    var set = HashSet<int>()
+    var m = fresh(keys)
+    uint seed = 7
+    nint checks = 0
+    for round in 0..3 {
+        for step in 0..60000 {
+            nint k = (nint)(next(ref seed) % (uint)keys)
+            uint what = next(ref seed) % 10
+            if what < 5 {
+                long v = (long)(next(ref seed) % 1000)
+                if m.there[k] {
+                    small[((uint)k).wrappingMultiply(2654435761)] = v
+                    wide[(long)k * -7919] = v
+                    texts[read named(k)] = v
+                } else {
+                    small.add(((uint)k).wrappingMultiply(2654435761), v)
+                    wide.add((long)k * -7919, v)
+                    _ = texts.getOrAdd(read named(k), v)
+                    _ = set.add((int)k - 1000)
+                    m.there[k] = true
+                }
+                m.value[k] = v
+            } else {
+                var gone = small.remove(((uint)k).wrappingMultiply(2654435761))
+                _ = wide.remove((long)k * -7919)
+                _ = texts.remove(read named(k))
+                bool was = set.remove((int)k - 1000)
+                if (gone is not null) != m.there[k] || was != m.there[k] {
+                    print($"remove disagrees at {k}")
+                    return
+                }
+                m.there[k] = false
+            }
+            if step % 5000 == 4999 {
+                if !agrees(read small, read wide, read texts, read set, read m) {
+                    print($"round {round}, step {step}")
+                    return
+                }
+                checks += 1
+            }
+        }
+        // Everything taken out one key at a time, then the tables emptied at once.
+        for k in 0..keys {
+            if m.there[k] && k % 2 == 0 {
+                _ = small.remove(((uint)k).wrappingMultiply(2654435761))
+                _ = wide.remove((long)k * -7919)
+                _ = texts.remove(read named(k))
+                _ = set.remove((int)k - 1000)
+                m.there[k] = false
+            }
+        }
+        if !agrees(read small, read wide, read texts, read set, read m) {
+            print($"round {round}, after the removes")
+            return
+        }
+        small.clear()
+        wide.clear()
+        texts.clear()
+        set.clear()
+        m = fresh(keys)
+        checks += 1
+    }
+    print($"{checks} checks, all the same")
+}

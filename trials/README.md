@@ -42,7 +42,9 @@ an HTTP server, and an HTTP/1.1 file server with nginx beside it (choices 1861-1
 C, under one load written in C, on Linux, with their tables in
 [Servers against Rust, Zig and C](../benchmarks/server.md).
 
-Still to come: an interpreter of Lox.
+Still to come: an interpreter of Lox. From slice 180 on a new trial is written in SG alone and measured against
+the C program it mirrors (an interpreter of Lox against clox), not written again in Rust and Zig: three
+versions of every program took more time than the language could spare. The trials above keep theirs.
 
 ## How they are written (1525-1532)
 

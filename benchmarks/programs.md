@@ -266,7 +266,9 @@ bytes.
 | 8192 by 8192, read and written | 0.488 s, 148.8 MB | 0.504 s, 148.8 MB | 0.487 s, 148.9 MB | 0.505 s, 147.0 MB | 0.520 s, 176.4 MB | 0.378 s, 239.1 MB |
 | 2,000 frames, `-O2` | 0.852 s, 13.5 MB | 0.716 s, 13.6 MB | 0.806 s, 13.7 MB | 0.830 s, 32.0 MB | 0.911 s, 17.9 MB | 0.350 s, 22.1 MB |
 | 300 whole frames, `-O2` | 0.288 s, 16.0 MB | 0.290 s, 16.0 MB | 0.252 s, 16.0 MB | 0.291 s, 23.9 MB | 0.325 s, 26.0 MB | 0.276 s, 24.4 MB |
+| 300 whole frames, `-O2`, after slice 180 | 0.275 s, 15.8 MB | 0.275 s, 16.0 MB | 0.254 s, 16.0 MB | 0.298 s, 23.9 MB | 0.325 s, 26.0 MB | 0.276 s, 24.4 MB |
 | 2,000 frames, `--unoptimize` | 2.224 s, 81.9 MB | 2.251 s, 82.0 MB | 1.791 s, 82.0 MB | 2.209 s, 182.2 MB | 2.103 s, 176.5 MB | 0.089 s, 8.8 MB |
+| 2,000 frames, `--unoptimize`, after slice 180 | 2.084 s, 81.8 MB | 2.091 s, 81.9 MB | 1.796 s, 82.0 MB | 2.235 s, 182.2 MB | 2.131 s, 176.5 MB | 0.090 s, 8.8 MB |
 | 8192 by 8192, cropped and turned | 0.370 s, 162.7 MB | 0.389 s, 162.7 MB | 0.378 s, 162.8 MB | 0.375 s, 160.9 MB | 0.394 s, 196.9 MB | 0.296 s, 201.6 MB |
 | 8192 by 8192, flipped | 0.521 s, 212.8 MB | 0.544 s, 212.9 MB | 0.532 s, 213.0 MB | 0.529 s, 211.0 MB | 0.570 s, 250.0 MB | 0.396 s, 239.1 MB |
 | 10,000 small GIFs, `--info` | 0.144 s, 3.9 MB | 0.149 s, 3.8 MB | 0.160 s, 4.0 MB | 0.140 s, 3.5 MB | 0.143 s, 3.7 MB | 0.318 s, 76.9 MB |
@@ -276,9 +278,11 @@ bytes.
 - Reading, writing, cropping, flipping and turning, where the work is LZW and the walk over the pixels, the three
   are within 4% of each other. gifsicle encodes with another algorithm (a tree of codes, not a table of
   hashes); it is faster on the large frame and writes 0.05% more.
-- Where the colors of the screen are given indices (`--unoptimize`, `-O2` of whole frames), SG takes 24% and 14%
-  more than Rust: a lookup in SG's `HashMap<uint, nint>` takes 9.4 ns against Rust's 3.8 (a hundred million
-  lookups, 0.94 s against 0.38), in [Slower than C](slower-than-c.md). Zig's `AutoHashMap` is as slow as SG's here.
+- Where the colors of the screen are given indices (`--unoptimize`, `-O2` of whole frames), SG took 24% and 14%
+  more than Rust: a lookup in SG's `HashMap<uint, nint>` took 9.4 ns against Rust's 3.8 (a hundred million
+  lookups, 0.94 s against 0.38). Slice 180 (choice 1882) looks at the slots eight at a time, as hashbrown does:
+  0.48 s for the hundred million, and 16% and 8% more than Rust here (the rows "after slice 180", measured
+  again the same day). What is left is in [Slower than C](slower-than-c.md).
 - `-O2` of the 2,000 frames is faster checked than not (0.716 s against 0.852): clang puts the function that finds
   what changed into the one that calls it in the build without checks, and the loop compiled there is slower. The
   same function with checks stays a function of its own.
