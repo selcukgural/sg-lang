@@ -10,7 +10,7 @@ wins ([the rules](method.md#fairness)).
 |---|---|
 | [SG against C](against-c.md) | 61 small programs, each written in SG and in C by hand, on macOS |
 | [SG against C on Windows](against-c-windows.md) | The same programs on Windows 11 on Arm |
-| [Programs against Rust and Zig](programs.md) | `wc`, `grep`, `jq`, `kv` and `hashsum`, written in SG, Rust and Zig |
+| [Programs against Rust and Zig](programs.md) | `wc`, `grep`, `jq`, `kv`, `hashsum` and `giftool`, written in SG, Rust and Zig; `lox` against clox; gifsicle in SG against gifsicle |
 | [The library against Rust and Zig](library.md) | The modules of `std` against Rust's crates and Zig's library: JSON, compression, zip, hashes, checksums, hex and Base64, Unicode, time, random numbers, the log, the network |
 | [Servers against Rust, Zig and C](server.md) | A store that speaks Redis's protocol, an HTTP server and a server of files with nginx beside it, on Linux, under one load: answers a second, p99 and p99.9, memory for each connection, idle and under load, the breaking point, and a run of 30 minutes |
 | [What the servers stand](robustness.md) | The same servers against clients that reset, close half, send a byte at a time, do not read, send what is not the protocol, outnumber the descriptors, and SIGTERM |

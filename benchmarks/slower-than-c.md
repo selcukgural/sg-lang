@@ -174,6 +174,17 @@ says what is slower, by how much and against what, the choice that measured it, 
   kept out (`noinline` in the C), 3.52 billion and 1.17 times on the noise, 1.04 on the large GIF. The nodes
   as one array of structs, as C keeps them, were slower (1.33 times). What would fix it: a way for the program
   to keep a function apart, or an encoder written as two functions, the lossy one and the plain one.
+- **`gifsicle`: compressing a frame again and again** (`-O3`, `-U -O2`, `--lossy`, sg-gifsicle's
+  `tests/measure.py`): 1.24 to 1.33 times Homebrew's gifsicle on animations of 300 and 2,000 frames (`-O3` of
+  2,000 0.782 s against 0.590). Sampled: the encoder above is most of it, and about 3% is the table of codes
+  of 100 KB each compression makes and fills (its arrays start at zeros and -1), where C takes the memory as
+  it comes. Built in place by hand in the generated C, without the temporaries of the struct literal, it took
+  the same time. Screens of 16 bits, as C keeps them for fewer than 65,535 colors, gave 1.5 to 2%.
+- **`gifsicle`: memory on animations** (sg-gifsicle): 1.2 to 1.7 times gifsicle's (2,000 frames read and
+  written 14.8 MB against 8.8; `-O3` 36.2 against 22.2). The port reads the whole file into memory, where C
+  reads it from a `FILE` (2.5 MB here), and macOS's allocator keeps more of what the port frees, many smaller
+  blocks: the most it holds at once in `-O3` is C's (14.9 MB against 14.6). The program is 3.3 times
+  gifsicle's size, stripped (666 KB against 201).
 - **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
   Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,

@@ -576,7 +576,10 @@ from 0.49, Rust's std 0.39). What is left of the gap to clox is in [the tables](
 Then the showcase (1895-1900): gifsicle written in SG, file by file, in [a repository of its
 own](https://github.com/selcukgural/sg-gifsicle) under gifsicle's license; its core gives what gifsicle 1.99 gives.
 Slice 182 (1901) is the first gap it found: `isTerminal()` of every reader and writer, so that a tool can refuse to
-write bytes to a terminal, as gifsicle does.
+write bytes to a terminal, as gifsicle does. The port was finished the same day (resizing, colors, `--lossy`,
+`--transform-colormap`; the same bytes as gifsicle in 54,356 runs) and measured against gifsicle: 1.03 to 1.19 times
+its time on large frames, 1.24 to 1.33 on animations compressed again and again, where the LZW encoder and a table
+the port must fill count most ([the tables](../../benchmarks/programs.md#gifsicle)).
 
 ## Next
 

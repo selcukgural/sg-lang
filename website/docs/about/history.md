@@ -24,7 +24,11 @@ the interpreter and run under the sanitizers.
 The plan is to write a well-known, widely used program in SG, one that has not been rewritten in Rust yet, and
 see how the claim holds on real software. The program is [gifsicle](https://www.lcdf.org/gifsicle/), the C tool
 that shrinks and edits GIF images: its work is bytes and bits, so it can be measured against the C original,
-and it has had a heap overflow of the kind SG rules out. It is taken up when the language is further along.
+and it has had a heap overflow of the kind SG rules out. It was written on 25 November 2026, after the trials of
+a GIF tool and of Lox, in [a repository of its own](https://github.com/selcukgural/sg-gifsicle): every option of
+gifsicle 1.99, the same bytes in 54,356 runs against it, and 1.03 to 1.33 times its time
+([the measurements](../benchmarks/programs.md#gifsicle)). It found one gap in the language on the way,
+`isTerminal()`, built in slice 182.
 
 ## The full record
 
