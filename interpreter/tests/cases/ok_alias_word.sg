@@ -1,0 +1,42 @@
+// `alias` is a word only at the top of a file, in front of a name that no `(` follows
+// (choice 1919). Everywhere else it is a name: a variable, a field, a parameter, a function,
+// a method and the variable of a loop.
+
+struct Contact {
+    string name
+    string alias
+
+    string shown(read this, read string alias) {
+        return $"{this.name} ({this.alias}, {alias})".toString()
+    }
+}
+
+int alias(int x) {
+    return x + 1
+}
+
+public alias Book = List<Contact>
+alias Count = nint
+alias Again = Count
+
+Count sizeOf(read Book book) {
+    return book.length()
+}
+
+void count() {
+    var alias = alias(41)
+    print(alias)
+    Again more = (nint)alias + 1
+    print(more)
+}
+
+void main() {
+    count()
+    Book book = List<Contact>()
+    book.add(Contact { name = "Ada", alias = "countess" })
+    book.add(Contact { name = "Grace", alias = "amazing" })
+    for alias in read book {
+        print(alias.shown("by name"))
+    }
+    print(sizeOf(read book))
+}

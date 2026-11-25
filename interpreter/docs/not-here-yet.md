@@ -180,7 +180,7 @@
 - Interfaces of your own (`interface`, `where`). `Disposable` and
   `Closable` on an enum. A `Disposable` value that holds a `raw T` going to another task. `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
-  in the design), and so an alias with type parameters (`using Link<T> = ...`).
+  in the design), and so an alias with type parameters (`alias Link<T> = ...`).
 - The task of `Task.whenAll` kept in a variable to be awaited later (`var all =
   Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: `linesAsync` (a `for`

@@ -9,7 +9,7 @@ pub struct Program {
     pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Func>,
     pub tests: Vec<TestDecl>,
-    /// `using FolderRef = shared Folder`: another name for a type.
+    /// `alias FolderRef = shared Folder`: another name for a type.
     pub aliases: Vec<AliasDecl>,
     /// The files the program was read from, in the order of their text.
     pub files: Vec<FileScope>,
@@ -279,7 +279,7 @@ pub struct TestDecl {
     pub body: Block,
 }
 
-/// `using NodeRef = shared Node`: a second name for a type, not a new type.
+/// `alias NodeRef = shared Node`: a second name for a type, not a new type.
 pub struct AliasDecl {
     pub public: bool,
     pub name: String,

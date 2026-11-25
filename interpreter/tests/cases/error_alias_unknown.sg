@@ -1,4 +1,4 @@
-using Point2 = Pont
+alias Point2 = Pont
 
 struct Point {
     int x

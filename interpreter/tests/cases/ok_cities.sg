@@ -1,7 +1,7 @@
 // Cities and roads of the example programs (05): the map owns the cities, the roads look at
 // them with `weak`, and a route is found breadth first. A removed city leaves no route through it.
 
-public using CityRef = shared checked City
+public alias CityRef = shared checked City
 
 public struct City {
     readonly int id

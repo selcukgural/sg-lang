@@ -4,5 +4,5 @@ error: `Count` exists in the `links` module but is not public
    |     ^^^^^
   it is defined here, without `public`:
   --> links/node.sg:3:7
- 3 | using Count = int
+ 3 | alias Count = int
    |       ^^^^^

@@ -1,5 +1,5 @@
 error: there is no type named `Pont`
   --> error_alias_unknown.sg:1:16
- 1 | using Point2 = Pont
+ 1 | alias Point2 = Pont
    |                ^^^^
   hint: `Point`

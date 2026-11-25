@@ -1,0 +1,5 @@
+error: there is no type named `alias`
+  a type alias is written at the top of a file, outside every function: `alias X = int`
+  --> error_alias_in_function.sg:4:5
+ 4 |     alias Count = int
+   |     ^^^^^

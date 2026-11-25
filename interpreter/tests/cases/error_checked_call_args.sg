@@ -1,4 +1,4 @@
-using FolderRef = shared checked Folder
+alias FolderRef = shared checked Folder
 
 struct Folder {
     string name

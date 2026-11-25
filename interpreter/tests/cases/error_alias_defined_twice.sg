@@ -2,7 +2,7 @@ struct Node {
     int value
 }
 
-using Node = int
+alias Node = int
 
 void main() {
 }

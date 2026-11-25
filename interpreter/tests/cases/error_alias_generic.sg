@@ -1,4 +1,4 @@
-using Many<T> = List<T>
+alias Many<T> = List<T>
 
 void main() {
 }

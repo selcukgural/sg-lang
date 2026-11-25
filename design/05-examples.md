@@ -528,7 +528,7 @@ owned its parent, the two objects would keep each other alive, the count would n
 never be returned. That is why the `parent` field is `weak`.
 
 ```
-public using FolderRef = shared checked Folder   // the same type, not a new type
+public alias FolderRef = shared checked Folder   // the same type, not a new type
 
 public struct Folder {
     readonly string name
@@ -801,7 +801,7 @@ to Ankara. In the folder tree the cycle was in one place (the child looks at its
 The rule stays the same: **there is one owner, the rest only look.** The map owns the cities, and the roads are `weak`.
 
 ```
-public using CityRef = shared checked City
+public alias CityRef = shared checked City
 
 public struct City {
     readonly int id

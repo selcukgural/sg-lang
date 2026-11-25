@@ -3,7 +3,7 @@
 struct Box {
     string name
 }
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 
 int grow(read BoxRef b) {
     b.name.write("a much longer text than the block of the name has room for, so it moves")

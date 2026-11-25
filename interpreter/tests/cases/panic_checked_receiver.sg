@@ -1,6 +1,6 @@
 // A method that takes `ref this` has its value lent to change for the call; reading the same
 // value through another owner inside it stops the program.
-using CounterRef = shared checked Counter
+alias CounterRef = shared checked Counter
 
 struct Counter {
     nint count

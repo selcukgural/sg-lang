@@ -3,7 +3,7 @@
 struct Box {
     int value
 }
-using BoxRef = shared Box
+alias BoxRef = shared Box
 
 BoxRef fresh(ref BoxRef b) {
     b = new BoxRef { value = 2 }

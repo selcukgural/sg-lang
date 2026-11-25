@@ -1,4 +1,4 @@
-using Names = List<string>
+alias Names = List<string>
 
 void main() {
     var names = Names()

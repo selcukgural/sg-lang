@@ -1,0 +1,4 @@
+alias Scores HashMap<string, int>
+
+void main() {
+}

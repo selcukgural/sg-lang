@@ -1,0 +1,5 @@
+// A type alias was written `using Name = Type` before choice 1920; the error names `alias`.
+public using Scores = HashMap<string, int>   // the old spelling
+
+void main() {
+}

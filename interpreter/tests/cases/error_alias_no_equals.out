@@ -1,0 +1,5 @@
+error: expected `=`, found `HashMap`
+  an alias is written `alias NodeRef = shared Node`
+  --> error_alias_no_equals.sg:1:14
+ 1 | alias Scores HashMap<string, int>
+   |              ^^^^^^^

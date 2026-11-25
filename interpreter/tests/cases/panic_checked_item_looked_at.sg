@@ -9,7 +9,7 @@ struct Box {
     List<Item> items
 }
 
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 
 int grow(read BoxRef b) {
     b.items.clear()

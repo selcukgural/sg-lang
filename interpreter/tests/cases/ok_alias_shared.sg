@@ -1,6 +1,6 @@
 // An alias of a `shared` type: `new NodeRef(1, null)` is `new shared Node(1, null)`.
 
-using NodeRef = shared Node
+alias NodeRef = shared Node
 
 struct Node : Formattable {
     int value

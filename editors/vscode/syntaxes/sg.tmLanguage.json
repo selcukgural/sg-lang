@@ -156,7 +156,12 @@
         },
         {
           "name": "storage.type.sg",
-          "match": "\\b(?:var|const|static|struct|enum|union|using|use|extern|export|async|test|assert|interface|embed|packed|align)\\b"
+          "match": "\\b(?:var|const|static|struct|enum|union|use|extern|export|async|test|assert|interface|embed|packed|align)\\b"
+        },
+        {
+          "comment": "`alias` is a word only in front of the name it gives a type: `alias Scores = ...`",
+          "name": "storage.type.sg",
+          "match": "\\balias(?=[ \\t]+[A-Za-z_]\\w*[ \\t]*[=<])"
         },
         {
           "name": "storage.modifier.sg",

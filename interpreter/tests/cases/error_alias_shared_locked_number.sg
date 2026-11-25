@@ -1,5 +1,5 @@
 // An alias of `shared locked int` names no struct, so `new` cannot build it by the alias.
-using CountRef = shared locked int
+alias CountRef = shared locked int
 
 void main() {
     var count = new CountRef(1)

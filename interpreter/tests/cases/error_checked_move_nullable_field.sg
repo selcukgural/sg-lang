@@ -1,6 +1,6 @@
 // A nullable field is not moved out of a value that others own too; the hint offers
 // `take()`, which leaves `null` there for the other owners.
-using UserRef = shared checked User
+alias UserRef = shared checked User
 
 struct User {
     string? nick

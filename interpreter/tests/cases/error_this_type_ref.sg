@@ -1,5 +1,5 @@
 // `this` with a type is taken with `read` or as it is.
-using PointRef = shared checked Point
+alias PointRef = shared checked Point
 
 struct Point {
     int x

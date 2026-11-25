@@ -1,4 +1,4 @@
-using Text = read string
+alias Text = read string
 
 void main() {
 }

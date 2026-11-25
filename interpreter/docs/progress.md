@@ -58,7 +58,7 @@ took 3.6.
 ## Several owners
 
 A value can have several owners: `new shared x`, `share x` and `weak x`, and a type has a second name
-with `using`. What a `shared checked` value points to is changed through any owner, each access checked
+with `alias`. What a `shared checked` value points to is changed through any owner, each access checked
 against the borrows in progress: a conflict through the same variable is a compile error, one through
 another a panic with both lines. `read x as n { }` and `ref x as n { }` lend it for a block, a method takes
 the owner with `read FolderRef this`, and the `shared` values that hold each other up when a program or a
@@ -586,6 +586,9 @@ threads, as gifsicle, and the same bytes in 58,767 runs.
 
 Slice 183 (1910-1916) gives the language `c ? a : b`, as C# has it: `if` stays a statement, the arms take the
 names and the narrowing an `if` would give them, and compiled code writes the `if` it is.
+
+Slice 184 (1918-1920) writes a type alias `alias Scores = HashMap<string, int>`, as D does, in place of C#'s
+`using`. `alias` is a word only where an alias starts; `using X = T` is an error whose hint is the new line.
 
 ## Next
 

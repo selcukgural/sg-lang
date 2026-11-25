@@ -3,7 +3,7 @@
 struct Box {
     string name
 }
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 
 void main() {
     var a = new BoxRef { name = "some text".clone() }

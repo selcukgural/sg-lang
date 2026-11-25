@@ -14399,7 +14399,7 @@ struct Emitter<'a> {
     files: &'a [FileScope],
     structs: HashMap<&'a str, &'a StructDecl>,
     enums: HashMap<&'a str, &'a EnumDecl>,
-    /// `using P = Point`: each alias by full name.
+    /// `alias P = Point`: each alias by full name.
     aliases: HashMap<&'a str, &'a AliasDecl>,
     /// A debug build: overflow panics. Otherwise it wraps.
     checked: bool,

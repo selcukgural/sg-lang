@@ -4,7 +4,7 @@
 // above it. The round adds up what the root holds and lets the tree go. What is measured:
 // `new shared`, `share` and the end of an owner, `weak` and `share` of it, and the checks of
 // the borrows of `shared checked` values, against the same tree in C with plain pointers.
-using FolderRef = shared checked Folder
+alias FolderRef = shared checked Folder
 
 struct Folder {
     long bytes

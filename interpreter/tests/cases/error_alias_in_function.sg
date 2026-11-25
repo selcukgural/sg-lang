@@ -1,0 +1,5 @@
+// A type alias is written at the top of a file: inside a function `alias X = int` reads as a
+// variable `X` of a type `alias`, and the note says where an alias goes.
+void main() {
+    alias Count = int
+}

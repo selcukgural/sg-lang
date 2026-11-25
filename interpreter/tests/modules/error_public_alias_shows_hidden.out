@@ -1,6 +1,6 @@
 error: `Box` is public, but it shows `Secret`, which is not
   --> aliasleak/box.sg:1:14
- 1 | public using Box = shared Secret
+ 1 | public alias Box = shared Secret
    |              ^^^
   `Secret` is defined here, without `public`:
   --> aliasleak/box.sg:3:8

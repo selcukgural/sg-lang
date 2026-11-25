@@ -2,7 +2,7 @@
 // cities that are joined keep each other alive. The program runs correctly, and the cities
 // still alive when it ends are reported with the field that holds them.
 
-public using CityRef = shared checked City
+public alias CityRef = shared checked City
 
 public struct City {
     readonly int id

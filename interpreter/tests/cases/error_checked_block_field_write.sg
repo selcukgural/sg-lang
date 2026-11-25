@@ -3,7 +3,7 @@
 struct Box {
     long count
 }
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 
 struct Pair {
     BoxRef first

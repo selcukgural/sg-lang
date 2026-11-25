@@ -1,6 +1,6 @@
 // An alias is public or not as a type is.
-public using NodeRef = shared Node
-using Count = int
+public alias NodeRef = shared Node
+alias Count = int
 
 public struct Node {
     public int value

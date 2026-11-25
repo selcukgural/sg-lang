@@ -1,10 +1,10 @@
-// `using Name = Type`: another name for a type. It is the same type, and it builds the value
+// `alias Name = Type`: another name for a type. It is the same type, and it builds the value
 // the type builds.
 
-using Points = List<Point>
-using Owned = Point*
-using P = Point
-using Again = P
+alias Points = List<Point>
+alias Owned = Point*
+alias P = Point
+alias Again = P
 
 struct Point : Formattable {
     int x

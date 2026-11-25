@@ -12,8 +12,9 @@ const NOT_YET: &[&str] = &[
 ];
 
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
-/// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
+/// `shared checked T`, `shared locked T`, `share x`, `weak x`,
 /// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
+/// `using` is kept: a type alias was written with it once, and the error that meets it names `alias`.
 const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export", "atomic", "const", "static"];
 
 type Res<T> = Result<T, Diag>;
@@ -184,6 +185,13 @@ impl<'a> Parser<'a> {
     /// Whether the next token is the word `word` (one of `WORDS`).
     fn at_word(&self, word: &str) -> bool {
         matches!(self.peek(), Tok::Ident(name) if name == word)
+    }
+
+    /// Whether a type alias starts here: `alias Name = T`. `alias` is a word only at the top of
+    /// a file, in front of a name that no `(` follows; elsewhere it is a name like any other, and
+    /// `alias f() { }` is a function that gives an `alias`.
+    fn at_alias(&self) -> bool {
+        self.at_word("alias") && matches!(self.peek_at(1), Tok::Ident(_)) && *self.peek_at(2) != Tok::LParen
     }
 
     fn expect(&mut self, tok: Tok, wanted: &str) -> Res<Span> {
@@ -475,15 +483,15 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `using NodeRef = shared Node`
+    /// `alias NodeRef = shared Node`
     fn alias_decl(&mut self, public: bool) -> Res<AliasDecl> {
         self.bump();
         let (name, name_span) = self.ident("the new name of the type")?;
         if *self.peek() == Tok::Lt {
             return Err(Diag::error(self.span(), "an alias with type parameters is not in the interpreter yet")
-                .note("generics of your own are deferred: `using Link<T> = ...` comes with them"));
+                .note("generics of your own are deferred: `alias Link<T> = ...` comes with them"));
         }
-        self.expect(Tok::Assign, "`=`").map_err(|d| d.note("an alias is written `using NodeRef = shared Node`"))?;
+        self.expect(Tok::Assign, "`=`").map_err(|d| d.note("an alias is written `alias NodeRef = shared Node`"))?;
         let ty = self.type_expr()?;
         Ok(AliasDecl { public, name, name_span, ty })
     }
@@ -529,7 +537,7 @@ impl<'a> Parser<'a> {
             let export = self.at_word("export");
             if export {
                 self.bump();
-                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_word("using") || self.at_word("extern") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
+                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_alias() || self.at_word("extern") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
                     return Err(Diag::error(export_span, "`export` is written in front of a function that C calls").hint("`export int compare(raw void a, raw void b) { ... }`"));
                 }
                 if self.at_word("async") {
@@ -540,7 +548,7 @@ impl<'a> Parser<'a> {
             let is_async = self.at_word("async");
             if is_async {
                 self.bump();
-                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_word("using") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
+                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_alias() || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
                     return Err(Diag::error(async_span, "`async` is written in front of a function").hint("`async int count(string path) { ... }`"));
                 }
             }
@@ -571,6 +579,13 @@ impl<'a> Parser<'a> {
                 let body = self.block()?;
                 program.tests.push(TestDecl { name, name_span, body });
             } else if self.at_word("using") {
+                // The word an alias was written with before choice 1920.
+                let start = self.span().start;
+                let end = self.src[start..].find('\n').map_or(self.src.len(), |at| start + at);
+                let line = self.src[start..end].split("//").next().unwrap_or("").trim_end();
+                return Err(Diag::error(self.span(), "a type alias is written with `alias`")
+                    .hint(format!("`{}alias{}`", if public { "public " } else { "" }, &line["using".len()..])));
+            } else if self.at_alias() {
                 let decl = self.alias_decl(public)?;
                 program.aliases.push(decl);
                 // A type can end in `>` or `*`, which at the end of a line would join it to

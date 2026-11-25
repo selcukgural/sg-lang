@@ -1,4 +1,4 @@
-public using Box = shared Secret
+public alias Box = shared Secret
 
 struct Secret {
     int value

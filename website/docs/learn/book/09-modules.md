@@ -376,14 +376,14 @@ require zlib example.com/bo/zlib 1.2.0 unsafe
 `sg add` and `sg update` show which packages use `unsafe` and which libraries of C they link, and an update
 to a version that starts to use `unsafe` stops until you allow it.
 
-## Type aliases: `using`
+## Type aliases: `alias`
 
-`using Name = Type` gives a type a second name. It is the same type, not a new one, so values pass between the
+`alias Name = Type` gives a type a second name. It is the same type, not a new one, so values pass between the
 two names freely. An alias also builds what it names:
 
 ```sg
-using NodeRef = shared Node
-using Scores = HashMap<string, int>
+alias NodeRef = shared Node
+alias Scores = HashMap<string, int>
 
 struct Node {
     int value
@@ -426,5 +426,5 @@ It prints:
 ```
 
 `best` takes a `read Scores` and is given a `HashMap<string, int>`: they are one type. An alias is private to
-its module unless it is written `public using`. A collection is still built by the name of its type:
+its module unless it is written `public alias`. A collection is still built by the name of its type:
 `Scores()` is an error whose hint is `HashMap<string, int>()`.

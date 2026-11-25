@@ -1,5 +1,5 @@
 // An alias of a `shared locked` struct builds with `new`, like `new shared locked Account`.
-using AccountRef = shared locked Account
+alias AccountRef = shared locked Account
 
 struct Account {
     int balance

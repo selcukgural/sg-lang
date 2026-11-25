@@ -1,5 +1,5 @@
 error: an alias names a type that owns its value, not a borrow
   --> error_alias_borrow.sg:1:14
- 1 | using Text = read string
+ 1 | alias Text = read string
    |              ^^^^^^^^^^^
   hint: name the type alone and write `read` where the borrow is: `read Text`

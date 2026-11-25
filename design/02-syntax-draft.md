@@ -189,7 +189,7 @@ An alias for long types. It is not a new type and disappears at compile time. `t
 can write `weak this` and `share this`:
 
 ```
-public using FolderRef = shared checked Folder
+public alias FolderRef = shared checked Folder
 
 public struct Folder {
     weak checked Folder? parent

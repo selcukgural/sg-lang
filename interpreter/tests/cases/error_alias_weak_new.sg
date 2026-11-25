@@ -1,5 +1,5 @@
 // An alias of a `weak` type is not built with `new`: a `weak` value looks at a `shared` one.
-using NodeLook = weak Node
+alias NodeLook = weak Node
 
 struct Node {
     int value

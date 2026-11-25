@@ -2,7 +2,7 @@ struct Node {
     int value
 }
 
-using NodeRef = shared Node
+alias NodeRef = shared Node
 
 void main() {
     shared NodeRef node = null

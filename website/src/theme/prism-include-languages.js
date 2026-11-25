@@ -4,7 +4,7 @@
 import siteConfig from '@generated/docusaurus.config';
 
 const control = 'if|else|while|for|in|return|break|continue|match|try|await|lock|when|with|is|not|or|as|unsafe';
-const declaration = 'var|const|static|struct|enum|union|using|use|extern|export|async|test|assert|interface|embed|packed|align';
+const declaration = 'var|const|static|struct|enum|union|use|extern|export|async|test|assert|interface|embed|packed|align';
 const modifier = 'public|readonly|read|ref|shared|weak|checked|locked|atomic|raw|share|new';
 const primitive = 'void|bool|char|string|sbyte|byte|short|ushort|int|uint|long|ulong|nint|nuint|float|double';
 
@@ -29,7 +29,8 @@ function defineSg(Prism) {
     },
     string: { pattern: /"(?:\\.|[^\\"\n])*"/, greedy: true },
     char: { pattern: /'(?:\\(?:[ntr0\\"']|u\{[0-9A-Fa-f]{1,6}\})|[^'\\\n])'/, alias: 'string' },
-    keyword: new RegExp(`\\b(?:${control}|${declaration}|${modifier})\\b`),
+    // `alias` is a word only in front of the name it gives a type (choice 1919): `alias Scores = ...`.
+    keyword: new RegExp(`\\b(?:${control}|${declaration}|${modifier})\\b|\\balias(?=[ \\t]+[A-Za-z_]\\w*[ \\t]*[=<])`),
     builtin: new RegExp(`\\b(?:${primitive})\\b`),
     boolean: /\b(?:true|false)\b/,
     constant: /\b(?:null|this)\b/,

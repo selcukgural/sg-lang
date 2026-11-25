@@ -83,7 +83,7 @@ overflow with the place, one comparison where there were two, and the program st
 the fifty-third: in a checked build a sum kept in a loop runs without its overflow test for as many rounds
 as it has room for, the loop written twice (315); on the way the variable of `for i in a..b` became a copy
 of the count in compiled code too, as it was in the interpreter (319). The fifty-fourth slice (`shared`,
-`weak` and `using`) and the fifty-fifth (`shared checked`, the `as` blocks, `this` with a type and the leak
+`weak` and type aliases, then written `using`) and the fifty-fifth (`shared checked`, the `as` blocks, `this` with a type and the leak
 report) were written in the checker and the interpreter; since the fifty-sixth they are compiled too: a
 `shared` value is a pointer with the counts of its owners and of its `weak` lookers in front of it, a
 `shared checked` one has the borrows of it in progress there as well, and a debug build keeps the values

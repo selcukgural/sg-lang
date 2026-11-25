@@ -1,0 +1,5 @@
+error: a type alias is written with `alias`
+  --> error_alias_using.sg:2:8
+ 2 | public using Scores = HashMap<string, int>   // the old spelling
+   |        ^^^^^
+  hint: `public alias Scores = HashMap<string, int>`

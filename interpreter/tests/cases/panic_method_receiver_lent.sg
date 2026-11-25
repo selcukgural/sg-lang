@@ -3,7 +3,7 @@
 struct Box {
     string name
 }
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 
 string grow(read BoxRef b) {
     b.name.write(" and more")

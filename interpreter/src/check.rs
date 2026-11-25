@@ -66,7 +66,7 @@ struct EnumInfo {
 enum TypeKind {
     Struct,
     Enum,
-    /// `using NodeRef = shared Node`: another name for a type.
+    /// `alias NodeRef = shared Node`: another name for a type.
     Alias,
 }
 
@@ -91,7 +91,7 @@ struct Names {
     public: HashSet<String>,
     /// Where each type and function is defined.
     spans: HashMap<String, Span>,
-    /// What each alias names, by full name: `using NodeRef = shared Node`.
+    /// What each alias names, by full name: `alias NodeRef = shared Node`.
     aliases: HashMap<String, TypeExpr>,
     /// The types of C declared in `extern` blocks (`struct sqlite3`), by full name: they are
     /// written only behind a raw pointer.
@@ -2748,6 +2748,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             if ty.name == "StringBuilder" {
                 return Err(diag.hint(STRING_BUILDER));
             }
+            // `alias X = int` inside a function reads as a variable `X` of a type `alias`.
+            if ty.name == "alias" {
+                return Err(diag.note("a type alias is written at the top of a file, outside every function: `alias X = int`"));
+            }
             if let Some(hint) = names.use_hint(&ty.name, ty.span) {
                 return Err(diag.hint(hint));
             }
@@ -2769,7 +2773,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         if before < raw {
             if !ty.suffixes.is_empty() {
                 return Err(Diag::error(ty.span, "an atomic pointer is written without `*`, `?` or `[...]` after it")
-                    .hint("name the pointer with `using`: `using NodeRef = raw Node`, then `atomic NodeRef`"));
+                    .hint("name the pointer with `alias`: `alias NodeRef = raw Node`, then `atomic NodeRef`"));
             }
             RAW.with(|found| found.borrow_mut().push((resolved.clone(), ty.span)));
             while raw > before {
@@ -8612,7 +8616,7 @@ impl<'a> Checker<'a> {
             return Ok(ty);
         }
 
-        // `new NodeRef(1)` with `using NodeRef = shared Node` is `new shared Node(1)`.
+        // `new NodeRef(1)` with `alias NodeRef = shared Node` is `new shared Node(1)`.
         if let ExprKind::New(inner) = &mut expr.kind {
             if let Some((checked, locked)) = self.shared_alias(inner)? {
                 let ExprKind::New(inner) = std::mem::replace(&mut expr.kind, ExprKind::Null) else { unreachable!("matched above") };

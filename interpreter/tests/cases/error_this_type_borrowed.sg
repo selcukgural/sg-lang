@@ -1,5 +1,5 @@
 // `PointRef this` takes an owner of its own; a borrowed one is not handed over.
-using PointRef = shared checked Point
+alias PointRef = shared checked Point
 
 struct Point {
     int x

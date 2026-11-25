@@ -3,7 +3,7 @@
 - **comptime:** a const given the value of a call was built in the hundred-and-fourth slice and taken out in the hundred-and-forty-fifth (["No call in a const"](rules/types.md#no-call-in-a-const), choice 1606); a value a function finds is a `static`. The rest of comptime, making types when the program is compiled (Zig's way to generics), stays out.
 - **Not in the first version:** macros. Async was in this line until 14 November 2026; its direction is now decided ([Async, the direction](directions/async.md)), and it is built after threads.
 - **After the first version:** implementing an interface outside the definition of the type (`extend`), using an interface
-  as a type (`read Shape`), associated types, default method bodies, operator definitions, constant parameters, a variable that `is not` opens into the outer scope, a `sync` that pushes the data to disk after `close` (`Flush(true)` in C#), generic type aliases (`using Link<T> = shared checked T`), lazy list chains (like LINQ).
+  as a type (`read Shape`), associated types, default method bodies, operator definitions, constant parameters, a variable that `is not` opens into the outer scope, a `sync` that pushes the data to disk after `close` (`Flush(true)` in C#), generic type aliases (`alias Link<T> = shared checked T`), lazy list chains (like LINQ).
 
 *Decided on 15 November 2026: no overloads, for now.* Two functions or methods do not share a name; a second form takes a
 name of its own (`nextUlong()` beside `nextLong(low, high)`). An overload costs nothing at run time, since the call is

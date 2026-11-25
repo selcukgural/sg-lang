@@ -2,7 +2,7 @@ struct Node {
     int value
 }
 
-using MaybeNode = Node?
+alias MaybeNode = Node?
 
 void main() {
     shared MaybeNode node = null

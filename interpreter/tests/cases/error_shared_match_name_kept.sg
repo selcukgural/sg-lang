@@ -8,7 +8,7 @@ struct Box {
     List<string> items
     string? opt
 }
-using BoxRef = shared checked Box
+alias BoxRef = shared checked Box
 BoxRef make() {
     return new BoxRef { shape = Shape.Named("a long text that lives on the heap one".clone()), items = List<string> { "a long text that lives on the heap two".clone() }, opt = "a long text that lives on the heap three".clone() }
 }

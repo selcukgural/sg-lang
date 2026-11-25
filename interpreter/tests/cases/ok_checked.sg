@@ -6,7 +6,7 @@ enum State : Copyable, Equatable {
     Busy
 }
 
-using CounterRef = shared checked Counter
+alias CounterRef = shared checked Counter
 
 struct Counter : Formattable, Equatable {
     string name

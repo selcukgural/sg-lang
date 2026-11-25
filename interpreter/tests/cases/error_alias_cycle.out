@@ -1,5 +1,5 @@
 error: the aliases `B` and `A` name each other
   an alias is another name for a type that is written out in the end
   --> error_alias_cycle.sg:2:11
- 2 | using B = List<A>
+ 2 | alias B = List<A>
    |           ^^^^^^^
