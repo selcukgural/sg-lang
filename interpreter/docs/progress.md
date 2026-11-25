@@ -552,10 +552,16 @@ socket takes its token's lock rather than the clock's, one for the whole program
 HTTP server's `/ping` gets 1.35 million answers a second where it got 1.22 million (C 1.40 million), 404s
 955,000 where 914,000 (C 1.18 million).
 
+Slice 179 (1874-1881) is the trial of a GIF tool, `giftool`, the step towards the showcase: a GIF read, cropped,
+flipped, turned, drawn whole or cut to what changed, and written again, with LZW by hand in SG, Rust and Zig, and
+`--info` byte for byte as `gifsicle -I`; held to a model in Python, itself held to gifsicle, pixel for pixel.
+The three are within 4% where the work is LZW and the pixels; where colors are looked up in a map SG takes 14% to
+24% more than Rust, its `HashMap` lookup being 2.5 times Rust's ([the tables](../../benchmarks/programs.md#giftool)).
+
 ## Next
 
-Next comes a GIF tool, the step towards the showcase; the heavy level of the stand and the whole table of the
-file server, run at night; and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
+Next comes the lookup of `HashMap`, which the GIF tool found 2.5 times Rust's; the heavy level of the stand and
+the whole table of the file server, run at night; and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
 `sg doc` (1392).

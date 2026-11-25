@@ -145,6 +145,13 @@ says what is slower, by how much and against what, the choice that measured it, 
   slots of a table 32 bits of each key's hash (2.67 s against Rust's 2.16 s before, measured on a quieter
   run); what is left is the search itself, one slot after another where Rust's hashbrown looks at sixteen
   with one instruction. What would fix it: groups of slots looked at together.
+- **`giftool`: colors given indices** (slice 179): `--unoptimize` of 2,000 frames takes 2.22 s against Rust's
+  1.79 s, `-O2` of 300 whole frames 0.288 s against 0.252. Each pixel's color is looked up in a
+  `HashMap<uint, nint>`; one lookup takes 9.4 ns against Rust's 3.8 (a hundred million, 0.94 s against 0.38).
+  Measured on the C SG writes: one round of SipHash fewer for a key of four bytes, as Rust hashes it, 0.86 s;
+  the key kept in the slot so that nothing else is read, no faster; no SipHash at all, 0.54 s, still slower
+  than Rust with it. What is left is the search of `kv` above: one slot after another. What would fix it:
+  groups of slots looked at together, and the shorter hash.
 - **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
   Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
@@ -172,6 +179,10 @@ says what is slower, by how much and against what, the choice that measured it, 
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
 
+- **A loop put into a large function** (`giftool`, `-O2` of 2,000 frames, slice 179): 0.852 s without checks
+  against 0.716 s with them. Clang puts the function that finds the pixels that changed into the one that calls
+  it when the function is small, as it is without checks, and the loop is slower compiled there; with checks it
+  stays a function of its own. Not looked into further.
 - **Several owners** (`tree`, 1.53 times C with plain pointers, choice 354): of the 0.033 s, the atomic
   counts are about 0.010 s and the checks of the borrows about 0.003 s; the rest is the larger blocks and
   the owner taken and let go at each step up the tree. Candidates: counts that are not atomic in a

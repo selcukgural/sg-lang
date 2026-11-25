@@ -3074,3 +3074,68 @@ fn the_trial_of_hashsum() {
     let out = Command::new(&built).args(["-x", "a"]).current_dir(&dir).stdin(Stdio::null()).finished();
     assert_eq!((out.status.code(), out.stdout.len()), (Some(2), 0));
 }
+
+/// The trial of `giftool` (choices 1874-1881), interpreted and compiled, on a GIF of eight frames with
+/// every disposal, a transparent index in each, a loop count and a comment with NULs: `--info` is what
+/// `gifsicle -I` writes of it; each option writes the same bytes interpreted and compiled; what it
+/// writes, read and written again, is the same bytes; a GIF cut short ends with 1 and writes nothing;
+/// an option not known ends with 2. `trials/giftool/tests/check.py` holds it to a model, picture by picture.
+#[test]
+fn the_trial_of_giftool() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_giftool");
+    let source = trials.join("giftool").join("sg").join("giftool.sg").to_string_lossy().into_owned();
+    let built = program(&dir, "giftool").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let sample = std::fs::read(trials.join("giftool").join("tests").join("sample.gif")).unwrap();
+    std::fs::write(dir.join("sample.gif"), &sample).unwrap();
+    std::fs::write(dir.join("cut.gif"), &sample[..sample.len() / 2]).unwrap();
+    let info = "* sample.gif 8 images\n  logical screen 70x50\n  global color table [4]\n  background 0\n  loop count 3\n  \
+                end comment \\000a\n  + image #0 30x20 transparent 0\n  + image #1 30x20 at 5,3 transparent 1\n    \
+                disposal asis delay 0.07s\n  + image #2 30x20 at 10,6 transparent 2\n    disposal background delay 0.14s\n  \
+                + image #3 30x20 at 15,9 transparent 3\n    disposal previous delay 0.21s\n  + image #4 30x20 at 20,12 \
+                transparent 0\n    disposal previous delay 0.28s\n  + image #5 30x20 at 25,15 transparent 1\n    \
+                disposal background delay 0.35s\n  + image #6 30x20 at 30,18 transparent 2\n    disposal asis delay \
+                0.42s\n  + image #7 30x20 at 35,21 transparent 3\n    delay 0.49s\n";
+    let run = |interpreted: bool, words: &[&str]| {
+        let mut command = match interpreted {
+            true => {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+                command.arg(&source);
+                command
+            }
+            false => Command::new(&built),
+        };
+        command.args(words).current_dir(&dir).stdin(Stdio::null()).finished()
+    };
+    let options: [&[&str]; 7] = [
+        &[],
+        &["--unoptimize"],
+        &["-O2"],
+        &["-O1", "--rotate-90"],
+        &["--crop", "10,5+40x30", "--flip-horizontal"],
+        &["--rotate-270"],
+        &["--unoptimize", "--flip-vertical", "--rotate-180"],
+    ];
+    for interpreted in [false, true] {
+        let out = run(interpreted, &["--info", "sample.gif"]);
+        assert_eq!(ran(&out), (0, info.to_string(), String::new()), "interpreted {interpreted}");
+        let out = run(interpreted, &["cut.gif"]);
+        assert_eq!((out.status.code(), out.stdout.len()), (Some(1), 0), "interpreted {interpreted}");
+        assert!(text(&out.stderr).contains("cut.gif"), "{}", text(&out.stderr));
+        let out = run(interpreted, &["--sideways", "sample.gif"]);
+        assert_eq!((out.status.code(), out.stdout.len()), (Some(2), 0), "interpreted {interpreted}");
+    }
+    for words in options {
+        let compiled = run(false, &[words, &["sample.gif"]].concat());
+        assert_eq!(compiled.status.code(), Some(0), "{words:?}: {}", text(&compiled.stderr));
+        let interpreted = run(true, &[words, &["sample.gif"]].concat());
+        assert!(interpreted.stdout == compiled.stdout, "{words:?}: interpreted and compiled differ");
+        std::fs::write(dir.join("again.gif"), &compiled.stdout).unwrap();
+        let again = run(false, &["again.gif"]);
+        assert!(again.stdout == compiled.stdout, "{words:?}: written again, it changed");
+    }
+}

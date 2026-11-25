@@ -1,0 +1,1570 @@
+// `giftool`: reads a GIF, changes it and writes it again, or tells what it holds as `gifsicle -I`
+// does (choices 1874-1881). What each option does, and the algorithm the three versions share, is in
+// `trials/giftool/README.md`.
+//
+//     giftool --info [FILE...]
+//     giftool [--unoptimize] [-O1|-O2] [--crop X,Y+WxH] [--flip-horizontal|--flip-vertical]
+//             [--rotate-90|--rotate-180|--rotate-270] [-o OUT] [IN]
+//
+// The input is read whole, and its frames are read, changed and written one after another into the
+// output, which is written at the end, so that a GIF found broken halfway leaves nothing behind.
+
+const nint MaxPixels = 268435456
+const nint HashSize = 5003
+const nint MaxCodes = 4096
+// The color of a pixel nothing is drawn on; a drawn one has its top byte set.
+const uint Clear = 0
+const uint Opaque = 0xFF000000
+
+// A frame as it was read, its pixels not yet: where its table and its data lie in the input.
+struct Frame {
+    nint left
+    nint top
+    nint width
+    nint height
+    bool interlace
+    nint localBits
+    nint localAt
+    nint transparent
+    int disposal
+    int delay
+    nint codeSize
+    nint dataAt
+    List<List<byte>> comments
+    nint extensions
+}
+
+struct Gif {
+    nint width
+    nint height
+    nint globalBits
+    nint globalAt
+    byte background
+    int loop
+    List<Frame> frames
+    List<List<byte>> endComments
+    nint endExtensions
+}
+
+// A frame to be written: its place, its table (none for the screen's) and its indices.
+struct Out {
+    nint left
+    nint top
+    nint width
+    nint height
+    nint tableBits
+    List<byte> table
+    nint transparent
+    int disposal
+    int delay
+    List<List<byte>> comments
+    List<byte> pixels
+}
+
+// What the options ask for.
+struct Options : Copyable {
+    bool unoptimize
+    int optimize
+    bool crop
+    nint cropX
+    nint cropY
+    nint cropWidth
+    nint cropHeight
+    int flip
+    int rotate
+}
+
+// The tables of the decoder and of the encoder, made once.
+struct Lzw {
+    List<ushort> prefix
+    List<byte> suffix
+    List<byte> first
+    List<ushort> length
+    List<byte> joined
+    List<int> keys
+    List<ushort> codes
+}
+
+Frame newFrame() {
+    return Frame {
+        left = 0, top = 0, width = 0, height = 0, interlace = false, localBits = 0, localAt = 0,
+        transparent = -1, disposal = 0, delay = 0, codeSize = 0, dataAt = 0,
+        comments = List<List<byte>>(), extensions = 0,
+    }
+}
+
+// ---- reading ----
+
+Result<byte, string> next(read byte[] data, ref nint at) {
+    if at >= data.length() {
+        return Error("the GIF ends too soon")
+    }
+    byte b = data[at]
+    at += 1
+    return Ok(b)
+}
+
+Result<nint, string> next16(read byte[] data, ref nint at) {
+    if at + 2 > data.length() {
+        return Error("the GIF ends too soon")
+    }
+    nint v = (nint)data[at] | ((nint)data[at + 1] << 8)
+    at += 2
+    return Ok(v)
+}
+
+Result<void, string> skip(read byte[] data, ref nint at, nint n) {
+    if at + n > data.length() {
+        return Error("the GIF ends too soon")
+    }
+    at += n
+    return Ok()
+}
+
+// Past the sub-blocks, up to the empty one.
+Result<void, string> skipBlocks(read byte[] data, ref nint at) {
+    while true {
+        nint n = (nint)try next(data, ref at)
+        if n == 0 {
+            return Ok()
+        }
+        try skip(data, ref at, n)
+    }
+    return Ok()
+}
+
+Result<List<byte>, string> joinBlocks(read byte[] data, ref nint at) {
+    var out = List<byte>()
+    while true {
+        nint n = (nint)try next(data, ref at)
+        if n == 0 {
+            return Ok(out)
+        }
+        nint from = at
+        try skip(data, ref at, n)
+        out.addAll(data[from..at])
+    }
+    return Ok(out)
+}
+
+// The whole GIF but its pixels; whatever is not as GIF has it is an error.
+Result<Gif, string> readGif(read byte[] data) {
+    if data.length() < 6 || !(data[0..6] == "GIF87a".asBytes() || data[0..6] == "GIF89a".asBytes()) {
+        return Error("not a GIF")
+    }
+    nint at = 6
+    var gif = Gif {
+        width = 0, height = 0, globalBits = 0, globalAt = 0, background = 0, loop = -1,
+        frames = List<Frame>(), endComments = List<List<byte>>(), endExtensions = 0,
+    }
+    gif.width = try next16(data, ref at)
+    gif.height = try next16(data, ref at)
+    byte packed = try next(data, ref at)
+    gif.background = try next(data, ref at)
+    _ = try next(data, ref at)
+    if gif.width == 0 || gif.height == 0 {
+        return Error("the screen has no size")
+    }
+    if gif.width * gif.height > MaxPixels {
+        return Error("the screen has more pixels than giftool takes")
+    }
+    if (packed & 0x80) != 0 {
+        gif.globalBits = (nint)(packed & 7) + 1
+        gif.globalAt = at
+        try skip(data, ref at, 3 << gif.globalBits)
+    }
+    var frame = newFrame()
+    while true {
+        byte block = try next(data, ref at)
+        if block == 0x3B {
+            break
+        }
+        if block == 0x21 {
+            byte kind = try next(data, ref at)
+            if kind == 0xF9 {
+                if try next(data, ref at) != 4 {
+                    return Error("a graphic control extension is not four bytes")
+                }
+                byte p = try next(data, ref at)
+                frame.disposal = (int)((p >> 2) & 7)
+                frame.delay = (int)try next16(data, ref at)
+                byte t = try next(data, ref at)
+                frame.transparent = -1
+                if (p & 1) != 0 {
+                    frame.transparent = (nint)t
+                }
+                if try next(data, ref at) != 0 {
+                    return Error("a graphic control extension is not four bytes")
+                }
+            } else if kind == 0xFE {
+                frame.comments.add(try joinBlocks(data, ref at))
+            } else if kind == 0xFF {
+                if try next(data, ref at) != 11 {
+                    return Error("an application extension's name is not eleven bytes")
+                }
+                nint name = at
+                try skip(data, ref at, 11)
+                if data[name..at] == "NETSCAPE2.0".asBytes() || data[name..at] == "ANIMEXTS1.0".asBytes() {
+                    if try next(data, ref at) != 3 {
+                        return Error("a loop extension is not three bytes")
+                    }
+                    _ = try next(data, ref at)
+                    gif.loop = (int)try next16(data, ref at)
+                    if try next(data, ref at) != 0 {
+                        return Error("a loop extension is not three bytes")
+                    }
+                } else {
+                    try skipBlocks(data, ref at)
+                    frame.extensions += 1
+                }
+            } else {
+                try skipBlocks(data, ref at)
+                frame.extensions += 1
+            }
+        } else if block == 0x2C {
+            frame.left = try next16(data, ref at)
+            frame.top = try next16(data, ref at)
+            frame.width = try next16(data, ref at)
+            frame.height = try next16(data, ref at)
+            byte p = try next(data, ref at)
+            if frame.width == 0 || frame.height == 0 {
+                return Error("a frame has no size")
+            }
+            if frame.left + frame.width > 65535 || frame.top + frame.height > 65535 {
+                return Error("a frame goes past 65535")
+            }
+            if frame.width * frame.height > MaxPixels {
+                return Error("a frame has more pixels than giftool takes")
+            }
+            if (p & 0x80) != 0 {
+                frame.localBits = (nint)(p & 7) + 1
+                frame.localAt = at
+                try skip(data, ref at, 3 << frame.localBits)
+            }
+            frame.interlace = (p & 0x40) != 0
+            frame.codeSize = (nint)try next(data, ref at)
+            if frame.codeSize < 2 || frame.codeSize > 11 {
+                return Error("a frame's code size is not one GIF allows")
+            }
+            frame.dataAt = at
+            try skipBlocks(data, ref at)
+            gif.frames.add(frame)
+            frame = newFrame()
+        } else {
+            return Error("a block of a kind GIF does not have")
+        }
+    }
+    gif.endComments = frame.comments
+    gif.endExtensions = frame.extensions
+    return Ok(gif)
+}
+
+// The indices of a frame from its LZW data, into `pixels[0..count]`.
+Result<void, string> decode(read byte[] data, read Frame frame, ref Lzw lzw, ref List<byte> pixels) {
+    nint count = frame.width * frame.height
+    nint at = frame.dataAt
+    lzw.joined.clear()
+    while true {
+        nint n = (nint)data[at]
+        at += 1
+        if n == 0 {
+            break
+        }
+        lzw.joined.addAll(data[at..at + n])
+        at += n
+    }
+    nint codeSize = frame.codeSize
+    nint clear = 1 << codeSize
+    nint end = clear + 1
+    for c in 0..least(clear, 256) {
+        lzw.suffix[c] = (byte)c
+        lzw.first[c] = (byte)c
+        lzw.length[c] = 1
+    }
+    nint width = codeSize + 1
+    nint mask = (1 << width) - 1
+    nint free = clear + 2
+    nint previous = -1
+    nint pos = 0
+    uint bits = 0
+    nint have = 0
+    nint i = 0
+    nint n = lzw.joined.length()
+    while pos < count {
+        while have < width && i < n {
+            bits |= (uint)lzw.joined[i] << have
+            have += 8
+            i += 1
+        }
+        if have < width {
+            break
+        }
+        nint code = (nint)(bits & (uint)mask)
+        bits >>= width
+        have -= width
+        if code == clear {
+            width = codeSize + 1
+            mask = (1 << width) - 1
+            free = clear + 2
+            previous = -1
+            continue
+        }
+        if code == end {
+            break
+        }
+        if code > 255 && code < clear {
+            return Error("a frame's data has a pixel past 255")
+        }
+        if previous < 0 {
+            if code >= clear {
+                return Error("a frame's data has a code that is not in its table")
+            }
+            pixels[pos] = (byte)code
+            pos += 1
+            previous = code
+            continue
+        }
+        if code > free || (code == free && free >= MaxCodes) {
+            return Error("a frame's data has a code that is not in its table")
+        }
+        if free < MaxCodes {
+            lzw.prefix[free] = (ushort)previous
+            if code < free {
+                lzw.suffix[free] = lzw.first[code]
+            } else {
+                lzw.suffix[free] = lzw.first[previous]
+            }
+            lzw.first[free] = lzw.first[previous]
+            lzw.length[free] = lzw.length[previous] + 1
+            free += 1
+            if free == (1 << width) && width < 12 {
+                width += 1
+                mask = (1 << width) - 1
+            }
+        }
+        // The string of the code, written from its end back.
+        nint len = (nint)lzw.length[code]
+        nint stop = pos + len
+        nint c = code
+        nint k = stop - 1
+        if stop > count {
+            while k >= count {
+                c = (nint)lzw.prefix[c]
+                k -= 1
+            }
+            stop = count
+        }
+        while k > pos {
+            pixels[k] = lzw.suffix[c]
+            c = (nint)lzw.prefix[c]
+            k -= 1
+        }
+        pixels[pos] = lzw.suffix[c]
+        pos = stop
+        previous = code
+    }
+    if pos < count {
+        return Error("a frame's data ends before its pixels do")
+    }
+    return Ok()
+}
+
+// The rows of an interlaced frame put in their order.
+void deinterlace(read byte[] from, ref List<byte> to, nint width, nint height) {
+    nint row = 0
+    var starts = nint[4] { 0, 4, 2, 1 }
+    var steps = nint[4] { 8, 8, 4, 2 }
+    for pass in 0..4 {
+        nint step = steps[pass]
+        nint y = starts[pass]
+        while y < height {
+            to[y * width..(y + 1) * width].copyFrom(from[row * width..(row + 1) * width])
+            row += 1
+            y += step
+        }
+    }
+}
+
+// ---- writing ----
+
+void put16(ref List<byte> out, nint v) {
+    out.add((byte)(v & 0xFF))
+    out.add((byte)(v >> 8))
+}
+
+void putBlocks(ref List<byte> out, read byte[] data) {
+    nint at = 0
+    while at < data.length() {
+        nint n = data.length() - at
+        if n > 255 {
+            n = 255
+        }
+        out.add((byte)n)
+        out.addAll(data[at..at + n])
+        at += n
+    }
+    out.add(0)
+}
+
+nint least(nint a, nint b) {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+nint most(nint a, nint b) {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+nint bitsFor(nint n) {
+    nint bits = 1
+    while (1 << bits) < n {
+        bits += 1
+    }
+    return bits
+}
+
+// The LZW of `pixels` in sub-blocks, after its code size (README, "Writing").
+void encode(ref List<byte> out, read byte[] pixels, nint codeSize, ref Lzw lzw) {
+    out.add((byte)codeSize)
+    nint clear = 1 << codeSize
+    nint width = codeSize + 1
+    nint free = clear + 2
+    for h in 0..HashSize {
+        lzw.keys[h] = -1
+    }
+    // The bits not yet written, and the sub-block being filled: its length byte is at `lengthAt`.
+    ulong bits = (ulong)clear
+    nint have = width
+    nint lengthAt = out.length()
+    out.add(0)
+    nint inBlock = 0
+    int ent = (int)pixels[0]
+    nint n = pixels.length()
+    for i in 1..n {
+        int c = (int)pixels[i]
+        int key = (c << 12) + ent
+        nint h = (nint)((c << 4) ^ ent)
+        if lzw.keys[h] == key {
+            ent = (int)lzw.codes[h]
+            continue
+        }
+        if lzw.keys[h] >= 0 {
+            nint step = HashSize - h
+            if h == 0 {
+                step = 1
+            }
+            bool found = false
+            while true {
+                h -= step
+                if h < 0 {
+                    h += HashSize
+                }
+                if lzw.keys[h] == key {
+                    found = true
+                    break
+                }
+                if lzw.keys[h] < 0 {
+                    break
+                }
+            }
+            if found {
+                ent = (int)lzw.codes[h]
+                continue
+            }
+        }
+        bits |= (ulong)ent << have
+        have += width
+        if free >= (1 << width) && width < 12 {
+            width += 1
+        }
+        if free < MaxCodes {
+            lzw.keys[h] = key
+            lzw.codes[h] = (ushort)free
+            free += 1
+        } else {
+            bits |= (ulong)clear << have
+            have += width
+            for j in 0..HashSize {
+                lzw.keys[j] = -1
+            }
+            width = codeSize + 1
+            free = clear + 2
+        }
+        while have >= 8 {
+            out.add((byte)(bits & 0xFF))
+            bits >>= 8
+            have -= 8
+            inBlock += 1
+            if inBlock == 255 {
+                out[lengthAt] = 255
+                lengthAt = out.length()
+                out.add(0)
+                inBlock = 0
+            }
+        }
+        ent = c
+    }
+    bits |= (ulong)ent << have
+    have += width
+    if free >= (1 << width) && width < 12 {
+        width += 1
+    }
+    bits |= (ulong)(clear + 1) << have
+    have += width
+    while have > 0 {
+        out.add((byte)(bits & 0xFF))
+        bits >>= 8
+        have -= 8
+        inBlock += 1
+        if inBlock == 255 {
+            out[lengthAt] = 255
+            lengthAt = out.length()
+            out.add(0)
+            inBlock = 0
+        }
+        if have < 0 {
+            have = 0
+        }
+    }
+    if inBlock > 0 {
+        out[lengthAt] = (byte)inBlock
+        out.add(0)
+    }
+}
+
+void writeFrame(ref List<byte> out, read Out f, read byte[] pixels, nint globalBits, ref Lzw lzw) {
+    for comment in read f.comments {
+        out.add(0x21)
+        out.add(0xFE)
+        putBlocks(ref out, read comment)
+    }
+    if f.disposal != 0 || f.delay != 0 || f.transparent >= 0 {
+        out.add(0x21)
+        out.add(0xF9)
+        out.add(4)
+        if f.transparent >= 0 {
+            out.add((byte)((f.disposal << 2) | 1))
+        } else {
+            out.add((byte)(f.disposal << 2))
+        }
+        put16(ref out, (nint)f.delay)
+        if f.transparent >= 0 {
+            out.add((byte)f.transparent)
+        } else {
+            out.add(0)
+        }
+        out.add(0)
+    }
+    out.add(0x2C)
+    put16(ref out, f.left)
+    put16(ref out, f.top)
+    put16(ref out, f.width)
+    put16(ref out, f.height)
+    nint bits = globalBits
+    if f.tableBits > 0 {
+        out.add((byte)(0x80 | (f.tableBits - 1)))
+        out.addAll(read f.table)
+        bits = f.tableBits
+    } else {
+        out.add(0)
+    }
+    byte most = 0
+    for p in pixels {
+        if p > most {
+            most = p
+        }
+    }
+    nint codeSize = bitsFor((nint)most + 1)
+    if bits > codeSize {
+        codeSize = bits
+    }
+    if codeSize < 2 {
+        codeSize = 2
+    }
+    encode(ref out, pixels, codeSize, ref lzw)
+}
+
+// ---- frames kept as indices: cut to the screen and the crop, flipped, turned ----
+
+struct View : Copyable {
+    // The crop on the screen, and the size of what is written.
+    nint x
+    nint y
+    nint width
+    nint height
+    nint outWidth
+    nint outHeight
+}
+
+// A frame of `w` by `h` at `left`, `top` of the cropped screen, flipped and turned: its new place and
+// size; and where each of its new pixels comes from, when `pixels` is given.
+struct Placed : Copyable {
+    nint left
+    nint top
+    nint width
+    nint height
+}
+
+Placed place(View view, Options o, nint left, nint top, nint w, nint h) {
+    nint l = left
+    nint t = top
+    if o.flip == 1 {
+        l = view.width - left - w
+    } else if o.flip == 2 {
+        t = view.height - top - h
+    }
+    if o.rotate == 90 {
+        return Placed { left = view.height - t - h, top = l, width = h, height = w }
+    }
+    if o.rotate == 180 {
+        return Placed { left = view.width - l - w, top = view.height - t - h, width = w, height = h }
+    }
+    if o.rotate == 270 {
+        return Placed { left = t, top = view.width - l - w, width = h, height = w }
+    }
+    return Placed { left = l, top = t, width = w, height = h }
+}
+
+// Where the pixels of a part of a picture come from once flipped and turned: the pixel at (x, y) of
+// the result is at `base + x * stepX + y * stepY` of the picture.
+struct Walk : Copyable {
+    nint base
+    nint stepX
+    nint stepY
+    nint width
+    nint height
+}
+
+// The walk over the part `w` by `h` at `origin` of a picture `stride` wide: the flip undone after the
+// turn, each a map of (x, y) that is a sum of x, y and a number.
+Walk walkOf(Options o, nint origin, nint stride, nint w, nint h) {
+    nint ax = 1
+    nint bx = 0
+    nint cx = 0
+    nint ay = 0
+    nint by = 1
+    nint cy = 0
+    nint ow = w
+    nint oh = h
+    if o.rotate == 90 {
+        ax = 0
+        bx = 1
+        ay = -1
+        by = 0
+        cy = h - 1
+        ow = h
+        oh = w
+    } else if o.rotate == 180 {
+        ax = -1
+        cx = w - 1
+        by = -1
+        cy = h - 1
+    } else if o.rotate == 270 {
+        ax = 0
+        bx = -1
+        cx = w - 1
+        ay = 1
+        by = 0
+        ow = h
+        oh = w
+    }
+    if o.flip == 1 {
+        ax = -ax
+        bx = -bx
+        cx = w - 1 - cx
+    } else if o.flip == 2 {
+        ay = -ay
+        by = -by
+        cy = h - 1 - cy
+    }
+    return Walk { base = origin + cx + cy * stride, stepX = ax + ay * stride, stepY = bx + by * stride, width = ow, height = oh }
+}
+
+void walkBytes(read byte[] from, Walk walk, ref List<byte> to) {
+    to.clear()
+    for y in 0..walk.height {
+        nint at = walk.base + y * walk.stepY
+        if walk.stepX == 1 {
+            to.addAll(from[at..at + walk.width])
+            continue
+        }
+        for _ in 0..walk.width {
+            to.add(from[at])
+            at += walk.stepX
+        }
+    }
+}
+
+void walkColors(read uint[] from, Walk walk, ref List<uint> to) {
+    to.clear()
+    for y in 0..walk.height {
+        nint at = walk.base + y * walk.stepY
+        if walk.stepX == 1 {
+            to.addAll(from[at..at + walk.width])
+            continue
+        }
+        for _ in 0..walk.width {
+            to.add(from[at])
+            at += walk.stepX
+        }
+    }
+}
+
+List<byte> tableCopy(read byte[] data, nint at, nint bits) {
+    var t = List<byte>()
+    if bits > 0 {
+        t.addAll(data[at..at + (3 << bits)])
+    }
+    return t
+}
+
+List<List<byte>> commentsOf(read List<List<byte>> comments) {
+    var out = List<List<byte>>()
+    for c in read comments {
+        var copy = List<byte>()
+        copy.addAll(read c)
+        out.add(copy)
+    }
+    return out
+}
+
+// A frame with its indices: the part of it on the cropped screen, flipped and turned, into `turned`;
+// `whole` when nothing of it changes and its pixels are written as they were read.
+Out indexFrame(read byte[] data, read Frame f, read byte[] pixels, View view, Options o, ref List<byte> turned, ref bool whole) {
+    nint x0 = f.left
+    nint y0 = f.top
+    nint x1 = f.left + f.width
+    nint y1 = f.top + f.height
+    if x0 < view.x {
+        x0 = view.x
+    }
+    if y0 < view.y {
+        y0 = view.y
+    }
+    if x1 > view.x + view.width {
+        x1 = view.x + view.width
+    }
+    if y1 > view.y + view.height {
+        y1 = view.y + view.height
+    }
+    var out = Out {
+        left = 0, top = 0, width = 1, height = 1, tableBits = f.localBits,
+        table = tableCopy(data, f.localAt, f.localBits), transparent = 0, disposal = 1,
+        delay = f.delay, comments = commentsOf(read f.comments), pixels = List<byte>(),
+    }
+    whole = false
+    if x0 >= x1 || y0 >= y1 {
+        // Nothing of it is on the screen: a pixel that is not drawn.
+        turned.clear()
+        turned.add(0)
+        return out
+    }
+    nint w = x1 - x0
+    nint h = y1 - y0
+    var at = place(view, o, x0 - view.x, y0 - view.y, w, h)
+    out.left = at.left
+    out.top = at.top
+    out.width = at.width
+    out.height = at.height
+    out.transparent = f.transparent
+    out.disposal = f.disposal
+    whole = w == f.width && h == f.height && o.flip == 0 && o.rotate == 0
+    if !whole {
+        walkBytes(pixels, walkOf(o, (y0 - f.top) * f.width + x0 - f.left, f.width, w, h), ref turned)
+    }
+    return out
+}
+
+// ---- frames put together on the screen ----
+
+// The colors of a table, `Opaque` set; an index past it is black.
+void colorsOf(read byte[] data, nint at, nint bits, ref List<uint> colors) {
+    for i in 0..256 {
+        colors[i] = Opaque
+    }
+    if bits == 0 {
+        return
+    }
+    for i in 0..(1 << bits) {
+        nint p = at + 3 * i
+        colors[i] = Opaque | ((uint)data[p] << 16) | ((uint)data[p + 1] << 8) | (uint)data[p + 2]
+    }
+}
+
+// Indices and a table for the colors of a frame: the screen's table when it holds every one of them
+// (and an index none of them takes, when one is clear), or a table of their own in the order they come.
+Result<void, string> paletteOf(read uint[] colors, read HashMap<uint, nint> global, nint globalBits, ref Out out) {
+    out.pixels.clear()
+    bool clear = false
+    bool fits = globalBits > 0
+    if fits {
+        var used = List<bool>.repeat(false, 256)
+        uint last = Clear
+        nint lastIndex = 0
+        for c in colors {
+            if c == Clear {
+                clear = true
+                out.pixels.add(0)
+                continue
+            }
+            if c != last {
+                var found = global.get(c)
+                if found is null {
+                    fits = false
+                    break
+                }
+                last = c
+                lastIndex = found
+                used[lastIndex] = true
+            }
+            out.pixels.add((byte)lastIndex)
+        }
+        if fits {
+            out.tableBits = 0
+            out.table.clear()
+            out.transparent = -1
+            if clear {
+                nint free = -1
+                for i in 0..(1 << globalBits) {
+                    if !used[i] {
+                        free = i
+                        break
+                    }
+                }
+                if free < 0 {
+                    fits = false
+                } else {
+                    out.transparent = free
+                    // the clear pixels were written as 0 for now
+                    nint k = 0
+                    for c in colors {
+                        if c == Clear {
+                            out.pixels[k] = (byte)free
+                        }
+                        k += 1
+                    }
+                    return Ok()
+                }
+            } else {
+                return Ok()
+            }
+        }
+    }
+    out.pixels.clear()
+    clear = false
+    var local = HashMap<uint, nint>()
+    var order = List<uint>()
+    uint last = Clear
+    nint lastIndex = -1
+    for c in colors {
+        if c == Clear {
+            clear = true
+            out.pixels.add(0)
+            continue
+        }
+        if c != last || lastIndex < 0 {
+            var index = local.getOrAdd(c, order.length())
+            if index == order.length() {
+                order.add(c)
+            }
+            last = c
+            lastIndex = index
+        }
+        out.pixels.add((byte)(lastIndex & 0xFF))
+    }
+    nint count = order.length()
+    if clear {
+        count += 1
+    }
+    if count > 256 {
+        return Error("a frame has more than 256 colors")
+    }
+    if clear {
+        nint t = order.length()
+        nint k = 0
+        for c in colors {
+            if c == Clear {
+                out.pixels[k] = (byte)t
+            }
+            k += 1
+        }
+        out.transparent = t
+    } else {
+        out.transparent = -1
+    }
+    nint bits = bitsFor(most(count, 2))
+    out.tableBits = bits
+    out.table.clear()
+    for c in read order {
+        out.table.add((byte)((c >> 16) & 0xFF))
+        out.table.add((byte)((c >> 8) & 0xFF))
+        out.table.add((byte)(c & 0xFF))
+    }
+    while out.table.length() < (3 << bits) {
+        out.table.add(0)
+    }
+    return Ok()
+}
+
+struct Rect : Copyable {
+    nint x0
+    nint y0
+    nint x1
+    nint y1
+}
+
+Rect noRect() {
+    return Rect { x0 = 0, y0 = 0, x1 = 0, y1 = 0 }
+}
+
+bool isEmpty(Rect r) {
+    return r.x0 >= r.x1 || r.y0 >= r.y1
+}
+
+Rect joined(Rect a, Rect b) {
+    if isEmpty(a) {
+        return b
+    }
+    if isEmpty(b) {
+        return a
+    }
+    return Rect {
+        x0 = least(a.x0, b.x0), y0 = least(a.y0, b.y0), x1 = most(a.x1, b.x1), y1 = most(a.y1, b.y1),
+    }
+}
+
+// The smallest rectangle holding the pixels where `before` and `after` differ; with `cleared` only
+// those drawn before and clear after.
+Rect differing(read uint[] before, read uint[] after, nint w, nint h, bool cleared) {
+    nint x0 = w
+    nint y0 = h
+    nint x1 = 0
+    nint y1 = 0
+    for y in 0..h {
+        nint row = y * w
+        for x in 0..w {
+            uint a = before[row + x]
+            uint b = after[row + x]
+            bool differs = a != b
+            if cleared {
+                differs = a != Clear && b == Clear
+            }
+            if differs {
+                if x < x0 {
+                    x0 = x
+                }
+                if x >= x1 {
+                    x1 = x + 1
+                }
+                if y < y0 {
+                    y0 = y
+                }
+                y1 = y + 1
+            }
+        }
+    }
+    if x0 >= x1 {
+        return noRect()
+    }
+    return Rect { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }
+}
+
+// A frame of `-O` not yet written: the next frame may still make it larger and have it cleared.
+struct Pending {
+    bool there
+    Rect rect
+    List<uint> colors
+    int delay
+    int disposal
+    List<List<byte>> comments
+}
+
+Result<void, string> writePending(ref List<byte> out, ref Pending p, read HashMap<uint, nint> global, nint globalBits, ref Lzw lzw) {
+    var f = Out {
+        left = p.rect.x0, top = p.rect.y0, width = p.rect.x1 - p.rect.x0, height = p.rect.y1 - p.rect.y0,
+        tableBits = 0, table = List<byte>(), transparent = -1, disposal = p.disposal, delay = p.delay,
+        comments = p.comments.replace(List<List<byte>>()), pixels = List<byte>(),
+    }
+    try paletteOf(read p.colors, read global, globalBits, ref f)
+    writeFrame(ref out, read f, read f.pixels, globalBits, ref lzw)
+    p.there = false
+    return Ok()
+}
+
+// The colors of `rect` of a screen `w` wide: of `now`, or clear where `before` shows the same, for -O2.
+void cutColors(read uint[] now, read uint[] before, nint w, Rect rect, bool sameClear, ref List<uint> to) {
+    to.clear()
+    for y in rect.y0..rect.y1 {
+        nint row = y * w
+        for x in rect.x0..rect.x1 {
+            uint c = now[row + x]
+            if sameClear && before[row + x] == c {
+                to.add(Clear)
+            } else {
+                to.add(c)
+            }
+        }
+    }
+}
+
+// ---- the program ----
+
+Result<List<byte>, string> rewrite(read byte[] data, read Gif gif, Options o) {
+    if gif.frames.length() == 0 {
+        return Error("the GIF has no frames")
+    }
+    var view = View {
+        x = 0, y = 0, width = gif.width, height = gif.height, outWidth = gif.width, outHeight = gif.height,
+    }
+    if o.crop {
+        if o.cropX >= gif.width || o.cropY >= gif.height {
+            return Error("the crop is outside the screen")
+        }
+        view.x = o.cropX
+        view.y = o.cropY
+        view.width = least(o.cropWidth, gif.width - o.cropX)
+        view.height = least(o.cropHeight, gif.height - o.cropY)
+    }
+    bool sideways = o.rotate == 90 || o.rotate == 270
+    if sideways {
+        view.outWidth = view.height
+        view.outHeight = view.width
+    } else {
+        view.outWidth = view.width
+        view.outHeight = view.height
+    }
+
+    var out = List<byte>.withCapacity(data.length() + 1024)
+    out.addAll("GIF89a".asBytes())
+    put16(ref out, view.outWidth)
+    put16(ref out, view.outHeight)
+    if gif.globalBits > 0 {
+        out.add((byte)(0x80 | 0x70 | (gif.globalBits - 1)))
+    } else {
+        out.add(0)
+    }
+    out.add(gif.background)
+    out.add(0)
+    if gif.globalBits > 0 {
+        out.addAll(data[gif.globalAt..gif.globalAt + (3 << gif.globalBits)])
+    }
+    if gif.loop >= 0 {
+        out.add(0x21)
+        out.add(0xFF)
+        out.add(11)
+        out.addAll("NETSCAPE2.0".asBytes())
+        out.add(3)
+        out.add(1)
+        put16(ref out, (nint)gif.loop)
+        out.add(0)
+    }
+
+    var lzw = Lzw {
+        prefix = List<ushort>.repeat(0, MaxCodes), suffix = List<byte>.repeat(0, MaxCodes),
+        first = List<byte>.repeat(0, MaxCodes), length = List<ushort>.repeat(0, MaxCodes),
+        joined = List<byte>(), keys = List<int>.repeat(-1, HashSize), codes = List<ushort>.repeat(0, HashSize),
+    }
+    var indices = List<byte>()
+    var rows = List<byte>()
+    bool together = o.unoptimize || o.optimize > 0
+    // The screen as drawn so far, what a frame of `previous` puts back, and the views of the screen.
+    nint screen = 0
+    nint seen = 0
+    if together {
+        screen = gif.width * gif.height
+        seen = view.outWidth * view.outHeight
+    }
+    var canvas = List<uint>.repeat(Clear, screen)
+    var saved = List<uint>()
+    var colors = List<uint>.repeat(Opaque, 256)
+    var global = HashMap<uint, nint>()
+    if gif.globalBits > 0 {
+        colorsOf(data, gif.globalAt, gif.globalBits, ref colors)
+        for i in 0..(1 << gif.globalBits) {
+            _ = global.getOrAdd(colors[i], i)
+        }
+    }
+    var turned = List<byte>()
+    bool whole = false
+    var screenWalk = walkOf(o, view.y * gif.width + view.x, gif.width, view.width, view.height)
+    var now = List<uint>.repeat(Clear, seen)
+    var before = List<uint>.repeat(Clear, seen)
+    var base = List<uint>.repeat(Clear, seen)
+    var pending = Pending {
+        there = false, rect = noRect(), colors = List<uint>(), delay = 0, disposal = 1,
+        comments = List<List<byte>>(),
+    }
+    for frame in read gif.frames {
+        nint count = frame.width * frame.height
+        if indices.length() < count {
+            indices = List<byte>.repeat(0, count)
+        }
+        try decode(data, frame, ref lzw, ref indices)
+        if frame.interlace {
+            if rows.length() < count {
+                rows = List<byte>.repeat(0, count)
+            }
+            deinterlace(indices[0..count], ref rows, frame.width, frame.height)
+            indices[0..count].copyFrom(rows[0..count])
+        }
+        if !together {
+            var f = indexFrame(data, frame, indices[0..count], view, o, ref turned, ref whole)
+            if whole {
+                writeFrame(ref out, read f, indices[0..count], gif.globalBits, ref lzw)
+            } else {
+                writeFrame(ref out, read f, read turned, gif.globalBits, ref lzw)
+            }
+            continue
+        }
+        // Drawn on the screen.
+        if frame.localBits > 0 {
+            colorsOf(data, frame.localAt, frame.localBits, ref colors)
+        } else {
+            colorsOf(data, gif.globalAt, gif.globalBits, ref colors)
+        }
+        nint x0 = frame.left
+        nint y0 = frame.top
+        nint x1 = least(frame.left + frame.width, gif.width)
+        nint y1 = least(frame.top + frame.height, gif.height)
+        if frame.disposal == 3 {
+            saved.clear()
+            for y in y0..y1 {
+                if x0 < x1 {
+                    saved.addAll(canvas[y * gif.width + x0..y * gif.width + x1])
+                }
+            }
+        }
+        for y in y0..y1 {
+            nint row = (y - frame.top) * frame.width - frame.left
+            for x in x0..x1 {
+                byte p = indices[row + x]
+                if (nint)p == frame.transparent {
+                    continue
+                }
+                canvas[y * gif.width + x] = colors[(nint)p]
+            }
+        }
+        walkColors(read canvas, screenWalk, ref now)
+        if frame.disposal == 2 {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    canvas[y * gif.width + x] = Clear
+                }
+            }
+        } else if frame.disposal == 3 {
+            nint k = 0
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    canvas[y * gif.width + x] = saved[k]
+                    k += 1
+                }
+            }
+        }
+        nint vw = view.outWidth
+        nint vh = view.outHeight
+        if o.optimize == 0 {
+            var f = Out {
+                left = 0, top = 0, width = vw, height = vh, tableBits = 0, table = List<byte>(),
+                transparent = -1, disposal = 2, delay = frame.delay, comments = commentsOf(read frame.comments),
+                pixels = List<byte>(),
+            }
+            try paletteOf(read now, read global, gif.globalBits, ref f)
+            writeFrame(ref out, read f, read f.pixels, gif.globalBits, ref lzw)
+            continue
+        }
+        // -O: what was drawn and is clear now is cleared by the frame before, made larger to hold it.
+        base.copyFrom(read before)
+        if pending.there {
+            var gone = differing(read before, read now, vw, vh, true)
+            if !isEmpty(gone) {
+                var grown = joined(pending.rect, gone)
+                var colorsBefore = List<uint>()
+                for y in grown.y0..grown.y1 {
+                    for x in grown.x0..grown.x1 {
+                        bool inside = x >= pending.rect.x0 && x < pending.rect.x1 && y >= pending.rect.y0 && y < pending.rect.y1
+                        if inside {
+                            nint w = pending.rect.x1 - pending.rect.x0
+                            colorsBefore.add(pending.colors[(y - pending.rect.y0) * w + x - pending.rect.x0])
+                        } else if o.optimize == 2 {
+                            colorsBefore.add(Clear)
+                        } else {
+                            colorsBefore.add(before[y * vw + x])
+                        }
+                    }
+                }
+                pending.rect = grown
+                pending.colors = colorsBefore
+                pending.disposal = 2
+                for y in grown.y0..grown.y1 {
+                    for x in grown.x0..grown.x1 {
+                        base[y * vw + x] = Clear
+                    }
+                }
+            }
+            try writePending(ref out, ref pending, read global, gif.globalBits, ref lzw)
+        }
+        var changed = differing(read base, read now, vw, vh, false)
+        if isEmpty(changed) {
+            changed = Rect { x0 = 0, y0 = 0, x1 = 1, y1 = 1 }
+        }
+        pending.there = true
+        pending.rect = changed
+        cutColors(read now, read base, vw, changed, o.optimize == 2, ref pending.colors)
+        pending.delay = frame.delay
+        pending.disposal = 1
+        pending.comments = commentsOf(read frame.comments)
+        before.copyFrom(read now)
+    }
+    if pending.there {
+        try writePending(ref out, ref pending, read global, gif.globalBits, ref lzw)
+    }
+    for comment in read gif.endComments {
+        out.add(0x21)
+        out.add(0xFE)
+        putBlocks(ref out, read comment)
+    }
+    out.add(0x3B)
+    return Ok(out)
+}
+
+// ---- --info, as gifsicle -I writes it ----
+
+void safeText(ref string s, read byte[] data) {
+    nint n = data.length()
+    for i in 0..n {
+        byte b = data[i]
+        if b < 0x20 || b >= 0x7F || b == 0x5C {
+            if b == 7 {
+                s.write("\\a")
+            } else if b == 8 {
+                s.write("\\b")
+            } else if b == 12 {
+                s.write("\\f")
+            } else if b == 10 {
+                s.write("\\n")
+            } else if b == 13 {
+                s.write("\\r")
+            } else if b == 9 {
+                s.write("\\t")
+            } else if b == 11 {
+                s.write("\\v")
+            } else if b == 0x5C {
+                s.write("\\\\")
+            } else if b == 0 {
+                if n - i > 1 {
+                    s.write("\\000")
+                }
+            } else {
+                s.write($"\\{(b >> 6) & 7}{(b >> 3) & 7}{b & 7}")
+            }
+        } else {
+            s.write((char)b)
+        }
+    }
+}
+
+string infoOf(read Gif gif, read string name) {
+    var s = string.withCapacity(256)
+    nint n = gif.frames.length()
+    if n == 0 {
+        return s
+    }
+    if n == 1 {
+        s.write($"* {name} 1 image\n")
+    } else {
+        s.write($"* {name} {n} images\n")
+    }
+    s.write($"  logical screen {gif.width}x{gif.height}\n")
+    if gif.globalBits > 0 {
+        s.write($"  global color table [{1 << gif.globalBits}]\n")
+        s.write($"  background {gif.background}\n")
+    }
+    if gif.loop == 0 {
+        s.write("  loop forever\n")
+    } else if gif.loop > 0 {
+        s.write($"  loop count {gif.loop}\n")
+    }
+    for c in read gif.endComments {
+        s.write("  end comment ")
+        safeText(ref s, read c)
+        s.write('\n')
+    }
+    if gif.endExtensions > 0 {
+        s.write($"  end extensions {gif.endExtensions}\n")
+    }
+    nint i = 0
+    for f in read gif.frames {
+        s.write($"  + image #{i} {f.width}x{f.height}")
+        if f.left != 0 || f.top != 0 {
+            s.write($" at {f.left},{f.top}")
+        }
+        if f.interlace {
+            s.write(" interlaced")
+        }
+        if f.transparent >= 0 {
+            s.write($" transparent {f.transparent}")
+        }
+        s.write('\n')
+        for c in read f.comments {
+            s.write("    comment ")
+            safeText(ref s, read c)
+            s.write('\n')
+        }
+        if f.extensions > 0 {
+            s.write($"    extensions {f.extensions}\n")
+        }
+        if f.localBits > 0 {
+            s.write($"    local color table [{1 << f.localBits}]\n")
+        }
+        if f.disposal != 0 || f.delay != 0 {
+            s.write("   ")
+            if f.disposal != 0 {
+                s.write(" disposal ")
+                if f.disposal == 1 {
+                    s.write("asis")
+                } else if f.disposal == 2 {
+                    s.write("background")
+                } else if f.disposal == 3 {
+                    s.write("previous")
+                } else {
+                    s.write($"{f.disposal}")
+                }
+            }
+            if f.delay != 0 {
+                s.write($" delay {f.delay / 100}.{f.delay % 100:D2}s")
+            }
+            s.write('\n')
+        }
+        i += 1
+    }
+    return s
+}
+
+Result<List<byte>, IoError> readInput(read string name) {
+    if name != "-" {
+        return File.readBytes(name)
+    }
+    var all = List<byte>()
+    var block = List<byte>.repeat(0, 65536)
+    while true {
+        var got = try Stdin.readSome(ref block[0..65536])
+        if got == 0 {
+            break
+        }
+        all.addAll(block[0..got])
+    }
+    return Ok(all)
+}
+
+void fail(string name, string message) {
+    printError($"giftool: {name}: {message}")
+    exit(1)
+}
+
+void usage(string message) {
+    printError($"giftool: {message}")
+    printError("Try 'giftool --help'.")
+    exit(2)
+}
+
+// `X,Y+WxH`, digits only.
+nint? number(read string s) {
+    if s.length() == 0 || s.length() > 9 {
+        return null
+    }
+    for c in s.chars() {
+        if c < '0' || c > '9' {
+            return null
+        }
+    }
+    match nint.parse(s) {
+        Ok(n) => return n
+        Error(_) => return null
+    }
+}
+
+void main(List<string> args) {
+    var cl = CommandLine("giftool", "Reads a GIF, changes it and writes it again, or tells what it holds.")
+    cl.flag("info", 'I', "Tell what each GIF holds, as gifsicle -I does")
+    cl.flag("unoptimize", null, "Write each frame whole, as the screen shows it")
+    cl.option("optimize", 'O', "LEVEL", "1: each frame only where the screen changed; 2: also clear what did not")
+    cl.option("crop", null, "X,Y+WxH", "Keep only this part of the screen")
+    cl.flag("flip-horizontal", null, "Mirror left to right")
+    cl.flag("flip-vertical", null, "Mirror top to bottom")
+    cl.flag("rotate-90", null, "Turn a quarter clockwise")
+    cl.flag("rotate-180", null, "Turn half round")
+    cl.flag("rotate-270", null, "Turn a quarter the other way")
+    cl.option("output", 'o', "OUT", "Where to write the GIF; the output when not given")
+    cl.rest("files", "The GIF to read, the input when none; with --info, any number")
+    var a = cl.parseOrExit(read args)
+    var files = a.rest()
+
+    if a.flag("info") {
+        bool failed = false
+        var names = List<string>()
+        for f in read files {
+            names.add(f.clone())
+        }
+        if names.length() == 0 {
+            names.add("-")
+        }
+        for name in read names {
+            string shown = name.clone()
+            if name == "-" {
+                shown = "<stdin>"
+            }
+            var data = match readInput(read name) {
+                Ok(d) => d
+                Error(cause) => {
+                    printError($"giftool: {shown}: {cause}")
+                    failed = true
+                    continue
+                }
+            }
+            match readGif(read data) {
+                Ok(gif) => {
+                    match Stdout.write(infoOf(read gif, read shown)) {
+                        Ok => {}
+                        Error(cause) => fail("<stdout>", $"{cause}".toString())
+                    }
+                }
+                Error(message) => {
+                    printError($"giftool: {shown}: {message}")
+                    failed = true
+                }
+            }
+        }
+        match Stdout.flush() {
+            Ok => {}
+            Error(cause) => fail("<stdout>", $"{cause}".toString())
+        }
+        if failed {
+            exit(1)
+        }
+        return
+    }
+
+    var o = Options {
+        unoptimize = a.flag("unoptimize"), optimize = 0, crop = false, cropX = 0, cropY = 0, cropWidth = 0,
+        cropHeight = 0, flip = 0, rotate = 0,
+    }
+    var level = a.option("optimize")
+    if level is not null {
+        var l = level
+        if l == "1" {
+            o.optimize = 1
+        } else if l == "2" {
+            o.optimize = 2
+        } else {
+            usage($"-O takes 1 or 2, not '{l}'".toString())
+        }
+    }
+    var crop = a.option("crop")
+    if crop is not null {
+        var text = crop
+        var plus = text.indexOf('+')
+        var comma = text.indexOf(',')
+        var times = text.indexOf('x')
+        bool ok = false
+        if plus is not null && comma is not null && times is not null {
+            nint p = plus
+            nint c = comma
+            nint t = times
+            if c < p && p < t {
+                var x = number(text[0..c])
+                var y = number(text[c + 1..p])
+                var w = number(text[p + 1..t])
+                var h = number(text[t + 1..])
+                if x is not null && y is not null && w is not null && h is not null {
+                    o.crop = true
+                    o.cropX = x
+                    o.cropY = y
+                    o.cropWidth = w
+                    o.cropHeight = h
+                    ok = o.cropWidth > 0 && o.cropHeight > 0
+                }
+            }
+        }
+        if !ok {
+            usage($"--crop takes X,Y+WxH, not '{text}'".toString())
+        }
+    }
+    if a.flag("flip-horizontal") && a.flag("flip-vertical") {
+        usage("one flip at most")
+    }
+    if a.flag("flip-horizontal") {
+        o.flip = 1
+    } else if a.flag("flip-vertical") {
+        o.flip = 2
+    }
+    nint turns = 0
+    if a.flag("rotate-90") {
+        o.rotate = 90
+        turns += 1
+    }
+    if a.flag("rotate-180") {
+        o.rotate = 180
+        turns += 1
+    }
+    if a.flag("rotate-270") {
+        o.rotate = 270
+        turns += 1
+    }
+    if turns > 1 {
+        usage("one rotation at most")
+    }
+    if files.length() > 1 {
+        usage("one GIF at a time")
+    }
+    string name = "-"
+    if files.length() == 1 {
+        name = files[0].clone()
+    }
+    string shown = name.clone()
+    if name == "-" {
+        shown = "<stdin>"
+    }
+    var data = match readInput(read name) {
+        Ok(d) => d
+        Error(cause) => {
+            fail(shown.clone(), $"{cause}".toString())
+            List<byte>()
+        }
+    }
+    var gif = match readGif(read data) {
+        Ok(g) => g
+        Error(message) => {
+            fail(shown.clone(), message)
+            return
+        }
+    }
+    var written = match rewrite(read data, read gif, o) {
+        Ok(bytes) => bytes
+        Error(message) => {
+            fail(shown.clone(), message)
+            return
+        }
+    }
+    var output = a.option("output")
+    var target = output ?? "-"
+    if target == "-" {
+        match Stdout.writeBytes(read written) {
+            Ok => {}
+            Error(cause) => fail("<stdout>", $"{cause}".toString())
+        }
+        match Stdout.flush() {
+            Ok => {}
+            Error(cause) => fail("<stdout>", $"{cause}".toString())
+        }
+    } else {
+        match File.writeBytes(read target, read written) {
+            Ok => {}
+            Error(cause) => fail(target.clone(), $"{cause}".toString())
+        }
+    }
+}

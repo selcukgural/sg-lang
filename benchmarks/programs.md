@@ -244,3 +244,47 @@ no `-j`.
   Such a program is now an error of the compiler (choice 1860).
 - Rust is measured with `sha2` 0.11, which uses the processor's SHA instructions on this machine; 0.10 does not,
   and took 2.37 s for the file of 1 GB.
+
+## giftool
+
+A GIF read, changed and written again, or told as `gifsicle -I` tells it, held to gifsicle 1.99 byte for byte
+where it tells and pixel for pixel where it draws (`trials/giftool/README.md`, choices 1874-1881). Written from
+the GIF89a specification: LZW decoded and encoded by hand the same way in the three, frames drawn on a screen of
+colors by their disposals for `--unoptimize` and `-O`. 24 cases of `measure.py giftool --check` hold the output
+and exit code of the five builds to each other, and `trials/giftool/tests/check.py` holds them to a model in
+Python, itself held to gifsicle: on macOS SG, SG interpreted, Rust and the two Zig builds, 1,653 runs of three
+builds and 1,102 of two, no problem; on Linux SG, Rust and the interpreter. Apple M3 Max, macOS, 25 November
+2026, slice 179. The GIFs are made from a seed by `trials/giftool/tests/inputs.py`: an animation of 2,000 frames
+of 480 by 270, the first whole and the others small parts of the screen, with tables of their own, every
+disposal, transparency and interlacing; one of 300 frames each up to the whole screen; one frame of 8192 by
+8192 (28 MB); 10,000 small GIFs. gifsicle is measured beside the three; it is another algorithm, and writes other
+bytes.
+
+| Case | SG | SG, checked | Rust | Zig | Zig, safe | gifsicle |
+|---|---|---|---|---|---|---|
+| 2,000 frames, read and written | 0.048 s, 7.6 MB | 0.050 s, 7.6 MB | 0.049 s, 7.7 MB | 0.052 s, 10.5 MB | 0.053 s, 12.0 MB | 0.089 s, 8.8 MB |
+| 8192 by 8192, read and written | 0.488 s, 148.8 MB | 0.504 s, 148.8 MB | 0.487 s, 148.9 MB | 0.505 s, 147.0 MB | 0.520 s, 176.4 MB | 0.378 s, 239.1 MB |
+| 2,000 frames, `-O2` | 0.852 s, 13.5 MB | 0.716 s, 13.6 MB | 0.806 s, 13.7 MB | 0.830 s, 32.0 MB | 0.911 s, 17.9 MB | 0.350 s, 22.1 MB |
+| 300 whole frames, `-O2` | 0.288 s, 16.0 MB | 0.290 s, 16.0 MB | 0.252 s, 16.0 MB | 0.291 s, 23.9 MB | 0.325 s, 26.0 MB | 0.276 s, 24.4 MB |
+| 2,000 frames, `--unoptimize` | 2.224 s, 81.9 MB | 2.251 s, 82.0 MB | 1.791 s, 82.0 MB | 2.209 s, 182.2 MB | 2.103 s, 176.5 MB | 0.089 s, 8.8 MB |
+| 8192 by 8192, cropped and turned | 0.370 s, 162.7 MB | 0.389 s, 162.7 MB | 0.378 s, 162.8 MB | 0.375 s, 160.9 MB | 0.394 s, 196.9 MB | 0.296 s, 201.6 MB |
+| 8192 by 8192, flipped | 0.521 s, 212.8 MB | 0.544 s, 212.9 MB | 0.532 s, 213.0 MB | 0.529 s, 211.0 MB | 0.570 s, 250.0 MB | 0.396 s, 239.1 MB |
+| 10,000 small GIFs, `--info` | 0.144 s, 3.9 MB | 0.149 s, 3.8 MB | 0.160 s, 4.0 MB | 0.140 s, 3.5 MB | 0.143 s, 3.7 MB | 0.318 s, 76.9 MB |
+| Size, stripped | 148 KB | 181 KB | 401 KB | 474 KB | 555 KB | — |
+| Lines | 1460 | 1460 | 1398 | 1356 | 1356 | — |
+
+- Reading, writing, cropping, flipping and turning, where the work is LZW and the walk over the pixels, the three
+  are within 4% of each other. gifsicle encodes with another algorithm (a tree of codes, not a table of
+  hashes); it is faster on the large frame and writes 0.05% more.
+- Where the colors of the screen are given indices (`--unoptimize`, `-O2` of whole frames), SG takes 24% and 14%
+  more than Rust: a lookup in SG's `HashMap<uint, nint>` takes 9.4 ns against Rust's 3.8 (a hundred million
+  lookups, 0.94 s against 0.38), in [Slower than C](slower-than-c.md). Zig's `AutoHashMap` is as slow as SG's here.
+- `-O2` of the 2,000 frames is faster checked than not (0.716 s against 0.852): clang puts the function that finds
+  what changed into the one that calls it in the build without checks, and the loop compiled there is slower. The
+  same function with checks stays a function of its own.
+- gifsicle's `--unoptimize` with nothing after it writes what it writes with no option (2,466,436 bytes both),
+  where the three write each screen whole (79 MB): its time is not that of the same work. Its `-O2` is another
+  algorithm, and takes 0.35 s on the 2,000 frames.
+- Zig holds more memory where it grows lists frame after frame (`--unoptimize`, 182 MB against 82): the
+  allocator it uses, `smp_allocator`, keeps what is freed.
+

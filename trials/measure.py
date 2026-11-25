@@ -219,6 +219,28 @@ def hashsum_inputs():
     return HASHSUM_DIR
 
 
+# The GIFs of `giftool` (choices 1878, 1879), made by `trials/giftool/tests/inputs.py` from a seed
+# with an encoder of its own, which none of the programs measured is.
+GIFTOOL_DIR = OUT / "giftool-inputs"
+
+
+def giftool_inputs():
+    if not (GIFTOOL_DIR / "small").exists() or not (GIFTOOL_DIR / "large.gif").exists():
+        sys.path.insert(0, str(TRIALS / "giftool" / "tests"))
+        import inputs as gif_inputs
+        gif_inputs.write_all(str(GIFTOOL_DIR))
+    return GIFTOOL_DIR
+
+
+def giftool_words(word):
+    """`{gif:NAME}`: the GIF `NAME.gif`; `{gif-small}`: the 10,000 small ones, by their names in the
+    folder of the inputs, where `giftool` runs."""
+    folder = giftool_inputs()
+    if word == "{gif-small}":
+        return [f"small/{entry}" for entry in sorted(os.listdir(folder / "small"))]
+    return [word[len("{gif:"):-1] + ".gif"]
+
+
 def hashsum_words(word):
     """`{hs:NAME}`: the names of the files of a folder of the inputs, in order."""
     folder = hashsum_inputs() / word[len("{hs:"):-1]
@@ -587,6 +609,37 @@ TRIALS_CASES = {
         ] + [(f"16 files of 64 MB, -j {j}", ["-j", str(j), "{hs:l}"], None, "pool") for j in (1, 2, 4, 8, 16)]
           + [(f"2,000 files of 1 KB to 16 MB, -j {j}", ["-j", str(j), "{hs:m}"], None, "pool") for j in (1, 2, 4, 8, 16)],
     },
+    # Each case runs in the folder of the GIFs; `{gif:NAME}` is `NAME.gif` there (choice 1879).
+    "giftool": {
+        "check": [
+            ("every disposal, written again", ["{gif:every-disposal}"], None),
+            ("every disposal, --unoptimize", ["--unoptimize", "{gif:every-disposal}"], None),
+            ("every disposal, -O2", ["-O2", "{gif:every-disposal}"], None),
+            ("sprites, -O1, turned", ["-O1", "--rotate-90", "{gif:sprites}"], None),
+            ("an animation, cropped and flipped", ["--crop", "10,5+60x40", "--flip-vertical", "{gif:test-animation}"], None),
+            ("tables cleared late, early and never", ["{gif:deferred-early-wide}"], None),
+            ("frames past the screen, turned", ["--rotate-270", "{gif:no-global-past-the-screen}"], None),
+            ("its colors, --info", ["--info", "{gif:every-disposal}", "{gif:interlaced-odd}"], None),
+            ("the input, --info", ["--info"], str(GIFTOOL_DIR / "sprites.gif")),
+            ("more than 256 colors on the screen", ["--unoptimize", "{gif:many-colors}"], None),
+            ("cut short", ["{gif:bad-truncated}"], None),
+            ("a code past its table", ["{gif:bad-code-past-table}"], None),
+            ("a frame of 65,535 by 65,535", ["{gif:bad-frame-too-large}"], None),
+            ("not a GIF", ["--info", "{gif:bad-not-a-gif}"], None),
+            ("a crop outside the screen", ["--crop", "5000,0+1x1", "{gif:sprites}"], None),
+            ("-O3", ["-O3", "{gif:sprites}"], None),
+        ],
+        "measure": [
+            ("2,000 frames, read and written", ["{gif:animation}"], None),
+            ("8192 by 8192, read and written", ["{gif:large}"], None),
+            ("2,000 frames, -O2", ["-O2", "{gif:animation}"], None),
+            ("300 whole frames, -O2", ["-O2", "{gif:animation-full}"], None),
+            ("2,000 frames, --unoptimize", ["--unoptimize", "{gif:animation}"], None),
+            ("8192 by 8192, cropped and turned", ["--crop", "100,100+6000x5000", "--rotate-90", "{gif:large}"], None),
+            ("8192 by 8192, flipped", ["--flip-horizontal", "{gif:large}"], None),
+            ("10,000 small GIFs, --info", ["--info", "{gif-small}"], None),
+        ],
+    },
     "std/json": {
         "check": [
             ("records, summed", ["sum", "{small-records}"], None),
@@ -853,7 +906,7 @@ RUST_LEFT_OUT = {
 # The trials whose time is not shown, only their memory and size (1553, 1801).
 NO_TIME = {"std/command_line", "std/environment"}
 # The folder a trial's programs run in, where it is not the one `measure.py` runs in.
-TRIAL_CWD = {"hashsum": OUT / "hashsum-inputs"}
+TRIAL_CWD = {"hashsum": OUT / "hashsum-inputs", "giftool": GIFTOOL_DIR}
 
 
 def fresh_copy(source, target):
@@ -970,11 +1023,21 @@ def hashsum_references():
     return {"sha256sum": Path(shutil.which("sha256sum") or "sha256sum")}
 
 
-REFERENCES = {"jq": jq_references, "hashsum": hashsum_references}
+def giftool_references():
+    # gifsicle, the tool people use for this work (1879): another algorithm, and another encoder, so
+    # it writes other bytes; its `-I` is what `--info` is held to.
+    gifsicle = shutil.which("gifsicle")
+    version = run([gifsicle, "--version"]).stdout.splitlines()[0] if gifsicle else ""
+    if "1.99" not in version:
+        sys.exit(f"  gifsicle 1.99 is needed for the trial of giftool; found {version or 'none'}")
+    return {"gifsicle": Path(gifsicle)}
+
+
+REFERENCES = {"jq": jq_references, "hashsum": hashsum_references, "giftool": giftool_references}
 # References whose output is not held to the others: their runs are measured, and a case where one
 # writes another output or exit code is marked in the table.
-LOOSE = {"jaq", "sha256sum"}
-REFERENCE_NAMES = {"jq 1.8.2", "jaq", "sha256sum"}
+LOOSE = {"jaq", "sha256sum", "gifsicle"}
+REFERENCE_NAMES = {"jq 1.8.2", "jaq", "sha256sum", "gifsicle"}
 
 
 def expand(words, trial):
@@ -991,6 +1054,7 @@ def expand(words, trial):
     words = [str(OUT / "kv" / "store") + w[len("{kvdir}"):] if w.startswith("{kvdir}") else w for w in words]
     words = [str(kv_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in KV_INPUTS else w for w in words]
     words = [x for w in words for x in (hashsum_words(w) if w.startswith("{hs:") else [w])]
+    words = [x for w in words for x in (giftool_words(w) if w.startswith("{gif") else [w])]
     return [str(other_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in OTHER_INPUTS else w
             for w in words]
 

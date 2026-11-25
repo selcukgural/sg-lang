@@ -18,6 +18,7 @@ that keep it fair, in [How it is measured](../benchmarks/method.md). This folder
 | [jq](jq) | The jq people use, held byte for byte to jq 1.8.2, on records, lines and numbers of JSON and on inputs that break things (choices 1804-1822); jq and jaq measured beside it | 166 |
 | [kv](kv) | A store of keys and values with a log written before each change, synced each block, each record or never; read back, cut by a crash, damaged, compacted; held to a model in Python and killed in the middle (choices 1844-1853) | 175 |
 | [hashsum](hashsum) | The SHA-256 of each file from a pool of workers, written in the order given, byte for byte as GNU's `sha256sum` writes it; small files, large ones, one of 1 GB, a load that is not even, and the scaling with the workers (choices 1854-1860) | 176 |
+| [giftool](giftool) | A GIF read, changed and written again: LZW by hand, cropped, flipped, turned, drawn whole (`--unoptimize`) and cut to what changed (`-O1`, `-O2`); `--info` byte for byte as `gifsicle -I`; held to a model in Python and to gifsicle (choices 1874-1881) | 179 |
 
 The modules of `std` are measured the same way, each in `trials/std/<module>` (choices 1553, 1629-1637),
 and their tables are in [The library against Rust and Zig](../benchmarks/library.md):
@@ -41,7 +42,7 @@ an HTTP server, and an HTTP/1.1 file server with nginx beside it (choices 1861-1
 C, under one load written in C, on Linux, with their tables in
 [Servers against Rust, Zig and C](../benchmarks/server.md).
 
-Still to come, in this order: a GIF tool, and an interpreter of Lox.
+Still to come: an interpreter of Lox.
 
 ## How they are written (1525-1532)
 
