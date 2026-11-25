@@ -297,12 +297,13 @@ says what is slower, by how much and against what, the choice that measured it, 
   1 KB, C 4.5 (1.45 times), and 3.1 against 2.1 for a 404. The 178th slice took one walk of the path and one close
   away from each file (`File.openRegular` and `reader.info()`, 1873: 0.66 and 0.52 before); a file of 1 KB still
   makes five calls of the system more than C's six, two of them the look through `O_PATH` that keeps a FIFO from
-  being opened, which Linux 7.2's `OPENAT2_REGULAR` would make one. The rest, 0.3 to 0.8 µs an answer on every
-  path, the HTTP server's `/ping` too, is SG's own code: the parsing of the request in `std/http`, the tasks, the
-  lock of the pool. With 100 files of 64 KB and 1,000 connections SG
-  answers the most of the four (196,000; C 128,000) but its p99 is 48.6 ms against C's 11.3. Candidates: SG's own
-  code for each request, measured function by function on the `/ping` of the HTTP server and on these;
-  `OPENAT2_REGULAR` where the kernel has it.
+  being opened, which Linux 7.2's `OPENAT2_REGULAR` would make one. The rest is SG's own code, measured function
+  by function on `/ping` (25 November): spread over some 25 functions of `std/http`, the tasks and the loop,
+  none above 1.5% of the time. Two were taken away after 1873 (`indexOf` of a byte through `memchr`, and the
+  wait for a socket on its token's lock rather than the clock's): `/ping` 1.35 million answers a second
+  against C's 1.40 million (from 1.22), 404s 955,000 against 1.18 million (from 914,000). With 100 files of 64 KB and 1,000 connections SG
+  answers the most of the four (196,000; C 128,000) but its p99 is 48.6 ms against C's 11.3. Candidates:
+  `OPENAT2_REGULAR` where the kernel has it; what is left of SG's own code is small steps, not one.
 - **A range read through a reader** (the server lane, the 177th slice): 4 KB at random places of a file of 1 GB
   get 216,000 answers a second from SG against C's 511,000 and Zig's 393,000. SG's server seeks its reader and
   reads; a reader fills its block of 64 KB after a seek, as Rust's `BufReader` does, so each range reads 64 KB

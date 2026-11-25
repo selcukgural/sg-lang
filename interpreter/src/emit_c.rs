@@ -5722,6 +5722,12 @@ typedef struct sg_cancel {
     sg_delay link;
     /* Made linked: its `parent` is read and let go only under the clock's lock. */
     bool linked;
+    /* The lock of `first`, the list of what looks at the source, and of `cancelled` becoming 1.
+       A cancel holds the clock's lock and then this one; a wait for a socket, linked to the
+       token before each read or send of a server, takes this one alone (1874), so that waits
+       on different tokens do not take one lock of the whole program in turn. A linked source's
+       lock is taken after its parent's, and the lock of a socket's slot after both. */
+    sg_mtx lock;
 } sg_cancel;
 
 static sg_mtx sg_clock_lock = SG_MTX_INIT;
@@ -5798,10 +5804,10 @@ static void sg_heap_remove(sg_delay* d) {
     sg_heap_up(i);
     sg_heap_down(moved->at);
 }
-/* The clock's lock is held. The delay may be freed by `over`. A task that awaits the delay
-   sees it over and then takes the clock's lock once (`sg_delay_over`), so it goes on only after
-   this has woken it. */
-static void sg_delay_end(sg_delay* d, int how) {
+/* The clock's lock is held, and the lock of the delay's token when it has one (`sg_cancel`). The
+   delay may be freed by `over`. A task that awaits the delay sees it over and then takes the
+   clock's lock once (`sg_delay_over`), so it goes on only after this has woken it. */
+static void sg_delay_end_listed(sg_delay* d, int how) {
     if (d->token) {
         if (d->prev) d->prev->next = d->next;
         else d->token->first = d->next;
@@ -5813,6 +5819,13 @@ static void sg_delay_end(sg_delay* d, int how) {
     SG_WAKE_PAUSE();
     if (over) over(d);
     else sg_wake(job);
+}
+/* The clock's lock is held, not the token's: a delay on the clock, which no one else ends. */
+static void sg_delay_end(sg_delay* d, int how) {
+    sg_cancel* token = d->token;
+    if (token) sg_mtx_lock(&token->lock);
+    sg_delay_end_listed(d, how);
+    if (token) sg_mtx_unlock(&token->lock);
 }
 /* The clock's lock is held, and let go while it sleeps: for `ns`, or until it is told of a
    sooner delay (`ns` below zero: only that). On Windows a timer of high resolution keeps the
@@ -5974,10 +5987,12 @@ static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token,
         d->state = SG_CANCELLED;
     } else {
         if (token) {
+            sg_mtx_lock(&token->lock);
             d->token = token;
             d->next = token->first;
             if (token->first) token->first->prev = d;
             token->first = d;
+            sg_mtx_unlock(&token->lock);
         }
         sg_clock_put(d, ms, loc);
     }
@@ -6040,6 +6055,7 @@ static sg_cancel* sg_cancel_new(void) {
     if (!c) abort();
     c->refs = 1;
     c->clock.at = -1;
+    sg_mtx_init(&c->lock);
     return c;
 }
 static inline sg_cancel* sg_cancel_more(sg_cancel* c) {
@@ -6064,16 +6080,19 @@ static inline sg_cancel* sg_move_source(sg_cancel** p) { sg_cancel* c = *p; *p =
 #define sg_move_token sg_move_source
 static inline bool sg_cancelled(const sg_cancel* c) { return c && __atomic_load_n(&c->cancelled, __ATOMIC_ACQUIRE); }
 static void sg_cancel_link_over(sg_delay* d);
-/* The clock's lock is held: a linked source leaves its parent's list, if it is still there, and
-   lets its parent go. */
+/* The clock's lock is held, and no source's: a linked source leaves its parent's list, if it is
+   still there (under the parent's lock), and lets its parent go. A source cancelled with its
+   parent was taken off the list by the parent's cancel, which holds that lock. */
 static void sg_cancel_unlink(sg_cancel* c) {
     sg_cancel* parent = c->parent;
     if (!parent) return;
     sg_delay* d = &c->link;
     if (d->token) {
+        sg_mtx_lock(&parent->lock);
         if (d->prev) d->prev->next = d->next;
         else d->token->first = d->next;
         if (d->next) d->next->prev = d->prev;
+        sg_mtx_unlock(&parent->lock);
         d->token = NULL;
     }
     c->parent = NULL;
@@ -6084,8 +6103,10 @@ static void sg_cancel_unlink(sg_cancel* c) {
    each in the order they were started, as the interpreter does it. */
 static void sg_cancel_held(sg_cancel* c) {
     if (c->cancelled) return;
-    __atomic_store_n(&c->cancelled, 1, __ATOMIC_RELEASE);
+    /* Before its own lock is taken: a parent's lock comes first. */
     sg_cancel_unlink(c);
+    sg_mtx_lock(&c->lock);
+    __atomic_store_n(&c->cancelled, 1, __ATOMIC_RELEASE);
     for (int linked = 1; linked >= 0; linked--) {
         sg_delay* last = c->first;
         while (last && last->next) last = last->next;
@@ -6095,12 +6116,13 @@ static void sg_cancel_held(sg_cancel* c) {
             if ((d->over == sg_cancel_link_over) != linked) continue;
             /* A wait for a socket or for a thread is not on the clock. */
             if (d->at >= 0) sg_heap_remove(d);
-            sg_delay_end(d, SG_CANCELLED);
+            sg_delay_end_listed(d, SG_CANCELLED);
         }
     }
+    sg_mtx_unlock(&c->lock);
 }
-/* The clock's lock is held: the source of `link` is cancelled with the source whose list it was
-   on, and has left that list. */
+/* The clock's lock and the parent's are held: the source of `link` is cancelled with the source
+   whose list it was on, and has left that list. */
 static void sg_cancel_link_over(sg_delay* d) {
     sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, link));
     d->token = NULL;
@@ -6124,9 +6146,11 @@ static sg_cancel* sg_cancel_linked(sg_cancel* parent) {
         c->link.at = -1;
         c->link.over = sg_cancel_link_over;
         c->link.token = parent;
+        sg_mtx_lock(&parent->lock);
         c->link.next = parent->first;
         if (parent->first) parent->first->prev = &c->link;
         parent->first = &c->link;
+        sg_mtx_unlock(&parent->lock);
     }
     sg_mtx_unlock(&sg_clock_lock);
     return c;
@@ -6139,6 +6163,7 @@ static void sg_cancel_free(sg_cancel* c, bool held) {
         sg_cancel_unlink(c);
         if (!held) sg_mtx_unlock(&sg_clock_lock);
     }
+    sg_mtx_destroy(&c->lock);
     free(c);
 }
 /* Under the clock's lock the clock either holds the source on its heap, and so has not taken it
@@ -6361,11 +6386,13 @@ static bool sg_tgroup_link(sg_tgroup_wait* w) {
     sg_mtx_lock(&sg_clock_lock);
     bool cancelled = w->token->cancelled;
     if (!cancelled) {
+        sg_mtx_lock(&w->token->lock);
         w->d.token = w->token;
         w->d.prev = NULL;
         w->d.next = w->token->first;
         if (w->token->first) w->token->first->prev = &w->d;
         w->token->first = &w->d;
+        sg_mtx_unlock(&w->token->lock);
     }
     sg_mtx_unlock(&sg_clock_lock);
     return cancelled;
@@ -6376,9 +6403,11 @@ static void sg_tgroup_unlink(sg_tgroup_wait* w) {
     sg_mtx_lock(&sg_clock_lock);
     sg_delay* d = &w->d;
     if (d->token) {
+        sg_mtx_lock(&d->token->lock);
         if (d->prev) d->prev->next = d->next;
         else d->token->first = d->next;
         if (d->next) d->next->prev = d->prev;
+        sg_mtx_unlock(&d->token->lock);
         d->token = NULL;
     }
     sg_mtx_unlock(&sg_clock_lock);
@@ -6709,11 +6738,13 @@ static bool sg_chan_park(sg_chan* c, sg_chan_wait* w) {
         sg_mtx_lock(&sg_clock_lock);
         bool cancelled = w->token->cancelled;
         if (!cancelled) {
+            sg_mtx_lock(&w->token->lock);
             w->d.token = w->token;
             w->d.prev = NULL;
             w->d.next = w->token->first;
             if (w->token->first) w->token->first->prev = &w->d;
             w->token->first = &w->d;
+            sg_mtx_unlock(&w->token->lock);
         }
         sg_mtx_unlock(&sg_clock_lock);
         if (cancelled) return true;
@@ -6727,9 +6758,11 @@ static void sg_chan_done(sg_chan_wait* w) {
         sg_mtx_lock(&sg_clock_lock);
         sg_delay* d = &w->d;
         if (d->token) {
+            sg_mtx_lock(&d->token->lock);
             if (d->prev) d->prev->next = d->next;
             else d->token->first = d->next;
             if (d->next) d->next->prev = d->prev;
+            sg_mtx_unlock(&d->token->lock);
             d->token = NULL;
         }
         sg_mtx_unlock(&sg_clock_lock);
@@ -8062,12 +8095,15 @@ static inline void sg_udp_nonblock(int fd) {
 static void sg_wait_ready(sg_wait* w) {
     sg_task* job = w->d.job;
     if (w->told) {
-        sg_mtx_lock(&sg_clock_lock);
+        /* The lock of its token, as a cancel of it holds (1874); the clock's for a wait that is
+           told without a token. */
+        sg_mtx* m = w->told_by ? &w->told_by->lock : &sg_clock_lock;
+        sg_mtx_lock(m);
         if (w->d.state == SG_WAITING) {
-            sg_wait_unlink(w);
+            sg_wait_unlink_listed(w);
             __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
         }
-        sg_mtx_unlock(&sg_clock_lock);
+        sg_mtx_unlock(m);
     } else {
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
     }
@@ -8479,10 +8515,12 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
     if (!s) return SG_E_MFILE;
     int bit = write ? 2 : 1;
     int code = 0;
+    /* The token's lock, not the clock's (1874): a cancel holds both, so it either finds the wait
+       on the token's list or comes before and is seen here. */
     if (token) {
-        sg_mtx_lock(&sg_clock_lock);
+        sg_mtx_lock(&token->lock);
         if (token->cancelled) {
-            sg_mtx_unlock(&sg_clock_lock);
+            sg_mtx_unlock(&token->lock);
             return SG_CANCELLED;
         }
     }
@@ -8497,11 +8535,11 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
             w->after = s->waits[bit - 1];
             s->waits[bit - 1] = w;
             w->listed = true;
-            if (token) sg_wait_link(w, token);
+            if (token) sg_wait_link_listed(w, token);
         }
     }
     sg_mtx_unlock(m);
-    if (token) sg_mtx_unlock(&sg_clock_lock);
+    if (token) sg_mtx_unlock(&token->lock);
     return code ? code : SG_WAITING;
 }
 
@@ -12113,6 +12151,9 @@ typedef struct sg_wait {
     /* The end of a program (`fd` its number on macOS, its pidfd on Linux), see `PROCESS_ASYNC_RUNTIME`. */
     bool proc;
     bool told;
+    /* The token it was put on the list of, kept when it leaves the list: whose lock the loop and
+       an end of the wait by its own task take to end it (1874). */
+    struct sg_cancel* told_by;
     /* In the slot of its socket, where the loop and a cancel take it out (see `NET_ASYNC_RUNTIME`). */
     bool listed;
     struct sg_wait* after;
@@ -12128,10 +12169,13 @@ typedef struct sg_wait {
    is waking already is left to them; the next wait of the task sees the mark. */
 static void sg_wait_cut_now(sg_wait* w) {
     sg_mtx_lock(&sg_clock_lock);
+    sg_cancel* token = w->told_by;
+    if (token) sg_mtx_lock(&token->lock);
     if (w->d.state == SG_WAITING) {
         if (w->d.at >= 0) sg_heap_remove(&w->d);
-        sg_delay_end(&w->d, SG_CANCELLED);
+        sg_delay_end_listed(&w->d, SG_CANCELLED);
     }
+    if (token) sg_mtx_unlock(&token->lock);
     sg_mtx_unlock(&sg_clock_lock);
 }
 static inline bool sg_wait_settled(sg_wait* w) {
@@ -12166,21 +12210,37 @@ static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
     w->proc = false;
     w->listed = false;
     w->after = NULL;
+    w->told_by = NULL;
 }
-/* The clock's lock is held: the wait is put on the list of its token. */
-static void sg_wait_link(sg_wait* w, sg_cancel* token) {
+/* The token's lock is held: the wait is put on the list of its token. */
+static void sg_wait_link_listed(sg_wait* w, sg_cancel* token) {
+    w->told_by = token;
     w->d.token = token;
     w->d.next = token->first;
     if (token->first) token->first->prev = &w->d;
     token->first = &w->d;
 }
-static void sg_wait_unlink(sg_wait* w) {
+/* The token's lock is held: the wait leaves its token's list, if it is on it. */
+static void sg_wait_unlink_listed(sg_wait* w) {
     sg_delay* d = &w->d;
     if (!d->token) return;
     if (d->prev) d->prev->next = d->next;
     else d->token->first = d->next;
     if (d->next) d->next->prev = d->prev;
     d->token = NULL;
+}
+/* The clock's lock is held, which a cancel takes first; the token's is taken here. */
+static void sg_wait_link(sg_wait* w, sg_cancel* token) {
+    sg_mtx_lock(&token->lock);
+    sg_wait_link_listed(w, token);
+    sg_mtx_unlock(&token->lock);
+}
+static void sg_wait_unlink(sg_wait* w) {
+    sg_cancel* token = w->told_by;
+    if (!token) return;
+    sg_mtx_lock(&token->lock);
+    sg_wait_unlink_listed(w);
+    sg_mtx_unlock(&token->lock);
 }
 
 /* Work on a thread of input and output that the async task waiting for it may leave: a cancel

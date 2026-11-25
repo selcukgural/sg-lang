@@ -547,13 +547,15 @@ calls of the system: `File.infoAsync` and then `File.openTextAsync` each walked 
 of its own before the file was opened, so that no FIFO would be. `File.openRegular` opens only a regular file,
 refusing anything else before it is opened (`IoError.NotAFile`), and `reader.info()` asks the open file:
 opened first, a file walks its path twice where it walked it three times. Files of 1 KB get 452,000 answers a second where C gets 637,000 (0.71 times, from 0.66), and with 1,000 connections 0.63 times (from 0.52); a 304, which opens the file now in all four as nginx does, cost both a seventh.
+After it, without a choice, two costs of SG's own code: `indexOf` of a byte asks `memchr`, and a wait for a
+socket takes its token's lock rather than the clock's, one for the whole program, twice an answer. The
+HTTP server's `/ping` gets 1.35 million answers a second where it got 1.22 million (C 1.40 million), 404s
+955,000 where 914,000 (C 1.18 million).
 
 ## Next
 
-Next comes the rest of the cost of each request in `std/http` and the runtime, SG's own code, 0.3 to 0.8 µs an
-answer on every path; then the heavy level of the stand, run
-at night,
-a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
+Next comes a GIF tool, the step towards the showcase; the heavy level of the stand and the whole table of the
+file server, run at night; and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
 `sg doc` (1392).
