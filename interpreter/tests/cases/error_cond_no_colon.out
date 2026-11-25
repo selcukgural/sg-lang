@@ -1,0 +1,5 @@
+error: expected `:`, found `2`
+  `c ? a : b` gives `a` where `c` holds, otherwise `b`
+  --> error_cond_no_colon.sg:3:23
+ 3 |     var y = x > 0 ? 1 2
+   |                       ^

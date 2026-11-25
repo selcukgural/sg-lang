@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `int?` and `int`
+  `n` may be `null`
+  --> error_cond_not_narrowed.sg:3:23
+ 3 |     print(n is null ? n + 1 : 0)
+   |                       ^^^^^
+  hint: test it first: `if n is not null { ... }`; or give a fallback with `??`

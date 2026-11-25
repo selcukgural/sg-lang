@@ -1,0 +1,5 @@
+error: an arm of `?:` gives a value; it cannot leave the function
+  --> error_cond_return.sg:2:25
+ 2 |     var y = x > 0 ? 1 : return 0
+   |                         ^^^^^^
+  hint: leave with an `if`, or with `?? return` on a value that may be `null`

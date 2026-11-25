@@ -1,0 +1,9 @@
+error: `b` cannot be moved here: `t` borrows from it and is used again later
+  --> error_cond_arm_borrow_kept.sg:5:16
+ 5 |     var gone = b
+   |                ^
+  `t` borrowed it here:
+  --> error_cond_arm_borrow_kept.sg:4:39
+ 4 |     var t = a.length() > 1 ? read a : read b
+   |                                       ^^^^^^
+  hint: finish with `t` before this line: a borrow ends at its last use

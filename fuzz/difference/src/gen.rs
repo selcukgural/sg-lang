@@ -728,6 +728,14 @@ impl Gen {
                 Some(at) => (self.call(at), true),
                 None => self.int_leaf(ty),
             },
+            // `c ? a : b` (choice 1910): only the arm chosen runs. A const is not given one.
+            11 if !self.in_const => {
+                let test = self.bool_expr(d.min(1));
+                let a = self.int_expr(ty, d);
+                let a = self.typed(a, ty);
+                let b = self.int_expr(ty, d).0;
+                (format!("({test} ? {a} : {b})"), true)
+            }
             _ => self.int_leaf(ty),
         }
     }
@@ -1123,7 +1131,11 @@ impl Gen {
                 let (var, Ty::Opt(of)) = self.var_where(|var| matches!(var.ty, Ty::Opt(of) if fits(of)))? else { return None };
                 self.mark_read(&var);
                 let other = self.number(of);
-                Some(cast(format!("({var} ?? {other})"), of))
+                // Or with `?:`, whose first arm sees `var` narrowed (choice 1913).
+                match self.rng.chance(30) {
+                    true => Some(cast(format!("({var} is not null ? {var} : {other})"), of)),
+                    false => Some(cast(format!("({var} ?? {other})"), of)),
+                }
             }
             2 => {
                 let (var, _) = self.var_where(|var| matches!(var.ty, Ty::List(of) if of == ty))?;

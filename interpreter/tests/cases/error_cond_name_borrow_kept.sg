@@ -1,0 +1,11 @@
+Result<string, IoError> load() {
+    return Ok("loaded".clone())
+}
+
+void main() {
+    var r = load()
+    var t = r is Ok(s) ? s : "x"
+    var moved = r
+    print(t)
+    print(moved ?? "?".clone())
+}

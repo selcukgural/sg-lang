@@ -1,0 +1,73 @@
+struct Pair {
+    string name
+    int n
+}
+
+string label(int n) {
+    print($"called {n}")
+    return $"label {n}".toString()
+}
+
+Result<int, NumberError> twice(string text, bool parse) {
+    var v = parse ? try int.parse(read text) : 0
+    return Ok(v * 2)
+}
+
+int pick(int? a, bool flag) {
+    return a ?? (flag ? 1 : 2)
+}
+
+int firstOr(read List<int> xs, int fallback) {
+    return xs.length() > 0 ? xs[0] : fallback
+}
+
+int must(int n) {
+    return n >= 0 ? n : panic("negative")
+}
+
+void main() {
+    var x = 3
+    // only the chosen arm runs
+    var a = x > 0 ? label(1) : label(2)
+    print(a)
+    var owned = "hello".clone()
+    var other = "world".clone()
+    var moved = x > 0 ? owned : other
+    print(moved)
+    var p = Pair { name = x > 1 ? "many".clone() : "one".clone(), n = x > 1 ? x : 1 }
+    print(p.name)
+    print(p.n)
+    var nested = x > 0 ? x > 2 ? "big" : "small" : "none"
+    print(nested)
+    var i = 0
+    while (i < 3 ? true : false) {
+        i += 1
+    }
+    print(i)
+    var ok = x > 0 && (x > 2 ? true : false)
+    print(ok)
+    print(twice("21", true) ?? -1)
+    print(twice("zz", true) ?? -1)
+    print(twice("zz", false) ?? -1)
+    print(pick(null, true))
+    print(pick(5, false))
+    var xs = List<int>()
+    print(firstOr(read xs, 9))
+    xs.add(4)
+    print(firstOr(read xs, 9))
+    print(must(3))
+    var m = match x {
+        3 => x > 1 ? "three, big" : "three"
+        _ => "other"
+    }
+    print(m)
+    var texts = List<string>()
+    for k in 0..4 {
+        texts.add(k % 2 == 0 ? $"even {k}".toString() : $"odd {k}".toString())
+    }
+    for t in texts {
+        print(t)
+    }
+    var maybe = x > 5 ? null : "here".clone()
+    print(maybe ?? "gone")
+}

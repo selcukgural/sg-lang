@@ -1,0 +1,6 @@
+void main() {
+    int? n = 4
+    if null == n {
+        print(0)
+    }
+}

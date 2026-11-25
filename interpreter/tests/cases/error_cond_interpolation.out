@@ -1,0 +1,6 @@
+error: `c ? a : b` inside `{ }` is written in parentheses
+  a `:` there starts the format, as in `{x:X}`
+  --> error_cond_interpolation.sg:3:20
+ 3 |     print($"{x > 0 ? "yes" : "no"}")
+   |                    ^^^^^^^^^
+  hint: write `{(c ? a : b)}`

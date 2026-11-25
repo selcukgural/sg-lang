@@ -310,6 +310,32 @@ fraction and panics if the result does not fit, as any cast does.
 A `bool` is `true` or `false`, and conditions must be one: `if count` is an error whose hint is
 `count != 0`. `&&` and `||` stop as soon as the answer is known, and `!` turns a `bool` around.
 
+`if` is a statement; a value picked by a condition is written `c ? a : b`, as in C#. Only the arm chosen runs,
+both arms have one type, and a chain reads as `else if`. Inside `{ }` of a `$"..."` it goes in parentheses,
+since a `:` there starts the format:
+
+```sg
+int sign(int n) {
+    return n > 0 ? 1 : n < 0 ? -1 : 0
+}
+
+void main() {
+    var count = 3
+    print($"{count} {(count == 1 ? "file" : "files")}")
+    print(sign(-8))
+    double half = count % 2 == 0 ? count / 2 : 1.5
+    print(half)
+}
+```
+
+It prints:
+
+```text
+3 files
+-1
+1.5
+```
+
 A `char` is one Unicode character, written in single quotes: `'a'`, `'é'`, `'\n'`, `'\u{1F600}'`. `(int)c`
 gives its code and `(char)n` the character of a code; `n.tryToChar()` gives `null` for a number that is no
 character. A character of ASCII is also a `byte` where an integer goes, which is handy for reading bytes.

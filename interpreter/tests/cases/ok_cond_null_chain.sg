@@ -1,0 +1,16 @@
+struct Person {
+    int age
+}
+
+void main() {
+    Person? p = null
+    var t = p?.age ?? 2
+    print(t)
+    Person? q = Person { age = 40 }
+    var u = q?.age ?? 2
+    print(u)
+    var w = (q?.age ?? 0) > 18 ? "adult" : "child"
+    print(w)
+    var z = p is not null ? p.age : 2
+    print(z)
+}

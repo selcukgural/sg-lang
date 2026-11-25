@@ -14137,6 +14137,7 @@ fn may_leave(expr: &Expr) -> bool {
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::Borrow { expr: inner, .. } => may_leave(inner),
         ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } => may_leave(left) || may_leave(right),
+        ExprKind::Cond { cond, then, els } => may_leave(cond) || may_leave(then) || may_leave(els),
         ExprKind::Index { recv, index, .. } => may_leave(recv) || may_leave(index),
         ExprKind::Slice { recv, from, to } => may_leave(recv) || any(&mut from.iter().chain(to).map(|inner| &**inner)),
         ExprKind::Interp(parts) => any(&mut parts.iter().filter_map(|part| match part {
@@ -18049,13 +18050,13 @@ impl<'a> Emitter<'a> {
                     None => init.ty.clone(),
                 };
                 let ctype = self.ctype(&ty, init.span)?;
-                // A `match` writes its value into the variable; the variable is in scope only
-                // after it, so an arm that leaves does not drop it.
-                if matches!(init.kind, ExprKind::Match { .. }) {
+                // A `match` (or `?:`) writes its value into the variable; the variable is in
+                // scope only after it, so an arm that leaves does not drop it.
+                if branches(init) {
                     self.temps += 1;
                     let cname = format!("v_{}_{}", local_cname(name), self.temps);
                     let _ = writeln!(out, "{pad}{ctype} {cname};");
-                    self.match_stmt(init, &Dest::Place(cname.clone(), ty.clone()), depth, out)?;
+                    self.branch_stmt(init, &Dest::Place(cname.clone(), ty.clone()), depth, out)?;
                     self.on_stack(&ty);
                     self.scopes.last_mut().expect("an open scope").push(Local { name: name.clone(), cname, ty, gone: false, drop: None });
                     return Ok(());
@@ -18088,10 +18089,10 @@ impl<'a> Emitter<'a> {
                     (None, ExprKind::Var(name)) => self.local(name).ty.strip_borrow().clone(),
                     (None, _) => target.ty.strip_borrow().clone(),
                 };
-                let new = if matches!(value.kind, ExprKind::Match { .. }) {
+                let new = if branches(value) {
                     let (ctype, temp) = (self.ctype(&held, value.span)?, self.temp());
                     let _ = writeln!(out, "{pad}{ctype} {temp};");
-                    self.match_stmt(value, &Dest::Place(temp.clone(), held.clone()), depth, out)?;
+                    self.branch_stmt(value, &Dest::Place(temp.clone(), held.clone()), depth, out)?;
                     temp
                 } else {
                     let new = self.head_value(value, &held)?;
@@ -18491,7 +18492,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            StmtKind::Return(Some(value)) if matches!(bare(value).kind, ExprKind::Match { .. }) => self.match_stmt(bare(value), &Dest::Return, depth, out)?,
+            StmtKind::Return(Some(value)) if branches(bare(value)) => self.branch_stmt(bare(value), &Dest::Return, depth, out)?,
             StmtKind::Return(value) => {
                 for line in self.return_lines(value.as_ref().map(bare), &[], stmt.span)? {
                     let _ = writeln!(out, "{pad}{line}");
@@ -19293,12 +19294,77 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// A `match` or a `?:` as statements, its value sent where `dest` says.
+    fn branch_stmt(&mut self, expr: &'a Expr, dest: &Dest, depth: usize, out: &mut String) -> Res<()> {
+        match &expr.kind {
+            ExprKind::Cond { .. } => self.cond_stmt(expr, dest, depth, out),
+            _ => self.match_stmt(expr, dest, depth, out),
+        }
+    }
+
+    /// `c ? a : b` as the `if` it is, each arm giving its value as an arm of a `match` does.
+    /// The names of an `is` in `c` are declared as an `if` declares them.
+    fn cond_stmt(&mut self, expr: &'a Expr, dest: &Dest, depth: usize, out: &mut String) -> Res<()> {
+        let ExprKind::Cond { cond, then, els } = &expr.kind else {
+            unreachable!("only called for `?:`");
+        };
+        let pad = "    ".repeat(depth);
+        let (mut test, names, chained, decls) = self.condition(cond, false)?;
+        for line in decls {
+            let _ = writeln!(out, "{pad}{line}");
+        }
+        self.flush_pre(&pad, out);
+        let mut kept = None;
+        if !self.post.is_empty() {
+            let temp = self.temp();
+            let _ = writeln!(out, "{pad}bool {temp} = {test};");
+            // The names of `x is Circle(r)` point into the value: it stays until the arms are done.
+            if names.is_empty() && !chained {
+                self.flush_post(&pad, out);
+            } else {
+                kept = self.hold();
+            }
+            test = temp;
+        }
+        let _ = writeln!(out, "{pad}if ({test}) {{");
+        self.cond_arm(then, dest, depth + 1, out, names)?;
+        let _ = writeln!(out, "{pad}}} else {{");
+        self.cond_arm(els, dest, depth + 1, out, Vec::new())?;
+        let _ = writeln!(out, "{pad}}}");
+        self.release(kept, &pad, out);
+        if chained {
+            self.keep_names(&[]);
+        }
+        Ok(())
+    }
+
+    /// One arm of `?:`, with the names the condition gives it.
+    fn cond_arm(&mut self, value: &'a Expr, dest: &Dest, depth: usize, out: &mut String, names: Names) -> Res<()> {
+        let pad = "    ".repeat(depth);
+        let before = self.gone();
+        self.scopes.push(Vec::new());
+        for (local, line) in names {
+            let _ = writeln!(out, "{pad}{line}");
+            self.scopes.last_mut().expect("an open scope").push(local);
+        }
+        self.arm_value(value, dest, depth, out)?;
+        // An arm that leaves has dropped what it had on the way out.
+        if value.ty != Ty::Never && !matches!(dest, Dest::Return) {
+            for line in self.drops(self.scopes.len() - 1) {
+                let _ = writeln!(out, "{pad}{line}");
+            }
+        }
+        self.scopes.pop();
+        self.gone_only_if(&before);
+        Ok(())
+    }
+
     /// The value an arm of a `match` ends with, sent where the value of the `match` goes.
     fn arm_value(&mut self, value: &'a Expr, dest: &Dest, depth: usize, out: &mut String) -> Res<()> {
         let pad = "    ".repeat(depth);
         match dest {
-            // A `match` on the last line of an arm gives its value to the same place.
-            _ if matches!(value.kind, ExprKind::Match { .. }) => self.match_stmt(value, dest, depth, out)?,
+            // A `match` or a `?:` on the last line of an arm gives its value to the same place.
+            _ if branches(value) => self.branch_stmt(value, dest, depth, out)?,
             // `panic(...)` gives no value: the program stops there.
             _ if value.ty == Ty::Never => self.expr_stmt(value, depth, out)?,
             Dest::Unused => self.expr_stmt(value, depth, out)?,
@@ -19775,6 +19841,9 @@ impl<'a> Emitter<'a> {
             // Other tasks run while it waits.
             ExprKind::Await(_) => Effect::Changes,
             ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
+            // Its arms are expressions, so it does what its parts do; that it is written before
+            // the statement is settled by `in_order`, as for any part with lines before it.
+            ExprKind::Cond { cond, then, els } => of(cond).max(of(then)).max(of(els)),
             // An array is its items and nothing else: nothing is allocated for it.
             ExprKind::Array { args, items, .. } => all(&mut args.iter().chain(items.iter().flatten())),
             ExprKind::AsSlice(inner) => of(inner),
@@ -22543,7 +22612,7 @@ impl<'a> Emitter<'a> {
             // A `match` inside a larger expression: it is written before the statement, as the
             // statements it is, and gives its value through a name. The parts of the statement
             // that come before it are computed before it too (see `in_order`).
-            ExprKind::Match { .. } if !matches!(expr.ty, Ty::Void | Ty::Never) && self.ctype(&expr.ty, expr.span).is_ok() => {
+            ExprKind::Match { .. } | ExprKind::Cond { .. } if !matches!(expr.ty, Ty::Void | Ty::Never) && self.ctype(&expr.ty, expr.span).is_ok() => {
                 let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
                 let (pre, post) = (std::mem::take(&mut self.pre), std::mem::take(&mut self.post));
                 // What the statement keeps so far is freed on every way out of an arm.
@@ -22553,7 +22622,7 @@ impl<'a> Emitter<'a> {
                 }
                 let (ways_out, gone) = (self.ways_out, self.gone());
                 let mut text = format!("{ctype} {temp};\n");
-                let written = self.match_stmt(expr, &Dest::Place(temp.clone(), expr.ty.clone()), 1, &mut text);
+                let written = self.branch_stmt(expr, &Dest::Place(temp.clone(), expr.ty.clone()), 1, &mut text);
                 if kept {
                     self.scopes.pop();
                 }
@@ -22561,8 +22630,9 @@ impl<'a> Emitter<'a> {
                 written?;
                 // A value that owns something and has no name yet would be left behind.
                 if self.ways_out > ways_out && !head {
-                    return Err(not_yet(expr.span, "a `match` that leaves the function, in this part of a statement")
-                        .hint("give the value a name first: `var x = match ...`"));
+                    let (what, start) = branch_words(expr);
+                    return Err(not_yet(expr.span, &format!("{what} that leaves the function, in this part of a statement"))
+                        .hint(format!("give the value a name first: `var x = {start}`")));
                 }
                 // On a side that runs only sometimes, what the arms moved is not certain.
                 if self.maybe > 0 {
@@ -22571,8 +22641,10 @@ impl<'a> Emitter<'a> {
                 self.pre.push(text.trim_end().to_string());
                 Ok(temp)
             }
-            ExprKind::Match { .. } => Err(not_yet(expr.span, "a `match` inside a larger expression")
-                .hint("give the value a name first: `var x = match ...`")),
+            ExprKind::Match { .. } | ExprKind::Cond { .. } => {
+                let (what, start) = branch_words(expr);
+                Err(not_yet(expr.span, &format!("{what} inside a larger expression")).hint(format!("give the value a name first: `var x = {start}`")))
+            }
             ExprKind::Unary(UnOp::Not, operand) => Ok(format!("(!{})", self.first(operand, head)?)),
             // In C a `byte` becomes an `int` before `~`: the result is cut back to its type.
             ExprKind::Unary(UnOp::BitNot, operand) => {
@@ -24479,6 +24551,19 @@ fn links(expr: &Expr, op: BinOp) -> Vec<&Expr> {
 }
 
 /// A chain of `&&` or `||` in which an `is` names values.
+/// A `match` or a `?:`: written as statements, giving its value to a place.
+fn branches(expr: &Expr) -> bool {
+    matches!(expr.kind, ExprKind::Match { .. } | ExprKind::Cond { .. })
+}
+
+/// How a message names a `match` or a `?:`, and how a line with one starts.
+fn branch_words(expr: &Expr) -> (&'static str, &'static str) {
+    match expr.kind {
+        ExprKind::Cond { .. } => ("a `?:`", "c ? a : b"),
+        _ => ("a `match`", "match ..."),
+    }
+}
+
 fn names_in_chain(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Binary(op @ (BinOp::And | BinOp::Or), ..) => links(expr, *op).into_iter().any(names_tested),

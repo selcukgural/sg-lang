@@ -1,0 +1,16 @@
+// The parts of a line are computed from left to right, also around a `?:` written before the line.
+int bump(ref int x) {
+    x += 1
+    return x
+}
+
+void main() {
+    var x = 1
+    var y = x + (x > 0 ? bump(ref x) : 0)
+    print($"{y} {x}")
+    var text = "n".clone()
+    var n = 5
+    print($"{text}{(n > 3 ? n * 2 : n)}{text}")
+    var z = (x > 0 ? bump(ref x) : 0) + x
+    print($"{z} {x}")
+}

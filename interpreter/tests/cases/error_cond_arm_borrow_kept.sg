@@ -1,0 +1,7 @@
+void main() {
+    var a = "first".clone()
+    var b = "second".clone()
+    var t = a.length() > 1 ? read a : read b
+    var gone = b
+    print(t)
+}

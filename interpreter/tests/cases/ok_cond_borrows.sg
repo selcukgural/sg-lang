@@ -1,0 +1,35 @@
+struct Person {
+    string name
+    int age
+}
+
+Result<string, IoError> load(bool ok) {
+    return ok ? Ok("loaded".clone()) : Error(IoError.NotFound)
+}
+
+void show(read string s) {
+    print(s)
+}
+
+void main() {
+    var x = 2
+    Person? p = Person { name = "pasha".clone(), age = 3 }
+    Person? none = null
+    var r = load(true)
+    var e = load(false)
+    show(p is not null ? read p.name : "nobody")
+    show(none is not null ? read none.name : "nobody")
+    show(r is Ok(s) ? s : "failed")
+    show(e is Ok(s) ? s : "failed")
+    var a = "first".clone()
+    var b = "second".clone()
+    show(x > 1 ? read a : read b)
+    var copy = x > 1 ? a.clone() : b.clone()
+    print(copy)
+    var age = p is not null ? p.age : 0
+    print(age)
+    var n = int.parse("41")
+    var rest = n is not Ok(v) ? 0 : v
+    var kept = n is Ok(v) ? v : -1
+    print(rest + kept)
+}

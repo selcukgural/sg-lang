@@ -1,0 +1,7 @@
+void main() {
+    var x = 3
+    var s = "a".clone()
+    var y = x > 0 ? s : "b".clone()
+    print(y)
+    print(s)
+}

@@ -1,0 +1,5 @@
+error: expected `string`, found `int`
+  both arms of `?:` give one type, and the other arm gives `string`
+  --> error_cond_types.sg:3:19
+ 3 |     print(x > 0 ? 1 : "one")
+   |                   ^

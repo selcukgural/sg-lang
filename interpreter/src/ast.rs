@@ -1322,6 +1322,10 @@ pub enum ExprKind {
     IsNull { expr: Box<Expr>, negated: bool },
     /// `a ?? b`. `on_result`: the left side is a `Result`, not a `T?` (set by the checker).
     Coalesce { left: Box<Expr>, right: Box<Expr>, on_result: bool },
+    /// `c ? a : b`: `a` where `c` holds, otherwise `b`; only the arm chosen runs. As in an
+    /// `if`, the names of an `is` in `c` are seen in `a` (in `b` for `is not`), and so is what
+    /// `c` narrows.
+    Cond { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
     /// `try e`: gives the value, or returns the error (or `null`) to the caller.
     Try { expr: Box<Expr>, kind: TryKind },
     /// `unsafe e`: a value whose computation may do what the checker cannot see is safe, such

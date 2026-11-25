@@ -1,0 +1,6 @@
+error: expected `bool`, found `int`
+  `??` binds more loosely than `>`: this reads `q?.age ?? (0 > 18)`
+  --> error_cond_coalesce_comparison.sg:7:11
+ 7 |     print(q?.age ?? 0 > 18 ? "adult" : "child")
+   |           ^^^^^^
+  hint: to compare the value, write `(q?.age ?? 0) > 18`

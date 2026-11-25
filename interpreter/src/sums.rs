@@ -285,6 +285,11 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
             each(left);
             each(right);
         }
+        ExprKind::Cond { cond, then, els } => {
+            each(cond);
+            each(then);
+            each(els);
+        }
         ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } | ExprKind::Allocate { args, .. } => args.iter().for_each(each),
         ExprKind::Method { recv, args, .. } => {
             each(recv);

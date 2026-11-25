@@ -142,6 +142,8 @@ impl Tok {
                 | Tok::OrOr
                 | Tok::Bang
                 | Tok::QuestionQuestion
+                | Tok::Question
+                | Tok::Colon
                 | Tok::Amp
                 | Tok::Pipe
                 | Tok::Caret
@@ -800,14 +802,18 @@ impl<'a> Lexer<'a> {
 
     /// Called on `{`; moves past the matching `}` and returns the range of the value in
     /// between, with what is written after it. `:` and `,` belong to the value only inside a
-    /// bracket of its own: no expression has a `:`, and a `,` outside brackets is a width when
-    /// a number follows it (`{n,5}`) and part of a type otherwise (`{HashMap<string, int>()...}`).
+    /// bracket of its own: `c ? a : b` is written in parentheses there, as in C#, and a `,`
+    /// outside brackets is a width when a number follows it (`{n,5}`) and part of a type
+    /// otherwise (`{HashMap<string, int>()...}`).
     fn interpolation_code(&mut self, string_start: usize) -> Result<(Span, Option<Spec>), Diag> {
         let open = self.pos;
         self.pos += 1;
         let code_start = self.pos;
         let (mut depth, mut nest) = (0, 0);
         let (mut comma, mut colon) = (None, None);
+        // A `?` outside brackets that is not `??`, `?.` or the end of a type (`List<int?>`,
+        // `int?[4]`): the `:` after it ends `c ? a : b`.
+        let mut question = None;
         loop {
             match self.at(0) {
                 None | Some(b'\n') => return Err(self.unterminated(string_start)),
@@ -842,7 +848,17 @@ impl<'a> Lexer<'a> {
                     nest -= 1;
                     self.pos += 1;
                 }
+                Some(b'?') if self.at(1) == Some(b'?') => self.pos += 2,
+                Some(b'?') if depth == 0 && nest <= 0 && !matches!(self.at(1), Some(b'.' | b'>' | b',' | b'[' | b']' | b')')) && question.is_none() => {
+                    question = Some(self.pos);
+                    self.pos += 1;
+                }
                 Some(b':') if depth == 0 && nest <= 0 && colon.is_none() => {
+                    if let Some(at) = question {
+                        return Err(Diag::error(Span::new(at, self.pos + 1), "`c ? a : b` inside `{ }` is written in parentheses")
+                            .note("a `:` there starts the format, as in `{x:X}`")
+                            .hint("write `{(c ? a : b)}`"));
+                    }
                     colon = Some(self.pos);
                     self.pos += 1;
                 }

@@ -74,9 +74,9 @@ should be. Before it starts, the run builds a small C program with the sanitizer
 compiler without them stops it at once instead of making every program a finding.
 
 What it writes (stages 1 and 2 of choice 1365): the integer types, `bool`, arithmetic, the bit
-operators, conversions, comparisons, `if`, `match`, `for` and `while`, functions, recursion, arrays,
+operators, conversions, comparisons, `if`, `?:`, `match`, `for` and `while`, functions, recursion, arrays,
 consts (made of operators and casts, masked so that none overflows, since a const calls no function),
-`print` with a format, `Copyable` structs, enums and `match` on them, `T?`, lists, text, and
+`print` with a format, `Copyable` structs, enums and `match` on them, `T?` (with `??` and with `x is not null ? x : n`), lists, text, and
 functions that give a `Result`.
 
 With `--borrow` first (`BORROW=1` for `run.sh`), the programs borrow (stage 3, choice 1593,

@@ -1,0 +1,5 @@
+error: `null` is not compared with `==`
+  --> error_null_compared_equal.sg:3:8
+ 3 |     if null == n {
+   |        ^^^^^^^^^
+  hint: write `n is null`

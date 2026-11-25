@@ -1,0 +1,5 @@
+error: `?:` gives a value; it is not a statement
+  --> error_cond_statement.sg:6:5
+ 6 |     x > 0 ? work() : work()
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: to do one thing or the other, write an `if`: `if x > 0 { ... } else { ... }`

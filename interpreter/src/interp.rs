@@ -5072,6 +5072,15 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Unbox(..) => self.unbox_value(expr, frame),
             ExprKind::IsVariant { .. } => self.is_variant_value(expr, frame),
             ExprKind::Match { .. } => self.match_value(expr, frame),
+            // The names of an `is` in the condition last until the arm is done.
+            ExprKind::Cond { cond, then, els } => {
+                let depth = frame.scopes.len();
+                frame.scopes.push(Scope::default());
+                let arm = if self.condition(cond, frame)? { then } else { els };
+                let value = self.expr(arm, frame);
+                frame.scopes.truncate(depth);
+                value
+            }
             // `await f(x)` of an async function runs it here, as part of this task.
             ExprKind::Await(..) => self.await_value(expr, frame),
             ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.address(name), block: None })),

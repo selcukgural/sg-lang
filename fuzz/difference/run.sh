@@ -17,7 +17,7 @@ exec podman run --rm --network none -v "$PWD":/src:ro -v sg-fuzz-data:/data \
   -e SECONDS_="$seconds" -e JOBS="$jobs" -e FIRST="$first" -e KIND="$kind" localhost/sg-test bash -c '
 set -euo pipefail
 mkdir /work && cd /src
-tar --exclude=./interpreter/target --exclude=./fuzz/target --exclude=./fuzz/difference/target --exclude=./graphify-out -cf - . | tar -xf - -C /work
+tar --exclude=./interpreter/target --exclude=./fuzz/target --exclude=./fuzz/difference/target --exclude=./graphify-out --exclude=./trials/target -cf - . | tar -xf - -C /work
 cd /work/interpreter && cargo build --release --quiet
 cd /work/fuzz/difference && cargo build --release --quiet
 out=/data/difference/$(date +%Y%m%d-%H%M%S)

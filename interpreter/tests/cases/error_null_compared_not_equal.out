@@ -1,0 +1,5 @@
+error: `null` is not compared with `!=`
+  --> error_null_compared_not_equal.sg:7:8
+ 7 |     if b != null {
+   |        ^^^^^^^^^
+  hint: write `b is not null`

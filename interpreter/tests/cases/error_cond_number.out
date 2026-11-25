@@ -1,0 +1,5 @@
+error: expected `bool`, found `int`
+  --> error_cond_number.sg:3:11
+ 3 |     print(x ? 1 : 2)
+   |           ^
+  hint: a number is not a condition; compare it: `x != 0`

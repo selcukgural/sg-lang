@@ -1,0 +1,6 @@
+error: expected `int`, found `bool`
+  `??` binds more loosely than `>`: this reads `n ?? (x > 0)`
+  --> error_cond_after_coalesce.sg:4:16
+ 4 |     print(n ?? x > 0 ? 1 : 2)
+   |                ^^^^^
+  hint: to compare the value, write `(n ?? x) > 0`

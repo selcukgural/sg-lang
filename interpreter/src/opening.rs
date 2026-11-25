@@ -430,6 +430,14 @@ impl Opener<'_> {
                 self.expr(left, Use::Value)?;
                 self.expr(right, Use::Value)?;
             }
+            ExprKind::Cond { cond, then, els } => {
+                let why = std::mem::replace(&mut self.why, Why::Condition);
+                let tested = self.expr(cond, Use::Value);
+                self.why = why;
+                tested?;
+                self.expr(then, Use::Value)?;
+                self.expr(els, Use::Value)?;
+            }
             ExprKind::Interp(parts) => {
                 for part in parts {
                     if let InterpPart::Expr(inner, _) = part {

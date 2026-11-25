@@ -1,0 +1,5 @@
+error: the type of this `?:` cannot be found from `null` alone
+  --> error_cond_null_alone.sg:3:21
+ 3 |     var y = x > 0 ? null : null
+   |                     ^^^^
+  hint: write the type where the result goes, for example `int? x = c ? null : null`

@@ -1,0 +1,5 @@
+void main() {
+    int? n = null
+    var x = 3
+    print(n ?? x > 0 ? 1 : 2)
+}

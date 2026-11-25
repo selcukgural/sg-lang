@@ -1,5 +1,5 @@
 error: there is no variable named `r`
-  the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, and after an `if` whose `else` leaves
+  the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, in the first arm of its `?:`, and after an `if` whose `else` leaves
   --> error_is_names_after_chain.sg:9:11
  9 |     print(r)
    |           ^

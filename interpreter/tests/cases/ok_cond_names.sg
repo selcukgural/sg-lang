@@ -1,0 +1,54 @@
+struct Box {
+    string name
+    int size
+}
+
+read Box bigger(read Box a, read Box b) from a, b {
+    return a.size >= b.size ? a : b
+}
+
+int positive(Result<int, NumberError> r) {
+    return r is Ok(v) && v > 0 ? v : 0
+}
+
+int orZero(Result<int, NumberError> r) {
+    return r is not Ok(v) || v < 0 ? 0 : v
+}
+
+int sizeOf(Box? b) {
+    return b is not null && b.size > 1 ? b.size : 0
+}
+
+string nameOf(Box? b) {
+    return b is null ? "nobody" : b.name.clone()
+}
+
+void main() {
+    var small = Box { name = "small".clone(), size = 1 }
+    var large = Box { name = "large".clone(), size = 9 }
+    print(bigger(read small, read large).name)
+    print(positive(int.parse("7")))
+    print(positive(int.parse("-7")))
+    print(positive(int.parse("x")))
+    print(orZero(int.parse("8")))
+    print(orZero(int.parse("-8")))
+    print(orZero(int.parse("y")))
+    print(sizeOf(null))
+    print(sizeOf(Box { name = "a".clone(), size = 5 }))
+    print(nameOf(null))
+    print(nameOf(Box { name = "pasha".clone(), size = 1 }))
+    var boxes = List<Box>()
+    boxes.add(small)
+    boxes.add(large)
+    var total = 0
+    for b in boxes {
+        total += b.size > 2 ? b.size * 10 : b.size
+    }
+    print(total)
+    var c = 'q'
+    var kind = c >= 'a' && c <= 'z' ? 'L' : '?'
+    print(kind)
+    long big = 3
+    var mixed = big > 2 ? big : 0
+    print(mixed)
+}

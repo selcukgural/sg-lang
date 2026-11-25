@@ -196,6 +196,10 @@
           "match": "\\?\\?|\\?\\."
         },
         {
+          "name": "keyword.operator.ternary.sg",
+          "match": "(?<=\\s)[?:](?=\\s)"
+        },
+        {
           "name": "keyword.operator.range.sg",
           "match": "\\.\\.=?"
         },

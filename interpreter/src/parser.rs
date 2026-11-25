@@ -1321,7 +1321,14 @@ impl<'a> Parser<'a> {
     fn at_declaration(&self) -> bool {
         // `await task` is not a variable `task` of the type `await`, nor `unsafe p[0] = 1` one of
         // the type `unsafe`.
-        !self.at_word("await") && !self.at_word("unsafe") && self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
+        !self.at_word("await") && !self.at_word("unsafe") && self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)) && !self.at_cond(n))
+    }
+
+    /// Whether the `?` that ends what reads as a type of `n` tokens begins `c ? a : b`
+    /// instead: `flag ? x : y`, `flag ? x.y : z`. A name that ends the line, or is followed by
+    /// `=`, is declared (`int? x = 1`).
+    fn at_cond(&self, n: usize) -> bool {
+        *self.peek_at(n - 1) == Tok::Question && !matches!(self.peek_at(n + 1), Tok::Assign | Tok::Newline | Tok::Eof | Tok::RBrace)
     }
 
     /// Whether a declaration starts here and is followed by `=`.
@@ -1492,7 +1499,7 @@ impl<'a> Parser<'a> {
                     .hint("put `else` on the same line as `}`: `} else {`"));
             }
             Tok::AndAnd | Tok::OrOr | Tok::Plus | Tok::Star | Tok::Slash | Tok::Percent | Tok::Eq | Tok::Ne
-            | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::QuestionQuestion | Tok::Amp | Tok::Pipe | Tok::Caret | Tok::Shl => {
+            | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::QuestionQuestion | Tok::Question | Tok::Colon | Tok::Amp | Tok::Pipe | Tok::Caret | Tok::Shl => {
                 let text = self.peek().describe();
                 return Err(Diag::error(start, format!("a line cannot start with {text}"))
                     .hint(format!("the statement ended on the previous line; to continue it, put {text} at the end of that line")));
@@ -1542,6 +1549,10 @@ impl<'a> Parser<'a> {
                     return Ok(Err(expr));
                 } else if is_statement(&expr) {
                     StmtKind::Expr(expr)
+                } else if let ExprKind::Cond { cond, .. } = &expr.kind {
+                    let text = &self.src[cond.span.start..cond.span.end];
+                    return Err(Diag::error(expr.span, "`?:` gives a value; it is not a statement")
+                        .hint(format!("to do one thing or the other, write an `if`: `if {text} {{ ... }} else {{ ... }}`")));
                 } else {
                     return Err(Diag::error(expr.span, "the value of this expression is not used")
                         .hint("only a call, an assignment or a declaration can be a statement"));
@@ -1880,12 +1891,36 @@ impl<'a> Parser<'a> {
         Ok(StmtKind::If { cond, then, els, after: Vec::new() })
     }
 
-    /// `a ?? b` binds loosest and groups to the right, as in C#.
+    /// `c ? a : b` binds loosest, then `a ?? b`; both group to the right, as in C#.
     fn expr(&mut self) -> Res<Expr> {
         self.nest(|parser| parser.expr_in())
     }
 
     fn expr_in(&mut self) -> Res<Expr> {
+        let cond = self.coalesce()?;
+        if *self.peek() != Tok::Question {
+            return Ok(cond);
+        }
+        self.bump();
+        let then = self.cond_arm()?;
+        if !self.eat(&Tok::Colon) {
+            return Err(self.unexpected("`:`").note("`c ? a : b` gives `a` where `c` holds, otherwise `b`"));
+        }
+        let els = self.cond_arm()?;
+        let span = cond.span.to(els.span);
+        Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Cond { cond: Box::new(cond), then: Box::new(then), els: Box::new(els) }, span })
+    }
+
+    /// An arm of `?:`: a value, never a way out (choice 1915).
+    fn cond_arm(&mut self) -> Res<Expr> {
+        if *self.peek() == Tok::Return {
+            return Err(Diag::error(self.span(), "an arm of `?:` gives a value; it cannot leave the function")
+                .hint("leave with an `if`, or with `?? return` on a value that may be `null`"));
+        }
+        self.expr()
+    }
+
+    fn coalesce(&mut self) -> Res<Expr> {
         let left = self.binary(0)?;
         if !self.eat(&Tok::QuestionQuestion) {
             return Ok(left);
@@ -1899,7 +1934,7 @@ impl<'a> Parser<'a> {
             };
             Expr { ty: Ty::Void, moved: false, kind: ExprKind::Return(value), span: Span::new(start.start, self.prev_end()) }
         } else {
-            self.expr()?
+            self.coalesce()?
         };
         let span = left.span.to(right.span);
         Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Coalesce { left: Box::new(left), right: Box::new(right), on_result: false }, span })

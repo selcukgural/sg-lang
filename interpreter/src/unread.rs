@@ -307,6 +307,11 @@ impl<'p> Pass<'p> {
                 self.expr(left);
                 self.expr(right);
             }
+            ExprKind::Cond { cond, then, els } => {
+                self.expr(cond);
+                self.expr(then);
+                self.expr(els);
+            }
             // A call of a variable that holds a function reads it; the name of a function is
             // not looked for among the variables.
             ExprKind::Call { name, name_span, args, .. } => {

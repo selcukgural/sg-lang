@@ -1,0 +1,10 @@
+error: there is no variable named `v`
+  the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, in the first arm of its `?:`, and after an `if` whose `else` leaves
+  --> error_cond_name_wrong_arm.sg:3:28
+ 3 |     print(r is Ok(v) ? 0 : v)
+   |                            ^
+  `v` is named by this `is`:
+  --> error_cond_name_wrong_arm.sg:3:19
+ 3 |     print(r is Ok(v) ? 0 : v)
+   |                   ^
+  hint: use the value where the name is seen, or take it out with `match`

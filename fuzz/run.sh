@@ -19,7 +19,7 @@ exec podman run --rm --network none -v "$PWD":/src:ro -v sg-fuzz-data:/data \
   -e TARGET="$target" -e SECONDS_="$seconds" -e JOBS="$jobs" localhost/sg-fuzz bash -c '
 set -euo pipefail
 mkdir /work && cd /src
-tar --exclude=./interpreter/target --exclude=./fuzz/target --exclude=./graphify-out -cf - . | tar -xf - -C /work
+tar --exclude=./interpreter/target --exclude=./fuzz/target --exclude=./graphify-out --exclude=./trials/target -cf - . | tar -xf - -C /work
 corpus=/data/corpus/$TARGET
 mkdir -p "$corpus" /data/artifacts/$TARGET
 if [ -z "$(ls -A "$corpus")" ] && [ "$TARGET" = regex ]; then

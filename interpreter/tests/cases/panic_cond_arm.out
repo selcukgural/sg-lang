@@ -1,0 +1,5 @@
+3
+panic: negative
+  --> panic_cond_arm.sg:2:25
+ 2 |     return n >= 0 ? n : panic("negative")
+   |                         ^^^^^^^^^^^^^^^^^

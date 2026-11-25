@@ -269,3 +269,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [181](2026-11-25.md#slice-181) | An interpreter of Lox held to clox; `toBits` and `fromBits`, `%e` and `%g` in `$"..."`, a hash of a key of a fixed size as foldhash | 1883–1894 |
 | [Showcase](2026-11-25.md#the-showcase) | gifsicle written in SG, in a repository of its own | 1895–1900 |
 | [182](2026-11-25.md#slice-182) | Whether a stream is a terminal: `isTerminal()` | 1901 |
+| [183](2026-11-25.md#slice-183) | The conditional operator `?:` | 1910–1916 |

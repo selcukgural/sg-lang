@@ -1,0 +1,4 @@
+void main() {
+    int? n = null
+    print(n is null ? n + 1 : 0)
+}

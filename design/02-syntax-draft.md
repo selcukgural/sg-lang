@@ -728,6 +728,32 @@ if node?.next is not null {
 A method that gives nothing is called through `?.` on a line of its own. There is no `a?.b = 5` and no `a?[i]` yet:
 `if a is not null { a.b = 5 }`.
 
+### `?:`
+
+`c ? a : b` is `a` where `c` holds and `b` otherwise, as in C#; only the arm chosen runs. `if` stays a statement, so
+a value picked by a condition is written with `?:` (Rust writes `if c { a } else { b }`):
+
+```
+var word = n == 1 ? "item" : "items"
+int sign(int n) {
+    return n > 0 ? 1 : n < 0 ? -1 : 0                     // groups to the right: a chain reads as `else if`
+}
+var width = p is not null ? p.x : 0                      // `p` is narrowed in the first arm, as in an `if`
+var doubled = r is Ok(v) ? v * 2 : 0                     // `v` is seen in the first arm only
+var rest = r is not Ok(v) ? 0 : v                        // and with `is not`, in the second
+var label = done ? null : name                           // a `string?`
+print($"{(n % 2 == 0 ? "even" : "odd")}")                // in parentheses inside `{ }`, where `:` starts the format
+```
+
+The condition is a `bool`: a number or a `T?` is not one. The arms have one type, the rule of the arms of a `match`;
+an arm that is only a number or `null` takes the type of the other arm, `null` making it a `T?`, and a borrow of a
+`Copyable` value (the `v` above) gives the value, as with `??`. A borrow from an `is` name keeps what it was tested
+on lent: after `var t = r is Ok(s) ? s : "none"`, `r` is lent while `t` is used. `?:` binds more
+loosely than every other operator, `??` too: `a ?? b ? c : d` is `(a ?? b) ? c : d`. It gives a value, so it is not
+a statement (`ready ? start() : stop()` is an error whose hint is the `if`), an arm that gives nothing is an error, and
+an arm cannot leave the function: `return` goes in an `if` or on the right of `??`. A line can end with `?` or `:` to
+go on on the next one, and cannot start with either. Compiled, `?:` is the `if` it reads as.
+
 ### Error model
 
 Panic is for programmer errors. Conditions expected from the environment are returned as values with `Result`:

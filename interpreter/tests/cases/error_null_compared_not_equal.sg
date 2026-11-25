@@ -1,0 +1,10 @@
+struct Box {
+    int size
+}
+
+void main() {
+    Box? b = null
+    if b != null {
+        print(b.size)
+    }
+}

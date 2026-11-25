@@ -1,0 +1,64 @@
+enum Shape {
+    Circle(int r)
+    Rect(int w, int h)
+    Empty
+}
+
+struct Point {
+    int x
+    int y
+}
+
+int sign(int n) {
+    return n > 0 ? 1 : n < 0 ? -1 : 0
+}
+
+string describe(read Shape s) {
+    return s is Circle(r) ? $"circle {r}".toString() : "something else"
+}
+
+int width(Point? p) {
+    return p is not null ? p.x : -1
+}
+
+void main() {
+    var x = 5
+    var s = x > 3 ? "big" : "small"
+    print(s)
+    print(sign(-7))
+    print(sign(0))
+    print(sign(42))
+    byte b = 7
+    var picked = x > 100 ? 0 : b
+    print(picked)
+    var maybe = x > 3 ? "yes" : null
+    print(maybe ?? "none")
+    var other = x > 30 ? "yes" : null
+    print(other ?? "none")
+    var n = x < 0 ? null : x
+    print(n ?? 0)
+    print(describe(read Shape.Circle(3)))
+    print(describe(read Shape.Empty))
+    print(width(Point { x = 4, y = 2 }))
+    print(width(null))
+    var r = int.parse("12")
+    var v = r is Ok(value) ? value * 2 : 0
+    print(v)
+    var w = r is not Ok(value) ? -1 : value + 1
+    print(w)
+    print($"{(x % 2 == 0 ? "even" : "odd")}")
+    print($"{List<int?>().length():X} {(x > 1 ? 10 : 20):X}")
+    var total = 1 + (x > 0 ? 10 : 20) * 2
+    print(total)
+    var flag = x > 0 && x < 10 ? true : false
+    print(flag)
+    var words = List<string>()
+    words.add(x > 3 ? "long" : "short")
+    print(words[0])
+    var chosen = x > 3 ?
+        "a" :
+        "b"
+    print(chosen)
+    var f = x > 3 ? 1.5 : 2
+    print(f)
+}

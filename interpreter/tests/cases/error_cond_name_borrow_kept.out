@@ -1,0 +1,9 @@
+error: `r` cannot be moved here: `t` borrows from it and is used again later
+  --> error_cond_name_borrow_kept.sg:8:17
+ 8 |     var moved = r
+   |                 ^
+  `t` borrowed it here:
+  --> error_cond_name_borrow_kept.sg:7:13
+ 7 |     var t = r is Ok(s) ? s : "x"
+   |             ^^^^^^^^^^^^^^^^^^^^
+  hint: finish with `t` before this line: a borrow ends at its last use

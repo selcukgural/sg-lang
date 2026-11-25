@@ -584,6 +584,9 @@ of an unoptimized GIF resized on several threads, each frame moved with its loca
 the thread that owns it, with no lock where gifsicle has two and an atomic counter; 3.5 times as fast with eight
 threads, as gifsicle, and the same bytes in 58,767 runs.
 
+Slice 183 (1910-1916) gives the language `c ? a : b`, as C# has it: `if` stays a statement, the arms take the
+names and the narrowing an `if` would give them, and compiled code writes the `if` it is.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

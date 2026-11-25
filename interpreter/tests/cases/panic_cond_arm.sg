@@ -1,0 +1,8 @@
+int must(int n) {
+    return n >= 0 ? n : panic("negative")
+}
+
+void main() {
+    print(must(3))
+    print(must(-1))
+}

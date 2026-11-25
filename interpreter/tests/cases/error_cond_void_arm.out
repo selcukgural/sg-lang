@@ -1,0 +1,5 @@
+error: this arm of `?:` gives no value
+  --> error_cond_void_arm.sg:6:21
+ 6 |     var y = x > 0 ? work() : work()
+   |                     ^^^^^^
+  hint: to do one thing or the other, write an `if`: `if x > 0 { ... } else { ... }`

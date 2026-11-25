@@ -4509,6 +4509,47 @@ fn nullable_of(ty: Ty) -> Ty {
 /// What a whole condition says once it has run, as `null_facts` reads it, without the
 /// variables it empties with `take`: when `b is null || b.take() is null` fails, `b` was
 /// there and then was emptied.
+/// The values an `is` with names looks at in a condition (`r` in `r is Ok(v) && v > 0`), and
+/// whether the names are `ref` borrows.
+fn named_tests<'e>(cond: &'e Expr, found: &mut Vec<(&'e Expr, bool)>) {
+    match &cond.kind {
+        ExprKind::Binary(BinOp::And | BinOp::Or, left, right) => {
+            named_tests(left, found);
+            named_tests(right, found);
+        }
+        ExprKind::Unary(UnOp::Not, inner) => named_tests(inner, found),
+        ExprKind::IsVariant { expr, pattern, by_ref, .. } if !pattern.names().is_empty() => found.push((expr, *by_ref)),
+        _ => {}
+    }
+}
+
+/// A whole number written out: `1`, `-1`.
+fn whole_number(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Int(..) => true,
+        ExprKind::Unary(UnOp::Neg, inner) => matches!(inner.kind, ExprKind::Int(..)),
+        _ => false,
+    }
+}
+
+/// A value written out that takes its type from where it goes: `null`, `0`, `-1`, `1.5`, `'a'`.
+fn bare_literal(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Null | ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Char(_) => true,
+        ExprKind::Unary(UnOp::Neg, inner) => matches!(inner.kind, ExprKind::Int(..) | ExprKind::Float(..)),
+        _ => false,
+    }
+}
+
+/// An arm of `?:` of another type than the other arm; with `expected`, the type is the one
+/// the place of the value wants.
+fn one_type(diag: Diag, expected: Option<&Ty>, ty: &Ty) -> Diag {
+    match expected {
+        Some(_) => diag,
+        None => diag.note(format!("both arms of `?:` give one type, and the other arm gives `{ty}`")),
+    }
+}
+
 fn condition_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
     let mut taken = Vec::new();
     taken_in(cond, &mut taken);
@@ -4518,7 +4559,7 @@ fn condition_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
 }
 
 /// Where the names of `is` are seen, for the notes of the errors about them.
-const NAMES_SEEN: &str = "the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, and after an `if` whose `else` leaves";
+const NAMES_SEEN: &str = "the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, in the first arm of its `?:`, and after an `if` whose `else` leaves";
 const NOT_NAMES_SEEN: &str = "the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends";
 
 /// `x is Circle(r)` or `x is not Circle(r)` (`Some(false)`), or one of them under `!`
@@ -5478,6 +5519,22 @@ impl<'a> Checker<'a> {
                 self.loans_of(inner, mutable)
             }
             ExprKind::Coalesce { left, right, .. } => union(&mut [&**left, &**right].into_iter()),
+            // As with a `match`: the names of an `is` in the condition are gone by now, and what
+            // they lent comes from what the `is` looks at.
+            ExprKind::Cond { cond, then, els } => {
+                let mut loans = union(&mut [&**then, &**els].into_iter());
+                if expr.ty.is_borrow() || self.holds(&expr.ty) {
+                    let mut tested = Vec::new();
+                    named_tests(cond, &mut tested);
+                    for (inner, by_ref) in tested {
+                        loans.extend(match inner.is_place() {
+                            true => self.place_loans(inner, by_ref, expr.span),
+                            false => self.loans_of(inner, by_ref),
+                        });
+                    }
+                }
+                loans
+            }
             // A value built from borrows carries them.
             ExprKind::StructLit { fields, .. } => union(&mut fields.iter().map(|field| &field.value)),
             ExprKind::With { base, fields } => union(&mut std::iter::once(&**base).chain(fields.iter().map(|field| &field.value))),
@@ -7698,7 +7755,7 @@ impl<'a> Checker<'a> {
             }
             // The habit from C: `if flags & 2 {`.
             (Ty::Int(_) | Ty::Float(_), Ty::Bool) => {
-                let text = if matches!(expr.kind, ExprKind::Coalesce { .. }) { format!("({text})") } else { text.to_string() };
+                let text = if matches!(expr.kind, ExprKind::Coalesce { .. } | ExprKind::Cond { .. }) { format!("({text})") } else { text.to_string() };
                 mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
             }
             (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_) | Ty::Raw(_) | Ty::CFunc(..)) => Ok(()),
@@ -9358,6 +9415,7 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Bool)
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
+            ExprKind::Cond { cond, then, els } => self.cond_expr(cond, then, els, expected),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
             ExprKind::Const(full) => Ok(self.consts.use_type(full)),
             ExprKind::Static(full) => self.static_use(full, expr.span),
@@ -10345,6 +10403,146 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// `c ? a : b`, checked as `if c { a } else { b }` is: `a` sees the names of an `is` in `c`
+    /// and what `c` narrows, `b` the names of an `is not` and what fails. The arms have one
+    /// type, as the arms of a `match` (choice 1912); an arm that is only a `null` or a number
+    /// takes the type of the other one, `null` making it a `T?`.
+    fn cond_expr(&mut self, cond: &mut Expr, then: &mut Expr, els: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
+        self.scopes.push(Scope::default());
+        // `a ?? flag ? 1 : 2` is `(a ?? flag) ? 1 : 2`, as in C#.
+        // `a ?? 0 > 18 ? ...` is `a ?? (0 > 18)`: the comparison binds tighter than `??`.
+        let grouped = match &cond.kind {
+            ExprKind::Coalesce { left, right, .. } => {
+                let text = |part: &Expr| self.src[part.span.start..part.span.end].to_string();
+                Some(match &right.kind {
+                    ExprKind::Binary(op, first, rest) if op.is_comparison() => (
+                        format!("`??` binds more loosely than `{}`: this reads `{} ?? ({})`", op.symbol(), text(left), text(right)),
+                        Some(format!("to compare the value, write `({} ?? {}) {} {}`", text(left), text(first), op.symbol(), text(rest))),
+                    ),
+                    _ => (format!("`?:` binds more loosely than `??`: the condition is all of `{} ?? {}`; for `?:` on the right of `??`, write `{} ?? ({} ? ...)`", text(left), text(right), text(left), text(right)), None),
+                })
+            }
+            _ => None,
+        };
+        let (_, fails) = self.condition(cond, NamesSeen::Fails).map_err(|diag| match &grouped {
+            Some((note, Some(hint))) => diag.note(note.clone()).hint(hint.clone()),
+            Some((note, None)) => diag.note(note.clone()),
+            None => diag,
+        })?;
+        let (_, when_false) = condition_facts(cond);
+        // A bare `null` or number on the left waits for the type of the right side; it has
+        // nothing to check in the scope of the condition.
+        let waits = expected.is_none() && bare_literal(then) && (!bare_literal(els) || (whole_number(then) && !whole_number(els)));
+        let before = self.moves();
+        let node = self.node();
+        self.borrows.branches.push((node, 0));
+        let then_ty = match waits {
+            true => Ok(None),
+            false => self.cond_arm(then, expected, expected).map(Some),
+        };
+        self.borrows.branches.pop();
+        let then_ty = then_ty?;
+        self.pop_scope(true)?;
+        let tested = self.src[cond.span.start..cond.span.end].to_string();
+        self.no_value_in_arm(then, then_ty.as_ref(), &tested)?;
+        let after_then = self.moves();
+        self.set_moves(&before);
+
+        self.borrows.branches.push((node, 1));
+        self.scopes.push(Scope::default());
+        let mut want = expected.cloned();
+        let els_ty = (|| {
+            for (binds, loans) in fails {
+                self.declare_group(binds, loans)?;
+            }
+            for name in &when_false {
+                self.narrow(name);
+            }
+            match &then_ty {
+                _ if want.is_some() => {}
+                Some(Ty::Null) => {
+                    return Err(Diag::error(then.span, "the type of this `?:` cannot be found from `null` alone")
+                        .hint("write the type where the result goes, for example `int? x = c ? null : null`"));
+                }
+                // `c ? x : null`: a `T?`.
+                Some(ty) if matches!(els.kind, ExprKind::Null) && *ty != Ty::Never => {
+                    let nullable = nullable_of(ty.clone());
+                    self.coerce(then, ty.clone(), &nullable)?;
+                    want = Some(nullable);
+                }
+                Some(Ty::Never) | None => {}
+                Some(ty) => want = Some(ty.clone()),
+            }
+            self.cond_arm(els, want.as_ref(), expected)
+        })();
+        self.borrows.branches.pop();
+        let els_ty = els_ty?;
+        self.pop_scope(true)?;
+        self.no_value_in_arm(els, Some(&els_ty), &tested)?;
+
+        // A bare `null` or number on the left.
+        let then_ty = match then_ty {
+            Some(ty) => ty,
+            None if els_ty == Ty::Never => self.cond_arm(then, None, None)?,
+            None => {
+                let ty = match els_ty {
+                    _ if matches!(then.kind, ExprKind::Null) => nullable_of(els_ty.clone()),
+                    _ => els_ty.clone(),
+                };
+                if ty != els_ty {
+                    self.coerce(els, els_ty.clone(), &ty)?;
+                }
+                self.cond_arm(then, Some(&ty), None)?
+            }
+        };
+        // An arm that never gives a value (`panic(...)`) does not reach what comes after.
+        match (then_ty == Ty::Never, els_ty == Ty::Never) {
+            (true, _) => {}
+            (false, true) => self.set_moves(&after_then),
+            (false, false) => self.merge_moves(&after_then),
+        }
+        Ok(match (then_ty, els_ty) {
+            (Ty::Never, ty) => ty,
+            (ty, Ty::Never) => ty,
+            (ty, _) => match want {
+                Some(want) if matches!(want, Ty::Nullable(_)) && !matches!(ty, Ty::Nullable(_)) => want,
+                _ => ty,
+            },
+        })
+    }
+
+    /// An arm of `?:`, of the type `want` when it is known. A borrow of a `Copyable` value
+    /// (the `v` of `r is Ok(v)`, a `read int` parameter) gives the value, as `??` does, unless the
+    /// arm lends it on purpose (`read x`) or the place wants a borrow.
+    fn cond_arm(&mut self, arm: &mut Expr, want: Option<&Ty>, expected: Option<&Ty>) -> Res<Ty> {
+        let mut found = self.expr(arm, want)?;
+        let lends = matches!(arm.kind, ExprKind::Borrow { .. }) || want.is_some_and(|ty| ty.is_borrow());
+        if let (Ty::Read(behind) | Ty::Ref(behind), false) = (&found, lends) {
+            if behind.is_copyable(self.copyable) {
+                let behind = (**behind).clone();
+                wrap(arm, ExprKind::Load);
+                arm.ty = behind.clone();
+                found = behind;
+            }
+        }
+        match want {
+            Some(ty) => {
+                self.coerce(arm, found, ty).map_err(|diag| one_type(diag, expected, ty))?;
+                Ok(ty.clone())
+            }
+            None => Ok(found),
+        }
+    }
+
+    /// An arm of `?:` that gives nothing (choice 1914).
+    fn no_value_in_arm(&self, arm: &Expr, ty: Option<&Ty>, tested: &str) -> Res<()> {
+        if ty != Some(&Ty::Void) {
+            return Ok(());
+        }
+        Err(Diag::error(arm.span, "this arm of `?:` gives no value")
+            .hint(format!("to do one thing or the other, write an `if`: `if {tested} {{ ... }} else {{ ... }}`")))
+    }
+
     fn binary(&mut self, op: BinOp, left: &mut Expr, right: &mut Expr, expected: Option<&Ty>, span: Span) -> Res<Ty> {
         if op.is_shift() {
             return self.shift(op, left, right, expected, span);
@@ -10598,7 +10796,10 @@ impl<'a> Checker<'a> {
             }
             (Ty::Null, _) | (_, Ty::Null) if matches!(op, BinOp::Eq | BinOp::Ne) => {
                 let word = if op == BinOp::Eq { "is null" } else { "is not null" };
-                Err(Diag::error(span, "`null` is not compared with `==`").hint(format!("write `x {word}`")))
+                // The side that is not `null` is the one tested: `p != null` is `p is not null`.
+                let tested = if matches!(left.kind, ExprKind::Null) { right } else { left };
+                let text = &self.src[tested.span.start..tested.span.end];
+                Err(Diag::error(span, format!("`null` is not compared with `{}`", op.symbol())).hint(format!("write `{text} {word}`")))
             }
             _ => Err(undefined()),
         }
@@ -14841,6 +15042,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
             list.push(Part::Expr(left));
             list.push(Part::Expr(right));
         }
+        ExprKind::Cond { cond, then, els } => list.extend([cond, then, els].map(|inner| Part::Expr(inner))),
         ExprKind::Slice { recv, from, to } => {
             list.push(Part::Expr(recv));
             list.extend([from, to].into_iter().flatten().map(|end| Part::Expr(end)));

@@ -1,0 +1,4 @@
+void main() {
+    var r = int.parse("1")
+    print(r is Ok(v) ? 0 : v)
+}
