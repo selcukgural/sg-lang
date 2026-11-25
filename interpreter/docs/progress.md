@@ -594,6 +594,11 @@ Slice 185 (1921-1926) counts an index from the end, as C# does: `xs[^1]` is the 
 the first and the last. What is indexed is computed once, a panic names `^n` as it was written, and the 22 places
 of the repository that wrote `xs[xs.length() - 1]` write `xs[^1]`.
 
+Slice 186 (1927-1934, 1940, 1942) built `sg build --static`, a program with musl linked in, measured it and set it
+aside: musl's `malloc` made a program that allocates much 1.5 to 10 times slower, 45 times on four threads, and the
+HTTP server a quarter slower; the work is on a branch of its own. Of it, 1932 is built: with musl or a glibc
+before 2.34 a started program gets no descriptor but 0, 1 and 2.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

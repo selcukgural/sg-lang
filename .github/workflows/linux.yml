@@ -33,11 +33,12 @@ jobs:
           persist-credentials: false
       # Clang and LLD build for the RISC-V machine and QEMU boots the kernel of `examples/kernel`
       # (`qemu-system-riscv` since Ubuntu 26.04, `ubuntu-latest` now; before, in `qemu-system-misc`)
-      # (`tests/kernel.rs`); zlib, SQLite and curl are the libraries of the examples and tests.
+      # (`tests/kernel.rs`); zlib, SQLite and curl are the libraries of the examples and tests;
+      # `musl-gcc` builds a program with a C library that has no closefrom (`tests/cli.rs`).
       - name: Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld qemu-system-riscv zlib1g-dev libsqlite3-dev libcurl4-openssl-dev
+          sudo apt-get install -y --no-install-recommends clang lld qemu-system-riscv zlib1g-dev libsqlite3-dev libcurl4-openssl-dev musl-tools
           cargo --version
           clang --version
       # What the machine gives: its memory, how it counts what programs may take (a `fork` of the

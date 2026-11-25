@@ -9840,12 +9840,47 @@ static int sg_proc_pump(int in, sg_str text, int out, sg_string* kept) {
 #endif
     return code;
 }
+#if defined(__linux__) && !(defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))) && !SG_LIBRARY
+#include <dirent.h>
+#include <limits.h>
+#include <sys/syscall.h>
+/* A C library that cannot close them in the spawned program (musl, glibc before 2.34): what this
+   program was handed open, or C code of its own opened without close-on-exec, is marked
+   close-on-exec before each start (choice 1932). Linux 5.11 does it in one call; before, each
+   descriptor in /proc/self/fd is marked, and without /proc each number up to the limit of open
+   files. A library leaves the descriptors of the program it is in as they are: they are not its. */
+static void sg_proc_close_on_exec(void) {
+    if (syscall(436 /* close_range, the same number on every machine */, 3u, ~0u, 4u /* CLOSE_RANGE_CLOEXEC */) == 0) return;
+    DIR* d = opendir("/proc/self/fd");
+    if (d) {
+        int self = dirfd(d);
+        struct dirent* e;
+        while ((e = readdir(d))) {
+            char* end;
+            long fd = strtol(e->d_name, &end, 10);
+            if (end == e->d_name || *end || fd < 3 || fd > INT_MAX || fd == self) continue;
+            int flags = fcntl((int)fd, F_GETFD);
+            if (flags >= 0 && !(flags & FD_CLOEXEC)) fcntl((int)fd, F_SETFD, flags | FD_CLOEXEC);
+        }
+        closedir(d);
+        return;
+    }
+    long most = sysconf(_SC_OPEN_MAX);
+    if (most < 0 || most > 1048576) most = 1048576;
+    for (int fd = 3; fd < (int)most; fd++) {
+        int flags = fcntl(fd, F_GETFD);
+        if (flags >= 0 && !(flags & FD_CLOEXEC)) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
+#define SG_PROC_CLOSE_ON_EXEC 1
+#endif
 /* Starts the program at `path` with `posix_spawn`. Its input is this program's (`input` 0),
    nothing (1) or a pipe (2); its output and its standard error are pipes when `out` and `err` say
    so, otherwise this program's. `ends` gets the ends of the pipes this program keeps (the input,
    the output, the standard error), or -1. What was printed goes out first. Only 0, 1 and 2 reach
    the program: every other descriptor of the runtime is opened close-on-exec, and on macOS the
-   spawn closes every descriptor it is not told to keep. */
+   spawn closes every descriptor it is not told to keep, with glibc 2.34 the spawn closes those
+   above 2, and with another C library on Linux they are marked close-on-exec first. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
                          int64_t input, bool out, bool err, pid_t* child, int ends[3]) {
@@ -9894,6 +9929,8 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
            program either: on macOS `POSIX_SPAWN_CLOEXEC_DEFAULT` does it, with glibc 2.34 this. */
 #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
         posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+#elif defined(SG_PROC_CLOSE_ON_EXEC)
+        sg_proc_close_on_exec();
 #endif
         sg_out_flush();
         fflush(stderr);

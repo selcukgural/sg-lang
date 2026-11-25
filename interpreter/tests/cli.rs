@@ -701,6 +701,43 @@ fn builds_for_a_machine_without_a_system() {
     assert!(err.starts_with("error: a program without an operating system has no `main`"), "{err}");
 }
 
+/// A program started by a program has only 0, 1 and 2 open, whatever was handed to the one that
+/// starts it: with glibc 2.34 the spawn closes the others; with a C library that cannot (musl,
+/// glibc before 2.34) they are marked close-on-exec first (choice 1932). Built by `sg build`, and
+/// with `musl-gcc` where it is installed, which asks the second way.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_started_program_gets_no_other_descriptor() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("a_started_program_gets_no_other_descriptor");
+    write(&dir, "fds.sg", "Result<void, ProcessError> main() {\n    var ls = Command(\"ls\")\n    ls.args(read List<string> { \"/proc/self/fd\" })\n    print(try ls.output())\n    return Ok()\n}\n");
+    assert_eq!(ran(&sg(&dir, &["build", "fds.sg", "-o", "glibc"])), (0, String::new(), String::new()));
+    let mut programs = vec!["glibc"];
+    // The C of the program linked with musl, statically: Debian's `musl-gcc` links a program
+    // that loads musl only where libgcc asks nothing of glibc (not on 64-bit Arm).
+    let musl = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("musl-gcc").is_file()));
+    if musl {
+        let c = sg(&dir, &["emit-c", "fds.sg"]);
+        std::fs::write(dir.join("fds.c"), &c.stdout).unwrap();
+        let built = Command::new("musl-gcc").args(["-std=c11", "-O1", "-o", "musl", "fds.c", "-lm", "-pthread", "-static"]).current_dir(&dir).stdin(Stdio::null()).finished();
+        assert!(built.status.success(), "{}", text(&built.stderr));
+        programs.push("musl");
+    } else {
+        eprintln!("no musl-gcc: a C library without closefrom is not asked");
+    }
+    for program in programs {
+        // Descriptor 7 is open, not close-on-exec, when the program starts.
+        let run = format!("exec 7</dev/null; exec ./{program}");
+        let (code, out, err) = ran(&Command::new("sh").args(["-c", &run]).current_dir(&dir).stdin(Stdio::null()).finished());
+        assert_eq!((code, err.as_str()), (0, ""), "{program}");
+        // `ls` reads the folder through one of its own (3).
+        let open: Vec<&str> = out.lines().collect();
+        assert!(open.starts_with(&["0", "1", "2"]) && !open.contains(&"7"), "{program}: {open:?}");
+    }
+}
+
 /// Command lines that are not one of the usages: 2, with the usage, and nothing built.
 #[test]
 fn refuses_what_is_not_a_usage() {
