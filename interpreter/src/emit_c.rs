@@ -16325,10 +16325,18 @@ impl<'a> Emitter<'a> {
                     Ty::Read(_) => (held.clone(), self.same_at(item, "v.ptr[i]", "item", span)?),
                     _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.equaler(item, span)?)),
                 };
-                let _ = writeln!(
-                    self.glue,
-                    "static inline int64_t {helper}({window} v, {given} item) {{ for (int64_t i = 0; i < v.len; i++) if ({equal}) return i; return -1; }}"
-                );
+                // A byte is looked for by `memchr`, many at a time (a head of HTTP is read so).
+                if matches!(&**item, Ty::Int(IntTy::Byte | IntTy::Sbyte)) {
+                    let _ = writeln!(
+                        self.glue,
+                        "static inline int64_t {helper}({window} v, {given} item) {{ if (v.len <= 0) return -1; const {held}* p = memchr(v.ptr, (unsigned char)item, (size_t)v.len); return p ? (int64_t)(p - v.ptr) : -1; }}"
+                    );
+                } else {
+                    let _ = writeln!(
+                        self.glue,
+                        "static inline int64_t {helper}({window} v, {given} item) {{ for (int64_t i = 0; i < v.len; i++) if ({equal}) return i; return -1; }}"
+                    );
+                }
                 let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
                 self.sigs.insert(helper.clone(), vec![key]);
             }
@@ -16665,10 +16673,17 @@ impl<'a> Emitter<'a> {
                     // Any other item is compared through a pointer, by the helper of its type.
                     _ => (format!("{held} const*"), format!("{}(&v->ptr[i], item)", self.equaler(item, span)?)),
                 };
-                let _ = writeln!(
-                    self.glue,
-                    "static inline int64_t {helper}(const {list_c}* v, {given} item) {{ for (int64_t i = 0; i < v->len; i++) if ({equal}) return i; return -1; }}"
-                );
+                if matches!(&**item, Ty::Int(IntTy::Byte | IntTy::Sbyte)) {
+                    let _ = writeln!(
+                        self.glue,
+                        "static inline int64_t {helper}(const {list_c}* v, {given} item) {{ if (v->len <= 0) return -1; const {held}* p = memchr(v->ptr, (unsigned char)item, (size_t)v->len); return p ? (int64_t)(p - v->ptr) : -1; }}"
+                    );
+                } else {
+                    let _ = writeln!(
+                        self.glue,
+                        "static inline int64_t {helper}(const {list_c}* v, {given} item) {{ for (int64_t i = 0; i < v->len; i++) if ({equal}) return i; return -1; }}"
+                    );
+                }
                 let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
                 self.sigs.insert(helper.clone(), vec![key]);
             }

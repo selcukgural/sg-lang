@@ -1,0 +1,59 @@
+// `indexOf` and `contains` of a single byte or sbyte, in a list, an array and a slice (compiled,
+// they look by `memchr`): the first place, counted from the start of what is searched; -1 for
+// none, for an empty window, and for a window that ends before the byte. A negative sbyte is
+// found as itself, not as the byte of the same bits in another type.
+
+void main() {
+    var data = List<byte>()
+    data.addAll("GET / HTTP/1.1\r\nHost: a\r\n\r\n".asBytes())
+    print(data.indexOf('\n') ?? -1)
+    print(data.indexOf('G') ?? -1)
+    print(data.indexOf((byte)0) ?? -1)
+    print(data.contains('\r'))
+    print(data.contains('z'))
+    var window = data[16..]
+    print(window.indexOf('\n') ?? -1)
+    print(data[0..15].indexOf('\n') ?? -1)
+    print(data[3..3].indexOf(' ') ?? -1)
+    var empty = List<byte>()
+    print(empty.indexOf('a') ?? -1)
+    print(empty.contains('a'))
+
+    var many = List<byte>.repeat(7, 100003)
+    print(many.indexOf((byte)8) ?? -1)
+    many[100002] = 8
+    many[99999] = 0
+    print(many.indexOf((byte)8) ?? -1)
+    print(many.indexOf((byte)0) ?? -1)
+    print(many[99990..100002].indexOf((byte)8) ?? -1)
+    print(many[99990..].indexOf((byte)8) ?? -1)
+    for at in 0..40 {
+        var short = List<byte>.repeat(1, at + 1)
+        short[at] = 255
+        if (short.indexOf((byte)255) ?? -1) != at || (short[0..at].indexOf((byte)255) ?? -1) != -1 {
+            print($"wrong at {at}")
+        }
+    }
+
+    var arr = byte[5](0)
+    arr[3] = 200
+    print(arr.indexOf((byte)200) ?? -1)
+    print(arr.indexOf((byte)0) ?? -1)
+    print(arr[1..].indexOf((byte)0) ?? -1)
+    print(arr[4..].indexOf((byte)0) ?? -1)
+    print(arr.contains((byte)201))
+
+    var signed = List<sbyte>()
+    signed.add(5)
+    signed.add(-128)
+    signed.add(-1)
+    signed.add(127)
+    print(signed.indexOf((sbyte)-1) ?? -1)
+    print(signed.indexOf((sbyte)-128) ?? -1)
+    print(signed.indexOf((sbyte)127) ?? -1)
+    print(signed.indexOf((sbyte)0) ?? -1)
+    print(signed[2..].indexOf((sbyte)-128) ?? -1)
+    var sarr = sbyte[3](-1)
+    print(sarr[1..].indexOf((sbyte)-1) ?? -1)
+    print(sarr.contains((sbyte)1))
+}
