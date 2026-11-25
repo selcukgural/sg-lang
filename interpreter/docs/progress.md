@@ -590,4 +590,6 @@ Next come the heavy level of the stand and the whole table of the file server, r
 takes over a function with many formatted values, which Lox's trial found. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
-`sg doc` (1392).
+`sg doc` (1392). The showcase is done; what it left for the language is its LZW encoder, 1.08 to 1.21 times gifsicle's
+because clang puts the lossy search inside the encoder's loop: a way for a program to keep a function apart, or
+another answer, is to be weighed as a slice ([Slower than C](../../benchmarks/slower-than-c.md)).
