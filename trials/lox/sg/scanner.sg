@@ -1,0 +1,270 @@
+// The scanner of clox: one token at a time, as the compiler asks for it. The source is bytes, as
+// clox reads it; it ends at its first NUL byte, where clox's text ends.
+
+enum TokenType : byte, Copyable, Equatable {
+    LeftParen
+    RightParen
+    LeftBrace
+    RightBrace
+    Comma
+    Dot
+    Minus
+    Plus
+    Semicolon
+    Slash
+    Star
+    Bang
+    BangEqual
+    Equal
+    EqualEqual
+    Greater
+    GreaterEqual
+    Less
+    LessEqual
+    Identifier
+    String
+    Number
+    And
+    Class
+    Else
+    False
+    For
+    Fun
+    If
+    Nil
+    Or
+    Print
+    Return
+    Super
+    This
+    True
+    Var
+    While
+    Error
+    Eof
+}
+
+// A token is a window of the source. An error token has its message in place of its text.
+struct Token : Copyable {
+    TokenType type
+    nint start
+    nint length
+    int line
+    // For an error token: 0 for "Unterminated string.", 1 for "Unexpected character.".
+    int message
+}
+
+struct Scanner {
+    // The source, and after its end the names the compiler makes up (`this`, `super`): a token
+    // for them is a window there.
+    List<byte> source
+    nint end
+    nint start
+    nint current
+    int line
+}
+
+// Where the names the compiler makes up lie, after the source.
+const nint SyntheticThis = 0
+const nint SyntheticSuper = 4
+
+Scanner newScanner(List<byte> bytes) {
+    nint end = bytes.indexOf(0) ?? bytes.length()
+    var source = List<byte>.withCapacity(end + 9)
+    source.addAll(bytes[0..end])
+    source.addAll("thissuper".asBytes())
+    return Scanner { source = source, end = end, start = 0, current = 0, line = 1 }
+}
+
+bool isAlpha(byte c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+bool isDigit(byte c) {
+    return c >= '0' && c <= '9'
+}
+
+bool isAtEnd(read Scanner s) {
+    return s.current >= s.end
+}
+
+byte advanceChar(ref Scanner s) {
+    s.current += 1
+    return s.source[s.current - 1]
+}
+
+byte peekChar(read Scanner s) {
+    if s.current >= s.end {
+        return 0
+    }
+    return s.source[s.current]
+}
+
+byte peekNext(read Scanner s) {
+    if s.current + 1 >= s.end {
+        return 0
+    }
+    return s.source[s.current + 1]
+}
+
+bool matchChar(ref Scanner s, byte expected) {
+    if isAtEnd(read s) || s.source[s.current] != expected {
+        return false
+    }
+    s.current += 1
+    return true
+}
+
+Token makeToken(read Scanner s, TokenType type) {
+    return Token { type = type, start = s.start, length = s.current - s.start, line = s.line, message = 0 }
+}
+
+Token errorToken(read Scanner s, int message) {
+    return Token { type = TokenType.Error, start = s.start, length = 0, line = s.line, message = message }
+}
+
+void skipWhitespace(ref Scanner s) {
+    while true {
+        byte c = peekChar(read s)
+        if c == ' ' || c == '\r' || c == '\t' {
+            _ = advanceChar(ref s)
+        } else if c == '\n' {
+            s.line += 1
+            _ = advanceChar(ref s)
+        } else if c == '/' && peekNext(read s) == '/' {
+            // A comment goes until the end of the line.
+            while peekChar(read s) != '\n' && !isAtEnd(read s) {
+                _ = advanceChar(ref s)
+            }
+        } else {
+            return
+        }
+    }
+}
+
+TokenType checkKeyword(read Scanner s, nint start, read string rest, TokenType type) {
+    var bytes = rest.asBytes()
+    if s.current - s.start == start + bytes.length() {
+        var at = s.start + start
+        if s.source[at..at + bytes.length()] == bytes {
+            return type
+        }
+    }
+    return TokenType.Identifier
+}
+
+TokenType identifierType(read Scanner s) {
+    match s.source[s.start] {
+        'a' => return checkKeyword(read s, 1, "nd", TokenType.And)
+        'c' => return checkKeyword(read s, 1, "lass", TokenType.Class)
+        'e' => return checkKeyword(read s, 1, "lse", TokenType.Else)
+        'f' => {
+            if s.current - s.start > 1 {
+                match s.source[s.start + 1] {
+                    'a' => return checkKeyword(read s, 2, "lse", TokenType.False)
+                    'o' => return checkKeyword(read s, 2, "r", TokenType.For)
+                    'u' => return checkKeyword(read s, 2, "n", TokenType.Fun)
+                    _ => {}
+                }
+            }
+        }
+        'i' => return checkKeyword(read s, 1, "f", TokenType.If)
+        'n' => return checkKeyword(read s, 1, "il", TokenType.Nil)
+        'o' => return checkKeyword(read s, 1, "r", TokenType.Or)
+        'p' => return checkKeyword(read s, 1, "rint", TokenType.Print)
+        'r' => return checkKeyword(read s, 1, "eturn", TokenType.Return)
+        's' => return checkKeyword(read s, 1, "uper", TokenType.Super)
+        't' => {
+            if s.current - s.start > 1 {
+                match s.source[s.start + 1] {
+                    'h' => return checkKeyword(read s, 2, "is", TokenType.This)
+                    'r' => return checkKeyword(read s, 2, "ue", TokenType.True)
+                    _ => {}
+                }
+            }
+        }
+        'v' => return checkKeyword(read s, 1, "ar", TokenType.Var)
+        'w' => return checkKeyword(read s, 1, "hile", TokenType.While)
+        _ => {}
+    }
+    return TokenType.Identifier
+}
+
+Token identifier(ref Scanner s) {
+    while isAlpha(peekChar(read s)) || isDigit(peekChar(read s)) {
+        _ = advanceChar(ref s)
+    }
+    return makeToken(read s, identifierType(read s))
+}
+
+Token number(ref Scanner s) {
+    while isDigit(peekChar(read s)) {
+        _ = advanceChar(ref s)
+    }
+    // Look for a fractional part.
+    if peekChar(read s) == '.' && isDigit(peekNext(read s)) {
+        // Consume the ".".
+        _ = advanceChar(ref s)
+        while isDigit(peekChar(read s)) {
+            _ = advanceChar(ref s)
+        }
+    }
+    return makeToken(read s, TokenType.Number)
+}
+
+Token stringToken(ref Scanner s) {
+    while peekChar(read s) != '"' && !isAtEnd(read s) {
+        if peekChar(read s) == '\n' {
+            s.line += 1
+        }
+        _ = advanceChar(ref s)
+    }
+    if isAtEnd(read s) {
+        return errorToken(read s, 0)
+    }
+    // The closing quote.
+    _ = advanceChar(ref s)
+    return makeToken(read s, TokenType.String)
+}
+
+// `!=`, `==`, `<=` and `>=`, or the character alone.
+Token withEqual(ref Scanner s, TokenType both, TokenType alone) {
+    if matchChar(ref s, '=') {
+        return makeToken(read s, both)
+    }
+    return makeToken(read s, alone)
+}
+
+Token scanToken(ref Scanner s) {
+    skipWhitespace(ref s)
+    s.start = s.current
+    if isAtEnd(read s) {
+        return makeToken(read s, TokenType.Eof)
+    }
+    byte c = advanceChar(ref s)
+    if isAlpha(c) {
+        return identifier(ref s)
+    }
+    if isDigit(c) {
+        return number(ref s)
+    }
+    return match c {
+        '(' => makeToken(read s, TokenType.LeftParen)
+        ')' => makeToken(read s, TokenType.RightParen)
+        '{' => makeToken(read s, TokenType.LeftBrace)
+        '}' => makeToken(read s, TokenType.RightBrace)
+        ';' => makeToken(read s, TokenType.Semicolon)
+        ',' => makeToken(read s, TokenType.Comma)
+        '.' => makeToken(read s, TokenType.Dot)
+        '-' => makeToken(read s, TokenType.Minus)
+        '+' => makeToken(read s, TokenType.Plus)
+        '/' => makeToken(read s, TokenType.Slash)
+        '*' => makeToken(read s, TokenType.Star)
+        '!' => withEqual(ref s, TokenType.BangEqual, TokenType.Bang)
+        '=' => withEqual(ref s, TokenType.EqualEqual, TokenType.Equal)
+        '<' => withEqual(ref s, TokenType.LessEqual, TokenType.Less)
+        '>' => withEqual(ref s, TokenType.GreaterEqual, TokenType.Greater)
+        '"' => stringToken(ref s)
+        _ => errorToken(read s, 1)
+    }
+}

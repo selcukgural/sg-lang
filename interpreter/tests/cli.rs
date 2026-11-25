@@ -3080,6 +3080,93 @@ fn the_trial_of_hashsum() {
 /// `gifsicle -I` writes of it; each option writes the same bytes interpreted and compiled; what it
 /// writes, read and written again, is the same bytes; a GIF cut short ends with 1 and writes nothing;
 /// an option not known ends with 2. `trials/giftool/tests/check.py` holds it to a model, picture by picture.
+/// The interpreter of Lox (choices 1883-1894), compiled and interpreted, held to what clox writes for
+/// the same program: a class with a superclass and `super`, a closure, numbers as `%g` writes them,
+/// three thousand objects, and an error at run time with its trace; the REPL; a missing file and a
+/// wrong use. The loop of choice 1894 (`--ip-local`) and the collector at every allocation
+/// (`--stress-gc`) write the same. The book's tests and the comparison with clox itself are in
+/// `trials/lox/tests` (`check.py`, `fuzz.py`).
+#[test]
+fn the_trial_of_lox() {
+    if !has_compiler() {
+        return;
+    }
+    let trials = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials");
+    let dir = work("the_trial_of_lox");
+    let source = trials.join("lox").join("sg").to_string_lossy().into_owned();
+    let built = program(&dir, "lox").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &built])), (0, String::new(), String::new()));
+    let script = r#"class Shape {
+  init(name) { this.name = name; }
+  area() { return 0; }
+  describe() { return this.name + " of area"; }
+}
+class Square < Shape {
+  init(side) { super.init("square"); this.side = side; }
+  area() { return this.side * this.side; }
+}
+fun counter() {
+  var n = 0;
+  fun next() { n = n + 1; return n; }
+  return next;
+}
+var c = counter();
+c();
+var s = Square(1.5);
+print s.describe();
+print s.area();
+print c() + 10;
+print 1 / 3;
+print 123456789;
+print -0;
+print "a" + "b" == "ab";
+print Square;
+print s;
+print c;
+var list = nil;
+class Node { init(v, next) { this.v = v; this.next = next; } }
+for (var i = 0; i < 3000; i = i + 1) { list = Node(i, list); }
+var total = 0;
+while (list != nil) { total = total + list.v; list = list.next; }
+print total;
+print nil + 1;
+"#;
+    std::fs::write(dir.join("script.lox"), script).unwrap();
+    let output = "square of area\n2.25\n12\n0.333333\n1.23457e+08\n-0\ntrue\nSquare\nSquare instance\n<fn next>\n4.4985e+06\n";
+    let error = "Operands must be two numbers or two strings.\n[line 34] in script\n";
+    let run = |interpreted: bool, words: &[&str], input: Option<&str>| {
+        let mut command = match interpreted {
+            true => {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
+                command.arg(&source);
+                command
+            }
+            false => Command::new(&built),
+        };
+        command.args(words).current_dir(&dir);
+        match input {
+            Some(input) => command.stdin(std::fs::File::open(dir.join(input)).unwrap()).finished(),
+            None => command.stdin(Stdio::null()).finished(),
+        }
+    };
+    std::fs::write(dir.join("repl.txt"), "var a = 1;\nprint a + 1;\nprint b;\nprint a;\nfun\n").unwrap();
+    let repl = "repl.txt";
+    for interpreted in [false, true] {
+        let flags: &[&[&str]] = if interpreted { &[&[]] } else { &[&[], &["--ip-local"], &["--stress-gc"], &["--ip-local", "--stress-gc"]] };
+        for flags in flags {
+            let out = run(interpreted, &[flags, &["script.lox"][..]].concat(), None);
+            assert_eq!(ran(&out), (70, output.to_string(), error.to_string()), "interpreted {interpreted}, {flags:?}");
+        }
+        let out = run(interpreted, &[], Some(repl));
+        let said = "Undefined variable 'b'.\n[line 1] in script\n[line 2] Error at end: Expect function name.\n";
+        assert_eq!(ran(&out), (0, "> > 2\n> > 1\n> > \n".to_string(), said.to_string()), "interpreted {interpreted}");
+        let out = run(interpreted, &["missing.lox"], None);
+        assert_eq!(ran(&out), (74, String::new(), "Could not open file \"missing.lox\".\n".to_string()), "interpreted {interpreted}");
+        let out = run(interpreted, &["a.lox", "b.lox"], None);
+        assert_eq!(ran(&out), (64, String::new(), "Usage: clox [path]\n".to_string()), "interpreted {interpreted}");
+    }
+}
+
 #[test]
 fn the_trial_of_giftool() {
     if !has_compiler() {

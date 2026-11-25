@@ -1,0 +1,5 @@
+// `g` is for a fractional number; an integer is made one first.
+void main() {
+    long n = 12345678
+    print($"{n:g3}")
+}

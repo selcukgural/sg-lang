@@ -1,0 +1,7 @@
+// An error deep in calls: the trace goes from the innermost frame out to the script.
+class Thing {
+  method(x) { return helper(x); }
+}
+fun helper(x) { return inner(x); }
+fun inner(x) { return x + nil; }
+Thing().method(1);

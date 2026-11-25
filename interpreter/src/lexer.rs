@@ -885,7 +885,7 @@ impl<'a> Lexer<'a> {
 
     /// What follows `:` inside `{ }`: one letter and the number of digits, as in C#.
     fn format_letter(&self, span: Span) -> Result<(Letter, Option<u32>), Diag> {
-        const KNOWN: &str = "formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point)";
+        const KNOWN: &str = "formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point), `e` and `E` (C's `%e`), `g` and `G` (C's `%g`)";
         let written = &self.src[span.start..span.end];
         let Some(first) = written.chars().next() else {
             return Err(Diag::error(Span::new(span.start - 1, span.end), "nothing after `:`").note(KNOWN));
@@ -897,6 +897,10 @@ impl<'a> Lexer<'a> {
             'b' | 'B' => Letter::Binary,
             'd' | 'D' => Letter::Decimal,
             'f' | 'F' => Letter::Fixed,
+            'e' => Letter::Exponent,
+            'E' => Letter::ExponentUpper,
+            'g' => Letter::General,
+            'G' => Letter::GeneralUpper,
             'n' | 'N' => {
                 return Err(Diag::error(span, format!("`{first}` is not a format here"))
                     .note("`N` would put separators between groups of digits, which change from one country to another")

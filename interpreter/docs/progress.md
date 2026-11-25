@@ -564,10 +564,19 @@ hundred million lookups take 0.48 s where they took 0.97 (Rust 0.39), a log of 1
 faster in 9% less memory. From this slice on a change of the language is measured against what SG was, and a
 program against the C program it mirrors, not written again in Rust and Zig.
 
+Slice 181 (1883-1894) is the last trial of the order of 1418: an interpreter of Lox written after clox, the C one of
+*Crafting Interpreters*, and held to it byte for byte, on the book's 246 tests and on 5,000 programs made from a
+seed, as it is, with its collector at every allocation and interpreted. Its objects, which refer to each other in
+cycles, are the items of one list and a value holds a handle; a value is 64 bits of NaN boxing, as clox's. It found
+three gaps, each built in the slice: the bits of a `double` (`toBits`, `fromBits`, 1891), `%e` and `%g` in
+`$"..."` (1892), and a hash of a key of a fixed size as hashbrown's foldhash in place of SipHash (1893), with which
+the lookups of fields and methods take half the time (a hundred million lookups in a `HashMap<uint, nint>` 0.16 s
+from 0.49, Rust's std 0.39). What is left of the gap to clox is in [the tables](../../benchmarks/programs.md#lox).
+
 ## Next
 
-Next comes an interpreter of Lox, measured against clox, the C one; the heavy level of the stand and the whole
-table of the file server, run at night. XML is not in `std` (1551, in place of 1413)
+Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang
+takes over a function with many formatted values, which Lox's trial found. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
 `sg doc` (1392).

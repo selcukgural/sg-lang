@@ -1,0 +1,5 @@
+error: `g` writes a fractional number with C's library (`snprintf`), and this program is built without an operating system
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_format_general.sg:3:25
+ 3 |     var text = $"x is {x:g3}".toString()
+   |                         ^^^

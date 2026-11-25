@@ -196,6 +196,37 @@ It prints:
 false 128 6
 ```
 
+## The bits of `float` and `double`
+
+A fractional number as the bits that hold it, and back, as Rust's `to_bits` and `from_bits` and C#'s
+`BitConverter.DoubleToUInt64Bits` (choice 1891). Every pattern of bits is a `float` or a `double`, so neither
+needs `unsafe`, and a `NaN` keeps the bits it has: a value can carry a tag in them (NaN boxing).
+
+| Signature | What it gives |
+|---|---|
+| `ulong toBits()` on a `double`, `uint toBits()` on a `float` | the bits of the number, as they lie in memory |
+| `double double.fromBits(ulong bits)`, `float float.fromBits(uint bits)` | the number those bits are |
+
+```sg
+void main() {
+    double x = 1.0
+    print($"{x.toBits():x16} {(-2.0).toBits():x16} {double.fromBits(0x400921fb54442d18)}")
+    float f = 0.5
+    print($"{f.toBits():x8} {float.fromBits(0x3f800000)}")
+    // A quiet NaN with a payload of its own, kept as it is.
+    var tagged = double.fromBits(0x7ffc000000000042)
+    print($"{tagged.isNaN()} {tagged.toBits() & 0xff:x2}")
+}
+```
+
+It prints:
+
+```text
+3ff0000000000000 c000000000000000 3.141592653589793
+3f000000 1
+true 42
+```
+
 ## Math on `float` and `double`
 
 Each is a method of the value and gives the same type, from C's `<math.h>`:

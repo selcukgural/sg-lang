@@ -2713,16 +2713,14 @@ static inline uint64_t sg_hash_word(uint64_t h, uint64_t word) {
     SG_SIPROUND SG_SIPROUND SG_SIPROUND
     return v0 ^ v1 ^ v2 ^ v3;
 }
-/* The hash of a key of four bytes or fewer, alone: its bytes and its length make one block, as
-   Rust's SipHash-1-3 takes a `u32` (choice 1882). */
-static inline uint64_t sg_hash_small(uint32_t word) {
-    uint64_t k0 = sg_seed[0], k1 = sg_seed[1];
-    uint64_t v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL, v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
-    uint64_t last = ((uint64_t)4 << 56) | word;
-    v3 ^= last; SG_SIPROUND v0 ^= last;
-    v2 ^= 0xff;
-    SG_SIPROUND SG_SIPROUND SG_SIPROUND
-    return v0 ^ v1 ^ v2 ^ v3;
+/* The hash of a key of a fixed size (an integer, a `bool`, a `char`, the variant of an enum that
+   carries nothing): the key and the first seed multiplied by the second seed, and the two halves of
+   the product folded together, as foldhash, hashbrown's own, and wyhash do (choice 1893). The seeds
+   are drawn when the program starts, so the hashes are not known outside it; text and lists keep
+   SipHash-1-3. */
+static inline uint64_t sg_hash_fixed(uint64_t word) {
+    unsigned __int128 product = (unsigned __int128)(word ^ sg_seed[0]) * (sg_seed[1] | 1);
+    return (uint64_t)product ^ (uint64_t)(product >> 64);
 }
 /* The control bytes of a hash table (choice 1882), looked at eight at a time: a byte is the top
    seven bits of a key's hash where an entry is, `SG_EMPTY` where none ever was since the table was
@@ -3093,6 +3091,14 @@ static unsigned __int128 sg_tenth(unsigned __int128 q, int* digit) {
    bits, so the rounding is exact and no `snprintf` is needed (it reads its format and
    costs a sixth of a line of the table benchmark). A value too large or too small for
    that, or more than 18 digits, goes to `snprintf`. */
+// `{x:e3}` and `{x:g6}`: C's `%e` and `%g`, which round the exact value; `NaN` and the
+// infinities as `print` writes them, as with `F` (1892).
+static int sg_printf_float(char* out, size_t room, double v, int digits, bool single, char conversion) {
+    if (!isfinite(v)) return sg_shortest(out, v, single);
+    char format[] = { '%', '.', '*', conversion, 0 };
+    return snprintf(out, room, format, digits, v);
+}
+
 static int sg_fixed(char* out, size_t room, double v, int digits, bool single) {
     if (!isfinite(v)) return sg_shortest(out, v, single);
     if (digits <= 18 && v != 0) {
@@ -14191,17 +14197,6 @@ fn table_behind(ty: &Ty) -> Option<(&Ty, usize)> {
     matches!(ty, Ty::Map(..) | Ty::Set(_)).then_some((ty, boxes))
 }
 
-/// The bytes of a key that is a number, a `bool` or a `char`: up to four are hashed in one block
-/// (choice 1882).
-fn key_bytes(key: &Ty) -> usize {
-    match key {
-        Ty::Bool | Ty::Int(IntTy::Byte | IntTy::Sbyte) => 1,
-        Ty::Int(IntTy::Short | IntTy::Ushort) => 2,
-        Ty::Char | Ty::Int(IntTy::Int | IntTy::Uint) => 4,
-        _ => 8,
-    }
-}
-
 /// The table template for a map (`map`) or for a set: keeps the lines meant for it.
 fn table_lines(map: bool) -> String {
     let mut out = String::new();
@@ -15145,7 +15140,7 @@ impl<'a> Emitter<'a> {
                 let (given, hash, equal, of, show) = match &**key {
                     Ty::Int(_) | Ty::Bool | Ty::Char => (
                         key_c.clone(),
-                        if key_bytes(key) <= 4 { "sg_hash_small((uint32_t)key)".to_string() } else { "sg_hash_word(0, (uint64_t)key)".to_string() },
+                        "sg_hash_fixed((uint64_t)key)".to_string(),
                         "*held == key".to_string(),
                         "*held".to_string(),
                         match &**key {
@@ -15185,6 +15180,14 @@ impl<'a> Emitter<'a> {
                             format!("{key_c} shown = {{ key.ptr, key.len, key.len }}; {}(out, &shown);", self.shower(key, span)?),
                         )
                     }
+                    // An enum whose variants carry nothing is its tag (choice 1893).
+                    Ty::Enum(_) if self.variants(key, span)?.is_some_and(|variants| variants.iter().all(|fields| fields.is_empty())) => (
+                        format!("{key_c} const*"),
+                        "sg_hash_fixed((uint64_t)key->tag)".to_string(),
+                        format!("{}(held, key)", self.equaler(key, span)?),
+                        "held".to_string(),
+                        format!("{}(out, key);", self.shower(key, span)?),
+                    ),
                     _ => (
                         format!("{key_c} const*"),
                         format!("{}(key, 0)", self.hasher(key, span)?),
@@ -20013,7 +20016,7 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         match spec.and_then(|spec| spec.letter) {
-            Some((letter, digits)) => self.lettered(expr, letter, digits.unwrap_or(0), format, values)?,
+            Some((letter, digits)) => self.lettered(expr, letter, digits.unwrap_or(letter.default_digits()), format, values)?,
             None => self.formatted_as_printed(expr, format, values)?,
         }
         widen(format, width);
@@ -20055,6 +20058,13 @@ impl<'a> Emitter<'a> {
             (Letter::Binary, Ty::Int(ty)) => {
                 let temp = self.temp();
                 self.pre.push(format!("char {temp}[{}]; int64_t {temp}n = sg_binary({temp}, (unsigned long long)(uint{}_t)({value}), {digits});", digits.max(64), ty.bits()));
+                format.push_str("%.*s");
+                values.extend([format!("{temp}n"), temp]);
+            }
+            (Letter::Exponent | Letter::ExponentUpper | Letter::General | Letter::GeneralUpper, Ty::Float(ty)) => {
+                let temp = self.temp();
+                let conversion = letter.name();
+                self.pre.push(format!("char {temp}[{}]; int64_t {temp}n = sg_printf_float({temp}, sizeof {temp}, {value}, {digits}, {}, '{conversion}');", 40 + digits, *ty == FloatTy::Float));
                 format.push_str("%.*s");
                 values.extend([format!("{temp}n"), temp]);
             }
@@ -23818,6 +23828,18 @@ impl<'a> Emitter<'a> {
                     let loc = self.loc(expr.span);
                     Ok(format!("{fname}({value}, {loc})"))
                 }
+                // `double.fromBits(bits)`: the bits moved over, which the C compiler does in a register.
+                Callee::FloatFromBits(ty) => {
+                    let (fname, float, int) = match ty {
+                        FloatTy::Float => ("sg_float_from_bits", "float", "uint32_t"),
+                        FloatTy::Double => ("sg_double_from_bits", "double", "uint64_t"),
+                    };
+                    if self.made.insert(fname.to_string()) {
+                        let _ = writeln!(self.glue, "static inline {float} {fname}({int} bits) {{ {float} v; memcpy(&v, &bits, sizeof v); return v; }}");
+                    }
+                    let value = self.value(&args[0])?;
+                    Ok(format!("{fname}({value})"))
+                }
                 Callee::FromBytes { ty, big } => {
                     let (bits, size) = (ty.bits(), ty.bits() / 8);
                     let fname = format!("sg_from_{}_{}", if *big { "be" } else { "le" }, int_name(*ty));
@@ -24064,6 +24086,19 @@ impl<'a> Emitter<'a> {
                     let value = self.first(recv, head)?;
                     let test = if name == "isFinite" { "isfinite" } else { "signbit" };
                     Ok(format!("({test}({value}) != 0)"))
+                }
+                // `x.toBits()`: the bits moved over, which the C compiler does in a register (1891).
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && name == "toBits" => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let (fname, float, int) = match ty {
+                        FloatTy::Float => ("sg_float_to_bits", "float", "uint32_t"),
+                        FloatTy::Double => ("sg_double_to_bits", "double", "uint64_t"),
+                    };
+                    if self.made.insert(fname.to_string()) {
+                        let _ = writeln!(self.glue, "static inline {int} {fname}({float} v) {{ {int} bits; memcpy(&bits, &v, sizeof bits); return bits; }}");
+                    }
+                    let value = self.first(recv, head)?;
+                    Ok(format!("{fname}({value})"))
                 }
                 // `x.exponent()`: an `int?`, empty for 0, `NaN` and the infinities.
                 Callee::Plain if matches!(recv.ty, Ty::Float(_)) && name == "exponent" => {

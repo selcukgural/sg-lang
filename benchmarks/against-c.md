@@ -7,11 +7,11 @@ faster. How the numbers are taken, and the rules that keep them fair, are in
 
 ## In short
 
-Of the 61 programs, 37 take the time of C within 5% (the middle of all is 1.00),
-13 are faster and 11 are slower.
+Of the 61 programs, 36 take the time of C within 5% (the middle of all is 1.00),
+14 are faster and 11 are slower.
 
 - **Slower:** `tree` 1.53, `queue` 1.39, `gunzip` 1.31, `signals` 1.27, `tasklist` 1.24, `asynclines` 1.18, `sha256` 1.17, `json` 1.15, `netlines` 1.09, `async` 1.08, `echo` 1.06. Each is in [Slower than C](slower-than-c.md), with what would fix it.
-- **Faster:** `floats` 0.23, `dates` 0.29, `show` 0.47, `table` 0.52, `copy` 0.54, `asynccopy` 0.59, `checksum` 0.69, `bits` 0.79, `lines` 0.79, `rewrite` 0.86, `classes` 0.87, `bitfields` 0.91, `bytes` 0.94. Several of these are C's library (`printf`, `gmtime_r`) against SG's
+- **Faster:** `floats` 0.23, `dates` 0.29, `counts` 0.35 (a hash table that finds eight slots at once, choices 1882 and 1893), `show` 0.47, `table` 0.52, `copy` 0.54, `asynccopy` 0.59, `checksum` 0.69, `bits` 0.79, `lines` 0.79, `rewrite` 0.86, `classes` 0.87, `bitfields` 0.91, `bytes` 0.94. Several of these are C's library (`printf`, `gmtime_r`) against SG's
   own code, not something C cannot do; the notes below say so program by program.
 
 The numbers move by a few percent from run to run, and sixty small programs are not a benchmark suite.
@@ -31,7 +31,7 @@ arm64: the best of five runs, `-O2` for all three, the C written by hand with no
 | `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.529 s | 0.324 s | 1.02 |
-| `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.322 s | 0.328 s | 0.323 s | 1.00 |
+| `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.106 s | 0.106 s | 0.305 s | 0.35 |
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.176 s | 0.183 s | 0.377 s | 0.47 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.290 s | 0.283 s | 0.99 |
@@ -144,12 +144,16 @@ The overflow-checked build took 2.1 times the time of C; since the fifty-third s
 
 ### `counts`
 
-`counts` is the first program with a hash table, and the first that is clearly slower than its C: 1.20
-times. All of it is the hash. The C program hashes a key with one multiplication, as a C programmer does;
-SG uses SipHash-1-3 with a key drawn when the program starts, as Rust does, so that someone who chooses
+`counts` is the first program with a hash table, and was the first that was clearly slower than its C: 1.20
+times. All of it was the hash. The C program hashes a key with one multiplication, as a C programmer does;
+SG used SipHash-1-3 with a key drawn when the program starts, as Rust does, so that someone who chooses
 the keys (a request, a file) cannot make them all land in one place and turn every lookup into a walk
-through the whole table. With the C program's hash put into the generated code the two take the same time
-(0.316 s against 0.319 s): the table itself costs nothing. The safe hash stays the default (choice 50).
+through the whole table. With the C program's hash put into the generated code the two took the same time
+(0.316 s against 0.319 s): the table itself cost nothing. The safe hash stayed the default (choice 50).
+Since slice 181 (choice 1893) a key of a fixed size, a number as here, is hashed by a folded multiplication
+with that secret key, as hashbrown's foldhash does, and text keeps SipHash; with the slots found eight at a
+time since slice 180 (choice 1882), `counts` takes 0.35 times the time of the C, whose table finds a slot one
+after another (0.106 s against 0.305, 25 November 2026).
 
 ### `show`
 

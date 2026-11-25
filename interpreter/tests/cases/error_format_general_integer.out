@@ -1,0 +1,5 @@
+error: `g` writes a fractional number with so many significant digits, as C's `%g`, and `n` is a `long`
+  --> error_format_general_integer.sg:4:15
+ 4 |     print($"{n:g3}")
+   |               ^^^
+  hint: make it a `double` first: `{(double)n:g3}`

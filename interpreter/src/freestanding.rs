@@ -72,6 +72,13 @@ fn needs(expr: &Expr) -> Option<(Span, String)> {
         }
         ExprKind::Call { name, name_span, callee: Callee::Plain, .. } if name == "exit" => Some((*name_span, "`exit` ends the process".to_string())),
         ExprKind::Await(_) => Some((expr.span, "`await` runs on the tasks of the system".to_string())),
+        // `{x:e3}` and `{x:g6}` are C's `%e` and `%g`, written by its `snprintf` (1892).
+        ExprKind::Interp(parts) => parts.iter().find_map(|part| match part {
+            InterpPart::Expr(_, Some(Spec { letter: Some((letter, _)), span, .. })) if letter.fractional() && *letter != Letter::Fixed => {
+                Some((*span, format!("`{}` writes a fractional number with C's library (`snprintf`)", letter.name())))
+            }
+            _ => None,
+        }),
         ExprKind::Call { name_span, callee, .. } | ExprKind::Method { name_span, callee, .. } => {
             let what = match callee {
                 Callee::Io(call) | Callee::IoAsync(call) => format!("`File.{}` reads or writes the file system", call.name()),

@@ -2,7 +2,8 @@
 
 Programs that people write, written in SG, in Rust and in Zig, the same algorithm each time and written
 plainly. Their code is in [`trials/`](../trials/README.md), which also says how they are written; how they
-are measured is in [How it is measured](method.md).
+are measured is in [How it is measured](method.md). From slice 180 on a trial is written in SG alone and
+measured against the C program it mirrors: [lox](#lox) against clox.
 
 Apple M3 Max, macOS, 20 November 2026; 100 MB of text from [`trials/inputs/text.sg`](../trials/inputs/text.sg) (seed 1). SG is compiled by
 the system's `cc` (Apple clang 21), Rust by its own LLVM (23.1), Zig 0.17.1 (LLVM too) with PCRE2 10.49.
@@ -267,8 +268,10 @@ bytes.
 | 2,000 frames, `-O2` | 0.852 s, 13.5 MB | 0.716 s, 13.6 MB | 0.806 s, 13.7 MB | 0.830 s, 32.0 MB | 0.911 s, 17.9 MB | 0.350 s, 22.1 MB |
 | 300 whole frames, `-O2` | 0.288 s, 16.0 MB | 0.290 s, 16.0 MB | 0.252 s, 16.0 MB | 0.291 s, 23.9 MB | 0.325 s, 26.0 MB | 0.276 s, 24.4 MB |
 | 300 whole frames, `-O2`, after slice 180 | 0.275 s, 15.8 MB | 0.275 s, 16.0 MB | 0.254 s, 16.0 MB | 0.298 s, 23.9 MB | 0.325 s, 26.0 MB | 0.276 s, 24.4 MB |
+| 300 whole frames, `-O2`, after slice 181 | 0.262 s, 15.9 MB | 0.264 s, 16.0 MB | 0.252 s, 16.0 MB | 0.289 s, 23.9 MB | 0.321 s, 26.0 MB | 0.276 s, 24.4 MB |
 | 2,000 frames, `--unoptimize` | 2.224 s, 81.9 MB | 2.251 s, 82.0 MB | 1.791 s, 82.0 MB | 2.209 s, 182.2 MB | 2.103 s, 176.5 MB | 0.089 s, 8.8 MB |
 | 2,000 frames, `--unoptimize`, after slice 180 | 2.084 s, 81.8 MB | 2.091 s, 81.9 MB | 1.796 s, 82.0 MB | 2.235 s, 182.2 MB | 2.131 s, 176.5 MB | 0.090 s, 8.8 MB |
+| 2,000 frames, `--unoptimize`, after slice 181 | 1.936 s, 81.9 MB | 1.962 s, 81.9 MB | 1.791 s, 82.1 MB | 2.225 s, 182.2 MB | 2.116 s, 176.5 MB | 0.089 s, 8.8 MB |
 | 8192 by 8192, cropped and turned | 0.370 s, 162.7 MB | 0.389 s, 162.7 MB | 0.378 s, 162.8 MB | 0.375 s, 160.9 MB | 0.394 s, 196.9 MB | 0.296 s, 201.6 MB |
 | 8192 by 8192, flipped | 0.521 s, 212.8 MB | 0.544 s, 212.9 MB | 0.532 s, 213.0 MB | 0.529 s, 211.0 MB | 0.570 s, 250.0 MB | 0.396 s, 239.1 MB |
 | 10,000 small GIFs, `--info` | 0.144 s, 3.9 MB | 0.149 s, 3.8 MB | 0.160 s, 4.0 MB | 0.140 s, 3.5 MB | 0.143 s, 3.7 MB | 0.318 s, 76.9 MB |
@@ -292,3 +295,61 @@ bytes.
 - Zig holds more memory where it grows lists frame after frame (`--unoptimize`, 182 MB against 82): the
   allocator it uses, `smp_allocator`, keeps what is freed.
 
+## lox
+
+An interpreter of Lox after clox, the bytecode interpreter of *Crafting Interpreters*, held to clox byte for byte
+(`trials/lox/README.md`, choices 1883-1894), and measured against clox alone, the C program it mirrors (the rule
+of slice 180): no Rust or Zig. clox is built by its own Makefile in release (`-O3 -flto`) with the same Clang. The
+two columns on the right of each are the loop of choice 1894, the place in the code kept in a local variable, made
+the same way in both (`lox --ip-local`, and `clox-ip-local` made by `trials/lox/tests/clox.py`). 30 cases of
+`measure.py lox --check` hold the five builds to each other, and `trials/lox/tests/check.py` holds SG to clox on
+the book's 246 tests and 19 programs of its own, 2,114 runs, and `fuzz.py` on 5,000 programs from a seed: no
+difference. Apple M3 Max, macOS, 25 November 2026, slice 181. The programs are the book's benchmarks with
+`clock()` made `0`, so that they print the same in every run; fib, binary_trees and trees at three sizes, the
+largest the book's; texts made, joined and interned, one of them growing by a character in each thousand; lists
+of objects made and dropped five times. `string_equality` does not compile, in clox either (more than 256
+constants in one chunk), and `zoo_batch`, which counts the batches done in ten seconds, is below the table.
+
+| Case | SG | SG, checked | SG, `--ip-local` | clox | clox, `ip` local |
+|---|---|---|---|---|---|
+| fib(25) | 0.010 s, 2.0 MB | 0.012 s, 2.0 MB | 0.009 s, 2.0 MB | 0.008 s, 1.9 MB | 0.008 s, 1.9 MB |
+| fib(30) | 0.083 s, 2.0 MB | 0.103 s, 2.0 MB | 0.076 s, 2.0 MB | 0.067 s, 1.9 MB | 0.061 s, 1.9 MB |
+| fib(35) | 0.910 s, 2.0 MB | 1.115 s, 2.0 MB | 0.820 s, 2.0 MB | 0.719 s, 1.9 MB | 0.658 s, 1.9 MB |
+| binary_trees, depth 10 | 0.060 s, 3.6 MB | 0.066 s, 3.7 MB | 0.053 s, 3.6 MB | 0.044 s, 3.2 MB | 0.041 s, 3.2 MB |
+| binary_trees, depth 12 | 0.281 s, 9.2 MB | 0.315 s, 9.3 MB | 0.252 s, 9.2 MB | 0.207 s, 7.1 MB | 0.191 s, 7.1 MB |
+| binary_trees, depth 14 | 1.344 s, 24.6 MB | 1.477 s, 24.6 MB | 1.192 s, 24.6 MB | 1.001 s, 23.7 MB | 0.913 s, 23.7 MB |
+| trees, depth 6 | 0.075 s, 7.6 MB | 0.093 s, 7.7 MB | 0.069 s, 7.6 MB | 0.051 s, 5.2 MB | 0.048 s, 5.2 MB |
+| trees, depth 7 | 0.364 s, 22.3 MB | 0.432 s, 22.4 MB | 0.320 s, 22.3 MB | 0.244 s, 18.4 MB | 0.230 s, 18.4 MB |
+| trees, depth 8 | 1.851 s, 100.7 MB | 2.188 s, 100.4 MB | 1.597 s, 100.7 MB | 1.192 s, 84.2 MB | 1.129 s, 84.2 MB |
+| texts, 100,000 | 0.024 s, 2.3 MB | 0.027 s, 2.3 MB | 0.022 s, 2.2 MB | 0.026 s, 2.1 MB | 0.027 s, 2.1 MB |
+| texts, 1,000,000 | 0.487 s, 4.8 MB | 0.513 s, 4.8 MB | 0.458 s, 4.8 MB | 1.252 s, 3.4 MB | 1.253 s, 3.4 MB |
+| texts, 5,000,000 | 7.936 s, 8.2 MB | 8.141 s, 8.2 MB | 7.820 s, 8.2 MB | 27.435 s, 4.3 MB | 26.884 s, 4.3 MB |
+| objects, 20,000 five times | 0.019 s, 10.9 MB | 0.022 s, 10.9 MB | 0.018 s, 10.9 MB | 0.015 s, 8.6 MB | 0.014 s, 8.6 MB |
+| objects, 200,000 five times | 0.164 s, 78.3 MB | 0.191 s, 78.3 MB | 0.155 s, 78.3 MB | 0.131 s, 69.3 MB | 0.128 s, 69.3 MB |
+| objects, 1,000,000 five times | 0.818 s, 298.9 MB | 0.930 s, 299.0 MB | 0.746 s, 298.9 MB | 0.633 s, 271.5 MB | 0.620 s, 271.5 MB |
+| equality | 3.414 s, 2.0 MB | 3.692 s, 2.0 MB | 2.098 s, 2.0 MB | 2.104 s, 1.9 MB | 2.101 s, 1.9 MB |
+| instantiation | 0.416 s, 5.7 MB | 0.446 s, 5.7 MB | 0.393 s, 5.7 MB | 0.393 s, 3.1 MB | 0.410 s, 3.1 MB |
+| invocation | 0.256 s, 2.0 MB | 0.301 s, 2.0 MB | 0.240 s, 2.0 MB | 0.155 s, 1.9 MB | 0.153 s, 1.9 MB |
+| method_call | 0.186 s, 2.0 MB | 0.219 s, 2.0 MB | 0.166 s, 2.0 MB | 0.115 s, 1.9 MB | 0.102 s, 1.9 MB |
+| properties | 0.390 s, 2.1 MB | 0.449 s, 2.1 MB | 0.366 s, 2.1 MB | 0.215 s, 2.0 MB | 0.224 s, 1.9 MB |
+| zoo | 0.300 s, 2.0 MB | 0.344 s, 2.0 MB | 0.287 s, 2.0 MB | 0.159 s, 1.9 MB | 0.169 s, 1.9 MB |
+| Size, stripped | 148 KB | 197 KB | 148 KB | 66 KB | 66 KB |
+| Lines | 2181 | 2181 | 2181 | 2609 | 2609 |
+
+- Where the work is the loop of bytecode alone, SG with `ip` in a local takes clox's time: `equality` 2.098 s
+  against 2.104, `instantiation` 0.393 against 0.393. As the book writes clox, reading `ip` through the frame at
+  each byte, SG takes 1.6 times (3.414 s): clox keeps the frame in a register and reads `frame->ip`, SG has no
+  pointer local in safe code and loads the list of frames, the frame and its `ip` at each byte. clox gains
+  little from the change; SG gains 39% on `equality`.
+- Texts: SG takes a third of clox's time (7.94 s against 27.4 at five million). Each text joined is interned,
+  and clox hashes it with FNV-1a a byte at a time, SG with SipHash-1-3 eight bytes at a time; the text that grows
+  reaches 5,000 characters.
+- Fields and methods: 1.6 to 1.9 times clox (`properties` 0.366 s against 0.224, `zoo` 0.287 against 0.169),
+  with the hash of choice 1893 (0.75 s before it). clox keeps a string's hash in the string and finds a field
+  by comparing addresses in one slot; SG's `HashMap` hashes the handle of the name and goes from the control
+  bytes to the index to the entry. The rest, bounds checks on the stack, the frames and the code (25% on
+  `properties`, measured with them taken out of the C by hand).
+- Calls and trees: 1.2 to 1.4 times (`fib(35)` 0.820 s against 0.658, `trees` 1.597 against 1.129, in 19% more
+  memory): the checks, and an object that takes the size of the largest variant of `Obj`.
+- `zoo_batch`, batches in ten seconds (more is faster): SG 4,947, with `ip` in a local 5,627; clox 9,621, with `ip`
+  in a local 9,028.

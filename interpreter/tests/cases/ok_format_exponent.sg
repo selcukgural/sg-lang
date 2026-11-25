@@ -1,0 +1,16 @@
+// `e` and `g`: C's `%e` and `%g` (1892). The digits after `e` are those after the point, after
+// `g` the significant ones; 6 when none is written. `E` and `G` write a capital `E`.
+void main() {
+    double pi = 3.14159265358979
+    print($"{pi:e} {pi:e3} {pi:E0} {pi:g} {pi:g3} {pi:G10}")
+    print($"{100000.0:g} {1000000.0:g} {1234567.0:g} {0.0001:g} {0.00001:g} {1e21:g}")
+    print($"{0.0:g} {(-0.0):g} {(-0.0):e2} {1.0:g0} {2.5:g1} {3.5:g1} {0.15:g1}")
+    print($"{1e-300:e} {5e-324:g} {1.7976931348623157e308:g17} {0.1:g17} {0.1:e25}")
+    print($"{1.0 / 3.0:g} {2.0 / 3.0:g} {100.0:g2} {123.456:G2} {1e-5:G}")
+    // Not finite: as `print` writes it, as with `F`.
+    print($"{double.NaN:g} {double.Infinity:e2} {(-double.Infinity):G}")
+    float f = 0.1
+    print($"{f:g} {f:g9} {f:e}")
+    // A width as with every format.
+    print($"[{pi,10:g4}] [{pi,-12:e2}]")
+}

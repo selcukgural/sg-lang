@@ -1,0 +1,48 @@
+// Closures that outlive their frames, share upvalues and are made in loops.
+fun counter() {
+  var n = 0;
+  fun inc() { n = n + 1; return n; }
+  return inc;
+}
+var a = counter();
+var b = counter();
+a(); a(); b();
+print a();
+print b();
+var fns = nil;
+class Cell { init(f, next) { this.f = f; this.next = next; } }
+for (var i = 0; i < 10; i = i + 1) {
+  var j = i;
+  fun get() { return j * i; }
+  fns = Cell(get, fns);
+}
+while (fns != nil) { print fns.f(); fns = fns.next; }
+fun outer() {
+  var x = "outer";
+  fun middle() {
+    fun inner() { return x; }
+    x = "changed";
+    return inner;
+  }
+  return middle();
+}
+print outer()();
+fun make() {
+  var shared = 0;
+  fun set(v) { shared = v; }
+  fun get() { return shared; }
+  class Pair { init() { this.set = set; this.get = get; } }
+  return Pair();
+}
+var p = make();
+p.set(42);
+print p.get();
+var total = 0;
+var k = 0;
+while (k < 100000) {
+  var c = counter();
+  c();
+  total = total + c();
+  k = k + 1;
+}
+print total;

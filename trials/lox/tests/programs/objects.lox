@@ -1,0 +1,22 @@
+// A million objects in lists that are dropped and made again, so the collector runs often.
+class Node { init(value, next) { this.value = value; this.next = next; } }
+fun build(n) {
+  var list = nil;
+  var i = 0;
+  while (i < n) { list = Node(i, list); i = i + 1; }
+  return list;
+}
+fun sum(list) {
+  var total = 0;
+  while (list != nil) { total = total + list.value; list = list.next; }
+  return total;
+}
+var round = 0;
+while (round < 5) {
+  print sum(build(200000));
+  round = round + 1;
+}
+var keep = build(1000);
+var many = 0;
+while (many < 100000) { Node(many, keep); many = many + 1; }
+print sum(keep);

@@ -1,0 +1,5 @@
+// The bits of a `double` are its `toBits()`.
+void main() {
+    double x = 2.0
+    print(x | 1)
+}

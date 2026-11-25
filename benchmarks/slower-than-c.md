@@ -146,11 +146,23 @@ says what is slower, by how much and against what, the choice that measured it, 
   run); what was left was the search itself, one slot after another where Rust's hashbrown looks at sixteen
   with one instruction. Slice 180 (choice 1882) looks at eight at a time, as hashbrown does: 2.45 s in 177 MB,
   from 2.60 s in 194 MB measured the same day.
-- **`giftool`: colors given indices** (slice 179): `--unoptimize` of 2,000 frames takes 2.08 s against Rust's
-  1.80 s, `-O2` of 300 whole frames 0.275 s against 0.254. Each pixel's color is looked up in a
+- **`giftool`: colors given indices** (slice 179): `--unoptimize` of 2,000 frames takes 1.94 s against Rust's
+  1.79 s, `-O2` of 300 whole frames 0.262 s against 0.252. Each pixel's color is looked up in a
   `HashMap<uint, nint>`, whose lookup took 2.5 times Rust's until slice 180 (choice 1882) looked at its slots
-  eight at a time and hashed a key of four bytes in one block: a hundred million lookups 0.48 s, Rust 0.39
-  (before, 2.22 s and 0.288). What is left is the loop that writes each pixel's index, and the encoder.
+  eight at a time and hashed a key of four bytes in one block (2.08 s and 0.275), and slice 181 (choice 1893)
+  hashed it with a folded multiplication: a hundred million lookups 0.16 s, Rust's std 0.39 (before, 2.22 s and
+  0.288). What is left is the loop that writes each pixel's index, and the encoder.
+- **`lox`: fields and methods** (slice 181): `properties` 0.366 s against clox's 0.224, `zoo` 0.287 against 0.169,
+  `invocation` 0.240 against 0.153, with the place in the code in a local in both. clox keeps a string's hash in
+  the string and finds a field in one slot by comparing addresses; SG's `HashMap` hashes the handle of the name
+  and goes from the control bytes to the index to the entry. Choice 1893 took SipHash out of it (0.75 s before);
+  bounds checks on the stack, the frames and the code are about a quarter of what is left.
+- **`lox`: the place in the code read through the frame** (slice 181): as the book writes clox, `ip` read through
+  the frame at each byte, `equality` takes SG 3.41 s and clox 2.10. clox keeps the frame in a register; SG has no
+  pointer local in safe code, and loads the list of frames, the frame and its `ip` at each byte. With `ip` in a
+  local in both (choice 1894) the two take the same time.
+- **`lox`: calls and objects** (slice 181): `fib(35)` 0.820 s against 0.658, `trees` 1.597 against 1.129 in 100.7 MB
+  against 84.2: the checks, and an object as large as the largest variant of the enum `Obj`.
 - **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
   Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
@@ -178,6 +190,10 @@ says what is slower, by how much and against what, the choice that measured it, 
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
 
+- **Compiling a function with many formatted values** (found in slice 181): a `main` of 1,000 `print`s of four
+  values each with a letter (`{x:F2}`, `{x:g3}`) takes clang `-O2` 10 to 12 s and over 500 MB, 500 of them 3 s:
+  each formatted value is a buffer of its own on the stack of the one function, and the time grows faster than
+  the lines. The same lines in functions of a hundred compile in seconds. Not looked into yet.
 - **A loop put into a large function** (`giftool`, `-O2` of 2,000 frames, slice 179): 0.852 s without checks
   against 0.716 s with them. Clang puts the function that finds the pixels that changed into the one that calls
   it when the function is small, as it is without checks, and the loop is slower compiled there; with checks it

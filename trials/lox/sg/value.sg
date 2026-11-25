@@ -1,0 +1,66 @@
+// A value of Lox in 64 bits, as clox keeps it with `NAN_BOXING` (choice 1885): a number is its own
+// bits; `nil`, `false` and `true` are a quiet NaN with a tag of their own; an object is a quiet NaN
+// with the sign bit and, in the low bits, the handle of the object, its place in the heap (1884),
+// where clox keeps its address. Only bits are moved, so none of it needs `unsafe`.
+
+const ulong SignBit = 0x8000000000000000
+const ulong Qnan = 0x7ffc000000000000
+
+const ulong NilVal = 0x7ffc000000000001
+const ulong FalseVal = 0x7ffc000000000002
+const ulong TrueVal = 0x7ffc000000000003
+
+// No object: the end of a list of handles, a function with no name.
+const nint NoObj = -1
+
+bool isNumber(ulong v) {
+    return v & Qnan != Qnan
+}
+
+bool isNil(ulong v) {
+    return v == NilVal
+}
+
+bool isBool(ulong v) {
+    return v | 1 == TrueVal
+}
+
+bool isObj(ulong v) {
+    return v & (Qnan | SignBit) == Qnan | SignBit
+}
+
+double asNumber(ulong v) {
+    return double.fromBits(v)
+}
+
+ulong numberVal(double d) {
+    return d.toBits()
+}
+
+ulong boolVal(bool b) {
+    if b {
+        return TrueVal
+    }
+    return FalseVal
+}
+
+nint asObj(ulong v) {
+    return (v & 0xffffffff).wrappingToNint()
+}
+
+ulong objVal(nint handle) {
+    return SignBit | Qnan | handle.wrappingToUlong()
+}
+
+bool isFalsey(ulong v) {
+    return v == NilVal || v == FalseVal
+}
+
+// `==` of Lox: numbers by their value (so a NaN is not equal to itself), the rest by their bits;
+// strings are interned, so equal text is the same object.
+bool valuesEqual(ulong a, ulong b) {
+    if isNumber(a) && isNumber(b) {
+        return asNumber(a) == asNumber(b)
+    }
+    return a == b
+}

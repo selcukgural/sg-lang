@@ -1,0 +1,72 @@
+// `lox`: an interpreter of Lox, written after clox, the bytecode interpreter of "Crafting
+// Interpreters" (choices 1883-1890). What it does and how it is held to clox is in
+// `trials/lox/README.md`.
+//
+//     lox [--stress-gc] [--ip-local] [path]
+//
+// With a path it runs the script and ends with 65 for an error of compiling, 70 for an error at
+// run time and 74 for a file it cannot read, as clox does; without one it reads lines and runs each.
+// `--stress-gc` runs the collector at every allocation, as clox built with `DEBUG_STRESS_GC`;
+// `--ip-local` runs the loop that holds its place in the code in a local variable (choice 1894).
+
+void repl(ref Vm vm, ref Program p, bool ipLocal) {
+    var line = List<byte>()
+    while true {
+        _ = Stdout.write("> ")
+        _ = Stdout.flush()
+        var more = Stdin.readLineBytes(ref line) ?? false
+        if !more {
+            _ = Stdout.write("\n")
+            break
+        }
+        // clox reads the line with its end.
+        line.add('\n')
+        _ = interpret(ref vm, ref p, line.clone(), ipLocal)
+    }
+}
+
+void runFile(ref Vm vm, ref Program p, read string path, bool ipLocal) {
+    match File.readBytes(path) {
+        Ok(source) => {
+            var result = interpret(ref vm, ref p, source, ipLocal)
+            if result == InterpretCompileError {
+                _ = Stdout.flush()
+                exit(65)
+            }
+            if result == InterpretRuntimeError {
+                _ = Stdout.flush()
+                exit(70)
+            }
+        }
+        Error(_) => {
+            printError($"Could not open file \"{path}\".")
+            exit(74)
+        }
+    }
+}
+
+void main(List<string> args) {
+    bool stressGC = false
+    bool ipLocal = false
+    var paths = List<string>()
+    for arg in read args {
+        if arg == "--stress-gc" {
+            stressGC = true
+        } else if arg == "--ip-local" {
+            ipLocal = true
+        } else {
+            paths.add(arg.clone())
+        }
+    }
+    var p = Program { code = List<byte>(), lines = List<int>(), constants = List<ulong>(), functions = List<Function>() }
+    var vm = newVm(read p, stressGC)
+    if paths.length() == 0 {
+        repl(ref vm, ref p, ipLocal)
+    } else if paths.length() == 1 {
+        runFile(ref vm, ref p, read paths[0], ipLocal)
+    } else {
+        printError("Usage: clox [path]")
+        exit(64)
+    }
+    _ = Stdout.flush()
+}

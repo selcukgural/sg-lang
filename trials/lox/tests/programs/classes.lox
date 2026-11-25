@@ -1,0 +1,27 @@
+// Inheritance three deep, `super` in each, methods taken as values, fields over methods.
+class A {
+  init(name) { this.name = name; }
+  hello() { return "A " + this.name; }
+  who() { return this.hello(); }
+}
+class B < A {
+  hello() { return "B " + super.hello(); }
+}
+class C < B {
+  init(name) { super.init(name + "!"); }
+  hello() { return "C " + super.hello(); }
+}
+var c = C("c");
+print c.who();
+var m = c.hello;
+print m();
+c.hello = "field";
+print c.hello;
+print c.who();
+print C;
+print c;
+print m;
+print clock;
+print A().init;
+var i = A("x").init("y");
+print i.name;

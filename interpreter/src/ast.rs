@@ -496,6 +496,8 @@ pub enum Callee {
     /// `ulong.fromLittleEndian(bytes)`, `ushort.fromBigEndian(bytes)`: the integer that exactly
     /// as many bytes as the type takes write, the first byte the lowest (or the highest).
     FromBytes { ty: IntTy, big: bool },
+    /// `double.fromBits(bits)`, `float.fromBits(bits)`: the number whose bits these are (1891).
+    FloatFromBits(FloatTy),
     /// `Header.fromBytes(bytes)`: a struct or a union of plain data that every pattern of bits
     /// is a value of, out of exactly as many bytes as it takes, as they lie in memory.
     StructFromBytes(String),
@@ -1569,6 +1571,16 @@ pub enum Letter {
     Decimal,
     /// `F`: a fractional number with exactly this many digits after the point.
     Fixed,
+    /// `e`: a fractional number as C's `%e` writes it, this many digits after the point (6 when
+    /// none is written): `3.142e+00` (1892).
+    Exponent,
+    /// `E`: the same with a capital `E`.
+    ExponentUpper,
+    /// `g`: as C's `%g` writes it, this many significant digits (6 when none is written; 0 is
+    /// 1), in the shorter of the two forms, trailing zeros left out: `3.14159`, `1e+21` (1892).
+    General,
+    /// `G`: the same with a capital `E`.
+    GeneralUpper,
 }
 
 impl Letter {
@@ -1580,7 +1592,24 @@ impl Letter {
             Letter::Binary => 'b',
             Letter::Decimal => 'D',
             Letter::Fixed => 'F',
+            Letter::Exponent => 'e',
+            Letter::ExponentUpper => 'E',
+            Letter::General => 'g',
+            Letter::GeneralUpper => 'G',
         }
+    }
+
+    /// The digits when none follow the letter: C's 6 for `e` and `g`, the least for the rest.
+    pub fn default_digits(self) -> u32 {
+        match self {
+            Letter::Exponent | Letter::ExponentUpper | Letter::General | Letter::GeneralUpper => 6,
+            _ => 0,
+        }
+    }
+
+    /// `F`, `e`, `E`, `g` and `G`: the letters of a fractional number.
+    pub fn fractional(self) -> bool {
+        matches!(self, Letter::Fixed | Letter::Exponent | Letter::ExponentUpper | Letter::General | Letter::GeneralUpper)
     }
 }
 

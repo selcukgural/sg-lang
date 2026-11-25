@@ -1,5 +1,5 @@
 error: nothing after `:`
-  formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point)
+  formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point), `e` and `E` (C's `%e`), `g` and `G` (C's `%g`)
   --> error_format_letter_empty.sg:3:15
  3 |     print($"{1:}")
    |               ^

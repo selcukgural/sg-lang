@@ -64,8 +64,10 @@ Roses are red,
 
 `$"..."` puts values into a text, each in braces. A value can be any expression, and a format may follow a
 colon: `x` or `X` for hex, `b` for binary and `D` for decimal, each with the least number of digits, and `F` for
-a fraction with so many digits after the point. A width after a comma pads with spaces, in front, or after it
-when it is negative. `{{` and `}}` write a brace.
+a fraction with so many digits after the point. `e` and `g` write a fraction as C's `%e` and `%g` do: `e` with
+an exponent and so many digits after the point, `g` with so many significant digits in the shorter of the two
+ways, zeros at the end left out; without a number, 6. `E` and `G` write a capital `E`. A width after a comma
+pads with spaces, in front, or after it when it is negative. `{{` and `}}` write a brace.
 
 ```sg
 void main() {
@@ -75,6 +77,7 @@ void main() {
     var name = "Pasha"
     print($"{n:x8} {n:X2} {n:b8}")
     print($"{day:D3} {price:F2} {n + day}")
+    print($"{price:e2} {price:g3} {1e21:g} {0.0001:G} {1234567.0:G}")
     print($"[{name,8}] [{name,-8}] [{price,8:F2}]")
     print($"{{braces}} {name.length()}")
     print($"""a "quoted" {name}""")
@@ -86,6 +89,7 @@ It prints:
 ```text
 000000ff FF 11111111
 007 3.14 262
+3.14e+00 3.14 1e+21 0.0001 1.23457E+06
 [   Pasha] [Pasha   ] [    3.14]
 {braces} 5
 a "quoted" Pasha

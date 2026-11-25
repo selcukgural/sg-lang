@@ -1,0 +1,5 @@
+// A `float` is made of 32 bits: a `uint`.
+void main() {
+    ulong bits = 1
+    print(float.fromBits(bits))
+}

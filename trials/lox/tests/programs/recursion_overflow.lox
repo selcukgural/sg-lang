@@ -1,0 +1,3 @@
+// The 65th frame is a stack overflow, with the trace of the 64 before it.
+fun down(n) { return down(n + 1); }
+down(0);

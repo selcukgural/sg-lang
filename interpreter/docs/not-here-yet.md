@@ -211,10 +211,11 @@
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
   `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
 - A number is written in decimal, hex and binary (`{n:x}`, `{n:b}`) and read in decimal and hex
-  (`parse`, `parseHex`), not in binary. C#'s other letters (`E`, `G`, `N`, `C`, `P`) and formats made of
+  (`parse`, `parseHex`), not in binary. C#'s other letters (`N`, `C`, `P`) and formats made of
   characters (`{x:0.00}`), a fill other than a space, centring, and a width that comes from a variable
-  (choices 224, 229). A fractional number is not read out of bytes or written into them
-  (`double.fromLittleEndian`, the bits of a `double` as a `ulong`). Of `<math.h>`: `nextafter` toward a
+  (choices 224, 229); `e` and `g` are C's, not C#'s (1892), and not in a program built with
+  `--freestanding`, which has no `snprintf`. A fractional number is not read out of bytes or written into
+  them (`double.fromLittleEndian`); its bits are `toBits` (1891). Of `<math.h>`: `nextafter` toward a
   number (`nextUp` and `nextDown` do it), the sign of Γ beside `logGamma`, `lround` and the other roundings
   to an integer (`round()` and then a conversion do it), `fdim`, `fenv` and the rounding modes (1225-1236).
   `saturatingDivide`, `saturatingNegate`, `saturatingAbs` and a saturating shift.

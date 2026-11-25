@@ -1,0 +1,29 @@
+// `toBits` and `fromBits`: the bits of a `float` or a `double` as they lie in memory, and the
+// number of any bits, a `NaN` with its payload among them (1891).
+void main() {
+    double x = 1.0
+    print($"{x.toBits():x16} {(-2.5).toBits():x16} {(0.0).toBits()} {(-0.0).toBits():x16}")
+    print(double.fromBits(0x400921fb54442d18))
+    float f = 1.5
+    print($"{f.toBits():x8} {float.fromBits(0x40490fdb)}")
+    // A signaling `NaN` keeps its bits, in the interpreter as in the compiled program.
+    var quietless = double.fromBits(0x7ff0000000000001)
+    print($"{quietless.isNaN()} {quietless.toBits():x16}")
+    var single = float.fromBits(0x7f800001)
+    print($"{single.isNaN()} {single.toBits():x8} {float.fromBits(0xffbfffff).toBits():x8}")
+    // Every `double` comes back as it went.
+    ulong bits = 0x123456789abcdef0
+    var steps = 0
+    while steps < 1000 {
+        bits = bits.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+        if double.fromBits(bits).toBits() != bits {
+            print($"{bits:x16} changed")
+        }
+        steps += 1
+    }
+    print("1000 patterns kept")
+    // NaN boxing: a tag in the bits of a quiet `NaN`.
+    ulong quiet = 0x7ffc000000000000
+    ulong boxed = quiet | 42
+    print($"{double.fromBits(boxed).isNaN()} {boxed & 0xffffffff}")
+}

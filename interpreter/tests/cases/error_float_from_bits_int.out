@@ -1,0 +1,5 @@
+error: `long` is an integer, which is its bits already
+  `fromBits` makes a `float` or a `double` out of its bits
+  --> error_float_from_bits_int.sg:2:16
+ 2 |     print(long.fromBits(3))
+   |                ^^^^^^^^

@@ -1,0 +1,8 @@
+// `g` and `e` are C's `%g` and `%e`, written by its `snprintf` (1892).
+export nint start(double x) {
+    var text = $"x is {x:g3}".toString()
+    return text.length()
+}
+
+void onPanic(read string message) {
+}

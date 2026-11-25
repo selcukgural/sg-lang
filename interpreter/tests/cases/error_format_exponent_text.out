@@ -1,0 +1,4 @@
+error: `e` writes a fractional number with an exponent, as C's `%e`, and `name` is a `string`
+  --> error_format_exponent_text.sg:3:18
+ 3 |     print($"{name:e2}")
+   |                  ^^^

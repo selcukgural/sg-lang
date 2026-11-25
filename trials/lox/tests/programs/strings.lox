@@ -1,0 +1,24 @@
+// Long texts, made by doubling; equal texts are the same object.
+var s = "ab";
+var i = 0;
+while (i < 20) { s = s + s; i = i + 1; }
+print s == s + "";
+var t = "a" + "b";
+print t == "ab";
+class Box {}
+var b = Box();
+b.ab = 1;
+print b.ab;
+var u = "";
+i = 0;
+while (i < 2000) { u = u + "x"; i = i + 1; }
+print u;
+var parts = "";
+var j = 0;
+while (j < 300) {
+  var k = "k" + parts;
+  parts = parts + "-";
+  j = j + 1;
+}
+print parts;
+print s;

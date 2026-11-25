@@ -34,7 +34,10 @@ name in that folder so that 20,000 of them stay within the length of a command l
 `sha256sum` is measured beside it for reference, and left out of a case marked `pool`, which gives `-j`
 (1857). A help each library words its own way is held
 only to its exit code (1798). `std/environment` reads `SG_TRIAL_TEXT` and `SG_TRIAL_BYTES` (not
-UTF-8), which every program is given, and `SG_TRIAL_MISSING`, which none is (1799).
+UTF-8), which every program is given, and `SG_TRIAL_MISSING`, which none is (1799). A trial written in SG
+alone, as every trial is from slice 180 on, has no `rust/` and no `zig/`: it is measured against the C program
+it mirrors, its reference, held to its output as the builds are (`lox` against clox, and both with the place in
+the code in a local variable: `SG --ip-local` is SG run with a flag of its own, choice 1894).
 Measured:
 the time (one run to warm up, then the best of five), the most memory held (the peak resident set,
 from `wait4`), the size of the program once stripped, and its lines that are neither blank nor
@@ -239,6 +242,81 @@ def giftool_words(word):
     if word == "{gif-small}":
         return [f"small/{entry}" for entry in sorted(os.listdir(folder / "small"))]
     return [word[len("{gif:"):-1] + ".gif"]
+
+
+# The programs of `lox` (choice 1889): the benchmarks of the book's tests, each with `clock()` made
+# `0`, so that what they print is the same in every build and every run, and the sizes asked of a
+# trial, small, medium and large; the largest of fib, binary_trees and trees are the book's own.
+# `string_equality` does not compile, in clox either (more than 256 constants in one chunk), and
+# `zoo_batch` counts the batches done in ten seconds by the clock, so neither is timed here.
+LOX_DIR = OUT / "lox-inputs"
+LOX_BOOK = ["equality", "instantiation", "invocation", "method_call", "properties", "zoo"]
+
+
+def lox_inputs():
+    if (LOX_DIR / "done").exists():
+        return LOX_DIR
+    sys.path.insert(0, str(TRIALS / "lox" / "tests"))
+    import clox
+    benchmark = clox.tests() / "benchmark"
+    LOX_DIR.mkdir(parents=True, exist_ok=True)
+    for name in LOX_BOOK:
+        (LOX_DIR / f"{name}.lox").write_text((benchmark / f"{name}.lox").read_text().replace("clock()", "0"))
+    fib = (benchmark / "fib.lox").read_text().replace("clock()", "0")
+    for n, want in ((25, 75025), (30, 832040), (35, 9227465)):
+        (LOX_DIR / f"fib-{n}.lox").write_text(fib.replace("fib(35) == 9227465", f"fib({n}) == {want}"))
+    trees = (benchmark / "binary_trees.lox").read_text().replace("clock()", "0")
+    for depth in (10, 12, 14):
+        (LOX_DIR / f"binary_trees-{depth}.lox").write_text(trees.replace("var maxDepth = 14;", f"var maxDepth = {depth};"))
+    wide = (benchmark / "trees.lox").read_text().replace("clock()", "0")
+    for depth, walk in ((6, 4881), (7, 24412), (8, 122068)):
+        (LOX_DIR / f"trees-{depth}.lox").write_text(wide.replace("Tree(8)", f"Tree({depth})").replace("122068", str(walk)))
+    # Texts made, joined and interned: the same text again and again (found in the table of
+    # strings), and a text that grows by one character in each thousand.
+    for size, count in (("small", 100_000), ("medium", 1_000_000), ("large", 5_000_000)):
+        (LOX_DIR / f"strings-{size}.lox").write_text(f"""var count = 0;
+var grown = "g";
+var j = 0;
+var i = 0;
+while (i < {count}) {{
+  var a = "key" + "-";
+  var b = a + grown;
+  if (b == a + grown) count = count + 1;
+  j = j + 1;
+  if (j == 1000) {{
+    grown = grown + "z";
+    j = 0;
+  }}
+  i = i + 1;
+}}
+print count;
+""")
+    # Lists of objects made and dropped, so that the collector runs often.
+    for size, count in (("small", 20_000), ("medium", 200_000), ("large", 1_000_000)):
+        (LOX_DIR / f"objects-{size}.lox").write_text(f"""class Node {{ init(value, next) {{ this.value = value; this.next = next; }} }}
+fun build(n) {{
+  var list = nil;
+  var i = 0;
+  while (i < n) {{ list = Node(i, list); i = i + 1; }}
+  return list;
+}}
+fun sum(list) {{
+  var total = 0;
+  while (list != nil) {{ total = total + list.value; list = list.next; }}
+  return total;
+}}
+var round = 0;
+while (round < 5) {{ print sum(build({count})); round = round + 1; }}
+""")
+    (LOX_DIR / "done").write_text("")
+    return LOX_DIR
+
+
+def lox_words(word):
+    """`{lox:NAME}`: a program of the measurements; `{loxp:NAME}`: one of `trials/lox/tests/programs`."""
+    if word.startswith("{loxp:"):
+        return [str(TRIALS / "lox" / "tests" / "programs" / f"{word[len('{loxp:'):-1]}.lox")]
+    return [str(lox_inputs() / f"{word[len('{lox:'):-1]}.lox")]
 
 
 def hashsum_words(word):
@@ -640,6 +718,38 @@ TRIALS_CASES = {
             ("10,000 small GIFs, --info", ["--info", "{gif-small}"], None),
         ],
     },
+    # SG against clox, the C program it mirrors, and both with the place in the code held in a
+    # local variable (choices 1889, 1894); no Rust or Zig (the rule of slice 180).
+    "lox": {
+        "check": [
+            ("closures", ["{loxp:closures}"], None),
+            ("classes", ["{loxp:classes}"], None),
+            ("numbers", ["{loxp:numbers}"], None),
+            ("texts", ["{loxp:strings}"], None),
+            ("an error at run time", ["{loxp:runtime_errors}"], None),
+            ("a stack overflow", ["{loxp:recursion_overflow}"], None),
+            ("errors of compiling", ["{loxp:unterminated}"], None),
+            ("a missing file", ["missing.lox"], None),
+            ("fib(25)", ["{lox:fib-25}"], None),
+        ],
+        "measure": [
+            ("fib(25)", ["{lox:fib-25}"], None),
+            ("fib(30)", ["{lox:fib-30}"], None),
+            ("fib(35)", ["{lox:fib-35}"], None),
+            ("binary_trees, depth 10", ["{lox:binary_trees-10}"], None),
+            ("binary_trees, depth 12", ["{lox:binary_trees-12}"], None),
+            ("binary_trees, depth 14", ["{lox:binary_trees-14}"], None),
+            ("trees, depth 6", ["{lox:trees-6}"], None),
+            ("trees, depth 7", ["{lox:trees-7}"], None),
+            ("trees, depth 8", ["{lox:trees-8}"], None),
+            ("texts, 100,000", ["{lox:strings-small}"], None),
+            ("texts, 1,000,000", ["{lox:strings-medium}"], None),
+            ("texts, 5,000,000", ["{lox:strings-large}"], None),
+            ("objects, 20,000 five times", ["{lox:objects-small}"], None),
+            ("objects, 200,000 five times", ["{lox:objects-medium}"], None),
+            ("objects, 1,000,000 five times", ["{lox:objects-large}"], None),
+        ] + [(name, [f"{{lox:{name}}}"], None) for name in LOX_BOOK],
+    },
     "std/json": {
         "check": [
             ("records, summed", ["sum", "{small-records}"], None),
@@ -961,6 +1071,14 @@ def build(trial):
     hardening = ["-fstack-clash-protection"] if sys.platform.startswith("linux") else []
     run([os.environ.get("CC") or "cc", "-std=c11", "-O2", "-ffp-contract=off", *hardening, c_file,
          "-o", built["SG checked"], "-lm", "-pthread"])
+    for name, flags in BUILD_FLAGS.get(full, {}).items():
+        built[name] = built["SG"]
+        BUILD_ARGS[name] = flags
+    # From slice 180 on a trial is written in SG alone, without `rust/` and `zig/`.
+    if not (folder / "rust").exists():
+        if full in REFERENCES:
+            built.update(REFERENCES[full]())
+        return built
     run(["cargo", "build", "--release", "--quiet", "--target-dir", out / "cargo"], cwd=folder / "rust")
     built["Rust"] = out / f"{trial}-rust"
     fresh_copy(out / "cargo" / "release" / trial, built["Rust"])
@@ -1033,7 +1151,18 @@ def giftool_references():
     return {"gifsicle": Path(gifsicle)}
 
 
-REFERENCES = {"jq": jq_references, "hashsum": hashsum_references, "giftool": giftool_references}
+def lox_references():
+    # clox, the program the trial mirrors, built by its own Makefile in release, and clox with the
+    # change of choice 1894; both are held to the output of SG.
+    sys.path.insert(0, str(TRIALS / "lox" / "tests"))
+    import clox
+    return {"clox": clox.build(), "clox --ip-local": clox.build_ip_local()}
+
+
+REFERENCES = {"jq": jq_references, "hashsum": hashsum_references, "giftool": giftool_references, "lox": lox_references}
+# A build that is the SG program run with flags of its own: name -> flags (choice 1894).
+BUILD_FLAGS = {"lox": {"SG --ip-local": ["--ip-local"]}}
+BUILD_ARGS = {}
 # References whose output is not held to the others: their runs are measured, and a case where one
 # writes another output or exit code is marked in the table.
 LOOSE = {"jaq", "sha256sum", "gifsicle"}
@@ -1055,6 +1184,7 @@ def expand(words, trial):
     words = [str(kv_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in KV_INPUTS else w for w in words]
     words = [x for w in words for x in (hashsum_words(w) if w.startswith("{hs:") else [w])]
     words = [x for w in words for x in (giftool_words(w) if w.startswith("{gif") else [w])]
+    words = [x for w in words for x in (lox_words(w) if w.startswith("{lox") else [w])]
     return [str(other_input(w.strip("{}"))) if w.startswith("{") and w.strip("{}") in OTHER_INPUTS else w
             for w in words]
 
@@ -1226,7 +1356,7 @@ def check(trial, built, cases, notes):
                 kv_prepare(kind)
             if "pool" in kind and build in REFERENCE_NAMES:
                 continue
-            code, output = run_once(path, args, stdin_path, True, errors, TRIAL_CWD.get(trial))[:2]
+            code, output = run_once(path, BUILD_ARGS.get(build, []) + args, stdin_path, True, errors, TRIAL_CWD.get(trial))[:2]
             if kind and kind[0] == "kv":
                 output += kv_log()
             elif kind == ["own"]:
@@ -1283,7 +1413,7 @@ def measure(trial, built, cases, runs):
             for run in range((1 if "once" in kind else runs) + 1):
                 if kind and kind[0] == "kv":
                     kv_prepare(kind)
-                code, _, seconds, peak = run_once(path, args, stdin_path, False, errors, TRIAL_CWD.get(trial))
+                code, _, seconds, peak = run_once(path, BUILD_ARGS.get(build, []) + args, stdin_path, False, errors, TRIAL_CWD.get(trial))
                 if code != 0 and build in LOOSE | REFERENCE_NAMES:
                     # A reference that fails a case is shown so, not counted.
                     failed = True
@@ -1341,6 +1471,12 @@ def report(trial, built, rows, notes):
     print("| Size, stripped | " + " | ".join(f"{sizes[b] / 1024:.0f} KB" if b in sizes else "—" for b in builds) + " |")
     left_out = RUST_LEFT_OUT.get(trial, {})
     counts = {"SG": lines(folder / "sg", ".sg"), "Zig": lines(folder / "zig", ".zig")}
+    if trial == "lox":
+        sys.path.insert(0, str(TRIALS / "lox" / "tests"))
+        import clox
+        counts["clox"] = clox.source_lines()
+        # The loop of choice 1894 (`local.sg`) has no counterpart in clox as the book leaves it.
+        counts["SG"] = lines(folder / "sg", ".sg", {"local.sg"})
     for b in builds:
         if b.startswith("Rust"):
             counts[b] = lines(folder / "rust", ".rs", left_out.get(b, frozenset()))

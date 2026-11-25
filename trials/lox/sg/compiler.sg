@@ -1,0 +1,946 @@
+// The compiler of clox: one pass over the tokens, writing bytecode as it parses, expressions by
+// precedence (Pratt). A function being compiled writes its code, its lines and its constants in
+// lists of its own; when it ends they are put at the end of the program's (`Program`), so that the
+// code of every function lies in one list and a jump, which is relative, needs no change.
+
+enum Op : byte, Copyable, Equatable {
+    Constant
+    Nil
+    True
+    False
+    Pop
+    GetLocal
+    SetLocal
+    GetGlobal
+    DefineGlobal
+    SetGlobal
+    GetUpvalue
+    SetUpvalue
+    GetProperty
+    SetProperty
+    GetSuper
+    Equal
+    Greater
+    Less
+    Add
+    Subtract
+    Multiply
+    Divide
+    Not
+    Negate
+    Print
+    Jump
+    JumpIfFalse
+    Loop
+    Call
+    Invoke
+    SuperInvoke
+    Closure
+    CloseUpvalue
+    Return
+    Class
+    Inherit
+    Method
+}
+
+const int PrecNone = 0
+const int PrecAssignment = 1
+const int PrecOr = 2
+const int PrecAnd = 3
+const int PrecEquality = 4
+const int PrecComparison = 5
+const int PrecTerm = 6
+const int PrecFactor = 7
+const int PrecUnary = 8
+const int PrecCall = 9
+const int PrecPrimary = 10
+
+const nint Uint8Count = 256
+
+enum FunctionType : byte, Copyable, Equatable {
+    Function
+    Initializer
+    Method
+    Script
+}
+
+struct Local : Copyable {
+    Token name
+    int depth
+    bool isCaptured
+}
+
+struct UpvalueRef : Copyable {
+    byte index
+    bool isLocal
+}
+
+// A function being compiled (clox's `Compiler`); the one it is inside is the one before it.
+struct FuncState {
+    FunctionType type
+    List<Local> locals
+    List<UpvalueRef> upvalues
+    int scopeDepth
+    List<byte> code
+    List<int> lines
+    List<ulong> constants
+    int arity
+    nint name
+}
+
+struct Compiler {
+    Scanner scanner
+    Token current
+    Token previous
+    bool hadError
+    bool panicMode
+    List<FuncState> funcs
+    // Whether each class being compiled, the innermost last, has a superclass.
+    List<bool> classes
+}
+
+// What `endCompiler` gives: the function object, and the upvalues its closure captures.
+struct Ended {
+    nint handle
+    List<UpvalueRef> upvalues
+}
+
+nint top(read Compiler c) {
+    return c.funcs.length() - 1
+}
+
+void errorAt(ref Compiler c, Token token, read string message) {
+    if c.panicMode {
+        return
+    }
+    c.panicMode = true
+    _ = Stderr.write($"[line {token.line}] Error")
+    if token.type == TokenType.Eof {
+        _ = Stderr.write(" at end")
+    } else if token.type == TokenType.Error {
+        // Nothing.
+    } else {
+        _ = Stderr.write(" at '")
+        _ = Stderr.writeBytes(c.scanner.source[token.start..token.start + token.length])
+        _ = Stderr.write("'")
+    }
+    _ = Stderr.write($": {message}\n")
+    c.hadError = true
+}
+
+void error(ref Compiler c, read string message) {
+    errorAt(ref c, c.previous, message)
+}
+
+void errorAtCurrent(ref Compiler c, read string message) {
+    errorAt(ref c, c.current, message)
+}
+
+void advance(ref Compiler c) {
+    c.previous = c.current
+    while true {
+        c.current = scanToken(ref c.scanner)
+        if c.current.type != TokenType.Error {
+            break
+        }
+        if c.current.message == 0 {
+            errorAtCurrent(ref c, "Unterminated string.")
+        } else {
+            errorAtCurrent(ref c, "Unexpected character.")
+        }
+    }
+}
+
+void consume(ref Compiler c, TokenType type, read string message) {
+    if c.current.type == type {
+        advance(ref c)
+        return
+    }
+    errorAtCurrent(ref c, message)
+}
+
+bool check(read Compiler c, TokenType type) {
+    return c.current.type == type
+}
+
+bool matchToken(ref Compiler c, TokenType type) {
+    if !check(read c, type) {
+        return false
+    }
+    advance(ref c)
+    return true
+}
+
+void emitByte(ref Compiler c, byte b) {
+    var f = top(read c)
+    c.funcs[f].code.add(b)
+    c.funcs[f].lines.add(c.previous.line)
+}
+
+void emitOp(ref Compiler c, Op op) {
+    emitByte(ref c, (byte)op)
+}
+
+void emitOpByte(ref Compiler c, Op op, byte b) {
+    emitByte(ref c, (byte)op)
+    emitByte(ref c, b)
+}
+
+nint codeLength(read Compiler c) {
+    return c.funcs[top(read c)].code.length()
+}
+
+void emitLoop(ref Compiler c, nint loopStart) {
+    emitOp(ref c, Op.Loop)
+    nint offset = codeLength(read c) - loopStart + 2
+    if offset > 65535 {
+        error(ref c, "Loop body too large.")
+    }
+    emitByte(ref c, ((offset >> 8) & 0xff).wrappingToByte())
+    emitByte(ref c, (offset & 0xff).wrappingToByte())
+}
+
+nint emitJump(ref Compiler c, Op instruction) {
+    emitOp(ref c, instruction)
+    emitByte(ref c, 0xff)
+    emitByte(ref c, 0xff)
+    return codeLength(read c) - 2
+}
+
+void emitReturn(ref Compiler c) {
+    if c.funcs[top(read c)].type == FunctionType.Initializer {
+        emitOpByte(ref c, Op.GetLocal, 0)
+    } else {
+        emitOp(ref c, Op.Nil)
+    }
+    emitOp(ref c, Op.Return)
+}
+
+byte makeConstant(ref Compiler c, ulong value) {
+    var f = top(read c)
+    c.funcs[f].constants.add(value)
+    nint constant = c.funcs[f].constants.length() - 1
+    if constant > 255 {
+        error(ref c, "Too many constants in one chunk.")
+        return 0
+    }
+    return (byte)constant
+}
+
+void emitConstant(ref Compiler c, ulong value) {
+    var constant = makeConstant(ref c, value)
+    emitOpByte(ref c, Op.Constant, constant)
+}
+
+void patchJump(ref Compiler c, nint offset) {
+    // -2 to adjust for the bytecode for the jump offset itself.
+    nint jump = codeLength(read c) - offset - 2
+    if jump > 65535 {
+        error(ref c, "Too much code to jump over.")
+    }
+    var f = top(read c)
+    c.funcs[f].code[offset] = ((jump >> 8) & 0xff).wrappingToByte()
+    c.funcs[f].code[offset + 1] = (jump & 0xff).wrappingToByte()
+}
+
+void initCompiler(ref Compiler c, ref Vm vm, read Program p, FunctionType type) {
+    var name = NoObj
+    if type != FunctionType.Script {
+        name = copyString(ref vm, read p, c.scanner.source[c.previous.start..c.previous.start + c.previous.length])
+    }
+    var state = FuncState {
+        type = type,
+        locals = List<Local>.withCapacity(Uint8Count),
+        upvalues = List<UpvalueRef>(),
+        scopeDepth = 0,
+        code = List<byte>(),
+        lines = List<int>(),
+        constants = List<ulong>(),
+        arity = 0,
+        name = name
+    }
+    // The first slot holds the function itself, or `this` in a method.
+    var slotName = Token { type = TokenType.Identifier, start = c.scanner.end + SyntheticThis, length = 0, line = 0, message = 0 }
+    if type != FunctionType.Function {
+        slotName.length = 4
+    }
+    state.locals.add(Local { name = slotName, depth = 0, isCaptured = false })
+    c.funcs.add(state)
+}
+
+Ended endCompiler(ref Compiler c, ref Vm vm, ref Program p) {
+    emitReturn(ref c)
+    var state = c.funcs.removeLast() ?? return Ended { handle = NoObj, upvalues = List<UpvalueRef>() }
+    var index = p.functions.length()
+    p.functions.add(Function {
+        arity = state.arity,
+        upvalueCount = (int)state.upvalues.length(),
+        name = state.name,
+        code = p.code.length(),
+        constants = p.constants.length()
+    })
+    p.code.addAll(read state.code)
+    p.lines.addAll(read state.lines)
+    p.constants.addAll(read state.constants)
+    // The bytes clox's chunk took, counted as it counts them.
+    nint size = SizeFunction + state.code.length() * 5 + state.constants.length() * 8
+    var handle = allocate(ref vm, read p, Obj.Function(index), size)
+    return Ended { handle = handle, upvalues = state.upvalues }
+}
+
+void beginScope(ref Compiler c) {
+    c.funcs[top(read c)].scopeDepth += 1
+}
+
+void endScope(ref Compiler c) {
+    var f = top(read c)
+    c.funcs[f].scopeDepth -= 1
+    while c.funcs[f].locals.length() > 0 {
+        var last = c.funcs[f].locals.length() - 1
+        if c.funcs[f].locals[last].depth <= c.funcs[f].scopeDepth {
+            break
+        }
+        if c.funcs[f].locals[last].isCaptured {
+            emitOp(ref c, Op.CloseUpvalue)
+        } else {
+            emitOp(ref c, Op.Pop)
+        }
+        _ = c.funcs[f].locals.removeLast()
+    }
+}
+
+byte identifierConstant(ref Compiler c, ref Vm vm, read Program p, Token name) {
+    var h = copyString(ref vm, read p, c.scanner.source[name.start..name.start + name.length])
+    return makeConstant(ref c, objVal(h))
+}
+
+bool identifiersEqual(read Compiler c, Token a, Token b) {
+    if a.length != b.length {
+        return false
+    }
+    return c.scanner.source[a.start..a.start + a.length] == c.scanner.source[b.start..b.start + b.length]
+}
+
+int resolveLocal(ref Compiler c, nint f, Token name) {
+    var i = c.funcs[f].locals.length() - 1
+    while i >= 0 {
+        var local = c.funcs[f].locals[i]
+        if identifiersEqual(read c, name, local.name) {
+            if local.depth == -1 {
+                error(ref c, "Can't read local variable in its own initializer.")
+            }
+            return (int)i
+        }
+        i -= 1
+    }
+    return -1
+}
+
+int addUpvalue(ref Compiler c, nint f, byte index, bool isLocal) {
+    var count = c.funcs[f].upvalues.length()
+    for i in 0..count {
+        var upvalue = c.funcs[f].upvalues[i]
+        if upvalue.index == index && upvalue.isLocal == isLocal {
+            return (int)i
+        }
+    }
+    if count == Uint8Count {
+        error(ref c, "Too many closure variables in function.")
+        return 0
+    }
+    c.funcs[f].upvalues.add(UpvalueRef { index = index, isLocal = isLocal })
+    return (int)count
+}
+
+int resolveUpvalue(ref Compiler c, nint f, Token name) {
+    if f == 0 {
+        return -1
+    }
+    var local = resolveLocal(ref c, f - 1, name)
+    if local != -1 {
+        c.funcs[f - 1].locals[local].isCaptured = true
+        return addUpvalue(ref c, f, local.wrappingToByte(), true)
+    }
+    var upvalue = resolveUpvalue(ref c, f - 1, name)
+    if upvalue != -1 {
+        return addUpvalue(ref c, f, upvalue.wrappingToByte(), false)
+    }
+    return -1
+}
+
+void addLocal(ref Compiler c, Token name) {
+    var f = top(read c)
+    if c.funcs[f].locals.length() == Uint8Count {
+        error(ref c, "Too many local variables in function.")
+        return
+    }
+    c.funcs[f].locals.add(Local { name = name, depth = -1, isCaptured = false })
+}
+
+void declareVariable(ref Compiler c) {
+    var f = top(read c)
+    if c.funcs[f].scopeDepth == 0 {
+        return
+    }
+    var name = c.previous
+    var i = c.funcs[f].locals.length() - 1
+    while i >= 0 {
+        var local = c.funcs[f].locals[i]
+        if local.depth != -1 && local.depth < c.funcs[f].scopeDepth {
+            break
+        }
+        if identifiersEqual(read c, name, local.name) {
+            error(ref c, "Already a variable with this name in this scope.")
+        }
+        i -= 1
+    }
+    addLocal(ref c, name)
+}
+
+byte parseVariable(ref Compiler c, ref Vm vm, read Program p, read string errorMessage) {
+    consume(ref c, TokenType.Identifier, errorMessage)
+    declareVariable(ref c)
+    if c.funcs[top(read c)].scopeDepth > 0 {
+        return 0
+    }
+    return identifierConstant(ref c, ref vm, read p, c.previous)
+}
+
+void markInitialized(ref Compiler c) {
+    var f = top(read c)
+    if c.funcs[f].scopeDepth == 0 {
+        return
+    }
+    var last = c.funcs[f].locals.length() - 1
+    c.funcs[f].locals[last].depth = c.funcs[f].scopeDepth
+}
+
+void defineVariable(ref Compiler c, byte global) {
+    if c.funcs[top(read c)].scopeDepth > 0 {
+        markInitialized(ref c)
+        return
+    }
+    emitOpByte(ref c, Op.DefineGlobal, global)
+}
+
+byte argumentList(ref Compiler c, ref Vm vm, ref Program p) {
+    int argCount = 0
+    if !check(read c, TokenType.RightParen) {
+        while true {
+            expression(ref c, ref vm, ref p)
+            if argCount == 255 {
+                error(ref c, "Can't have more than 255 arguments.")
+            }
+            argCount += 1
+            if !matchToken(ref c, TokenType.Comma) {
+                break
+            }
+        }
+    }
+    consume(ref c, TokenType.RightParen, "Expect ')' after arguments.")
+    // clox keeps the count in a byte, which wraps past 255.
+    return argCount.wrappingToByte()
+}
+
+void andOp(ref Compiler c, ref Vm vm, ref Program p) {
+    var endJump = emitJump(ref c, Op.JumpIfFalse)
+    emitOp(ref c, Op.Pop)
+    parsePrecedence(ref c, ref vm, ref p, PrecAnd)
+    patchJump(ref c, endJump)
+}
+
+void binary(ref Compiler c, ref Vm vm, ref Program p) {
+    var operatorType = c.previous.type
+    parsePrecedence(ref c, ref vm, ref p, precedenceOf(operatorType) + 1)
+    match operatorType {
+        BangEqual => {
+            emitOp(ref c, Op.Equal)
+            emitOp(ref c, Op.Not)
+        }
+        EqualEqual => emitOp(ref c, Op.Equal)
+        Greater => emitOp(ref c, Op.Greater)
+        GreaterEqual => {
+            emitOp(ref c, Op.Less)
+            emitOp(ref c, Op.Not)
+        }
+        Less => emitOp(ref c, Op.Less)
+        LessEqual => {
+            emitOp(ref c, Op.Greater)
+            emitOp(ref c, Op.Not)
+        }
+        Plus => emitOp(ref c, Op.Add)
+        Minus => emitOp(ref c, Op.Subtract)
+        Star => emitOp(ref c, Op.Multiply)
+        Slash => emitOp(ref c, Op.Divide)
+        _ => {}
+    }
+}
+
+void call(ref Compiler c, ref Vm vm, ref Program p) {
+    var argCount = argumentList(ref c, ref vm, ref p)
+    emitOpByte(ref c, Op.Call, argCount)
+}
+
+void dot(ref Compiler c, ref Vm vm, ref Program p, bool canAssign) {
+    consume(ref c, TokenType.Identifier, "Expect property name after '.'.")
+    var name = identifierConstant(ref c, ref vm, read p, c.previous)
+    if canAssign && matchToken(ref c, TokenType.Equal) {
+        expression(ref c, ref vm, ref p)
+        emitOpByte(ref c, Op.SetProperty, name)
+    } else if matchToken(ref c, TokenType.LeftParen) {
+        var argCount = argumentList(ref c, ref vm, ref p)
+        emitOpByte(ref c, Op.Invoke, name)
+        emitByte(ref c, argCount)
+    } else {
+        emitOpByte(ref c, Op.GetProperty, name)
+    }
+}
+
+void literal(ref Compiler c) {
+    match c.previous.type {
+        False => emitOp(ref c, Op.False)
+        Nil => emitOp(ref c, Op.Nil)
+        True => emitOp(ref c, Op.True)
+        _ => {}
+    }
+}
+
+void grouping(ref Compiler c, ref Vm vm, ref Program p) {
+    expression(ref c, ref vm, ref p)
+    consume(ref c, TokenType.RightParen, "Expect ')' after expression.")
+}
+
+void numberLiteral(ref Compiler c) {
+    var t = c.previous
+    // A number token is ASCII digits and at most one point, so it is text; `parse` rounds as
+    // `strtod` does.
+    var text = string.fromUtf8(c.scanner.source[t.start..t.start + t.length]) ?? ""
+    double value = double.parse(text) ?? 0.0
+    emitConstant(ref c, numberVal(value))
+}
+
+void orOp(ref Compiler c, ref Vm vm, ref Program p) {
+    var elseJump = emitJump(ref c, Op.JumpIfFalse)
+    var endJump = emitJump(ref c, Op.Jump)
+    patchJump(ref c, elseJump)
+    emitOp(ref c, Op.Pop)
+    parsePrecedence(ref c, ref vm, ref p, PrecOr)
+    patchJump(ref c, endJump)
+}
+
+void stringLiteral(ref Compiler c, ref Vm vm, read Program p) {
+    var t = c.previous
+    var h = copyString(ref vm, read p, c.scanner.source[t.start + 1..t.start + t.length - 1])
+    emitConstant(ref c, objVal(h))
+}
+
+void namedVariable(ref Compiler c, ref Vm vm, ref Program p, Token name, bool canAssign) {
+    Op getOp = Op.GetLocal
+    Op setOp = Op.SetLocal
+    var f = top(read c)
+    int arg = resolveLocal(ref c, f, name)
+    if arg == -1 {
+        arg = resolveUpvalue(ref c, f, name)
+        if arg != -1 {
+            getOp = Op.GetUpvalue
+            setOp = Op.SetUpvalue
+        } else {
+            arg = (int)identifierConstant(ref c, ref vm, read p, name)
+            getOp = Op.GetGlobal
+            setOp = Op.SetGlobal
+        }
+    }
+    if canAssign && matchToken(ref c, TokenType.Equal) {
+        expression(ref c, ref vm, ref p)
+        emitOpByte(ref c, setOp, arg.wrappingToByte())
+    } else {
+        emitOpByte(ref c, getOp, arg.wrappingToByte())
+    }
+}
+
+void variable(ref Compiler c, ref Vm vm, ref Program p, bool canAssign) {
+    namedVariable(ref c, ref vm, ref p, c.previous, canAssign)
+}
+
+Token syntheticToken(read Compiler c, nint at, nint length) {
+    return Token { type = TokenType.Identifier, start = c.scanner.end + at, length = length, line = 0, message = 0 }
+}
+
+void superOp(ref Compiler c, ref Vm vm, ref Program p) {
+    if c.classes.length() == 0 {
+        error(ref c, "Can't use 'super' outside of a class.")
+    } else if !c.classes[c.classes.length() - 1] {
+        error(ref c, "Can't use 'super' in a class with no superclass.")
+    }
+    consume(ref c, TokenType.Dot, "Expect '.' after 'super'.")
+    consume(ref c, TokenType.Identifier, "Expect superclass method name.")
+    var name = identifierConstant(ref c, ref vm, read p, c.previous)
+    namedVariable(ref c, ref vm, ref p, syntheticToken(read c, SyntheticThis, 4), false)
+    if matchToken(ref c, TokenType.LeftParen) {
+        var argCount = argumentList(ref c, ref vm, ref p)
+        namedVariable(ref c, ref vm, ref p, syntheticToken(read c, SyntheticSuper, 5), false)
+        emitOpByte(ref c, Op.SuperInvoke, name)
+        emitByte(ref c, argCount)
+    } else {
+        namedVariable(ref c, ref vm, ref p, syntheticToken(read c, SyntheticSuper, 5), false)
+        emitOpByte(ref c, Op.GetSuper, name)
+    }
+}
+
+void thisOp(ref Compiler c, ref Vm vm, ref Program p) {
+    if c.classes.length() == 0 {
+        error(ref c, "Can't use 'this' outside of a class.")
+        return
+    }
+    variable(ref c, ref vm, ref p, false)
+}
+
+void unary(ref Compiler c, ref Vm vm, ref Program p) {
+    var operatorType = c.previous.type
+    // Compile the operand.
+    parsePrecedence(ref c, ref vm, ref p, PrecUnary)
+    // Emit the operator instruction.
+    match operatorType {
+        Bang => emitOp(ref c, Op.Not)
+        Minus => emitOp(ref c, Op.Negate)
+        _ => {}
+    }
+}
+
+// The table of rules of clox, as a function of the token: its precedence as an infix operator.
+int precedenceOf(TokenType type) {
+    return match type {
+        LeftParen or Dot => PrecCall
+        Minus or Plus => PrecTerm
+        Slash or Star => PrecFactor
+        BangEqual or EqualEqual => PrecEquality
+        Greater or GreaterEqual or Less or LessEqual => PrecComparison
+        And => PrecAnd
+        Or => PrecOr
+        _ => PrecNone
+    }
+}
+
+// The prefix rule of the token, run; `false` when it has none.
+bool prefixRule(ref Compiler c, ref Vm vm, ref Program p, TokenType type, bool canAssign) {
+    match type {
+        LeftParen => grouping(ref c, ref vm, ref p)
+        Minus or Bang => unary(ref c, ref vm, ref p)
+        Identifier => variable(ref c, ref vm, ref p, canAssign)
+        String => stringLiteral(ref c, ref vm, read p)
+        Number => numberLiteral(ref c)
+        False or Nil or True => literal(ref c)
+        Super => superOp(ref c, ref vm, ref p)
+        This => thisOp(ref c, ref vm, ref p)
+        _ => return false
+    }
+    return true
+}
+
+void infixRule(ref Compiler c, ref Vm vm, ref Program p, TokenType type, bool canAssign) {
+    match type {
+        LeftParen => call(ref c, ref vm, ref p)
+        Dot => dot(ref c, ref vm, ref p, canAssign)
+        And => andOp(ref c, ref vm, ref p)
+        Or => orOp(ref c, ref vm, ref p)
+        _ => binary(ref c, ref vm, ref p)
+    }
+}
+
+void parsePrecedence(ref Compiler c, ref Vm vm, ref Program p, int precedence) {
+    advance(ref c)
+    bool canAssign = precedence <= PrecAssignment
+    if !prefixRule(ref c, ref vm, ref p, c.previous.type, canAssign) {
+        error(ref c, "Expect expression.")
+        return
+    }
+    while precedence <= precedenceOf(c.current.type) {
+        advance(ref c)
+        infixRule(ref c, ref vm, ref p, c.previous.type, canAssign)
+    }
+    if canAssign && matchToken(ref c, TokenType.Equal) {
+        error(ref c, "Invalid assignment target.")
+    }
+}
+
+void expression(ref Compiler c, ref Vm vm, ref Program p) {
+    parsePrecedence(ref c, ref vm, ref p, PrecAssignment)
+}
+
+void block(ref Compiler c, ref Vm vm, ref Program p) {
+    while !check(read c, TokenType.RightBrace) && !check(read c, TokenType.Eof) {
+        declaration(ref c, ref vm, ref p)
+    }
+    consume(ref c, TokenType.RightBrace, "Expect '}' after block.")
+}
+
+void function(ref Compiler c, ref Vm vm, ref Program p, FunctionType type) {
+    initCompiler(ref c, ref vm, read p, type)
+    beginScope(ref c)
+    consume(ref c, TokenType.LeftParen, "Expect '(' after function name.")
+    if !check(read c, TokenType.RightParen) {
+        while true {
+            var f = top(read c)
+            c.funcs[f].arity += 1
+            if c.funcs[f].arity > 255 {
+                errorAtCurrent(ref c, "Can't have more than 255 parameters.")
+            }
+            var constant = parseVariable(ref c, ref vm, read p, "Expect parameter name.")
+            defineVariable(ref c, constant)
+            if !matchToken(ref c, TokenType.Comma) {
+                break
+            }
+        }
+    }
+    consume(ref c, TokenType.RightParen, "Expect ')' after parameters.")
+    consume(ref c, TokenType.LeftBrace, "Expect '{' before function body.")
+    block(ref c, ref vm, ref p)
+    var ended = endCompiler(ref c, ref vm, ref p)
+    var constant = makeConstant(ref c, objVal(ended.handle))
+    emitOpByte(ref c, Op.Closure, constant)
+    for upvalue in read ended.upvalues {
+        if upvalue.isLocal {
+            emitByte(ref c, 1)
+        } else {
+            emitByte(ref c, 0)
+        }
+        emitByte(ref c, upvalue.index)
+    }
+}
+
+void method(ref Compiler c, ref Vm vm, ref Program p) {
+    consume(ref c, TokenType.Identifier, "Expect method name.")
+    var constant = identifierConstant(ref c, ref vm, read p, c.previous)
+    var type = FunctionType.Method
+    var t = c.previous
+    if c.scanner.source[t.start..t.start + t.length] == "init".asBytes() {
+        type = FunctionType.Initializer
+    }
+    function(ref c, ref vm, ref p, type)
+    emitOpByte(ref c, Op.Method, constant)
+}
+
+void classDeclaration(ref Compiler c, ref Vm vm, ref Program p) {
+    consume(ref c, TokenType.Identifier, "Expect class name.")
+    var className = c.previous
+    var nameConstant = identifierConstant(ref c, ref vm, read p, c.previous)
+    declareVariable(ref c)
+    emitOpByte(ref c, Op.Class, nameConstant)
+    defineVariable(ref c, nameConstant)
+    c.classes.add(false)
+    if matchToken(ref c, TokenType.Less) {
+        consume(ref c, TokenType.Identifier, "Expect superclass name.")
+        variable(ref c, ref vm, ref p, false)
+        if identifiersEqual(read c, className, c.previous) {
+            error(ref c, "A class can't inherit from itself.")
+        }
+        beginScope(ref c)
+        addLocal(ref c, syntheticToken(read c, SyntheticSuper, 5))
+        defineVariable(ref c, 0)
+        namedVariable(ref c, ref vm, ref p, className, false)
+        emitOp(ref c, Op.Inherit)
+        c.classes[c.classes.length() - 1] = true
+    }
+    namedVariable(ref c, ref vm, ref p, className, false)
+    consume(ref c, TokenType.LeftBrace, "Expect '{' before class body.")
+    while !check(read c, TokenType.RightBrace) && !check(read c, TokenType.Eof) {
+        method(ref c, ref vm, ref p)
+    }
+    consume(ref c, TokenType.RightBrace, "Expect '}' after class body.")
+    emitOp(ref c, Op.Pop)
+    if c.classes[c.classes.length() - 1] {
+        endScope(ref c)
+    }
+    _ = c.classes.removeLast()
+}
+
+void funDeclaration(ref Compiler c, ref Vm vm, ref Program p) {
+    var global = parseVariable(ref c, ref vm, read p, "Expect function name.")
+    markInitialized(ref c)
+    function(ref c, ref vm, ref p, FunctionType.Function)
+    defineVariable(ref c, global)
+}
+
+void varDeclaration(ref Compiler c, ref Vm vm, ref Program p) {
+    var global = parseVariable(ref c, ref vm, read p, "Expect variable name.")
+    if matchToken(ref c, TokenType.Equal) {
+        expression(ref c, ref vm, ref p)
+    } else {
+        emitOp(ref c, Op.Nil)
+    }
+    consume(ref c, TokenType.Semicolon, "Expect ';' after variable declaration.")
+    defineVariable(ref c, global)
+}
+
+void expressionStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    expression(ref c, ref vm, ref p)
+    consume(ref c, TokenType.Semicolon, "Expect ';' after expression.")
+    emitOp(ref c, Op.Pop)
+}
+
+void forStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    beginScope(ref c)
+    consume(ref c, TokenType.LeftParen, "Expect '(' after 'for'.")
+    if matchToken(ref c, TokenType.Semicolon) {
+        // No initializer.
+    } else if matchToken(ref c, TokenType.Var) {
+        varDeclaration(ref c, ref vm, ref p)
+    } else {
+        expressionStatement(ref c, ref vm, ref p)
+    }
+    var loopStart = codeLength(read c)
+    nint exitJump = -1
+    if !matchToken(ref c, TokenType.Semicolon) {
+        expression(ref c, ref vm, ref p)
+        consume(ref c, TokenType.Semicolon, "Expect ';' after loop condition.")
+        // Jump out of the loop if the condition is false.
+        exitJump = emitJump(ref c, Op.JumpIfFalse)
+        // Condition.
+        emitOp(ref c, Op.Pop)
+    }
+    if !matchToken(ref c, TokenType.RightParen) {
+        var bodyJump = emitJump(ref c, Op.Jump)
+        var incrementStart = codeLength(read c)
+        expression(ref c, ref vm, ref p)
+        emitOp(ref c, Op.Pop)
+        consume(ref c, TokenType.RightParen, "Expect ')' after for clauses.")
+        emitLoop(ref c, loopStart)
+        loopStart = incrementStart
+        patchJump(ref c, bodyJump)
+    }
+    statement(ref c, ref vm, ref p)
+    emitLoop(ref c, loopStart)
+    if exitJump != -1 {
+        patchJump(ref c, exitJump)
+        // Condition.
+        emitOp(ref c, Op.Pop)
+    }
+    endScope(ref c)
+}
+
+void ifStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    consume(ref c, TokenType.LeftParen, "Expect '(' after 'if'.")
+    expression(ref c, ref vm, ref p)
+    consume(ref c, TokenType.RightParen, "Expect ')' after condition.")
+    var thenJump = emitJump(ref c, Op.JumpIfFalse)
+    emitOp(ref c, Op.Pop)
+    statement(ref c, ref vm, ref p)
+    var elseJump = emitJump(ref c, Op.Jump)
+    patchJump(ref c, thenJump)
+    emitOp(ref c, Op.Pop)
+    if matchToken(ref c, TokenType.Else) {
+        statement(ref c, ref vm, ref p)
+    }
+    patchJump(ref c, elseJump)
+}
+
+void printStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    expression(ref c, ref vm, ref p)
+    consume(ref c, TokenType.Semicolon, "Expect ';' after value.")
+    emitOp(ref c, Op.Print)
+}
+
+void returnStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    var type = c.funcs[top(read c)].type
+    if type == FunctionType.Script {
+        error(ref c, "Can't return from top-level code.")
+    }
+    if matchToken(ref c, TokenType.Semicolon) {
+        emitReturn(ref c)
+    } else {
+        if type == FunctionType.Initializer {
+            error(ref c, "Can't return a value from an initializer.")
+        }
+        expression(ref c, ref vm, ref p)
+        consume(ref c, TokenType.Semicolon, "Expect ';' after return value.")
+        emitOp(ref c, Op.Return)
+    }
+}
+
+void whileStatement(ref Compiler c, ref Vm vm, ref Program p) {
+    var loopStart = codeLength(read c)
+    consume(ref c, TokenType.LeftParen, "Expect '(' after 'while'.")
+    expression(ref c, ref vm, ref p)
+    consume(ref c, TokenType.RightParen, "Expect ')' after condition.")
+    var exitJump = emitJump(ref c, Op.JumpIfFalse)
+    emitOp(ref c, Op.Pop)
+    statement(ref c, ref vm, ref p)
+    emitLoop(ref c, loopStart)
+    patchJump(ref c, exitJump)
+    emitOp(ref c, Op.Pop)
+}
+
+void synchronize(ref Compiler c) {
+    c.panicMode = false
+    while c.current.type != TokenType.Eof {
+        if c.previous.type == TokenType.Semicolon {
+            return
+        }
+        match c.current.type {
+            Class or Fun or Var or For or If or While or Print or Return => return
+            _ => {}
+        }
+        advance(ref c)
+    }
+}
+
+void declaration(ref Compiler c, ref Vm vm, ref Program p) {
+    if matchToken(ref c, TokenType.Class) {
+        classDeclaration(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.Fun) {
+        funDeclaration(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.Var) {
+        varDeclaration(ref c, ref vm, ref p)
+    } else {
+        statement(ref c, ref vm, ref p)
+    }
+    if c.panicMode {
+        synchronize(ref c)
+    }
+}
+
+void statement(ref Compiler c, ref Vm vm, ref Program p) {
+    if matchToken(ref c, TokenType.Print) {
+        printStatement(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.For) {
+        forStatement(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.If) {
+        ifStatement(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.Return) {
+        returnStatement(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.While) {
+        whileStatement(ref c, ref vm, ref p)
+    } else if matchToken(ref c, TokenType.LeftBrace) {
+        beginScope(ref c)
+        block(ref c, ref vm, ref p)
+        endScope(ref c)
+    } else {
+        expressionStatement(ref c, ref vm, ref p)
+    }
+}
+
+// The script's function object, or `NoObj` when the source has an error.
+nint compile(ref Vm vm, ref Program p, List<byte> source) {
+    vm.compiling = true
+    var none = Token { type = TokenType.Eof, start = 0, length = 0, line = 0, message = 0 }
+    var c = Compiler {
+        scanner = newScanner(source),
+        current = none,
+        previous = none,
+        hadError = false,
+        panicMode = false,
+        funcs = List<FuncState>(),
+        classes = List<bool>()
+    }
+    initCompiler(ref c, ref vm, read p, FunctionType.Script)
+    advance(ref c)
+    while !matchToken(ref c, TokenType.Eof) {
+        declaration(ref c, ref vm, ref p)
+    }
+    var ended = endCompiler(ref c, ref vm, ref p)
+    vm.compiling = false
+    if c.hadError {
+        return NoObj
+    }
+    return ended.handle
+}

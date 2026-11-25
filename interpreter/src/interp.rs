@@ -5148,7 +5148,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     InterpPart::Expr(inner, spec) => {
                         let value = values.next().expect("one value for each part");
                         let shown = match spec.and_then(|spec| spec.letter) {
-                            Some((letter, digits)) => written_as(&owned(value.clone()), letter, digits.unwrap_or(0) as usize),
+                            Some((letter, digits)) => written_as(&owned(value.clone()), letter, digits.unwrap_or(letter.default_digits()) as usize),
                             None => self.show(value, false, inner.span)?,
                         };
                         let width = spec.map_or(0, |spec| spec.width);
@@ -5901,6 +5901,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                     })
                     .collect();
                 Ok(load(bytes.as_ptr() as usize, &ty, self.plain, expr.span)?)
+            }
+            Callee::FloatFromBits(ty) => {
+                let Value::Int(_, bits) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the bits an integer") };
+                Ok(Value::Float(
+                    *ty,
+                    match ty {
+                        FloatTy::Float => float_from_bits(bits as u32),
+                        FloatTy::Double => f64::from_bits(bits as u64),
+                    },
+                ))
             }
             Callee::FromBytes { ty, big } => {
                 let cells = cells_of(&owned(self.expr(&args[0], frame)?));
@@ -9097,6 +9107,9 @@ fn written_as(value: &Value, letter: Letter, digits: usize) -> String {
             true => format!("{value:.digits$}"),
             false => show_float(*value, *ty),
         },
+        (Value::Float(ty, value), _) if !value.is_finite() => show_float(*value, *ty),
+        (Value::Float(_, value), Letter::Exponent | Letter::ExponentUpper) => c_exponent(*value, digits, letter == Letter::ExponentUpper),
+        (Value::Float(_, value), Letter::General | Letter::GeneralUpper) => c_general(*value, digits, letter == Letter::GeneralUpper),
         (Value::Int(_, value), Letter::Decimal) => {
             let sign = if *value < 0 { "-" } else { "" };
             format!("{sign}{:0digits$}", value.unsigned_abs())
@@ -9110,6 +9123,48 @@ fn written_as(value: &Value, letter: Letter, digits: usize) -> String {
             }
         }
         _ => unreachable!("the checker lets a letter through only for a number it fits"),
+    }
+}
+
+/// A finite number as C's `%.*e` writes it: one digit, the point (none for 0 digits), the
+/// digits, `e`, the sign and at least two digits of the exponent. Rust's `{:e}` rounds the
+/// exact value to the digits, half to even, as C does; only its exponent is written otherwise.
+fn c_exponent(value: f64, digits: usize, upper: bool) -> String {
+    let (mantissa, exponent) = exponent_parts(value, digits);
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let e = if upper { 'E' } else { 'e' };
+    let exp_sign = if exponent < 0 { '-' } else { '+' };
+    format!("{sign}{mantissa}{e}{exp_sign}{:02}", exponent.unsigned_abs())
+}
+
+/// The digits of `|value|` rounded to `digits` after the point, and its power of ten.
+fn exponent_parts(value: f64, digits: usize) -> (String, i32) {
+    let written = format!("{:.digits$e}", value.abs());
+    let (mantissa, exponent) = written.split_once('e').expect("`{:e}` writes an `e`");
+    (mantissa.to_string(), exponent.parse().expect("`{:e}` writes a number after the `e`"))
+}
+
+/// A finite number as C's `%.*g` writes it: `precision` significant digits (0 is 1); the form
+/// of `%e` when its exponent is below -4 or not below the precision, else the form of `%f`;
+/// zeros at the end of the fraction left out, and the point with them.
+fn c_general(value: f64, precision: usize, upper: bool) -> String {
+    let precision = precision.max(1);
+    let exponent = if value == 0.0 { 0 } else { exponent_parts(value, precision - 1).1 };
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let trim = |text: &str| -> String {
+        match text.contains('.') {
+            true => text.trim_end_matches('0').trim_end_matches('.').to_string(),
+            false => text.to_string(),
+        }
+    };
+    if exponent < -4 || exponent >= precision as i32 {
+        let (mantissa, exponent) = exponent_parts(value, precision - 1);
+        let e = if upper { 'E' } else { 'e' };
+        let exp_sign = if exponent < 0 { '-' } else { '+' };
+        format!("{sign}{}{e}{exp_sign}{:02}", trim(&mantissa), exponent.unsigned_abs())
+    } else {
+        let after = (precision as i32 - 1 - exponent) as usize;
+        format!("{sign}{}", trim(&format!("{:.after$}", value.abs())))
     }
 }
 
@@ -9398,6 +9453,30 @@ mod libm {
     }
 }
 
+/// A `float` is held as an `f64` here. A `NaN` is widened and narrowed by hand, its payload
+/// moved over as it is, so that `float.fromBits(b).toBits()` is `b` for every `b`, as the
+/// compiled program has it: the machine's conversion would make a signaling `NaN` quiet.
+fn float_from_bits(bits: u32) -> f64 {
+    let value = f32::from_bits(bits);
+    if !value.is_nan() {
+        return f64::from(value);
+    }
+    let bits = u64::from(bits);
+    f64::from_bits(((bits & 0x8000_0000) << 32) | 0x7ff0_0000_0000_0000 | ((bits & 0x007f_ffff) << 29))
+}
+
+/// The bits of a `float` held as an `f64`; the other way of `float_from_bits`.
+fn float_to_bits(value: f64) -> u32 {
+    if !value.is_nan() {
+        return (value as f32).to_bits();
+    }
+    let bits = value.to_bits();
+    let payload = ((bits >> 29) & 0x007f_ffff) as u32;
+    // A payload only in the low bits, which no `float` has, stays a `NaN`: quiet.
+    let payload = if payload == 0 { 0x0040_0000 } else { payload };
+    ((bits >> 32) & 0x8000_0000) as u32 | 0x7f80_0000 | payload
+}
+
 /// `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from zero), `truncate`, `isNaN`,
 /// `isInfinite`, and the functions of the C library: `exp`, `log`, `sin` and the rest. On a
 /// `float` in `f32`.
@@ -9407,6 +9486,12 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
         "isInfinite" => return Value::Bool(value.is_infinite()),
         "isFinite" => return Value::Bool(value.is_finite()),
         "isSignNegative" => return Value::Bool(value.is_sign_negative()),
+        "toBits" => {
+            return match ty {
+                FloatTy::Float => Value::Int(IntTy::Uint, i128::from(float_to_bits(value))),
+                FloatTy::Double => Value::Int(IntTy::Ulong, i128::from(value.to_bits())),
+            }
+        }
         "exponent" => return exponent(ty, value).map_or(Value::Null, |power| Value::Int(IntTy::Int, i128::from(power))),
         "nextUp" | "nextDown" => {
             let up = name == "nextUp";

@@ -438,7 +438,7 @@ fn is_text_value(ty: &Ty) -> bool {
 /// the change is what they are called for.
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
-        Callee::Join | Callee::WithCapacity | Callee::ListRepeat | Callee::ListWithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
+        Callee::Join | Callee::WithCapacity | Callee::ListRepeat | Callee::ListWithCapacity | Callee::FromBytes { .. } | Callee::FloatFromBits(_) | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Net(NetCall::Port | NetCall::Reader) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next" | "makeUnique"),
@@ -10454,7 +10454,14 @@ impl<'a> Checker<'a> {
             }
             (Ty::Int(_) | Ty::Float(_), Ty::Int(_) | Ty::Float(_)) => {
                 if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                    return Err(undefined().note("the bit operators work on integers"));
+                    let mut diag = undefined().note("the bit operators work on integers");
+                    // The bits of a fractional number, when that is what is wanted (1891).
+                    if let Ty::Float(float) = left_ty.strip_borrow() {
+                        let text = &self.src[left.span.start..left.span.end];
+                        let int = if *float == FloatTy::Float { "uint" } else { "ulong" };
+                        diag = diag.hint(format!("`{text}.toBits()` gives its bits as a `{int}`"));
+                    }
+                    return Err(diag);
                 }
                 let common = Ty::Float(self.common_float(left, left_ty.clone(), right, right_ty.clone())?);
                 Ok(if op.is_comparison() { Ty::Bool } else { common })
@@ -10620,7 +10627,8 @@ impl<'a> Checker<'a> {
     /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, a struct or an enum
     /// that is `Formattable`, and a collection of such values; also behind a pointer.
     /// The letter after `:` in `{x:X2}` fits the value: `x`, `X`, `b` and `D` are for an
-    /// integer, `F` for a fractional number (also behind a pointer, as `print` looks).
+    /// integer, `F`, `e`, `E`, `g` and `G` for a fractional number (also behind a pointer, as
+    /// `print` looks).
     fn format_letter(&self, ty: &Ty, letter: Letter, span: Span, value: &Expr) -> Res<()> {
         let mut inner = ty.strip_borrow();
         while let Ty::Ptr(behind) | Ty::Shared(behind, _) = inner {
@@ -10633,15 +10641,17 @@ impl<'a> Checker<'a> {
             Letter::Binary => "an integer in binary",
             Letter::Decimal => "an integer with at least so many digits",
             Letter::Fixed => "a fractional number with so many digits after the point",
+            Letter::Exponent | Letter::ExponentUpper => "a fractional number with an exponent, as C's `%e`",
+            Letter::General | Letter::GeneralUpper => "a fractional number with so many significant digits, as C's `%g`",
         };
         let name = letter.name();
         let shown = ty.to_string();
         let article = if shown.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
         let diag = || Diag::error(span, format!("`{name}` writes {what}, and `{text}` is {article} `{shown}`"));
         match (letter, inner) {
-            (Letter::Fixed, Ty::Float(_)) => Ok(()),
-            (Letter::Fixed, Ty::Int(_)) => Err(diag().hint(format!("make it a `double` first: `{{(double){text}{spec}}}`"))),
-            (Letter::Fixed, _) => Err(diag()),
+            (letter, Ty::Float(_)) if letter.fractional() => Ok(()),
+            (letter, Ty::Int(_)) if letter.fractional() => Err(diag().hint(format!("make it a `double` first: `{{(double){text}{spec}}}`"))),
+            (letter, _) if letter.fractional() => Err(diag()),
             (_, Ty::Int(_)) => Ok(()),
             (_, Ty::Char) => Err(diag().hint(format!("the code of the character: `{{(int){text}{spec}}}`"))),
             (Letter::Decimal, Ty::Float(_)) => Err(diag().hint("`F0` writes it with no digits after the point")),
@@ -12918,6 +12928,18 @@ impl<'a> Checker<'a> {
             if matches!(name, "fromLittleEndian" | "fromBigEndian") {
                 return self.number_from_bytes(&ty, name, name_span, args, callee, span);
             }
+            // `double.fromBits(bits)`: the number whose bits these are; every pattern of bits is
+            // a `double`, so it needs no `unsafe` (1891).
+            if name == "fromBits" {
+                let Ty::Float(float) = ty else {
+                    return Err(Diag::error(name_span, format!("`{ty}` is an integer, which is its bits already"))
+                        .note("`fromBits` makes a `float` or a `double` out of its bits"));
+                };
+                let bits = Ty::Int(if float == FloatTy::Float { IntTy::Uint } else { IntTy::Ulong });
+                self.args(name, args, &[bits], span)?;
+                *callee = Callee::FloatFromBits(float);
+                return Ok(ty.clone());
+            }
             let radix = match (name, &ty) {
                 ("parse", _) => 10,
                 ("parseHex", Ty::Int(_)) => 16,
@@ -12927,7 +12949,7 @@ impl<'a> Checker<'a> {
                 }
                 _ => {
                     let diag = Diag::error(name_span, format!("`{ty}` has no function `{name}`"));
-                    let functions = if matches!(ty, Ty::Int(_)) { "parse, parseHex, fromLittleEndian, fromBigEndian" } else { "parse" };
+                    let functions = if matches!(ty, Ty::Int(_)) { "parse, parseHex, fromLittleEndian, fromBigEndian" } else { "parse, fromBits" };
                     return Err(match constant(&ty, name, name_span) {
                         Ok(()) => diag.hint(format!("`{name}` is a constant: `{ty}.{name}`, without parentheses")),
                         Err(_) if matches!(ty, Ty::Int(_)) && endian_hint(name, true).is_some() => {
@@ -13762,6 +13784,13 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 self.coerce(recv, recv_ty.clone(), target)?;
                 Ok(Ty::Bool)
+            }
+            // `x.toBits()`: the bits of the number as they lie in memory, in an unsigned integer
+            // of its size: a `uint` for a `float`, a `ulong` for a `double` (1891).
+            (Ty::Float(ty), "toBits") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Int(if *ty == FloatTy::Float { IntTy::Uint } else { IntTy::Ulong }))
             }
             // `x.exponent()`: the power of two of `x`, as C's `ilogb` has it; `null` for 0, `NaN`
             // and the infinities, for which C gives a number of its own on each system.

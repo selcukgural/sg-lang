@@ -1,0 +1,5 @@
+error: expected `uint`, found `ulong`
+  --> error_float_from_bits_wrong.sg:4:26
+ 4 |     print(float.fromBits(bits))
+   |                          ^^^^
+  hint: convert with `(uint)`; it panics if the value does not fit

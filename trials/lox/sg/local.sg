@@ -1,0 +1,361 @@
+// The loop of `run` with the place in the code held in a local variable, as the first challenge of the
+// chapter "Calls and Functions" of the book asks of clox (choice 1894): `ip`, where the frame's slots
+// start and where its constants start are locals, read from the frame when it changes, and `ip` is
+// written back to the frame before anything that may read it there: a call, a return, an error. clox
+// is measured with the same change (`trials/lox/clox-ip-local.patch`). `lox --ip-local` runs it.
+
+int runLocal(ref Vm vm, read Program p) {
+    var fi = vm.frameCount - 1
+    var ip = vm.frames[fi].ip
+    var slots = vm.frames[fi].slots
+    var constants = vm.frames[fi].constants
+    while true {
+        var instruction = p.code[ip]
+        ip += 1
+        match Op.fromValue(instruction) {
+            null => {}
+            Constant => {
+                var index = (nint)p.code[ip]
+                ip += 1
+                push(ref vm, p.constants[constants + index])
+            }
+            Nil => push(ref vm, NilVal)
+            True => push(ref vm, TrueVal)
+            False => push(ref vm, FalseVal)
+            Pop => _ = pop(ref vm)
+            GetLocal => {
+                var slot = (nint)p.code[ip]
+                ip += 1
+                push(ref vm, vm.stack[slots + slot])
+            }
+            SetLocal => {
+                var slot = (nint)p.code[ip]
+                ip += 1
+                vm.stack[slots + slot] = peek(read vm, 0)
+            }
+            GetGlobal => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                ulong value = NilVal
+                bool found = false
+                var v = vm.globals.get(name)
+                if v is not null {
+                    value = v
+                    found = true
+                }
+                if !found {
+                    vm.frames[fi].ip = ip
+                    runtimeErrorNamed(ref vm, read p, "Undefined variable '", name, "'.")
+                    return InterpretRuntimeError
+                }
+                push(ref vm, value)
+            }
+            DefineGlobal => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                if !vm.globals.contains(name) {
+                    countBytes(ref vm, read p, tableGrowth(vm.globals.length()))
+                }
+                var value = peek(read vm, 0)
+                var slot = vm.globals.getOrAdd(name, value)
+                slot = value
+                _ = pop(ref vm)
+            }
+            SetGlobal => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                if !vm.globals.contains(name) {
+                    vm.frames[fi].ip = ip
+                    runtimeErrorNamed(ref vm, read p, "Undefined variable '", name, "'.")
+                    return InterpretRuntimeError
+                }
+                vm.globals[name] = peek(read vm, 0)
+            }
+            GetUpvalue => {
+                var slot = (nint)p.code[ip]
+                ip += 1
+                push(ref vm, readUpvalue(read vm, vm.frames[fi].closure, slot))
+            }
+            SetUpvalue => {
+                var slot = (nint)p.code[ip]
+                ip += 1
+                writeUpvalue(ref vm, vm.frames[fi].closure, slot, peek(read vm, 0))
+            }
+            GetProperty => {
+                if !isObjType(read vm, peek(read vm, 0), KindInstance) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Only instances have properties.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var instance = asObj(peek(read vm, 0))
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                ulong value = NilVal
+                bool isField = false
+                nint klass = 0
+                if vm.objects[instance] is Instance(k, fields) {
+                    klass = k
+                    var v = fields.get(name)
+                    if v is not null {
+                        value = v
+                        isField = true
+                    }
+                }
+                if isField {
+                    // Instance.
+                    _ = pop(ref vm)
+                    push(ref vm, value)
+                } else {
+                    vm.frames[fi].ip = ip
+                    if !bindMethod(ref vm, read p, klass, name) {
+                        return InterpretRuntimeError
+                    }
+                }
+            }
+            SetProperty => {
+                if !isObjType(read vm, peek(read vm, 1), KindInstance) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Only instances have fields.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var instance = asObj(peek(read vm, 1))
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                tableSet(ref vm, read p, instance, name, peek(read vm, 0))
+                var value = pop(ref vm)
+                _ = pop(ref vm)
+                push(ref vm, value)
+            }
+            GetSuper => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                var superclass = asObj(pop(ref vm))
+                vm.frames[fi].ip = ip
+                if !bindMethod(ref vm, read p, superclass, name) {
+                    return InterpretRuntimeError
+                }
+            }
+            Equal => {
+                var b = pop(ref vm)
+                var a = pop(ref vm)
+                push(ref vm, boolVal(valuesEqual(a, b)))
+            }
+            Greater => {
+                if !isNumber(peek(read vm, 0)) || !isNumber(peek(read vm, 1)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be numbers.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var b = asNumber(pop(ref vm))
+                var a = asNumber(pop(ref vm))
+                push(ref vm, boolVal(a > b))
+            }
+            Less => {
+                if !isNumber(peek(read vm, 0)) || !isNumber(peek(read vm, 1)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be numbers.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var b = asNumber(pop(ref vm))
+                var a = asNumber(pop(ref vm))
+                push(ref vm, boolVal(a < b))
+            }
+            Add => {
+                if isObjType(read vm, peek(read vm, 0), KindString) && isObjType(read vm, peek(read vm, 1), KindString) {
+                    concatenate(ref vm, read p)
+                } else if isNumber(peek(read vm, 0)) && isNumber(peek(read vm, 1)) {
+                    var b = asNumber(pop(ref vm))
+                    var a = asNumber(pop(ref vm))
+                    push(ref vm, numberVal(a + b))
+                } else {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be two numbers or two strings.".asBytes())
+                    return InterpretRuntimeError
+                }
+            }
+            Subtract => {
+                if !isNumber(peek(read vm, 0)) || !isNumber(peek(read vm, 1)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be numbers.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var b = asNumber(pop(ref vm))
+                var a = asNumber(pop(ref vm))
+                push(ref vm, numberVal(a - b))
+            }
+            Multiply => {
+                if !isNumber(peek(read vm, 0)) || !isNumber(peek(read vm, 1)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be numbers.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var b = asNumber(pop(ref vm))
+                var a = asNumber(pop(ref vm))
+                push(ref vm, numberVal(a * b))
+            }
+            Divide => {
+                if !isNumber(peek(read vm, 0)) || !isNumber(peek(read vm, 1)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operands must be numbers.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var b = asNumber(pop(ref vm))
+                var a = asNumber(pop(ref vm))
+                push(ref vm, numberVal(a / b))
+            }
+            Not => {
+                var value = pop(ref vm)
+                push(ref vm, boolVal(isFalsey(value)))
+            }
+            Negate => {
+                if !isNumber(peek(read vm, 0)) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Operand must be a number.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var value = pop(ref vm)
+                push(ref vm, numberVal(-asNumber(value)))
+            }
+            Print => {
+                var value = pop(ref vm)
+                printValue(read vm, read p, value)
+                _ = Stdout.write("\n")
+            }
+            Jump => {
+                var offset = ((nint)p.code[ip] << 8) | (nint)p.code[ip + 1]
+                ip += 2 + offset
+            }
+            JumpIfFalse => {
+                var offset = ((nint)p.code[ip] << 8) | (nint)p.code[ip + 1]
+                ip += 2
+                if isFalsey(peek(read vm, 0)) {
+                    ip += offset
+                }
+            }
+            Loop => {
+                var offset = ((nint)p.code[ip] << 8) | (nint)p.code[ip + 1]
+                ip += 2
+                ip -= offset
+            }
+            Call => {
+                var argCount = (int)p.code[ip]
+                ip += 1
+                vm.frames[fi].ip = ip
+                if !callValue(ref vm, read p, peek(read vm, (nint)argCount), argCount) {
+                    return InterpretRuntimeError
+                }
+                fi = vm.frameCount - 1
+                ip = vm.frames[fi].ip
+                slots = vm.frames[fi].slots
+                constants = vm.frames[fi].constants
+            }
+            Invoke => {
+                var method = asObj(p.constants[constants + (nint)p.code[ip]])
+                var argCount = (int)p.code[ip + 1]
+                ip += 2
+                vm.frames[fi].ip = ip
+                if !invoke(ref vm, read p, method, argCount) {
+                    return InterpretRuntimeError
+                }
+                fi = vm.frameCount - 1
+                ip = vm.frames[fi].ip
+                slots = vm.frames[fi].slots
+                constants = vm.frames[fi].constants
+            }
+            SuperInvoke => {
+                var method = asObj(p.constants[constants + (nint)p.code[ip]])
+                var argCount = (int)p.code[ip + 1]
+                ip += 2
+                var superclass = asObj(pop(ref vm))
+                vm.frames[fi].ip = ip
+                if !invokeFromClass(ref vm, read p, superclass, method, argCount) {
+                    return InterpretRuntimeError
+                }
+                fi = vm.frameCount - 1
+                ip = vm.frames[fi].ip
+                slots = vm.frames[fi].slots
+                constants = vm.frames[fi].constants
+            }
+            Closure => {
+                var function = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                nint index = 0
+                if vm.objects[function] is Function(i) {
+                    index = i
+                }
+                var count = (nint)p.functions[index].upvalueCount
+                var upvalues = List<nint>.repeat(NoObj, count)
+                var closure = allocate(ref vm, read p, Obj.Closure(index, upvalues), SizeClosure + count * 8)
+                push(ref vm, objVal(closure))
+                for i in 0..count {
+                    var isLocal = p.code[ip]
+                    var at = (nint)p.code[ip + 1]
+                    ip += 2
+                    nint upvalue = NoObj
+                    if isLocal != 0 {
+                        upvalue = captureUpvalue(ref vm, read p, slots + at)
+                    } else if vm.objects[vm.frames[fi].closure] is Closure(_, enclosing) {
+                        upvalue = enclosing[at]
+                    }
+                    match ref vm.objects[closure] {
+                        Closure(_, list) => list[i] = upvalue
+                        _ => {}
+                    }
+                }
+            }
+            CloseUpvalue => {
+                closeUpvalues(ref vm, vm.top - 1)
+                _ = pop(ref vm)
+            }
+            Return => {
+                var result = pop(ref vm)
+                closeUpvalues(ref vm, slots)
+                vm.frameCount -= 1
+                if vm.frameCount == 0 {
+                    _ = pop(ref vm)
+                    return InterpretOk
+                }
+                vm.top = slots
+                push(ref vm, result)
+                fi = vm.frameCount - 1
+                ip = vm.frames[fi].ip
+                slots = vm.frames[fi].slots
+                constants = vm.frames[fi].constants
+            }
+            Class => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                var klass = allocate(ref vm, read p, Obj.Class(name, HashMap<nint, ulong>()), SizeClass)
+                push(ref vm, objVal(klass))
+            }
+            Inherit => {
+                var superclass = peek(read vm, 1)
+                if !isObjType(read vm, superclass, KindClass) {
+                    vm.frames[fi].ip = ip
+                    runtimeError(ref vm, read p, "Superclass must be a class.".asBytes())
+                    return InterpretRuntimeError
+                }
+                var subclass = asObj(peek(read vm, 0))
+                var inherited = List<nint>()
+                var bodies = List<ulong>()
+                if vm.objects[asObj(superclass)] is Class(_, methods) {
+                    for entry in methods {
+                        inherited.add(entry.key)
+                        bodies.add(entry.value)
+                    }
+                }
+                for i in 0..inherited.length() {
+                    tableSet(ref vm, read p, subclass, inherited[i], bodies[i])
+                }
+                // Subclass.
+                _ = pop(ref vm)
+            }
+            Method => {
+                var name = asObj(p.constants[constants + (nint)p.code[ip]])
+                ip += 1
+                defineMethod(ref vm, read p, name)
+            }
+        }
+    }
+    return InterpretOk
+}

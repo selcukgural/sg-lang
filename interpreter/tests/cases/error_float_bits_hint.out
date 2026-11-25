@@ -1,0 +1,6 @@
+error: operator `|` is not defined for `double` and `double`
+  the bit operators work on integers
+  --> error_float_bits_hint.sg:4:11
+ 4 |     print(x | 1)
+   |           ^^^^^
+  hint: `x.toBits()` gives its bits as a `ulong`

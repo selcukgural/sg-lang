@@ -1,0 +1,261 @@
+// The objects of Lox and the collector that frees them, as clox has them (choice 1884). An object is
+// an item of one list, and a value holds its place there, its handle, where clox holds its address.
+// What clox frees, the collector here turns into a free place that the next object takes; the
+// handles in use are a list of their own, which the sweep goes over as clox goes over its objects. Marking
+// and sweeping are clox's: the roots are marked, the gray ones blackened, the strings no longer
+// reached taken out of the table of strings, and the rest swept.
+//
+// The program, its code and its constants, is kept apart from the heap (`Program`), so that the
+// machine reads it while the heap changes. Its functions are made only by the compiler and live
+// as long as the program: their constants are roots, where clox reaches them from the closures.
+
+enum Obj {
+    // A place no object holds, and the next such place.
+    Free(nint next)
+    String(List<byte> chars)
+    Function(nint index)
+    Native(int which)
+    Closure(nint function, List<nint> upvalues)
+    // `location` is the place of the variable on the stack while it is open, and -1 once the
+    // variable has been closed into `closed`. `next` is the next open upvalue, lower on the stack.
+    Upvalue(nint location, ulong closed, nint next)
+    Class(nint name, HashMap<nint, ulong> methods)
+    Instance(nint klass, HashMap<nint, ulong> fields)
+    BoundMethod(ulong receiver, nint method)
+}
+
+// A function the compiler made: where its code and its constants start in the program's lists.
+struct Function : Copyable {
+    int arity
+    int upvalueCount
+    // The handle of its name, `NoObj` for the script.
+    nint name
+    nint code
+    nint constants
+}
+
+struct Program {
+    List<byte> code
+    List<int> lines
+    List<ulong> constants
+    List<Function> functions
+}
+
+// The sizes clox counts for its objects on a machine of 64 bits, so that the collector runs as
+// often as clox's does: twice the bytes still in use after the last one, and first at 1 MB.
+const nint SizeString = 40
+const nint SizeFunction = 72
+const nint SizeNative = 24
+const nint SizeClosure = 40
+const nint SizeUpvalue = 40
+const nint SizeClass = 40
+const nint SizeInstance = 40
+const nint SizeBoundMethod = 32
+const nint SizeEntry = 16
+const nint GrowFactor = 2
+
+// The capacity a table of clox has with `count` keys: 8 first, doubled when a key would fill it
+// past three quarters.
+nint tableCapacity(nint count) {
+    if count == 0 {
+        return 0
+    }
+    nint capacity = 8
+    while count * 4 > capacity * 3 {
+        capacity *= 2
+    }
+    return capacity
+}
+
+// The bytes a table of clox takes more when its `count + 1`th key is put in.
+nint tableGrowth(nint count) {
+    return (tableCapacity(count + 1) - tableCapacity(count)) * SizeEntry
+}
+
+// A new object, in a free place when there is one. The collector may run first, as clox's runs
+// in `reallocate` before the memory is taken: what the object refers to must be reachable already.
+nint allocate(ref Vm vm, read Program p, Obj obj, nint size) {
+    countBytes(ref vm, read p, size)
+    if vm.free != NoObj {
+        var h = vm.free
+        if vm.objects[h] is Free(next) {
+            vm.free = next
+        }
+        vm.objects[h] = obj
+        vm.used.add(h)
+        return h
+    }
+    vm.objects.add(obj)
+    vm.marks.add(false)
+    var h = vm.objects.length() - 1
+    vm.used.add(h)
+    return h
+}
+
+// Bytes taken, and the collector run when they pass the mark (on every allocation under
+// `--stress-gc`, as clox's `DEBUG_STRESS_GC`). Not while the compiler runs: what it makes is held
+// in its own lists, which the collector does not see.
+void countBytes(ref Vm vm, read Program p, nint size) {
+    vm.bytesAllocated += size
+    if size > 0 && !vm.compiling && (vm.stressGC || vm.bytesAllocated > vm.nextGC) {
+        collectGarbage(ref vm, read p)
+    }
+}
+
+// The interned string of these bytes, made when there is none.
+nint copyString(ref Vm vm, read Program p, read byte[] chars) {
+    var found = vm.strings.get(chars)
+    if found is not null {
+        return found
+    }
+    var own = List<byte>.withCapacity(chars.length())
+    own.addAll(chars)
+    return addString(ref vm, read p, own)
+}
+
+// The interned string of bytes made here (`takeString`): the one already there when there is one.
+nint takeString(ref Vm vm, read Program p, List<byte> chars) {
+    var found = vm.strings.get(read chars)
+    if found is not null {
+        return found
+    }
+    return addString(ref vm, read p, chars)
+}
+
+nint addString(ref Vm vm, read Program p, List<byte> chars) {
+    var key = chars.clone()
+    var h = allocate(ref vm, read p, Obj.String(chars), SizeString + key.length() + 1)
+    // The table of strings grows as clox's does, and the string is on the stack meanwhile.
+    push(ref vm, objVal(h))
+    countBytes(ref vm, read p, tableGrowth(vm.strings.length()))
+    vm.strings.add(key, h)
+    _ = pop(ref vm)
+    return h
+}
+
+void markObject(ref List<bool> marks, ref List<nint> gray, nint h) {
+    if h == NoObj || marks[h] {
+        return
+    }
+    marks[h] = true
+    gray.add(h)
+}
+
+void markValue(ref List<bool> marks, ref List<nint> gray, ulong v) {
+    if isObj(v) {
+        markObject(ref marks, ref gray, asObj(v))
+    }
+}
+
+void markTable(ref List<bool> marks, ref List<nint> gray, read HashMap<nint, ulong> table) {
+    for entry in table {
+        markObject(ref marks, ref gray, entry.key)
+        markValue(ref marks, ref gray, entry.value)
+    }
+}
+
+void markRoots(ref Vm vm, read Program p) {
+    for i in 0..vm.top {
+        markValue(ref vm.marks, ref vm.gray, vm.stack[i])
+    }
+    for i in 0..vm.frameCount {
+        markObject(ref vm.marks, ref vm.gray, vm.frames[i].closure)
+    }
+    var upvalue = vm.openUpvalues
+    while upvalue != NoObj {
+        markObject(ref vm.marks, ref vm.gray, upvalue)
+        upvalue = nextUpvalue(read vm, upvalue)
+    }
+    markTable(ref vm.marks, ref vm.gray, read vm.globals)
+    // What the compiler's functions hold: their names and constants (in place of
+    // `markCompilerRoots` and of the functions closures reach).
+    for f in read p.functions {
+        markObject(ref vm.marks, ref vm.gray, f.name)
+    }
+    for c in read p.constants {
+        markValue(ref vm.marks, ref vm.gray, c)
+    }
+    markObject(ref vm.marks, ref vm.gray, vm.initString)
+}
+
+nint nextUpvalue(read Vm vm, nint h) {
+    if vm.objects[h] is Upvalue(_, _, next) {
+        return next
+    }
+    return NoObj
+}
+
+void blacken(ref Vm vm, nint h) {
+    match read vm.objects[h] {
+        BoundMethod(receiver, method) => {
+            markValue(ref vm.marks, ref vm.gray, receiver)
+            markObject(ref vm.marks, ref vm.gray, method)
+        }
+        Class(name, methods) => {
+            markObject(ref vm.marks, ref vm.gray, name)
+            markTable(ref vm.marks, ref vm.gray, methods)
+        }
+        Closure(_, upvalues) => {
+            for u in upvalues {
+                markObject(ref vm.marks, ref vm.gray, u)
+            }
+        }
+        Instance(klass, fields) => {
+            markObject(ref vm.marks, ref vm.gray, klass)
+            markTable(ref vm.marks, ref vm.gray, fields)
+        }
+        Upvalue(_, closed, _) => markValue(ref vm.marks, ref vm.gray, closed)
+        Function(_) or Native(_) or String(_) or Free(_) => {}
+    }
+}
+
+// What clox's `freeObject` gives back, in the bytes it counts.
+nint sizeOf(read Obj obj) {
+    return match obj {
+        Free(_) => 0
+        String(chars) => SizeString + chars.length() + 1
+        Function(_) => SizeFunction
+        Native(_) => SizeNative
+        Closure(_, upvalues) => SizeClosure + upvalues.length() * 8
+        Upvalue(_, _, _) => SizeUpvalue
+        Class(_, methods) => SizeClass + tableCapacity(methods.length()) * SizeEntry
+        Instance(_, fields) => SizeInstance + tableCapacity(fields.length()) * SizeEntry
+        BoundMethod(_, _) => SizeBoundMethod
+    }
+}
+
+// Over the objects in use only, as clox goes over its list of objects: those still reached stay, in
+// the order they were, and the others are freed.
+void sweep(ref Vm vm) {
+    nint kept = 0
+    for i in 0..vm.used.length() {
+        var h = vm.used[i]
+        if vm.marks[h] {
+            vm.marks[h] = false
+            vm.used[kept] = h
+            kept += 1
+            continue
+        }
+        vm.bytesAllocated -= sizeOf(read vm.objects[h])
+        // A string no longer reached leaves the table of strings (`tableRemoveWhite`).
+        if vm.objects[h] is String(chars) {
+            _ = vm.strings.remove(chars)
+        }
+        vm.objects[h] = Obj.Free(vm.free)
+        vm.free = h
+    }
+    while vm.used.length() > kept {
+        _ = vm.used.removeLast()
+    }
+}
+
+void collectGarbage(ref Vm vm, read Program p) {
+    markRoots(ref vm, read p)
+    while vm.gray.length() > 0 {
+        var h = vm.gray.removeLast() ?? NoObj
+        blacken(ref vm, h)
+    }
+    sweep(ref vm)
+    vm.nextGC = vm.bytesAllocated * GrowFactor
+    vm.collections += 1
+}
