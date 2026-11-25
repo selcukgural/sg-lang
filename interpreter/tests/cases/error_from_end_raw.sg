@@ -1,0 +1,7 @@
+void main() {
+    unsafe {
+        var p = Memory.allocate<int>(4)
+        p[^1] = 1
+        Memory.free(p)
+    }
+}

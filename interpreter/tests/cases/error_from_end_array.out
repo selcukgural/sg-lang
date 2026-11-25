@@ -1,0 +1,5 @@
+error: index ^4 is out of range: the length is 3
+  the items of an `int[3]` are at ^1 to ^3 from the end
+  --> error_from_end_array.sg:3:11
+ 3 |     print(a[^4])
+   |           ^^^^^

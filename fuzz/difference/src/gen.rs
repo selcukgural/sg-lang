@@ -7,8 +7,8 @@
 //! message and code, must be the same interpreted and compiled.
 //!
 //! Stage 1: the integer types, `bool`, arithmetic, the bit operators, conversions, comparisons,
-//! `if`, `match`, `for` and `while`, functions, recursion, arrays, consts, `print` and `$"..."`
-//! with a format.
+//! `if`, `match`, `for` and `while`, functions, recursion, arrays (also indexed from the end,
+//! `a[^n]`), consts, `print` and `$"..."` with a format.
 //!
 //! The program is a tree of `Node`s, each a statement or a block, so that the reducer can take
 //! any of them away (choice 1366).
@@ -792,6 +792,15 @@ impl Gen {
         self.indexing += 1;
         let value = self.int_expr(INT, 1);
         self.indexing -= 1;
+        // Counted from the end (1921): `^1` to `^8` of an array of eight, or now and then a
+        // count that may be outside, whose panic names `^n`.
+        if self.rng.chance(20) {
+            return match value.1 {
+                true if self.rng.chance(15) => format!("^({} & 15)", value.0),
+                true => format!("^(({} & 7) + 1)", value.0),
+                false => format!("^{}", 1 + self.rng.below(8)),
+            };
+        }
         match value.1 {
             true if self.rng.chance(4) => value.0,
             true => format!("({} & 7)", value.0),
@@ -1080,6 +1089,14 @@ impl Gen {
         let value = self.int_expr(INT, 1);
         self.indexing -= 1;
         let value = self.typed(value, INT);
+        // Counted from the end (1921), inside the list when it is not empty.
+        if self.rng.chance(15) {
+            if self.rng.chance(15) {
+                return format!("^({value} & 15)");
+            }
+            self.mark_read(list);
+            return format!("^(({value} & 0x7fff) % {list}.length() + 1)");
+        }
         match self.rng.chance(4) {
             true => value,
             false => {

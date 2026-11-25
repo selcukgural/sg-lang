@@ -1,0 +1,5 @@
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    var k = 1
+    var i = ^k
+}

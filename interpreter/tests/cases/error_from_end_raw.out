@@ -1,0 +1,5 @@
+error: a `raw int` has no end to count from: the length of the memory it points at is not known
+  --> error_from_end_raw.sg:4:11
+ 4 |         p[^1] = 1
+   |           ^^
+  hint: count from the start, with the length the memory was given

@@ -1,0 +1,5 @@
+error: a map has no end to count from: its keys are not places in a row
+  --> error_from_end_map.sg:3:13
+ 3 |     print(m[^1])
+   |             ^^
+  hint: `^` counts from the end of a list, an array, a slice or a text; a key is written as it is: `map[1]`

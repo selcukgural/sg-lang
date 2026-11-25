@@ -578,7 +578,7 @@ impl Opener<'_> {
                 self.why = why;
             }
             ExprKind::Open { .. } | ExprKind::Within(_) => unreachable!("a function is opened once"),
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::SizeOf { .. } | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) => {}
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::SizeOf { .. } | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::End => {}
         }
         if let Some(mark) = call {
             self.end_call(expr, mark);

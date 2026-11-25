@@ -1,0 +1,5 @@
+error: `^` counts one operand from the end; what it counts is put in parentheses
+  --> error_from_end_operator.sg:4:14
+ 4 |     print(xs[^k + 1])
+   |              ^^^^^^
+  hint: `^(k + 1)`

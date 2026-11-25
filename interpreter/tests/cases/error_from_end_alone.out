@@ -1,0 +1,5 @@
+error: `^` counts from the end of what is indexed, so it is written first between `[ ]`: `xs[^1]`, `xs[..^1]`
+  an index from the end is not a value of its own; the bit inverse is `~x`
+  --> error_from_end_alone.sg:4:13
+ 4 |     var i = ^k
+   |             ^

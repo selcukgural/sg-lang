@@ -1,0 +1,82 @@
+// `xs[^n]` counts from the end (1921): `^1` is the last item, `^n` is `xs[xs.length() - n]`,
+// and the receiver is computed once.
+
+struct Box {
+    List<int> items
+    int[4] fixed
+}
+
+struct Cell {
+    int[3] parts
+}
+
+int sum(read int[] xs) {
+    var total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+Box make(ref int calls) {
+    calls += 1
+    return Box { items = List<int> { 5, 6, 7 }, fixed = int[4] { 1, 2, 3, 4 } }
+}
+
+void main() {
+    // Items of a list, read and written.
+    var xs = List<int> { 1, 2, 3, 4 }
+    print($"{xs[^1]} {xs[^4]}")
+    xs[^1] = 40
+    xs[^2] += 5
+    print($"{xs[0]} {xs[1]} {xs[2]} {xs[3]}")
+    var k = 2
+    byte small = 3
+    print($"{xs[^k]} {xs[^(k + 1)]} {xs[^small]} {xs[^xs.length()]}")
+
+    // An array, a window, a text and its bytes.
+    var a = int[3] { 10, 20, 30 }
+    var w = a[..]
+    print($"{a[^1]} {w[^3]}")
+    var s = "naïve"
+    print($"{s[^1]} {s[1..^1]} {s[^2..]} {s[..^0]}")
+    print(s.asBytes()[^1])
+
+    // Ranges: methods on them, a `for`, a call.
+    var ys = List<int> { 9, 3, 7, 1, 5 }
+    ys[..^1].sort()
+    print($"{ys[0]} {ys[1]} {ys[2]} {ys[3]} {ys[4]}")
+    ys[1..^0].reverse()
+    print($"{ys[0]} {ys[1]} {ys[2]} {ys[3]} {ys[4]}")
+    print(sum(ys[1..^1]))
+    for y in ys[^2..] {
+        print(y)
+    }
+    ys[^3..].copyFrom(ys[..3])
+    print($"{ys[0]} {ys[1]} {ys[2]} {ys[3]} {ys[4]}")
+    print(ys[^2..^2].length())
+
+    // Fields, borrows, nesting.
+    var b = Box { items = List<int> { 1, 2 }, fixed = int[4] { 4, 3, 2, 1 } }
+    b.items[^1] += 10
+    b.fixed[^4] = 40
+    print($"{b.items[^1]} {b.fixed[^4]} {b.fixed[^1]}")
+    var last = ref b.items[^1]
+    last += 1
+    print(b.items[1])
+    var grid = List<List<int>> { List<int> { 1, 2 }, List<int> { 3, 4, 5 } }
+    print($"{grid[^1][^1]} {grid[^2][^(grid[^2].length())]}")
+
+    // The receiver is computed once.
+    var calls = 0
+    print($"{make(ref calls).items[^1]} {make(ref calls).fixed[^2]} {calls}")
+
+    // An array in raw memory has a length.
+    unsafe {
+        var cells = Memory.allocate<Cell>(1)
+        cells[0].parts[^1] = 7
+        cells[0].parts[^3] = 5
+        print($"{cells[0].parts[0]} {cells[0].parts[^1]}")
+        Memory.free(cells)
+    }
+}

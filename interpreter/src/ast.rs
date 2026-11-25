@@ -1394,6 +1394,10 @@ pub enum ExprKind {
     /// Inserted by the checker: the borrows of `shared checked` values recorded while this is
     /// computed end when it ends (a call whose result borrows nothing, a condition).
     Within(Box<Expr>),
+    /// The length of what is indexed, in `xs[^n]` and `xs[a..^n]`: `^n` is read as `End - n`
+    /// (1921). It stands only as the left of that `-`, the whole of an index or of an end of
+    /// a range, and each back end gives it the length of the receiver it computed once.
+    End,
 }
 
 /// How a `shared checked T` is reached.

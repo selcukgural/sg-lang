@@ -68,7 +68,7 @@ Result<void, IoError> main() {
             panic("the fetch failed")
         }
         total += (long)got.body.length()
-        sum += (long)got.body[got.body.length() - 1]
+        sum += (long)got.body[^1]
     }
     unsafe {
         curl_easy_cleanup(handle)

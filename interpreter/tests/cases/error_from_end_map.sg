@@ -1,0 +1,4 @@
+void main() {
+    var m = HashMap<int, int> { {1, 2} }
+    print(m[^1])
+}

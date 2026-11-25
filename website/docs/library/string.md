@@ -85,7 +85,8 @@ error whose hint is `.clone()`.
 |---|---|
 | `nint length(read this)` | The length in bytes |
 | `text[i]` | The byte at `i`; a panic outside the text, with the index and the length |
-| `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]` | A `read string` of those bytes; a panic when the range cuts a character in half |
+| `text[^n]` | The byte `n` from the end: `text[^1]` is the last |
+| `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]` | A `read string` of those bytes; a panic when the range cuts a character in half. An end may count from the end: `text[1..^1]` leaves out the first and the last byte |
 | `read byte[] asBytes(read this)` | The bytes, to look at |
 | `Result<read string, TextError> string.fromUtf8(read byte[] bytes)` | The bytes as text, or the place of the first byte that is not UTF-8 (`cause.position`) |
 

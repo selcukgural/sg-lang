@@ -1,0 +1,5 @@
+error: `^0` is the end itself, past the last item, so this index is always out of range
+  --> error_from_end_zero.sg:4:14
+ 4 |     print(xs[^0])
+   |              ^^
+  hint: the last item is `^1`; `^0` is written as the end of a range: `[a..^0]`

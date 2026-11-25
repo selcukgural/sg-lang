@@ -2834,6 +2834,25 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
     }
 }
 
+/// `n` of an index written `^n`, read as `End - n` (1921).
+fn from_end(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Sub, end, count) if matches!(end.kind, ExprKind::End) => Some(count),
+        _ => None,
+    }
+}
+
+/// The length `^n` counts back from: of a text in bytes, of a list, an array or a slice in items.
+fn length_of(holder: &Value) -> i128 {
+    match holder {
+        Value::Str(text) => text.len() as i128,
+        Value::List(items) => items.borrow().len() as i128,
+        Value::Array(items) | Value::Slice(items) => items.len() as i128,
+        Value::Bytes(_, start, end) => (end - start) as i128,
+        other => cells_of(other).len() as i128,
+    }
+}
+
 struct Interp<'a, 'e> {
     funcs: HashMap<&'a str, &'a Func>,
     /// Functions written in struct bodies: struct name, then function name.
@@ -4912,7 +4931,18 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Index { recv, index, .. } => {
                 let holder = self.place(recv, frame)?;
                 let holder = owned(holder.borrow().clone());
-                let at = strip(self.expr(index, frame)?);
+                // `xs[^n]` (1921): the count is said as it was written when it is out of range.
+                let at = match from_end(index) {
+                    Some(count) => {
+                        let length = length_of(&holder);
+                        let count = self.int(count, frame)?;
+                        if count < 1 || count > length {
+                            return Err(Diag::panic(expr.span, format!("index ^{count} is out of range: the length is {length}")).into());
+                        }
+                        Value::Int(IntTy::Nint, length - count)
+                    }
+                    None => strip(self.expr(index, frame)?),
+                };
                 let out_of_range = |at: i128, length: usize| {
                     Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")))
                 };
@@ -5397,19 +5427,22 @@ impl<'a, 'e> Interp<'a, 'e> {
             };
             // A list's length and its part are read where it is: copying all of its cells to
             // cut a few out would make each slice of a long list as slow as the list is long.
-            let length = match &holder {
-                Value::Str(text) => text.len() as i128,
-                Value::List(items) => items.borrow().len() as i128,
-                Value::Array(items) | Value::Slice(items) => items.len() as i128,
-                Value::Bytes(_, start, end) => (end - start) as i128,
-                other => cells_of(other).len() as i128,
+            let length = length_of(&holder);
+            // `xs[a..^n]` (1921): an end from the end lies from 0 to the length back.
+            let mut bound = |end: &'a Expr, this: &mut Self| -> Res<i128> {
+                let Some(count) = from_end(end) else { return this.int(end, frame) };
+                let count = this.int(count, frame)?;
+                if count < 0 || count > length {
+                    return Err(Diag::panic(expr.span, format!("range bound ^{count} is out of range: the length is {length}")).into());
+                }
+                Ok(length - count)
             };
             let from = match from {
-                Some(from) => self.int(from, frame)?,
+                Some(from) => bound(from, self)?,
                 None => 0,
             };
             let to = match to {
-                Some(to) => self.int(to, frame)?,
+                Some(to) => bound(to, self)?,
                 None => length,
             };
             // An end that lies outside is said first: `xs[4..]` on three items is out of
@@ -6673,7 +6706,16 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Index { recv, index, .. } => {
                 let RawSpot { at: base, ty, .. } = self.raw_place(recv, verb, frame)?;
                 let Ty::Array(item, length) = &ty else { unreachable!("an item in raw memory is an item of an array") };
-                let at = self.int(index, frame)?;
+                let at = match from_end(index) {
+                    Some(count) => {
+                        let count = self.int(count, frame)?;
+                        if count < 1 || count > *length as i128 {
+                            return Err(Diag::panic(expr.span, format!("index ^{count} is out of range: the length is {length}")).into());
+                        }
+                        *length as i128 - count
+                    }
+                    None => self.int(index, frame)?,
+                };
                 if at < 0 || at >= *length as i128 {
                     return Err(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")).into());
                 }

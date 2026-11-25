@@ -252,7 +252,8 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Static(_)
         | ExprKind::Embed(_)
         | ExprKind::FuncRef(_)
-        | ExprKind::CVar(_) => {}
+        | ExprKind::CVar(_)
+        | ExprKind::End => {}
         ExprKind::Interp(parts) => {
             for part in parts {
                 if let InterpPart::Expr(value, _) = part {

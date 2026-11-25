@@ -1,0 +1,5 @@
+error: `^` counts from the end of what is indexed, so it is written first between `[ ]`: `xs[^1]`, `xs[..^1]`
+  an index from the end is not a value of its own; the bit inverse is `~x`
+  --> error_from_end_argument.sg:4:18
+ 4 |     print(xs.get(^k) ?? 0)
+   |                  ^

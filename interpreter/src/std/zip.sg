@@ -895,7 +895,7 @@ string nameKey(read string name) {
 // one name.
 read string withoutSlash(read string name) {
     if name.endsWith('/') {
-        return name[..name.length() - 1]
+        return name[..^1]
     }
     return name
 }

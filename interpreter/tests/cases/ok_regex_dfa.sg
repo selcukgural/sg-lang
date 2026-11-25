@@ -26,7 +26,7 @@ void many(read string text, read string pattern) {
     var re = Regex.compile(read pattern) ?? panic("a pattern")
     var all = re.findAll(read text)
     var first = re.find(read text) ?? panic("a match")
-    var last = all[all.length() - 1]
+    var last = all[^1]
     print($"{pattern}: {all.length()} matches, first {first}, last {last}, isMatch {re.isMatch(read text)}")
 }
 

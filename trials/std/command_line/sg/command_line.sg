@@ -42,7 +42,7 @@ void main(List<string> args) {
     }
     out.write($"files {files.length()} {bytes}")
     if files.length() > 0 {
-        out.write($" {files[0]} {files[files.length() - 1]}")
+        out.write($" {files[0]} {files[^1]}")
     }
     print(out)
 }

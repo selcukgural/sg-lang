@@ -590,6 +590,10 @@ names and the narrowing an `if` would give them, and compiled code writes the `i
 Slice 184 (1918-1920) writes a type alias `alias Scores = HashMap<string, int>`, as D does, in place of C#'s
 `using`. `alias` is a word only where an alias starts; `using X = T` is an error whose hint is the new line.
 
+Slice 185 (1921-1926) counts an index from the end, as C# does: `xs[^1]` is the last item, `xs[1..^1]` all but
+the first and the last. What is indexed is computed once, a panic names `^n` as it was written, and the 22 places
+of the repository that wrote `xs[xs.length() - 1]` write `xs[^1]`.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

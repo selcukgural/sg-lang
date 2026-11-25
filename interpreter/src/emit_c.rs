@@ -2509,6 +2509,21 @@ SG_COLD static _Noreturn void sg_item_fail(long long at, long long len, const ch
     fprintf(stderr, "panic: index %lld is out of range: the length is %lld\n", at, len);
     sg_die_hint(loc, "`.get(i)` reads with `null` instead; before a write, compare the index with `.length()`");
 }
+/* `xs[^n]` and `xs[a..^n]` (1921): the place `len - n`, for an `n` from 1 to the length in an
+   index and from 0 to the length at an end of a range. The count is said as it was written. */
+SG_COLD static _Noreturn void sg_end_fail(long long count, long long len, bool bound, const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: %s ^%lld is out of range: the length is %lld\n", bound ? "range bound" : "index", count, len);
+    sg_die(loc);
+}
+static inline int64_t sg_from_end(int64_t count, int64_t len, const char* loc) {
+    if (__builtin_expect((uint64_t)count - 1 >= (uint64_t)len, 0)) sg_end_fail(count, len, false, loc);
+    return len - count;
+}
+static inline int64_t sg_bound_from_end(int64_t count, int64_t len, const char* loc) {
+    if (__builtin_expect((uint64_t)count > (uint64_t)len, 0)) sg_end_fail(count, len, true, loc);
+    return len - count;
+}
 SG_COLD static _Noreturn void sg_item_sum_fail(long long at, long long len, const sg_sum* s, const char* loc) {
     sg_sum_told(at, s);
     sg_item_fail(at, len, loc);
@@ -14111,13 +14126,21 @@ fn names_in(expr: &Expr, names: &[String], found: &mut bool) {
 
 /// Whether computing the expression can leave the function: it holds a `try`, a `?? return`,
 /// or a `match`, whose arms may.
+/// `n` of an index written `^n`, read as `End - n` (1921).
+fn from_end(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Sub, end, count) if matches!(end.kind, ExprKind::End) => Some(count),
+        _ => None,
+    }
+}
+
 fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } | ExprKind::End => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -19766,7 +19789,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } | ExprKind::End => Effect::Reads,
             // The first read of a static whose value is found then calls what finds it.
             ExprKind::Static(name) => match self.statics[name.as_str()].value {
                 Some(_) => Effect::Reads,
@@ -19793,6 +19816,8 @@ impl<'a> Emitter<'a> {
             ExprKind::Unary(UnOp::Neg, inner) | ExprKind::Cast { expr: inner, .. } => of(inner).max(if self.checked { Effect::Stops } else { Effect::Reads }),
             ExprKind::Binary(op, left, right) => {
                 let own = match op {
+                    // `^n`: the count is checked against the length (1921).
+                    BinOp::Sub if matches!(left.kind, ExprKind::End) => Effect::Stops,
                     BinOp::Div | BinOp::Rem => Effect::Stops,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::Shr if self.checked => Effect::Stops,
                     _ => Effect::Reads,
@@ -21787,12 +21812,22 @@ impl<'a> Emitter<'a> {
                 // A place may be written more than once in a statement (`xs[i] += 1`): what
                 // finds it is computed once if computing it does more than read.
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
-                let address = self.list_address(recv)?;
+                let mut address = self.list_address(recv)?;
+                // `xs[^n]` (1921): the list is found once, and its length read where it is.
+                let mut from_end_at = None;
+                if let Some(count) = from_end(index) {
+                    let temp = self.temp();
+                    self.pre.push(format!("__auto_type {temp} = {address};"));
+                    let count = self.value(count)?;
+                    from_end_at = Some(format!("sg_from_end({count}, {temp}->len, {})", self.loc(expr.span)));
+                    address = temp;
+                }
                 // `getUnchecked` in the language's own module (1803): a release build reads the
                 // item without checking the index; a debug build checks it as `xs[i]` does.
                 let unchecked = *unchecked && !self.checked;
-                let sum = if unchecked { None } else { self.index_sum(index)? };
+                let sum = if unchecked || from_end_at.is_some() { None } else { self.index_sum(index)? };
                 let found = match sum {
+                    _ if from_end_at.is_some() => format!("sg_at_{name}({address}, {}, {})", from_end_at.unwrap_or_default(), self.loc(expr.span)),
                     _ if unchecked => format!("(&({address})->ptr[{}])", self.value(index)?),
                     Some((at, sum)) => format!("sg_ats_{name}({address}, {at}, &{sum}, {})", self.loc(expr.span)),
                     None => {
@@ -21820,15 +21855,30 @@ impl<'a> Emitter<'a> {
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
                 // A window is given as it is, an array through a pointer to it.
                 let before = self.mark();
-                let (from, from_ty) = match items {
+                let (mut from, from_ty) = match items {
                     Ty::Slice(_) => (self.window(recv)?, Ty::Read(Box::new(items.clone()))),
                     _ => (self.list_address(recv)?, Ty::Ref(Box::new(items.clone()))),
+                };
+                // `xs[^n]` (1921): an array's length is its type's; a window is found once.
+                let length = match items {
+                    Ty::Array(_, length) => length.to_string(),
+                    _ if from_end(index).is_some() => {
+                        let temp = self.temp();
+                        self.pre.push(format!("__auto_type {temp} = {from};"));
+                        from = temp;
+                        format!("{from}.len")
+                    }
+                    _ => String::new(),
                 };
                 let mut parts = vec![self.part(recv, &from_ty, from, before)];
                 let before = self.mark();
                 // See `getUnchecked` of a list (1803).
                 let unchecked = *unchecked && !self.checked;
-                let (at, sum) = if unchecked { (self.value(index)?, None) } else { self.index_or_sum(index)? };
+                let (at, sum) = match from_end(index) {
+                    Some(count) => (format!("sg_from_end({}, {length}, {})", self.value(count)?, self.loc(expr.span)), None),
+                    None if unchecked => (self.value(index)?, None),
+                    None => self.index_or_sum(index)?,
+                };
                 parts.push(self.part(index, &index.ty, at, before));
                 let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
@@ -22966,10 +23016,19 @@ impl<'a> Emitter<'a> {
             // A byte of text and a range of it: checked in every build.
             ExprKind::Index { recv, index, kind: IndexKind::Text, .. } => {
                 let before = self.mark();
-                let text = self.view(recv)?;
-                let mut parts = vec![self.part(recv, &Ty::Read(Box::new(Ty::Str)), text, before)];
+                let mut text = self.view(recv)?;
+                // `text[^n]` (1921): the text is found once, and its length read there.
+                if from_end(index).is_some() {
+                    let temp = self.temp();
+                    self.pre.push(format!("sg_str {temp} = {text};"));
+                    text = temp;
+                }
+                let mut parts = vec![self.part(recv, &Ty::Read(Box::new(Ty::Str)), text.clone(), before)];
                 let before = self.mark();
-                let (at, sum) = self.index_or_sum(index)?;
+                let (at, sum) = match from_end(index) {
+                    Some(count) => (format!("sg_from_end({}, {text}.len, {})", self.value(count)?, self.loc(expr.span)), None),
+                    None => self.index_or_sum(index)?,
+                };
                 parts.push(self.part(index, &index.ty, at, before));
                 let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
@@ -22983,15 +23042,26 @@ impl<'a> Emitter<'a> {
                 let slice = flat(&expr.ty).strip_borrow().clone();
                 let name = mangle(&slice).ok_or_else(|| not_yet(expr.span, &format!("the type `{slice}`")))?;
                 let before = self.mark();
-                let whole = self.window(recv)?;
+                let mut whole = self.window(recv)?;
                 if from.is_none() && to.is_none() {
                     return Ok(whole);
                 }
+                // `xs[a..^n]` (1921): the window is found once, and its length read there.
+                if from.iter().chain(to).any(|end| from_end(end).is_some()) {
+                    let temp = self.temp();
+                    self.pre.push(format!("__auto_type {temp} = {whole};"));
+                    whole = temp;
+                }
+                let length = format!("{whole}.len");
                 let mut parts = vec![self.part(recv, &expr.ty, whole, before)];
                 let mut sums = Vec::new();
                 for (end, may_sum) in self.range_ends(from, to) {
                     let before = self.mark();
-                    let (value, sum) = if may_sum { self.index_or_sum(end)? } else { (self.value(end)?, None) };
+                    let (value, sum) = match from_end(end) {
+                        Some(count) => (format!("sg_bound_from_end({}, {length}, {})", self.value(count)?, self.loc(expr.span)), None),
+                        None if may_sum => self.index_or_sum(end)?,
+                        None => (self.value(end)?, None),
+                    };
                     parts.push(self.part(end, &end.ty, value, before));
                     sums.push(sum);
                 }
@@ -23020,7 +23090,11 @@ impl<'a> Emitter<'a> {
                 let mut sums = Vec::new();
                 for (end, may_sum) in self.range_ends(from, to) {
                     let before = self.mark();
-                    let (value, sum) = if may_sum { self.index_or_sum(end)? } else { (self.value(end)?, None) };
+                    let (value, sum) = match from_end(end) {
+                        Some(count) => (format!("sg_bound_from_end({}, {temp}.len, {})", self.value(count)?, self.loc(expr.span)), None),
+                        None if may_sum => self.index_or_sum(end)?,
+                        None => (self.value(end)?, None),
+                    };
                     parts.push(self.part(end, &end.ty, value, before));
                     sums.push(sum.map_or("NULL".to_string(), |sum| format!("&{sum}")));
                 }

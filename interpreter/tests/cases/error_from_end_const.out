@@ -1,0 +1,4 @@
+error: the value of `Past` is found when the program is compiled, and this stops it: index ^9 is out of range: the length is 5
+  --> error_from_end_const.sg:2:19
+ 2 | const byte Past = Name[^9]
+   |                   ^^^^^^^^

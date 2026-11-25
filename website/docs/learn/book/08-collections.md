@@ -122,6 +122,42 @@ front, `ref list[4..]`, lends the part for writing, and `mixed[1..4].sort()` put
 where they are. While a slice that is used later borrows a list, the list cannot be changed: growing or clearing
 it may move or free its items, and the slice would point at the old memory.
 
+## Counting from the end
+
+```sg
+void main() {
+    var days = List<string> { "mon", "tue", "wed", "thu", "fri" }
+    print(days[^1])
+    print(days[^2])
+    print(days[1..^1])
+    print(days[^2..])
+
+    var line = "[42]"
+    print(line[1..^1])
+
+    days[^1] = "FRI"
+    print(days)
+}
+```
+
+It prints:
+
+```text
+fri
+thu
+["tue", "wed", "thu"]
+["thu", "fri"]
+42
+["mon", "tue", "wed", "thu", "FRI"]
+```
+
+`days[^1]` is the last item and `days[^2]` the one before it: `^n` is `days.length() - n`, with the list named
+once. It works where an index does, on a list, an array, a slice and a text, for reading and for writing, and at
+either end of a range: `days[1..^1]` leaves out the first and the last, `days[^2..]` is the last two. As an index
+`^0` would be past the last item, so it is an error; as the end of a range it is the length. A count outside the
+list panics with what was written: `index ^9 is out of range: the length is 5`. `^` is written only between the
+brackets; `var i = ^1` is an error.
+
 ## `List<T>`
 
 ```sg

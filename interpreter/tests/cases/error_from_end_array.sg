@@ -1,0 +1,4 @@
+void main() {
+    var a = int[3] { 1, 2, 3 }
+    print(a[^4])
+}

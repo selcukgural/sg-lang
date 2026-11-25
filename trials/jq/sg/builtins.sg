@@ -1313,8 +1313,8 @@ bool matchesPerl(read Regex r, read string text, bool nonEmpty, bool dollar) {
     if matchesIn(r, text, nonEmpty) {
         return true
     }
-    if dollar && text.length() > 0 && text[text.length() - 1] == '\n' {
-        return matchesIn(r, text[0..text.length() - 1], nonEmpty)
+    if dollar && text.length() > 0 && text[^1] == '\n' {
+        return matchesIn(r, text[0..^1], nonEmpty)
     }
     return false
 }

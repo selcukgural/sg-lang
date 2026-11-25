@@ -174,6 +174,10 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
 - An index that is known and lies outside an array is an error, not a panic: `buf[16]` with `byte[16] buf`.
   An index that depends on data panics with the index and the length, as for a list; so does a range
   outside a list, an array or a slice.
+- An index counted from the end (`xs[^n]`) is `^1` or more: `xs[^0]` and `xs[^-1]` are errors, as is `a[^4]`
+  on an `int[3]`. `^` is written only first between `[ ]` (`var i = ^1` is an error), counts one operand
+  (`xs[^k + 1]` is an error whose hint is `xs[^(k + 1)]`), and has no end to count from in a `HashMap` or a
+  `raw T`. A count that depends on data panics naming `^n` and the length.
 - An array gets every item when it is built: `int[3] { 1, 2 }` is an error, `string[2]("ada")` is one
   (text is not copied silently) and so is `string[2]` (text has no zero value). There is no memory that
   was never written.

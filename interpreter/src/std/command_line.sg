@@ -417,7 +417,7 @@ public struct Arguments {
         if given.length() == 0 {
             return null
         }
-        return given[given.length() - 1]
+        return given[^1]
     }
 
     // Every value the option was given, in order.

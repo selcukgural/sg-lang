@@ -263,7 +263,7 @@ bool accept(ref Parser r, read string word) {
             return false
         }
     }
-    if isIdentByte(w[w.length() - 1]) && r.at + w.length() < bytes.length() && isIdentByte(bytes[r.at + w.length()]) {
+    if isIdentByte(w[^1]) && r.at + w.length() < bytes.length() && isIdentByte(bytes[r.at + w.length()]) {
         return false
     }
     // `|` is not `|=`, `/` is not `//` or `/=`, `=` is not `==`, `<` is not `<=`.
@@ -886,8 +886,8 @@ Result<nint, string> parseNumber(ref Parser r, ref Program p) {
         json.write('0')
     }
     json.write(text)
-    if json[json.length() - 1] == '.' {
-        json = json[0..json.length() - 1].clone()
+    if json[^1] == '.' {
+        json = json[0..^1].clone()
     }
     double value = doubleOfLiteral(read json)
     var literal = canonicalLiteral(read json)

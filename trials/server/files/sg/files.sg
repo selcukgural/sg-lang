@@ -399,7 +399,7 @@ void main(List<string> args) {
     // ROOT without the `/` at its end, so that a path, which starts with one, follows it.
     var root = args[1].clone()
     while root.length() > 1 && root.endsWith('/') {
-        root = root[..root.length() - 1].clone()
+        root = root[..^1].clone()
     }
     if !Directory.exists(read root) {
         printError($"files: {root} is not a folder".toString())

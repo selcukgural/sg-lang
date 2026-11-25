@@ -1927,7 +1927,8 @@ fn statics_found(prog: &mut Program, src: &str, structs: &HashMap<String, Struct
 /// enums and atomic values of them.
 fn plain_constant(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Constant { .. } => true,
+        // `End` is the length of a const indexed from the end (`Primes[^1]`).
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Constant { .. } | ExprKind::End => true,
         ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Atomic(inner) => plain_constant(inner),
         ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => plain_constant(left) && plain_constant(right),
         ExprKind::Field { recv, .. } => plain_constant(recv),
@@ -3073,7 +3074,8 @@ fn not_const_type(ty: &Ty, top: bool, structs: &HashMap<String, StructInfo>, enu
 /// written too.
 fn constant_only(expr: &Expr, measures: bool) -> Res<()> {
     match &expr.kind {
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } => Ok(()),
+        // `End` is the length of a const indexed from the end (`Primes[^1]`).
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } | ExprKind::End => Ok(()),
         ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Field { recv: inner, .. } => constant_only(inner, measures),
         ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => {
             constant_only(left, measures)?;
@@ -3439,6 +3441,14 @@ fn level_written(arg: &Expr) -> Res<()> {
         Some(level) if !(0..=9).contains(&level) => Err(Diag::error(arg.span, format!("compression level {level}: a level is 0 (stored as it is) to 9 (smallest)"))
             .hint("6 is zlib's default, 1 the fastest that compresses")),
         _ => Ok(()),
+    }
+}
+
+/// `n` of an index written `^n`, read as `End - n` (1921).
+fn from_end(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Sub, end, count) if matches!(end.kind, ExprKind::End) => Some(count),
+        _ => None,
     }
 }
 
@@ -5664,7 +5674,7 @@ impl<'a> Checker<'a> {
             })),
             // A number, a `bool`, a text that lasts for the run, a raw pointer, a value of C or a
             // const: nothing that borrows from a variable of the function.
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Interp(_) | ExprKind::Null => Vec::new(),
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Interp(_) | ExprKind::Null | ExprKind::End => Vec::new(),
             ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Cast { .. } | ExprKind::Atomic(_) | ExprKind::IsNull { .. } | ExprKind::IsVariant { .. } => Vec::new(),
             ExprKind::Allocate { .. } | ExprKind::SizeOf { .. } | ExprKind::RawCast { .. } | ExprKind::CVar(_) | ExprKind::Return(_) | ExprKind::Constant { .. } => Vec::new(),
             ExprKind::FuncRef(_) | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(..) => Vec::new(),
@@ -8145,6 +8155,11 @@ impl<'a> Checker<'a> {
                         Ok(Some(((**item).clone(), writable)))
                     }
                     Ty::Map(key, value) => {
+                        if let Some(count) = from_end(index) {
+                            let text = &self.src[count.span.start..count.span.end];
+                            return Err(Diag::error(index.span, "a map has no end to count from: its keys are not places in a row")
+                                .hint(format!("`^` counts from the end of a list, an array, a slice or a text; a key is written as it is: `map[{text}]`")));
+                        }
                         self.typed(index, &self.table_key_param(key))?;
                         *kind = IndexKind::Map;
                         Ok(Some(((**value).clone(), writable)))
@@ -8155,6 +8170,10 @@ impl<'a> Checker<'a> {
                         if let Some(at) = known_int(index).filter(|at| *at < 0 || *at >= *length as i128) {
                             return Err(Diag::error(span, format!("index {at} is out of range: the length is {length}"))
                                 .note(format!("the items of a `{inner}` are at 0 to {}", length - 1)));
+                        }
+                        if let Some(count) = from_end(index).and_then(known_int).filter(|count| *count < 1 || *count > *length as i128) {
+                            return Err(Diag::error(span, format!("index ^{count} is out of range: the length is {length}"))
+                                .note(format!("the items of a `{inner}` are at ^1 to ^{length} from the end")));
                         }
                         *kind = IndexKind::Array;
                         Ok(Some(((**item).clone(), writable)))
@@ -8175,6 +8194,10 @@ impl<'a> Checker<'a> {
                     }
                     // Whatever reached the pointer, what it points at is not borrowed from it.
                     Ty::Raw(item) => {
+                        if from_end(index).is_some() {
+                            return Err(Diag::error(index.span, format!("a `{ty}` has no end to count from: the length of the memory it points at is not known"))
+                                .hint("count from the start, with the length the memory was given"));
+                        }
                         let item = (**item).clone();
                         match &recv.kind {
                             ExprKind::CVar(name) => self.needs_unsafe(span, &format!("`{}` is a variable of C, which C may read and write at any time and from any thread", short_name(name)))?,
@@ -8847,6 +8870,8 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Bool(_) => Ok(Ty::Bool),
             ExprKind::Str(_) => Ok(Ty::Str),
+            // The length of what is indexed, in `xs[^n]` (1921).
+            ExprKind::End => Ok(Ty::Int(IntTy::Nint)),
             // A character is a `char`, and a `byte` where an integer goes: from there it
             // widens like any other integer.
             ExprKind::Char(value) => {
@@ -9497,8 +9522,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// An index or one end of a range: any integer that widens to `nint`.
+    /// An index or one end of a range: any integer that widens to `nint`. `^n` counts from the
+    /// end (1921): it is `End - n`, with `n` such an integer.
     fn index(&mut self, expr: &mut Expr, what: &str) -> Res<()> {
+        if let ExprKind::Binary(BinOp::Sub, end, count) = &mut expr.kind {
+            if matches!(end.kind, ExprKind::End) {
+                self.index(count, "the count from the end")?;
+                end.ty = Ty::Int(IntTy::Nint);
+                expr.ty = Ty::Int(IntTy::Nint);
+                return Ok(());
+            }
+        }
         let ty = self.int_operand(expr, Some(IntTy::Nint), what)?;
         self.coerce(expr, Ty::Int(ty), &Ty::Int(IntTy::Nint))
     }
@@ -15095,6 +15129,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Const(_)
         | ExprKind::Static(_)
         | ExprKind::Embed(_)
+        | ExprKind::End
         | ExprKind::Return(None) => {}
     }
     list

@@ -1677,6 +1677,11 @@ void fill(ref byte[] target, byte value)                        // Rust: &mut [u
 
 parse(read buffer)                               // a List<byte> is passed as a slice, like string → read string
 var part = data[..4]                             // slice of a slice, no copy. Ends may be omitted: [..b], [a..], [..]
+var last = data[^1]                              // counted from the end: data[data.length() - 1]. C#: data[^1]
+var body = line[1..^1]                           // without the first and the last; ^0 is the end itself
+var tail = next()[^2..]                          // what is indexed is computed once: one call
+var i = ^1                                       // error: ^ is written only first in [ ]; there is no index value
+var x = xs[^k + 1]                               // error: what ^ counts is one operand. Hint: xs[^(k + 1)]
 fill(ref buffer[4..], 0)                         // a range that is written through: ref in front, a ref byte[]
 var part = make()[..4]                           // error: borrows from a value with no name, gone when the line ends.
                                                  // Hint: give the value a name first

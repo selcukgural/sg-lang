@@ -60,7 +60,7 @@ void main() {
         var roomy = JsonOptions { maxDepth = (int)depth + 1 }
         tell(read kind, "whole", read text, roomy)
         tell(read kind, "one too deep", read text, JsonOptions { maxDepth = (int)depth })
-        tell(read kind, "cut", text[0..text.length() - 7], roomy)
+        tell(read kind, "cut", text[0..^7], roomy)
         var trailing = $"{text} x".toString()
         tell(read kind, "trailing", read trailing, roomy)
         // A wrong byte and a wrong closer far down, past where the stack ran low.

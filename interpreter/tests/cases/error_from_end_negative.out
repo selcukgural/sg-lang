@@ -1,0 +1,5 @@
+error: a count from the end is not negative: `^1` is the last item
+  --> error_from_end_negative.sg:4:14
+ 4 |     print(xs[^-1])
+   |              ^^^
+  hint: an index from the start is written without `^`

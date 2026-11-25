@@ -84,6 +84,7 @@ For the same reason a collection that a `for` goes over by borrowing cannot be c
 | `void addAll(ref this, read T[] items)` | Copies the items to the end, when they are `Copyable` |
 | `nint length(read this)` | The number of items |
 | `xs[i]`, `xs[i] = v`, `xs[i] += 1`, `ref xs[i]` | Reads, writes or lends one item; a panic outside the list |
+| `xs[^n]` | The item `n` from the end: `xs[^1]` is the last, `xs[^n]` is `xs[xs.length() - n]`; read, written and lent as `xs[i]` is |
 | `read T? get(read this, nint i)` | The item, or `null` outside the list |
 | `T? removeLast(ref this)` | Takes the last item out, or gives `null` when the list is empty |
 | `void clear(ref this)` | Removes every item, and keeps the memory |
@@ -204,7 +205,7 @@ An array has its length in its type and lies where it is kept: in a variable, or
 | `int[3] { 1, 2, 3 }` | The items, every one of them |
 | `byte[16](255)` | One value in every item |
 | `byte[16]` | Zeros: 0, `false` or `null` in every item; a type with no zero value (text) needs the items written |
-| `xs[i]`, `xs[i] = v` | Reads or writes one item |
+| `xs[i]`, `xs[i] = v` | Reads or writes one item; `xs[^1]` is the last |
 | `length`, `get`, `indexOf`, `contains`, `binarySearch`, `lowerBound`, `upperBound`, `sort`, `reverse`, `copyFrom` | As on a `List` |
 
 An array of items that can be copied is copied like a number; any other is moved.
@@ -235,7 +236,8 @@ It prints:
 
 A slice is a window on the items of a list, an array or another slice. `read xs` and `ref xs` give one where a
 slice is expected, and so does a range: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` to write
-through. A function that takes `read T[]` takes a list and an array alike. A range lent as `ref` lends the whole
+through. An end counted from the end is written `^n`: `xs[..^1]` is every item but the last, `xs[^3..]` the last
+three. A function that takes `read T[]` takes a list and an array alike. A range lent as `ref` lends the whole
 list or array, as in Rust: `f(ref xs[0..2], xs[2..4])` is an error, however far apart the two ranges are.
 
 | Signature | What it does |

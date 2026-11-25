@@ -180,7 +180,7 @@ Result<Jv?, string> take(ref Reader r, JsonToken token) {
             if r.marked && hasMarker(read text) {
                 text = restored(read text)
             }
-            r.building[r.building.length() - 1].name = text
+            r.building[^1].name = text
             return Ok(null)
         }
         EndArray or EndObject => {

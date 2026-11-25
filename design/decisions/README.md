@@ -271,3 +271,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [182](2026-11-25.md#slice-182) | Whether a stream is a terminal: `isTerminal()` | 1901 |
 | [183](2026-11-25.md#slice-183) | The conditional operator `?:` | 1910–1916 |
 | [184](2026-11-25.md#slice-184) | A type alias written `alias`, not `using` | 1918–1920 |
+| [185](2026-11-25.md#slice-185) | An index counted from the end, `xs[^1]` | 1921–1926 |

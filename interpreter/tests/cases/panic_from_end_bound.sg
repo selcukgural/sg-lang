@@ -1,0 +1,5 @@
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    var k = 4
+    print(xs[..^k].length())
+}

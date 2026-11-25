@@ -1,0 +1,4 @@
+error: the count from the end must be an integer, found `string`
+  --> error_from_end_text_count.sg:4:15
+ 4 |     print(xs[^"a"])
+   |               ^^^

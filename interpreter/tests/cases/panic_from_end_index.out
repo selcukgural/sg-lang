@@ -1,0 +1,4 @@
+panic: index ^4 is out of range: the length is 3
+  --> panic_from_end_index.sg:4:11
+ 4 |     print(xs[^k])
+   |           ^^^^^^

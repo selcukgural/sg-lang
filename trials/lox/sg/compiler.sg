@@ -569,7 +569,7 @@ Token syntheticToken(read Compiler c, nint at, nint length) {
 void superOp(ref Compiler c, ref Vm vm, ref Program p) {
     if c.classes.length() == 0 {
         error(ref c, "Can't use 'super' outside of a class.")
-    } else if !c.classes[c.classes.length() - 1] {
+    } else if !c.classes[^1] {
         error(ref c, "Can't use 'super' in a class with no superclass.")
     }
     consume(ref c, TokenType.Dot, "Expect '.' after 'super'.")
@@ -739,7 +739,7 @@ void classDeclaration(ref Compiler c, ref Vm vm, ref Program p) {
         defineVariable(ref c, 0)
         namedVariable(ref c, ref vm, ref p, className, false)
         emitOp(ref c, Op.Inherit)
-        c.classes[c.classes.length() - 1] = true
+        c.classes[^1] = true
     }
     namedVariable(ref c, ref vm, ref p, className, false)
     consume(ref c, TokenType.LeftBrace, "Expect '{' before class body.")
@@ -748,7 +748,7 @@ void classDeclaration(ref Compiler c, ref Vm vm, ref Program p) {
     }
     consume(ref c, TokenType.RightBrace, "Expect '}' after class body.")
     emitOp(ref c, Op.Pop)
-    if c.classes[c.classes.length() - 1] {
+    if c.classes[^1] {
         endScope(ref c)
     }
     _ = c.classes.removeLast()

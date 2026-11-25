@@ -2080,6 +2080,9 @@ impl<'a> Parser<'a> {
                 let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Unary(UnOp::BitNot, e), operand))
             }
+            // `^n` counts from the end of what is indexed (1921), and only there.
+            Tok::Caret => Err(Diag::error(start, "`^` counts from the end of what is indexed, so it is written first between `[ ]`: `xs[^1]`, `xs[..^1]`")
+                .note("an index from the end is not a value of its own; the bit inverse is `~x`")),
             Tok::New => {
                 self.bump();
                 if self.at_word("shared") {
@@ -2312,7 +2315,7 @@ impl<'a> Parser<'a> {
         let kind = self.bracketed(|p| {
             let from = match p.peek() {
                 Tok::DotDot | Tok::DotDotEq => None,
-                _ => Some(Box::new(p.expr()?)),
+                _ => Some(Box::new(p.index_end()?)),
             };
             if *p.peek() == Tok::DotDotEq {
                 return Err(Diag::error(p.span(), "`..=` is written only in a pattern; a range of a text or a slice stops before its end")
@@ -2320,16 +2323,55 @@ impl<'a> Parser<'a> {
             }
             if !p.eat(&Tok::DotDot) {
                 let index = from.expect("read above when there is no `..`");
+                // `xs[^0]` is past the last item whatever the length (1923).
+                if let ExprKind::Binary(BinOp::Sub, end, count) = &index.kind {
+                    if matches!(end.kind, ExprKind::End) && matches!(count.kind, ExprKind::Int(0, _)) {
+                        return Err(Diag::error(index.span, "`^0` is the end itself, past the last item, so this index is always out of range")
+                            .hint("the last item is `^1`; `^0` is written as the end of a range: `[a..^0]`"));
+                    }
+                }
                 return Ok(ExprKind::Index { recv, index, kind: IndexKind::Text, unchecked: false });
             }
             let to = match p.peek() {
                 Tok::RBracket => None,
-                _ => Some(Box::new(p.expr()?)),
+                _ => Some(Box::new(p.index_end()?)),
             };
             Ok(ExprKind::Slice { recv, from, to })
         })?;
         self.expect(Tok::RBracket, "`]`")?;
         Ok(Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) })
+    }
+
+    /// An index or an end of a range. `^n` counts from the end (1921) and is read as `End - n`,
+    /// `End` being the length of what is indexed. What follows `^` is one operand, as after
+    /// `-`; an operator after it is refused, since `^k + 1` could be read either way (1924).
+    fn index_end(&mut self) -> Res<Expr> {
+        if *self.peek() != Tok::Caret {
+            return self.expr();
+        }
+        let mark = self.bump().span;
+        let at = self.i;
+        let count = self.unary()?;
+        if matches!(count.kind, ExprKind::Int(value, _) if value < 0) {
+            return Err(Diag::error(mark.to(count.span), "a count from the end is not negative: `^1` is the last item")
+                .hint("an index from the start is written without `^`"));
+        }
+        if !matches!(self.peek(), Tok::RBracket | Tok::DotDot | Tok::DotDotEq) {
+            self.i = at;
+            if let Ok(whole) = self.expr() {
+                if matches!(self.peek(), Tok::RBracket | Tok::DotDot | Tok::DotDotEq) {
+                    let text = &self.src[whole.span.start..whole.span.end];
+                    return Err(Diag::error(mark.to(whole.span), "`^` counts one operand from the end; what it counts is put in parentheses")
+                        .hint(format!("`^({text})`")));
+                }
+            }
+            self.i = at;
+            self.unary()?;
+            return Err(self.unexpected("`]` or `..`"));
+        }
+        let end = Expr { ty: Ty::Void, moved: false, kind: ExprKind::End, span: mark };
+        let span = mark.to(count.span);
+        Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Binary(BinOp::Sub, Box::new(end), Box::new(count)), span })
     }
 
     /// Runs `inner` between brackets, where a struct literal is always unambiguous.

@@ -65,9 +65,9 @@ Result<void, IoError> main(List<string> args) {
     var bad = copyOf(read packed)
     bad[0] = 0x1E
     opened("not gzip", Gzip.decompress(read bad, 100))
-    opened("cut", Gzip.decompress(packed[..packed.length() - 3], 100))
+    opened("cut", Gzip.decompress(packed[..^3], 100))
     var changed = copyOf(read packed)
-    changed[packed.length() - 5] ^= 1
+    changed[^5] ^= 1
     opened("crc", Gzip.decompress(read changed, 100))
     var longer = copyOf(read packed)
     longer.add(0)
@@ -79,7 +79,7 @@ Result<void, IoError> main(List<string> args) {
     opened("dictionary", Zlib.decompress(read List<byte> { 0x78, 0xBB, 0, 0, 0, 1 }, 100))
     opened("far back", Deflate.decompress(read List<byte> { 3, 2, 0 }, 100))
     var zlibbed = Zlib.compress(hello, 1)
-    zlibbed[zlibbed.length() - 1] ^= 0x80
+    zlibbed[^1] ^= 0x80
     opened("adler", Zlib.decompress(read zlibbed, 100))
 
     // Two members of gzip, one after the other, open as one.

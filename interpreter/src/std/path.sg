@@ -20,7 +20,7 @@ public struct Path {
             return first.clone()
         }
         var tail = second[Path.rootLength(second)..]
-        if Path.isSeparator(first[first.length() - 1]) {
+        if Path.isSeparator(first[^1]) {
             return $"{first}{tail}".toString()
         }
         if OperatingSystem.isWindows() {
@@ -47,7 +47,7 @@ public struct Path {
             return
         }
         var tail = name[Path.rootLength(name)..]
-        if !Path.isSeparator(path[path.length() - 1]) {
+        if !Path.isSeparator(path[^1]) {
             if !OperatingSystem.isWindows() {
                 path.write('/')
             } else if Path.rootLength(path) != 2 || path.length() != 2 {

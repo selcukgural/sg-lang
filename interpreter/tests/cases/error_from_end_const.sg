@@ -1,0 +1,6 @@
+const string Name = "hello"
+const byte Past = Name[^9]
+
+void main() {
+    print(Past)
+}
