@@ -6051,6 +6051,32 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 Ok(self.ended_task(value, expr.span))
             }
+            // The calls of the file system as a task (1871) are done here when they are called,
+            // as `File.readTextAsync` is; a token is looked at before the work.
+            Callee::SystemAsync(call) => {
+                let params = match call {
+                    SystemCall::Move | SystemCall::Replace | SystemCall::Copy | SystemCall::Status => 2,
+                    SystemCall::List => 3,
+                    _ => 1,
+                };
+                let source = match args.get(params) {
+                    Some(token) => match owned(self.expr(token, frame)?) {
+                        Value::Token(source) => source,
+                        _ => unreachable!("the checker makes it a token"),
+                    },
+                    None => None,
+                };
+                let value = match source.is_some_and(|source| source.borrow().cancelled) || self.cut_now() {
+                    true => {
+                        for arg in &args[..params] {
+                            self.expr(arg, frame)?;
+                        }
+                        failed(io_cancelled())
+                    }
+                    false => self.system(*call, &args[..params], frame)?,
+                };
+                Ok(self.ended_task(value, expr.span))
+            }
             // A writer's async methods do the work of the methods without `Async`; the
             // block that the compiled code writes on a thread of its own is written here.
             Callee::StreamAsync(call) => {

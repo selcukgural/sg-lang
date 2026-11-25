@@ -1,0 +1,9 @@
+// So does `File.delete` (1871).
+async Result<void, IoError> clean(string path) {
+    try File.delete(read path)
+    return Ok()
+}
+
+async void main() {
+    _ = await clean("a.txt")
+}

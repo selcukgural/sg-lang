@@ -1,0 +1,6 @@
+error: `File.info` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_async_file_info.sg:3:25
+ 3 |     var info = try File.info(read path)
+   |                         ^^^^
+  hint: `await File.infoAsync(read path)` does the same work without holding the thread

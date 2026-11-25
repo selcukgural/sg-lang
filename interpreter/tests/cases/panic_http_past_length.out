@@ -1,0 +1,4 @@
+panic: a part of 2 bytes where the answer's length leaves 1
+  --> panic_http_past_length.sg:7:19
+ 7 |         try await conn.writeAsync("de".asBytes())
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

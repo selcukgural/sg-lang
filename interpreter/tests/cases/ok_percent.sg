@@ -1,0 +1,33 @@
+// Percent-encoding (choice 1867): what is not unreserved as `%` and two upper-case digits, and back,
+// strictly, as bytes that need not be UTF-8.
+void show(read string text) {
+    match Percent.decode(text) {
+        Ok(bytes) => print($"{text} -> {Hex.encode(read bytes)}")
+        Error(InvalidCharacter(at)) => print($"{text}: not percent at {at}")
+        Error(InvalidLength) => print($"{text}: length")
+    }
+}
+
+void main() {
+    print(Percent.encode("a b/ç".asBytes()))
+    print(Percent.encode("AZaz09-._~!*'();:@&=+$,/?#[]".asBytes()))
+    print(Percent.encode(read byte[3] { 0, 127, 255 }))
+    show("")
+    show("abc")
+    show("%41%62%2f%2F")
+    show("a+b%20c")
+    show("%")
+    show("%4")
+    show("%G1")
+    show("%4G")
+    show("ab%")
+    show("%c0%ae%00")
+    var big = string.withCapacity(300)
+    for _ in 0..100 {
+        big.write("%e2%82%ac")
+    }
+    var back = Percent.decode(read big) ?? List<byte>()
+    print($"{back.length()} {string.fromUtf8(back[0..3]) ?? "?"}")
+    var round = Percent.encode(read back)
+    print($"{round.length()} {round[0..9]}")
+}

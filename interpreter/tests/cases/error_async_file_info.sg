@@ -1,0 +1,9 @@
+// `File.info` asks the disk, which can take long: an async function asks it as a task (1871).
+async Result<long, IoError> size(string path) {
+    var info = try File.info(read path)
+    return Ok(info.size)
+}
+
+async void main() {
+    print(await size("a.txt") ?? 0)
+}

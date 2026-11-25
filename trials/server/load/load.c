@@ -1,7 +1,7 @@
 /* The load of the server lane (choices 1700, 1706): one program in C that drives every server the
    same way, so that the servers are measured and not their clients.
 
-       load resp|http HOST:PORT [options]
+       load resp|http|files HOST:PORT [options]
 
    Closed loop (the default): each connection keeps PIPELINE requests in flight and sends the next
    as soon as an answer comes; what is measured is how many answers come in a second. Open loop
@@ -25,6 +25,13 @@
      --sources K      the connections come from 127.0.0.1 to 127.0.0.K, for more than one range of ports
      --fill           RESP: SET every key once, then end
      --check          every answer held to what it must be, byte for byte
+     --files K        files: the files asked for, /f/000000.bin and on, each --size bytes (1000); byte O
+                      of file F is (7F + O) mod 251, as `measure.py` writes them, so an answer is checked
+                      without the files being read here (choice 1869)
+     --size BYTES     files: the size of each (4096)
+     --range BYTES    files: a range of so many bytes at a place drawn at random, `Range: bytes=A-B`
+     --since          files: `If-Modified-Since` in 2100, answered 304
+     --missing        files: a file that is not there, answered 404
      --report S       also a line of JSON for each S seconds of the measured time, after the end
      --reconnect N    each connection closed and opened again after N answers (one at a time)
      --trickle MS     RESP: once answered, each idle connection begins a SET of a value of 1 MB and sends
@@ -77,7 +84,7 @@
 
 /* ---- options */
 
-enum { RESP, HTTP };
+enum { RESP, HTTP, FILES };
 static int protocol;
 static struct sockaddr_in target;
 static int conns = 50, threads = 4, pipeline = 1, value_size = 64, keys = 10000, sets = 10;
@@ -88,6 +95,9 @@ static double trickle = 0;
 static double report = 0;
 static double ramp_from = 0, ramp_step = 0, ramp_seconds = 0, think_ms = 20, deadline_ms = 100;
 static int ramp_stages = 100;
+static int files_count = 1000;
+static int64_t file_size = 4096, range_len = 0;
+static bool since_mode, missing_mode;
 #define MOST_STAGES 400
 
 /* ---- time */
@@ -145,7 +155,7 @@ static double percentile(const histogram* h, double p) {
 
 /* ---- connections */
 
-enum { OP_GET, OP_SET, OP_PING, OP_HTTP };
+enum { OP_GET, OP_SET, OP_PING, OP_HTTP, OP_FILE };
 #define MOST_PIPELINE 256
 
 typedef struct {
@@ -153,6 +163,7 @@ typedef struct {
     int key;
     uint8_t op;
     bool gone; /* --ramp: counted as failed already, its answer no longer counts */
+    int64_t at; /* files: where the range asked for starts */
 } pending;
 
 typedef struct conn {
@@ -174,6 +185,7 @@ typedef struct conn {
     int64_t body_at;    /* how far into the body */
     int64_t body_len;
     int status;
+    bool bad; /* files: a byte of the body that is not the file's */
     bool saw_close;
     /* open loop: when the next request is due */
     int64_t next_due;
@@ -212,6 +224,9 @@ typedef struct {
 
 /* Byte j of the value of key k is alphabet[k % 26 + j]: 'a' + (k + j) % 26. */
 static char alphabet[26 + 65536 + 64];
+/* files: byte j of `pattern` is j mod 251, so byte O of file F, (7F + O) mod 251, is
+   pattern[(7F + O) % 251]. */
+static uint8_t pattern[251 + 65536];
 static atomic_int idle_answered;
 static atomic_int failed_connects;
 static int idle_total;
@@ -223,7 +238,7 @@ static void die(const char* what) {
 }
 
 static void usage(const char* why) {
-    fprintf(stderr, "load: %s\nusage: load resp|http HOST:PORT [--conns N] [--threads T] [--pipeline P] [--rate R]\n"
+    fprintf(stderr, "load: %s\nusage: load resp|http|files HOST:PORT [--conns N] [--threads T] [--pipeline P] [--rate R]\n"
                     "  [--duration S] [--warmup S] [--value BYTES] [--keys K] [--sets PERCENT] [--close]\n"
                     "  [--idle N] [--trickle MS] [--sources K] [--fill] [--check]\n", why);
     exit(2);
@@ -419,7 +434,7 @@ static void key_text(char* to, int key) {
     snprintf(to, 17, "key:%012d", key);
 }
 
-static size_t make_request(worker* w, uint8_t op, int key) {
+static size_t make_request(worker* w, uint8_t op, int key, int64_t at) {
     size_t need = (size_t)value_size + 256;
     if (w->scratch_cap < need) {
         w->scratch = realloc(w->scratch, need);
@@ -440,6 +455,14 @@ static size_t make_request(worker* w, uint8_t op, int key) {
         memcpy(s + n, alphabet + key % 26, (size_t)value_size);
         memcpy(s + n + value_size, "\r\n", 2);
         return (size_t)n + (size_t)value_size + 2;
+    }
+    case OP_FILE: {
+        int n = sprintf(s, "GET /%s/%06d.bin HTTP/1.1\r\nHost: localhost\r\n%s", missing_mode ? "none" : "f", key,
+                        close_each ? "Connection: close\r\n" : "");
+        if (range_len) n += sprintf(s + n, "Range: bytes=%lld-%lld\r\n", (long long)at, (long long)(at + range_len - 1));
+        if (since_mode) n += sprintf(s + n, "If-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n");
+        memcpy(s + n, "\r\n", 2);
+        return (size_t)n + 2;
     }
     default:
         if (close_each) {
@@ -470,13 +493,14 @@ static void flush_out(worker* w, conn* c) {
     c->out_at = c->out_len = 0;
 }
 
-static void send_request(worker* w, conn* c, uint8_t op, int key, int64_t due) {
+static void send_request(worker* w, conn* c, uint8_t op, int key, int64_t due, int64_t at) {
     if (c->count == MOST_PIPELINE) abort();
-    size_t len = make_request(w, op, key);
+    size_t len = make_request(w, op, key, at);
     pending* p = &c->ring[(c->head + c->count) % MOST_PIPELINE];
     p->due = due;
     p->key = key;
     p->op = op;
+    p->at = at;
     c->count++;
     if (c->out_len == 0) {
         ssize_t n = send(c->fd, w->scratch, len, 0);
@@ -510,8 +534,16 @@ static void send_request(worker* w, conn* c, uint8_t op, int key, int64_t due) {
 static void next_request(worker* w, conn* c, int64_t due) {
     uint8_t op;
     int key = 0;
+    int64_t at = 0;
     if (protocol == HTTP) {
         op = OP_HTTP;
+    } else if (protocol == FILES) {
+        op = OP_FILE;
+        key = (int)(next_rand(&c->rand) % (uint32_t)files_count);
+        if (range_len) {
+            uint64_t r = (uint64_t)next_rand(&c->rand) << 32 | next_rand(&c->rand);
+            at = (int64_t)(r % (uint64_t)(file_size - range_len + 1));
+        }
     } else if (fill) {
         static atomic_int next_key;
         key = atomic_fetch_add(&next_key, 1);
@@ -521,7 +553,7 @@ static void next_request(worker* w, conn* c, int64_t due) {
         key = (int)(next_rand(&c->rand) % (uint32_t)keys);
         op = (int)(next_rand(&c->rand) % 100) < sets ? OP_SET : OP_GET;
     }
-    send_request(w, c, op, key, due);
+    send_request(w, c, op, key, due, at);
 }
 
 /* ---- answers */
@@ -666,10 +698,13 @@ static void take(worker* w, conn* c, const char* p, const char* end) {
                 c->status = 0;
                 if (sscanf(c->line, "HTTP/1.1 %d", &c->status) != 1) { fail_conn(w, c, "not HTTP/1.1"); return; }
                 c->body_len = -1;
+                c->bad = false;
                 for (char* h = memchr(c->line, '\n', (size_t)head_len); h && h < c->line + head_len; h = memchr(h, '\n', (size_t)(c->line + head_len - h))) {
                     h++;
                     if (strncasecmp(h, "content-length:", 15) == 0) c->body_len = strtoll(h + 15, NULL, 10);
                 }
+                /* a 304 has no body, whatever its head says */
+                if (c->status == 304) c->body_len = 0;
                 if (c->body_len < 0) { fail_conn(w, c, "no Content-Length"); return; }
                 c->line_len = head_len; /* kept for a message */
                 c->left = c->body_len;
@@ -687,6 +722,14 @@ static void take(worker* w, conn* c, const char* p, const char* end) {
                     int64_t value_part = c->body_len - c->body_at;
                     if (value_part > n) value_part = n;
                     if (value_part > 0 && !expect_value(want->key, p, c->body_at, value_part)) c->status = -1;
+                } else if (protocol == FILES) {
+                    if (c->status == 200 || c->status == 206) {
+                        int64_t o = want->at + c->body_at;
+                        for (int64_t i = 0; i < n && !c->bad; i += 65536) {
+                            int64_t m = n - i < 65536 ? n - i : 65536;
+                            if (memcmp(p + i, pattern + (7 * (int64_t)want->key + o + i) % 251, (size_t)m) != 0) c->bad = true;
+                        }
+                    }
                 } else if (c->body_at + n <= 4 && memcmp(p, &"pong"[c->body_at], (size_t)n) != 0) {
                     c->status = -1;
                 }
@@ -703,6 +746,12 @@ static void take(worker* w, conn* c, const char* p, const char* end) {
             c->status = 0;
             c->line_len = 0;
             answered(w, c, ok || (!check && c->body_len >= 0));
+        } else if (protocol == FILES) {
+            int status = missing_mode ? 404 : since_mode ? 304 : range_len ? 206 : 200;
+            int64_t length = missing_mode ? 9 : since_mode ? 0 : range_len ? range_len : file_size;
+            bool ok = c->status == status && c->body_len == length && !c->bad;
+            c->line_len = 0;
+            answered(w, c, ok);
         } else {
             bool ok = c->status == 200 && c->body_len == 4;
             c->line_len = 0;
@@ -719,7 +768,7 @@ static void start_conn(worker* w, conn* c, int64_t t) {
     c->connecting = false;
     poll_out(w->poll, c, c->out_len > 0);
     if (c->is_idle) {
-        send_request(w, c, protocol == RESP ? OP_PING : OP_HTTP, 0, t);
+        send_request(w, c, protocol == RESP ? OP_PING : protocol == FILES ? OP_FILE : OP_HTTP, 0, t, 0);
     } else if (ramp_step > 0) {
         /* what fell due while it was being opened and is past saving is counted as failed */
         while (c->next_due + (int64_t)(deadline_ms * 1e6) < t) {
@@ -1045,7 +1094,8 @@ int main(int argc, char** argv) {
     if (argc < 3) usage("a protocol and an address are needed");
     if (strcmp(argv[1], "resp") == 0) protocol = RESP;
     else if (strcmp(argv[1], "http") == 0) protocol = HTTP;
-    else usage("the protocol is resp or http");
+    else if (strcmp(argv[1], "files") == 0) protocol = FILES;
+    else usage("the protocol is resp, http or files");
     {
         char host[64];
         const char* colon = strrchr(argv[2], ':');
@@ -1082,6 +1132,11 @@ int main(int argc, char** argv) {
         else if (TAKES("--think")) think_ms = number(v, a);
         else if (TAKES("--deadline")) deadline_ms = number(v, a);
         else if (TAKES("--stages")) ramp_stages = (int)number(v, a);
+        else if (TAKES("--files")) files_count = (int)number(v, a);
+        else if (TAKES("--size")) file_size = (int64_t)number(v, a);
+        else if (TAKES("--range")) range_len = (int64_t)number(v, a);
+        else if (strcmp(a, "--since") == 0) since_mode = true;
+        else if (strcmp(a, "--missing") == 0) missing_mode = true;
         else if (strcmp(a, "--close") == 0) close_each = true;
         else if (strcmp(a, "--fill") == 0) fill = true;
         else if (strcmp(a, "--check") == 0) check = true;
@@ -1092,7 +1147,11 @@ int main(int argc, char** argv) {
         }
     }
     if (threads < 1 || pipeline < 1 || pipeline > MOST_PIPELINE || keys < 1 || value_size > 65536 || sources < 1 || sources > 250) usage("a value out of range");
-    if (close_each && (protocol != HTTP || pipeline != 1 || rate > 0)) usage("--close is for HTTP, one request at a time, closed loop");
+    if (close_each && (protocol == RESP || pipeline != 1 || rate > 0)) usage("--close is for HTTP, one request at a time, closed loop");
+    if (protocol == FILES && (files_count < 1 || file_size < 1 || range_len < 0 || range_len > file_size || (since_mode + missing_mode + (range_len > 0)) > 1))
+        usage("files: --files and --size above 0, --range no more than --size, and one of --range, --since, --missing");
+    if (protocol != FILES && (range_len || since_mode || missing_mode)) usage("--range, --since and --missing are for files");
+    for (int i = 0; i < (int)sizeof pattern; i++) pattern[i] = (uint8_t)(i % 251);
     if (rate > 0 && pipeline != 1) usage("--rate sends one request at a time on each connection");
     if (fill && protocol != RESP) usage("--fill is for RESP");
     if (trickle > 0 && (protocol != RESP || idle == 0)) usage("--trickle is for RESP, with --idle");
@@ -1194,11 +1253,16 @@ int main(int argc, char** argv) {
         }
     }
     double seconds = fill ? (double)(ended - began) / 1e9 : duration;
+    char extra[64] = "";
+    if (protocol == FILES) {
+        int64_t length = missing_mode ? 9 : since_mode ? 0 : range_len ? range_len : file_size;
+        snprintf(extra, sizeof extra, ",\"body_mb_per_second\":%.1f", (double)answers * (double)length / seconds / 1e6);
+    }
     printf("{\"protocol\":\"%s\",\"conns\":%d,\"idle\":%d,\"pipeline\":%d,\"rate\":%.0f,\"answers\":%" PRIu64
            ",\"seconds\":%.3f,\"per_second\":%.0f,\"p50_us\":%.1f,\"p90_us\":%.1f,\"p99_us\":%.1f,\"p999_us\":%.1f"
-           ",\"max_us\":%.1f,\"mean_us\":%.1f,\"late\":%" PRIu64 ",\"errors\":%" PRIu64 ",\"wrong\":%" PRIu64 ",\"cut\":%" PRIu64 "}\n",
-           protocol == RESP ? "resp" : "http", conns, idle, pipeline, rate, answers, seconds, (double)answers / seconds,
+           ",\"max_us\":%.1f,\"mean_us\":%.1f,\"late\":%" PRIu64 ",\"errors\":%" PRIu64 ",\"wrong\":%" PRIu64 ",\"cut\":%" PRIu64 "%s}\n",
+           protocol == RESP ? "resp" : protocol == HTTP ? "http" : "files", conns, idle, pipeline, rate, answers, seconds, (double)answers / seconds,
            percentile(all, 50), percentile(all, 90), percentile(all, 99), percentile(all, 99.9),
-           (double)all->max / 1000.0, all->total ? all->sum / (double)all->total / 1000.0 : 0, late, errors, wrong, cut);
+           (double)all->max / 1000.0, all->total ? all->sum / (double)all->total / 1000.0 : 0, late, errors, wrong, cut, extra);
     return errors || wrong ? 1 : 0;
 }

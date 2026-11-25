@@ -394,3 +394,96 @@ Result<void, DecodeError> base64DecodeInto(ref List<byte> bytes, read string tex
     }
     return Ok()
 }
+
+// The upper-case hex digits percent-encoding writes, as RFC 3986 asks.
+const byte[16] PercentDigits = {
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70
+}
+
+// Percent-encoding (RFC 3986): a byte as `%` and two hex digits, as a URL carries what its
+// characters cannot (choice 1867). A path is encoded a segment at a time, since `/` is encoded.
+public struct Percent {
+    // The bytes with each that is not unreserved (`A`-`Z`, `a`-`z`, `0`-`9`, `-`, `.`, `_`, `~`)
+    // written as `%` and two upper-case hex digits: `Percent.encode("a b/ç".asBytes())` is
+    // `"a%20b%2F%C3%A7"`.
+    public string encode(read byte[] data) {
+        var text = string.withCapacity(data.length())
+        Percent.encodeInto(ref text, data)
+        return text
+    }
+
+    // The same text written at the end of `target`, with no text made for it.
+    public void encodeInto(ref string target, read byte[] data) {
+        var block = byte[64]
+        nint n = 0
+        for b in data {
+            if n > 61 {
+                target.write(string.fromUtf8(block[..n]) ?? "")
+                n = 0
+            }
+            if percentUnreserved(b) {
+                block[n] = b
+                n += 1
+            } else {
+                block[n] = '%'
+                block[n + 1] = PercentDigits[b >> 4]
+                block[n + 2] = PercentDigits[b & 15]
+                n += 3
+            }
+        }
+        target.write(string.fromUtf8(block[..n]) ?? "")
+    }
+
+    // The bytes of a text with each `%` and two hex digits, upper or lower case, taken as the
+    // byte they write and every other byte as it is; `+` stays `+`, as in a path. The bytes need
+    // not be UTF-8. A `%` without two hex digits after it is `InvalidCharacter` at the first that
+    // is not one, or at the `%` when the text ends before them.
+    public Result<List<byte>, DecodeError> decode(read string text) {
+        var bytes = List<byte>.withCapacity(text.length())
+        try Percent.decodeInto(ref bytes, text)
+        return Ok(bytes)
+    }
+
+    // The same bytes added at the end of `target`, with no list made for them. A text that cannot
+    // be read leaves `target` as it was.
+    public Result<void, DecodeError> decodeInto(ref List<byte> target, read string text) {
+        var digits = text.asBytes()
+        nint start = target.length()
+        nint from = 0
+        nint i = 0
+        while i < digits.length() {
+            if digits[i] != '%' {
+                i += 1
+                continue
+            }
+            target.addAll(digits[from..i])
+            if i + 2 >= digits.length() {
+                undo(ref target, start)
+                if i + 1 < digits.length() && HexValues[digits[i + 1]] > 15 {
+                    return Error(DecodeError.InvalidCharacter((long)(i + 1)))
+                }
+                return Error(DecodeError.InvalidCharacter((long)i))
+            }
+            byte high = HexValues[digits[i + 1]]
+            byte low = HexValues[digits[i + 2]]
+            if high > 15 {
+                undo(ref target, start)
+                return Error(DecodeError.InvalidCharacter((long)(i + 1)))
+            }
+            if low > 15 {
+                undo(ref target, start)
+                return Error(DecodeError.InvalidCharacter((long)(i + 2)))
+            }
+            target.add(high << 4 | low)
+            i += 3
+            from = i
+        }
+        target.addAll(digits[from..])
+        return Ok()
+    }
+}
+
+// Whether percent-encoding leaves the byte as it is.
+bool percentUnreserved(byte b) {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '.' || b == '_' || b == '~'
+}

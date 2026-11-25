@@ -567,6 +567,11 @@ pub enum Callee {
     /// language's own module makes (`System.list`, `System.status`), with `File.delete`,
     /// `File.move`, `File.replace` and `File.copy`.
     System(SystemCall),
+    /// `System.statusAsync(path, ref fields, read token)` and the other calls of the file system
+    /// as a task, done on a thread of input and output while the task waits (choice 1871): what
+    /// `File.infoAsync`, `File.deleteAsync` and `Directory.listAsync` are built on, and what
+    /// `File.deleteAsync`, `moveAsync`, `replaceAsync` and `copyAsync` are. A token may come last.
+    SystemAsync(SystemCall),
     /// `count.fetchAdd(1)`, `Atomic.fence(MemoryOrder.Release)`: an atomic operation, with the
     /// order it keeps and, for `compareExchange`, the order it keeps when it fails. The orders
     /// written are taken out of the arguments.
@@ -1007,6 +1012,28 @@ pub enum SystemCall {
     /// `System.lookupAsync(host, ref bits, read token)`: the same on a thread of its own, which a
     /// cancel leaves.
     LookupAsync,
+}
+
+impl SystemCall {
+    /// The calls of the file system, which wait for the disk and so have an async version
+    /// (choice 1871), by the name `System` gives them.
+    pub fn on_disk(self) -> Option<&'static str> {
+        Some(match self {
+            SystemCall::Delete => "delete",
+            SystemCall::Move => "move",
+            SystemCall::Replace => "replace",
+            SystemCall::Copy => "copy",
+            SystemCall::CreateDirectory => "createDirectory",
+            SystemCall::RemoveDirectory => "removeDirectory",
+            SystemCall::RemoveAll => "removeAll",
+            SystemCall::SyncDirectory => "syncDirectory",
+            SystemCall::List => "list",
+            SystemCall::Status => "status",
+            SystemCall::MakeTemp => "makeTemp",
+            SystemCall::MakeTempFile => "makeTempFile",
+            _ => return None,
+        })
+    }
 }
 
 impl IoCall {

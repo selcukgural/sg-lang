@@ -1,0 +1,21 @@
+// A part past the length an answer was begun with is a mistake of the program (choice 1865).
+async Result<void, IoError> serve(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        try await conn.beginAsync(200, "text/plain", 4)
+        try await conn.writeAsync("abc".asBytes())
+        try await conn.writeAsync("de".asBytes())
+        try await conn.endAsync()
+    }
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = try await TcpStream.connectAsync(read address)
+    var accepted = try await listener.acceptAsync()
+    try await client.sendAsync("GET / HTTP/1.1\r\nHost: h\r\n\r\n".asBytes())
+    try await serve(accepted)
+    return Ok()
+}

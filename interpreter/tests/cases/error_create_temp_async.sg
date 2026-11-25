@@ -1,8 +1,0 @@
-// Making a temporary file is a quick call of the file system: it has no async version.
-async Result<void, IoError> run() {
-    var path = try await File.createTempAsync()
-    return Ok()
-}
-
-void main() {
-}

@@ -276,9 +276,49 @@ Each call has an async version for an async function: `File.readTextAsync`, `rea
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`;
 on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
 `fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`,
-`syncDataAsync`, `syncAsync`, `setLengthAsync`, and `seekAsync` on both. Each may take a
-`read CancellationToken` last (not `closeAsync`). In an async function the calls without `Async` are an error,
-since they would hold the thread. `buffered` and `consume` do not wait, and are called as they are.
+`syncDataAsync`, `syncAsync`, `setLengthAsync`, `seekAsync`. Each may take a `read CancellationToken` last (not
+`closeAsync`). In an async function the calls without `Async` are an error, since they would hold the thread.
+`buffered` and `consume` do not wait, and neither does a reader's `seek`, which asks the system where the
+file stands and reads nothing: they are called as they are.
+
+The calls of the file system have async versions too (choice 1871), done on a thread of input and output
+while the task waits: `File.infoAsync`, `existsAsync`, `deleteAsync`, `moveAsync`, `replaceAsync`, `copyAsync`,
+`createTempAsync`, and `Directory.createAsync`, `createAllAsync`, `deleteAsync`, `deleteAllAsync`, `syncAsync`,
+`listAsync`, `existsAsync`, `createTempAsync`, each giving what the call without `Async` gives and taking a token
+last. On a local disk with its cache warm such a call takes a microsecond; on a disk of the network, a cold one
+or one that hangs it can take as long as a read, and every task of the thread would wait with it, so in an
+async function the calls without `Async` are an error here too, also through a function that is not async.
+`Directory.current()` and `Directory.temp()` ask the process, not the disk, and are called as they are.
+
+A thread taken for each call costs a hand-over, as it costs `tokio::fs`. On Linux, compiled, `File.infoAsync`
+(and `existsAsync`, `Directory.existsAsync`), `File.openTextAsync` and a file reader's `readSomeAsync` are first
+tried on the task's own thread in the forms the kernel answers only from what it already holds: a path found from
+its cache alone (`openat2` with `RESOLVE_CACHED`), a read of what its cache holds (`preadv2` with `RWF_NOWAIT`).
+Where it would wait, or has neither (a kernel before 5.12, a filter of system calls, overlayfs and tmpfs, which
+have no `RWF_NOWAIT`), the call goes to the thread as before, so a disk that is slow still holds no task's thread
+(choice 1872). A file server answers a file it has served before without a hand-over.
+
+```sg
+async Result<void, IoError> main() {
+    var folder = try await Directory.createTempAsync()
+    var path = Path.join(read folder, "notes.txt")
+    try await File.writeTextAsync(read path, "one\n")
+    var info = try await File.infoAsync(read path)
+    print($"{info.kind} {info.size}")
+    print(await File.existsAsync(read path))
+    try await Directory.deleteAllAsync(read folder)
+    print(await Directory.existsAsync(read folder))
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+File 4
+true
+false
+```
 
 ## `Stdin`, `Stdout` and `Stderr`
 

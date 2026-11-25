@@ -1,5 +1,5 @@
-error: `receiveFrom` holds the thread until it is done, and an async function does not hold its thread
-  `receiveFrom` waits for the network
+error: `UdpSocket.receiveFrom` holds the thread until it is done, and an async function does not hold its thread
+  `UdpSocket.receiveFrom` waits for the network
   the tasks of async functions share a few threads: one that holds its thread keeps the others from running
   --> error_udp_blocking_in_async.sg:4:26
  4 |     var got = try socket.receiveFrom(ref buffer)

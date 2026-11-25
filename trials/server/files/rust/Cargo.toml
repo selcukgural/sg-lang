@@ -1,0 +1,18 @@
+[package]
+name = "files"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# hyper 1 over `tokio`, as `../../http/rust` is (choice 1706), with what a file server of Rust reads
+# files with: `tokio::fs`, whose calls go to the threads of `spawn_blocking`, and `tokio-util`'s
+# `ReaderStream` turning the file into the pieces of the body (choice 1868). The server is written
+# by hand on them, not with `tower-http`'s `ServeDir`, so that it does what the other three do.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false }
+bytes = "1"

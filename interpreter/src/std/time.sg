@@ -211,6 +211,82 @@ public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable 
         return Ok(seen.toUtc())
     }
 
+    // A moment as HTTP writes it (RFC 9110, choice 1866): `Sun, 06 Nov 1994 08:49:37 GMT`. It
+    // also reads the two older forms a recipient must take, RFC 850's `Sunday, 06-Nov-94 08:49:37
+    // GMT` (a year 00 to 69 is 2000 to 2069, 70 to 99 is 1970 to 1999) and C's asctime, `Sun Nov  6
+    // 08:49:37 1994`. The names are matched as they are written, upper and lower case as here, and
+    // the day of the week must be the one of the date: `InvalidText` at the first byte that does not
+    // fit, at 0 for a day of the week that is not the date's.
+    public Result<DateTime, DateError> parseHttpDate(read string text) {
+        nint at = 0
+        int day = 0
+        int month = 0
+        int year = 0
+        int named = 0
+        if text.length() > 3 && text[3] == ',' {
+            named = try httpName(text, ref at, HttpDays, 3)
+            try expect(text, ref at, ',')
+            try expect(text, ref at, ' ')
+            day = try digitsAt(text, ref at, 2)
+            try expect(text, ref at, ' ')
+            month = try httpName(text, ref at, HttpMonths, 3) + 1
+            try expect(text, ref at, ' ')
+            year = try digitsAt(text, ref at, 4)
+            try expect(text, ref at, ' ')
+        } else if text.length() > 3 && text[3] == ' ' {
+            named = try httpName(text, ref at, HttpDays, 3)
+            try expect(text, ref at, ' ')
+            month = try httpName(text, ref at, HttpMonths, 3) + 1
+            try expect(text, ref at, ' ')
+            if at < text.length() && text[at] == ' ' {
+                at += 1
+                day = try digitsAt(text, ref at, 1)
+            } else {
+                day = try digitsAt(text, ref at, 2)
+            }
+            try expect(text, ref at, ' ')
+        } else {
+            named = try httpLongDay(text, ref at)
+            try expect(text, ref at, ',')
+            try expect(text, ref at, ' ')
+            day = try digitsAt(text, ref at, 2)
+            try expect(text, ref at, '-')
+            month = try httpName(text, ref at, HttpMonths, 3) + 1
+            try expect(text, ref at, '-')
+            year = try digitsAt(text, ref at, 2)
+            if year < 70 {
+                year += 2000
+            } else {
+                year += 1900
+            }
+            try expect(text, ref at, ' ')
+        }
+        var hour = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, ':')
+        var minute = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, ':')
+        var second = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, ' ')
+        if text[3] == ' ' {
+            year = try digitsAt(text, ref at, 4)
+        } else {
+            try expect(text, ref at, 'G')
+            try expect(text, ref at, 'M')
+            try expect(text, ref at, 'T')
+        }
+        if at != text.length() {
+            return Error(DateError.InvalidText(at))
+        }
+        var seconds = try civilSeconds(year, month, day, hour, minute, second)
+        if !holdsSeconds(seconds, 0) {
+            return Error(DateError.OutOfRange)
+        }
+        if floorModulo(floorDivide(seconds, 86400) + 3, 7) != (long)named {
+            return Error(DateError.InvalidText(0))
+        }
+        return Ok(DateTime { ns = seconds * 1000000000 })
+    }
+
     // The moment seen at the offset of the time zone of the system then (`TZ` and
     // `/etc/localtime` on Linux and macOS; on Windows the zone set in Windows).
     public DateTimeOffset toLocal(read this) {
@@ -266,6 +342,23 @@ public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable 
 
     public DayOfWeek dayOfWeek(read this) {
         return weekday(floorDivide(this.ns, 86400000000000))
+    }
+
+    // The moment as HTTP writes it in `Date` and `Last-Modified` (RFC 9110's IMF-fixdate, choice
+    // 1866): `Sun, 06 Nov 1994 08:49:37 GMT`, always in GMT, the part of a second left out.
+    public string toHttpDate(read this) {
+        var seconds = floorDivide(this.ns, 1000000000)
+        var days = floorDivide(seconds, 86400)
+        var date = civilFromDays(days)
+        var time = floorModulo(seconds, 86400)
+        var w = (nint)floorModulo(days + 3, 7) * 3
+        var m = (nint)(date.month - 1) * 3
+        var text = string.withCapacity(29)
+        text.write(HttpDays[w..w + 3])
+        text.write($", {date.day:D2} ")
+        text.write(HttpMonths[m..m + 3])
+        text.write($" {date.year:D4} {time / 3600:D2}:{time / 60 % 60:D2}:{time % 60:D2} GMT")
+        return text
     }
 
     // The time from `earlier` to this moment; negative when `earlier` is later.
@@ -572,6 +665,48 @@ void writeCivil(long seconds, int part, ref Formatter f) {
             f.write($".{part:D9}")
         }
     }
+}
+
+// The names HTTP dates write, three letters each, Monday first.
+const string HttpDays = "MonTueWedThuFriSatSun"
+const string HttpMonths = "JanFebMarAprMayJunJulAugSepOctNovDec"
+
+// Which of the names of `width` letters packed in `names` is at `at`, which moves past it;
+// `InvalidText` at `at` when none is.
+Result<int, DateError> httpName(read string text, ref nint at, read string names, nint width) {
+    if at + width <= text.length() {
+        var i = 0
+        while (nint)i * width < names.length() {
+            var start = (nint)i * width
+            if text[at..at + width] == names[start..start + width] {
+                at += width
+                return Ok(i)
+            }
+            i += 1
+        }
+    }
+    return Error(DateError.InvalidText(at))
+}
+
+// The day of the week written whole, as RFC 850 does (`Sunday`), Monday 0; `InvalidText` at
+// `at` when it is none.
+Result<int, DateError> httpLongDay(read string text, ref nint at) {
+    var i = try httpName(text, ref at, HttpDays, 3)
+    var rest = "day"
+    if i == 1 {
+        rest = "sday"
+    } else if i == 2 {
+        rest = "nesday"
+    } else if i == 3 {
+        rest = "rsday"
+    } else if i == 5 {
+        rest = "urday"
+    }
+    if at + rest.length() > text.length() || text[at..at + rest.length()] != rest {
+        return Error(DateError.InvalidText(at))
+    }
+    at += rest.length()
+    return Ok(i)
 }
 
 // The number written in exactly `count` digits at `at`, which moves past them; `InvalidText` at

@@ -526,11 +526,28 @@ a file copied every block through the reader's own: a block as large as the read
 the caller's, and sixteen workers hold 3.3 MB, the least of the three. The pools scale alike, ten times from
 one worker to sixteen; what is left is SHA-256 on one processor, 1.14 times Zig.
 
+Slice 177 (1861-1871) is the file server of the server lane, `trials/server/files`: GET and HEAD of the files
+under a folder, with ranges, `If-Modified-Since` and folders, in SG, Rust, Zig and C, with nginx measured
+beside them, each held to one model by `check.py` at every edge and to the load's check of every byte. The
+language gained an answer of `std/http` begun with its length (`beginAsync(status, type, length)`), the dates
+of HTTP (`DateTime.toHttpDate`, `parseHttpDate`) and percent-encoding (`Percent`). Asked whether an async
+function may call `File.info`, the rule that nothing holds the thread in async code lost its exception for the
+file system: the calls of `File` and `Directory` that ask the disk have `Async` versions on the threads of input
+and output, and without `Async` they are an error there. The checker now also follows a static function
+written `Type.f(...)` to what it holds, which it had missed. On Linux the state of a file, its opening and a read
+are first asked of the kernel with the promise not to wait (`openat2` with `RESOLVE_CACHED`, `preadv2` with
+`RWF_NOWAIT`) and handed to a thread only when it would (1872): handed over every time, SG answered 60,400
+requests of 1 KB a second; asked first, 395,000, against C's 598,000, Zig's 486,000 and nginx's 521,000. Files of
+1 MB and a file of 1 GB go at C's speed; what is left, a processor 1.5 to 1.6 times C's for each answer and a range
+read through the reader's block, is in [Slower than C](../../benchmarks/slower-than-c.md) ([the
+tables](../../benchmarks/server.md#files)).
+
 ## Next
 
-Next comes the heavy level of
-the stand, run at night,
-an HTTP/1.1 file server, a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
+Next comes the cost of each request in `std/http` and the runtime, which the file server shows at 1.5 to 1.6
+times C's processor for each answer, measured by itself and brought down; then the heavy level of the stand, run
+at night,
+a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site
 (1394), the rest of the third stage of the generator of programs, which moves, and the preview (942) with
 `sg doc` (1392).

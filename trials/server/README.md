@@ -1,15 +1,16 @@
 # The server lane
 
-Two servers, each written in SG, Rust, Zig and C, and one load that drives them all the same way
+Three servers, each written in SG, Rust, Zig and C, and one load that drives them all the same way
 (choices 1698-1707). The numbers, and what they say, are in
 [Servers against Rust, Zig and C](../../benchmarks/server.md).
 
 | Folder | What it is |
 |---|---|
 | [load/stand.c](load/stand.c) | The stand, in C (choices 1750-1763): starts a server and does to it what it must stand, resets, halves closed, a byte at a time, clients that do not read, requests that are not the protocol, more clients than descriptors, SIGTERM; after each round the server must answer, be back to its descriptors and hold no more memory idle. What each scenario does is written at its top; the results are in [What the servers stand](../../benchmarks/robustness.md) |
-| [load](load) | The load, in C: closed loop (answers a second) or open loop (`--rate`, the time of each answer counted from when it was due, so a server that stalls is charged for what waited behind it), idle connections from several source addresses, a check of every answer byte for byte, a line for each interval of a long run (`--report`), connections opened again (`--reconnect`) |
+| [load](load) | The load, in C (`resp`, `http` and `files`, whose answers it checks byte for byte against what each file holds): closed loop (answers a second) or open loop (`--rate`, the time of each answer counted from when it was due, so a server that stalls is charged for what waited behind it), idle connections from several source addresses, a check of every answer byte for byte, a line for each interval of a long run (`--report`), connections opened again (`--reconnect`) |
 | [resp](resp) | A store that speaks a part of RESP2, Redis's protocol: PING, GET, SET, DEL, over 64 maps each behind a lock |
 | [http](http) | An HTTP/1.1 server that answers GET /ping with `pong`, connections kept open; SG's is on `std/http` (`sg`), with the one written by hand on `TcpStream` before it beside it (`sg-by-hand`) |
+| [files](files) | A file server: GET and HEAD of the files under a folder, ranges, `If-Modified-Since`, folders, with nginx measured beside the four (choices 1861-1871); its own `measure.py` and `check.py` |
 | [http/conformance](http/conformance) | Requests on the edges of HTTP/1.1 sent to `std/http` and to hyper, the answers set side by side (choice 1794); run by hand, the table is in [library.md](../../benchmarks/library.md#against-hyper) |
 | [pieces](pieces) | A head of 100 bytes and a body of 4 KB or 64 KB sent over the loopback, copied into one buffer, with SG's `sendPieces` and with C's `writev` (choice 1740): `pieces copy\|pieces SIZE COUNT` prints the nanoseconds of one message |
 | [measure.py](measure.py) | Builds everything and runs every case on Linux in the image of [Containerfile](Containerfile) |

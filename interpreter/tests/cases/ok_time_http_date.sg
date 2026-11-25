@@ -1,0 +1,41 @@
+// HTTP dates (choice 1866): IMF-fixdate written, and the three forms of RFC 9110 read, the day of
+// the week held to the date.
+void show(read string text) {
+    match DateTime.parseHttpDate(text) {
+        Ok(t) => print($"{text} -> {t} {t.toHttpDate()}")
+        Error(e) => print($"{text}: {e}")
+    }
+}
+
+void main() {
+    print(DateTime.fromUnixSeconds(784111777).toHttpDate())
+    print(DateTime.fromUnixSeconds(0).toHttpDate())
+    print(DateTime.fromUnixMilliseconds(-1).toHttpDate())
+    print((DateTime.utc(2262, 4, 11, 23, 47, 16) ?? DateTime.fromUnixSeconds(0)).toHttpDate())
+    print((DateTime.utc(1677, 9, 21, 0, 12, 44) ?? DateTime.fromUnixSeconds(0)).toHttpDate())
+    show("Sun, 06 Nov 1994 08:49:37 GMT")
+    show("Sunday, 06-Nov-94 08:49:37 GMT")
+    show("Sun Nov  6 08:49:37 1994")
+    show("Thu Feb 29 12:00:00 2024")
+    show("Wednesday, 01-Jan-69 00:00:00 GMT")
+    show("Thursday, 01-Jan-70 00:00:00 GMT")
+    show("Mon, 06 Nov 1994 08:49:37 GMT")
+    show("sun, 06 Nov 1994 08:49:37 GMT")
+    show("Sun, 06 Nov 1994 08:49:37 gmt")
+    show("Sun, 06 Nov 1994 08:49:37 GMT ")
+    show("Sun, 6 Nov 1994 08:49:37 GMT")
+    show("Sun, 31 Feb 1994 08:49:37 GMT")
+    show("Sun, 06 Nov 1994 24:00:00 GMT")
+    show("Sun, 06 Nov 1994 08:49:60 GMT")
+    show("Sun, 06 Nov 9999 08:49:37 GMT")
+    show("Sun, 06 Xyz 1994 08:49:37 GMT")
+    show("Sun Nov 06 08:49:37 1994")
+    show("Sun Nov  6 08:49:37 1994 GMT")
+    show("Sundae, 06-Nov-94 08:49:37 GMT")
+    show("")
+    show("Sun")
+    show("Sun,")
+    show("Sun, 06 Nov 1994 08:49:37 GM")
+    show("Mon, 11 Apr 2262 23:47:16 GMT")
+    show("Fri, 11 Apr 2262 23:47:17 GMT")
+}

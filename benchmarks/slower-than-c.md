@@ -290,6 +290,24 @@ says what is slower, by how much and against what, the choice that measured it, 
   ticks against C's 106; in the kernel 720 against 693). A look at the slot without its lock saved 1%, within the
   noise, and the watch every millisecond, a pool that never steals and `TCP_NODELAY` changed nothing (each
   measured); the parsing and the wake are the candidates left.
+- **Each answer of the file server, past the disk** (the server lane, the 177th slice, choices 1861-1872): with
+  files of 1 KB and 50 connections SG answers 395,000 a second against C's 598,000 (0.66 times; Zig 486,000),
+  with 1,000 connections 339,000 against 646,000 (0.52), 404s 667,000 against 965,000 (0.69) and 304s 597,000
+  against 850,000 (0.70); SG takes 7.7 ms of the processor for every thousand answers of 1 KB, C 4.8 (1.6 times),
+  and 4.0 against 2.7 for a 404 (1.5). The disk is no longer the difference: since 1872 a 404 makes the calls of
+  the system C makes, and a file of 1 KB four more (two of them the open's look through `O_PATH`). A profile with
+  the kernel found no one place: the rest is spread over the parsing of the request in `std/http`, the head of the
+  answer written, the task of each connection and its wakes. With 100 files of 64 KB and 1,000 connections SG
+  answers the most of the four (196,000; C 128,000) but its p99 is 48.6 ms against C's 11.3. Candidates: the next
+  slice measures the cost of each request of `std/http` and of the runtime by itself, on the `/ping` of the HTTP
+  server and on these.
+- **A range read through a reader** (the server lane, the 177th slice): 4 KB at random places of a file of 1 GB
+  get 216,000 answers a second from SG against C's 511,000 and Zig's 393,000. SG's server seeks its reader and
+  reads; a reader fills its block of 64 KB after a seek, as Rust's `BufReader` does, so each range reads 64 KB
+  where the others read the 4 KB they send. The reader keeps its rule (a block read ahead is what a reader is
+  for). Candidates: a read larger than what a reader has left, or than its block, going straight into the
+  caller's buffer after a seek (a read of the size asked), or a read at a place of the file with no block at all
+  (`pread`).
 
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a

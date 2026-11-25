@@ -826,14 +826,14 @@ def check(languages):
     return 0
 
 
-def in_podman(argv):
-    """Runs this script on Linux in the image `sg-server`, the repository copied in."""
+def in_podman(argv, script="trials/server/measure.py", volumes=()):
+    """Runs this script (or `script`) on Linux in the image `sg-server`, the repository copied in."""
     results = OUT
     results.mkdir(parents=True, exist_ok=True)
     inner = ("mkdir -p /work && cd /src && tar --exclude=./interpreter/target --exclude=./graphify-out "
              "--exclude=./trials/target -cf - . | tar -xf - -C /work && cd /work/interpreter && "
              "cargo build --release --quiet && cd /work && mkdir -p trials/target && "
-             "ln -s /results trials/target/server && python3 trials/server/measure.py --native " + " ".join(argv))
+             f"ln -s /results trials/target/server && python3 {script} --native " + " ".join(argv))
     # the stand's servers may grow past what the machine has: a limit, so that the kernel stops
     # the server in the image and not the machine (the stand stops it before, --most-rss)
     limit = ["--memory", "7g"] if "--robust" in argv else []
@@ -842,7 +842,7 @@ def in_podman(argv):
            "--sysctl", "net.core.somaxconn=65535", "--sysctl", "net.ipv4.tcp_max_syn_backlog=65535",
            "-v", f"{ROOT}:/src:ro", "-v", "sg-linux-target:/work/interpreter/target",
            "-v", "sg-server-cargo:/usr/local/cargo/registry", "-v", "sg-server-target:/work/trials/target/server-bin-linux",
-           "-v", f"{results}:/results",
+           "-v", f"{results}:/results", *[w for v in volumes for w in ("-v", v)],
            "localhost/sg-server", "bash", "-c", inner]
     return subprocess.run(cmd).returncode
 

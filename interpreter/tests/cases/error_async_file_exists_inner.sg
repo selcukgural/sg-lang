@@ -1,0 +1,9 @@
+// A function that is not async and asks the disk holds the thread of the async function that
+// calls it (1871).
+bool ready(read string path) {
+    return File.exists(path)
+}
+
+async void main() {
+    print(ready("a.txt"))
+}

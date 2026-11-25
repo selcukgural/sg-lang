@@ -1,0 +1,56 @@
+// An answer begun with a length (choice 1865): `content-length` with no chunks, kept open for
+// HTTP/1.0 too, the body left out for HEAD, and an end before the length closes the connection.
+async Result<void, IoError> serve(TcpStream stream) {
+    var conn = HttpConnection(stream)
+    while try await conn.receiveHeadAsync() {
+        var target = conn.request().target().clone()
+        if target == "/sized" {
+            try await conn.beginAsync(200, "text/plain", 10)
+            try await conn.writeAsync("hello".asBytes())
+            try await conn.writeAsync("".asBytes())
+            try await conn.writeAsync("world".asBytes())
+            try await conn.endAsync()
+        } else if target == "/zero" {
+            try await conn.beginAsync(200, "text/plain", 0)
+            try await conn.endAsync()
+        } else if target == "/chunked" {
+            try await conn.beginAsync(200, "text/plain")
+            try await conn.writeAsync("abc".asBytes())
+            try await conn.endAsync()
+        } else {
+            try await conn.beginAsync(200, "text/plain", 8)
+            try await conn.writeAsync("cut".asBytes())
+            match await conn.endAsync() {
+                Ok => print("end: ok")
+                Error(e) => print($"end: {e}")
+            }
+        }
+    }
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = try await TcpStream.connectAsync(read address)
+    var accepted = try await listener.acceptAsync()
+    var server = serve(accepted)
+    try await client.sendAsync("GET /sized HTTP/1.1\r\nHost: h\r\n\r\nHEAD /sized HTTP/1.1\r\nHost: h\r\n\r\nGET /zero HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /chunked HTTP/1.1\r\nHost: h\r\n\r\nGET /cut HTTP/1.1\r\nHost: h\r\n\r\nGET /sized HTTP/1.1\r\nHost: h\r\n\r\n".asBytes())
+    var got = List<byte>()
+    var buffer = byte[4096](0)
+    while true {
+        var n = try await client.receiveAsync(ref buffer[..])
+        if n == 0 {
+            break
+        }
+        got.addAll(buffer[0..n])
+    }
+    try await server
+    var text = string.fromUtf8(read got) ?? ""
+    for line in text.split("\r\n") {
+        if !line.startsWith("date: ") {
+            print(line)
+        }
+    }
+    return Ok()
+}

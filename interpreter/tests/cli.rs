@@ -2009,6 +2009,82 @@ fn the_servers_of_the_server_lane() {
     }
 }
 
+/// The file server of the server lane in SG (choices 1861 to 1871), built for release: the load's own check
+/// of every byte of whole files, of ranges at random places, of 304 and of 404, on files written as the load
+/// expects them (byte O of file F is (7F + O) mod 251); then requests at the edges, each sent as it is
+/// written: a path out of the folder, `/` written `%2F`, a range past the end, a folder without its `/`, a
+/// FIFO, which the server must not open. `trials/server/files/check.py` holds the four versions to many more.
+#[cfg(unix)]
+#[test]
+fn the_file_server_of_the_server_lane() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("the_file_server_of_the_server_lane");
+    let server = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("trials").join("server");
+    let load = dir.join("load");
+    let cc = sg::cc::compiler().unwrap();
+    let built = Command::new(&cc).args(["-O2", "-pthread", "-o"]).arg(&load).arg(server.join("load").join("load.c")).arg("-lm").finished();
+    assert_eq!(ran(&built).0, 0, "the load: {}", ran(&built).2);
+    let source = server.join("files").join("sg").join("files.sg").to_string_lossy().into_owned();
+    let program = program(&dir, "files").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "--release", "-o", &program])), (0, String::new(), String::new()));
+    let root = dir.join("root");
+    std::fs::create_dir_all(root.join("f")).unwrap();
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    for k in 0..20usize {
+        let size = 200_000usize;
+        let bytes: Vec<u8> = (0..size).map(|o| ((7 * k + o) % 251) as u8).collect();
+        std::fs::write(root.join("f").join(format!("{k:06}.bin")), bytes).unwrap();
+    }
+    std::fs::write(root.join("a.txt"), "hello world\n").unwrap();
+    std::fs::write(root.join("sub").join("index.html"), "<p>").unwrap();
+    assert!(Command::new("mkfifo").arg(root.join("fifo")).status().unwrap().success());
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut child = Command::new(&program).arg(port.to_string()).arg(&root).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let started = std::time::Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(started.elapsed().as_secs() < 10, "files does not listen on {port}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for args in [
+        "--check --files 20 --size 200000 --conns 8 --duration 0.5 --warmup 0",
+        "--check --files 20 --size 200000 --range 70000 --conns 8 --duration 0.5 --warmup 0",
+        "--check --files 20 --size 200000 --since --conns 8 --duration 0.5 --warmup 0",
+        "--check --files 20 --size 200000 --missing --conns 8 --duration 0.5 --warmup 0",
+        "--check --files 20 --size 200000 --close --conns 4 --duration 0.5 --warmup 0",
+    ] {
+        let out = Command::new(&load).arg("files").arg(format!("127.0.0.1:{port}")).args(args.split(' ')).finished();
+        let (code, stdout, stderr) = ran(&out);
+        let answered = stdout.contains("\"answers\":") && !stdout.contains("\"answers\":0,");
+        assert!(code == 0 && answered, "files {args}: exit {code}\n{stdout}\n{stderr}");
+    }
+    let ask = |head: &str| -> String {
+        use std::io::{Read, Write};
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        conn.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        conn.write_all(format!("{head}\r\nHost: here\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+        let mut got = Vec::new();
+        conn.read_to_end(&mut got).unwrap();
+        String::from_utf8_lossy(&got).lines().filter(|l| !l.starts_with("date:") && !l.starts_with("last-modified:")).collect::<Vec<_>>().join("\n")
+    };
+    for (head, want) in [
+        ("GET /a.txt HTTP/1.1", "HTTP/1.1 200 OK\ncontent-type: text/plain; charset=utf-8\naccept-ranges: bytes\nconnection: close\ncontent-length: 12\n\nhello world"),
+        ("GET /../a.txt HTTP/1.1", "HTTP/1.1 400 Bad Request\ncontent-type: text/plain\nconnection: close\ncontent-length: 11\n\nbad request"),
+        ("GET /sub%2Findex.html HTTP/1.1", "HTTP/1.1 400 Bad Request\ncontent-type: text/plain\nconnection: close\ncontent-length: 11\n\nbad request"),
+        ("GET /sub HTTP/1.1", "HTTP/1.1 301 Moved Permanently\ncontent-type: text/plain\nlocation: /sub/\nconnection: close\ncontent-length: 17\n\nmoved permanently"),
+        ("GET /sub/ HTTP/1.1", "HTTP/1.1 200 OK\ncontent-type: text/html; charset=utf-8\naccept-ranges: bytes\nconnection: close\ncontent-length: 3\n\n<p>"),
+        ("GET /fifo HTTP/1.1", "HTTP/1.1 404 Not Found\ncontent-type: text/plain\nconnection: close\ncontent-length: 9\n\nnot found"),
+        ("GET /a.txt HTTP/1.1\r\nRange: bytes=-3", "HTTP/1.1 206 Partial Content\ncontent-type: text/plain; charset=utf-8\naccept-ranges: bytes\ncontent-range: bytes 9-11/12\nconnection: close\ncontent-length: 3\n\nld"),
+        ("GET /a.txt HTTP/1.1\r\nRange: bytes=12-", "HTTP/1.1 416 Range Not Satisfiable\ncontent-type: text/plain\ncontent-range: bytes */12\nconnection: close\ncontent-length: 21\n\nrange not satisfiable"),
+    ] {
+        assert_eq!(ask(head), want, "{head}");
+    }
+    assert!(child.try_wait().unwrap().is_none(), "the server ended");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
 /// The servers of the server lane stand what clients do to them (choices 1750 to 1753, 1759, 1761,
 /// 1762), as `trials/server/load/stand.c` does it, quickly: resets, halves closed, a byte at a time,
 /// clients that do not read, requests that are not the protocol, more clients than descriptors, and

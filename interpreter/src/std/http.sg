@@ -157,8 +157,11 @@ public struct HttpConnection {
     nint bodyEnd
     // Where the next request starts once the body of this one is known: -1 before.
     nint next
-    // 0 not yet, 1 begun with chunks, 2 begun until the connection closes, 3 answered.
+    // 0 not yet, 1 begun with chunks, 2 begun until the connection closes, 3 answered, 4 begun
+    // with a length.
     int answer
+    // The bytes an answer begun with a length still owes.
+    long owed
     // `false` once the connection is closed for good.
     bool open
     int? refusedWith
@@ -177,7 +180,7 @@ public struct HttpConnection {
             stream = stream, options = options, block = List<byte>.repeat(0, 4096), start = 0, filled = 0,
             headStop = 0, marks = List<nint>.withCapacity(32), hostStart = 0, hostEnd = 0, minor = 1, keep = true, isHead = false, bodyKind = 0,
             bodyLength = 0, expectContinue = false, bodyRead = false, bodyStart = 0, bodyEnd = 0, next = 0,
-            answer = 3, open = true, refusedWith = null, out = List<byte>(), extra = List<byte>(),
+            answer = 3, owed = 0, open = true, refusedWith = null, out = List<byte>(), extra = List<byte>(),
             dateSecond = -1, date = List<byte>.repeat(0, 29), limit = CancellationSource()
         }
     }
@@ -839,26 +842,35 @@ public struct HttpConnection {
         return this.sendOrHold()
     }
 
-    // Starts an answer of a length not known yet (1782): its parts are sent in chunks, or for
-    // HTTP/1.0 until the connection closes.
-    public async Result<void, IoError> beginAsync(ref this, int status, read string contentType, read CancellationToken token = CancellationToken.None) {
-        try this.writeBegin(status, contentType)
+    // Starts an answer whose body is sent in parts (1782). Without `length` its parts are sent in
+    // chunks, or for HTTP/1.0 until the connection closes; with it (1865) the answer says
+    // `content-length`, the parts are sent as they are, and the connection stays open. Parts past
+    // the length are a panic; an end before it closes the connection, the client seeing the
+    // answer cut, and gives `InvalidInput`.
+    public async Result<void, IoError> beginAsync(ref this, int status, read string contentType, long? length = null, read CancellationToken token = CancellationToken.None) {
+        try this.writeBegin(status, contentType, length)
         if this.out.length() >= HttpHeldBytes {
             try await this.flushAsync(read token)
         }
         return Ok()
     }
 
-    public Result<void, IoError> begin(ref this, int status, read string contentType) {
-        try this.writeBegin(status, contentType)
+    public Result<void, IoError> begin(ref this, int status, read string contentType, long? length = null) {
+        try this.writeBegin(status, contentType, length)
         if this.out.length() >= HttpHeldBytes {
             try this.flush()
         }
         return Ok()
     }
 
-    // Sends a part of the answer `beginAsync` started; an empty part sends nothing.
+    // Sends a part of the answer `beginAsync` started; an empty part sends nothing. A large part of
+    // an answer not in chunks goes out as it lies, with what waits before it, in one send of pieces
+    // (`writev`): it is not copied into the connection's block first.
     public async Result<void, IoError> writeAsync(ref this, read byte[] part, read CancellationToken token = CancellationToken.None) {
+        if part.length() >= HttpDirectBytes && (this.answer == 2 || this.answer == 4) && !this.isHead {
+            this.countPart(part)
+            return await this.sendWithAsync(part, read token)
+        }
         this.writePart(part)
         if this.holds() {
             return Ok()
@@ -871,18 +883,27 @@ public struct HttpConnection {
         return this.sendOrHold()
     }
 
-    // Ends the answer `beginAsync` started.
+    // Ends the answer `beginAsync` started; `InvalidInput` for one begun with a length that was
+    // not all sent, after what was sent goes out and the connection closes.
     public async Result<void, IoError> endAsync(ref this, read CancellationToken token = CancellationToken.None) {
-        this.writeEnd()
-        if this.holds() {
+        var cut = this.writeEnd()
+        if !cut && this.holds() {
             return Ok()
         }
-        return await this.sendOutAsync(read token)
+        try await this.sendOutAsync(read token)
+        if cut {
+            return Error(IoError.InvalidInput)
+        }
+        return Ok()
     }
 
     public Result<void, IoError> end(ref this) {
-        this.writeEnd()
-        return this.sendOrHold()
+        var cut = this.writeEnd()
+        try this.sendOrHold()
+        if cut {
+            return Error(IoError.InvalidInput)
+        }
+        return Ok()
     }
 
     // Sends the answers that wait.
@@ -927,13 +948,27 @@ public struct HttpConnection {
         return Ok()
     }
 
-    Result<void, IoError> writeBegin(ref this, int status, read string contentType) {
+    Result<void, IoError> writeBegin(ref this, int status, read string contentType, long? length) {
         this.answering()
         if this.answer != 0 {
             panic("an answer is begun once")
         }
         if status == 204 || status == 304 {
             panic($"an answer {status} has no body to begin")
+        }
+        if length is not null {
+            long size = length
+            if size < 0 {
+                panic($"an answer has a length of 0 or more, not {size}")
+            }
+            try this.writeHead(status, contentType)
+            this.out.addAll("content-length: ".asBytes())
+            httpDecimal(ref this.out, size)
+            this.out.addAll("\r\n".asBytes())
+            this.endHead()
+            this.owed = size
+            this.answer = 4
+            return Ok()
         }
         if this.minor == 0 {
             this.keep = false
@@ -949,10 +984,21 @@ public struct HttpConnection {
         return Ok()
     }
 
-    void writePart(ref this, read byte[] part) {
-        if this.answer != 1 && this.answer != 2 {
+    // The checks of a part, and the bytes it takes of a length.
+    void countPart(ref this, read byte[] part) {
+        if this.answer != 1 && this.answer != 2 && this.answer != 4 {
             panic("`writeAsync` sends a part of an answer `beginAsync` began")
         }
+        if this.answer == 4 {
+            if (long)part.length() > this.owed {
+                panic($"a part of {part.length()} bytes where the answer's length leaves {this.owed}")
+            }
+            this.owed -= (long)part.length()
+        }
+    }
+
+    void writePart(ref this, read byte[] part) {
+        this.countPart(part)
         if part.length() == 0 || this.isHead {
             return
         }
@@ -966,14 +1012,21 @@ public struct HttpConnection {
         }
     }
 
-    void writeEnd(ref this) {
-        if this.answer != 1 && this.answer != 2 {
+    // Whether the answer is cut: begun with a length not all sent, so that the connection closes.
+    bool writeEnd(ref this) {
+        if this.answer != 1 && this.answer != 2 && this.answer != 4 {
             panic("`endAsync` ends an answer `beginAsync` began")
         }
         if this.answer == 1 && !this.isHead {
             this.out.addAll("0\r\n\r\n".asBytes())
         }
+        var cut = this.answer == 4 && this.owed > 0 && !this.isHead
+        this.owed = 0
+        if cut {
+            this.keep = false
+        }
         this.answer = 3
+        return cut
     }
 
     // The status line, `date`, `content-type`, the headers of `addHeader`, and `connection: close`
@@ -1196,6 +1249,39 @@ public struct HttpConnection {
         return Ok()
     }
 
+    // What waits and then `part`, sent as pieces, with the time limit `sendOutAsync` gives.
+    async Result<void, IoError> sendWithAsync(ref this, read byte[] part, read CancellationToken token) {
+        Result<void, IoError> sent = Ok()
+        if !token.canBeCancelled() {
+            var mine = this.armed(this.options.idleTimeout)
+            var pieces = List<read byte[]>.withCapacity(2)
+            pieces.add(this.out[..])
+            pieces.add(part)
+            sent = await this.stream.sendPiecesAsync(read pieces, read mine)
+        } else {
+            var linked = CancellationSource.linked(read token)
+            if this.options.idleTimeout > 0 {
+                linked.cancelAfter(this.options.idleTimeout)
+            }
+            var pieces = List<read byte[]>.withCapacity(2)
+            pieces.add(this.out[..])
+            pieces.add(part)
+            sent = await this.stream.sendPiecesAsync(read pieces, read linked.token())
+        }
+        this.out.clear()
+        match sent {
+            Ok => return Ok()
+            Error(Cancelled(c)) => {
+                if token.isCancelled() {
+                    return Error(IoError.Cancelled(c))
+                }
+                this.open = false
+                return Ok()
+            }
+            Error(e) => return Error(e)
+        }
+    }
+
     // A token of the connection's own source, set to cancel `ms` from now (a time far off for 0);
     // a source that has cancelled is made again.
     CancellationToken armed(ref this, int ms) {
@@ -1213,6 +1299,8 @@ public struct HttpConnection {
 
 // Answers held for the next request are sent once they come to this many bytes (1777).
 const nint HttpHeldBytes = 65536
+// A part of an answer at least this large is sent as it lies, not copied into the block (`writeAsync`).
+const nint HttpDirectBytes = 16384
 // How long a refused client may go on sending (see `lingerAsync`).
 const int HttpLingerQuiet = 100
 const int HttpLingerMost = 2000

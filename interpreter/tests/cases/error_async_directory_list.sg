@@ -1,0 +1,9 @@
+// And `Directory.list` (1871).
+async Result<nint, IoError> count(string path) {
+    var entries = try Directory.list(read path)
+    return Ok(entries.length())
+}
+
+async void main() {
+    print(await count(".") ?? 0)
+}

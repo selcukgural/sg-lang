@@ -128,6 +128,8 @@ Gregorian calendar.
 | `Result<DateTime, DateError> DateTime.utc(int year, int month, int day, int hour, int minute, int second)` | A moment from its parts, each checked |
 | `DateTime DateTime.fromUnixSeconds(long seconds)`, `fromUnixMilliseconds(long milliseconds)` | A moment from a count since 1970 |
 | `Result<DateTime, DateError> DateTime.parse(read string text)` | A moment in RFC 3339, taken to UTC |
+| `Result<DateTime, DateError> DateTime.parseHttpDate(read string text)` | A moment as HTTP writes it, in any of the three forms of RFC 9110 |
+| `string toHttpDate(read this)` | The moment as HTTP writes it in `Date` and `Last-Modified`: `Sun, 06 Nov 1994 08:49:37 GMT` |
 | `int year(read this)`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond` | The parts, in UTC |
 | `DayOfWeek dayOfWeek(read this)` | `Monday` to `Sunday` |
 | `long unixSeconds(read this)`, `unixMilliseconds` | The count since 1970, rounded down |
@@ -140,6 +142,32 @@ Gregorian calendar.
 there is one. Another format is written with the parts: `$"{t.day():D2}.{t.month():D2}.{t.year()}"`.
 
 A `DateTime` is made by its functions only; `DateTime { ... }` is an error whose hint names them.
+
+The dates of HTTP (choice 1866): `toHttpDate` writes RFC 9110's IMF-fixdate, always in GMT, the part of a
+second left out. `parseHttpDate` reads it and the two older forms a recipient must take: RFC 850's `Sunday,
+06-Nov-94 08:49:37 GMT`, whose year 00 to 69 is 2000 to 2069 and 70 to 99 is 1970 to 1999, and C's asctime,
+`Sun Nov  6 08:49:37 1994`. It reads the names as RFC 9110 writes them, in that case only, and the day of the
+week must be the date's: `InvalidText` at the first byte that does not fit, at 0 for a day of the week that is
+not the date's.
+
+```sg
+void main() {
+    var t = DateTime.fromUnixSeconds(784111777)
+    print(t.toHttpDate())
+    print(DateTime.parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT") ?? DateTime.fromUnixSeconds(0))
+    print(DateTime.parseHttpDate("Sun Nov  6 08:49:37 1994") ?? DateTime.fromUnixSeconds(0))
+    print(DateTime.parseHttpDate("Mon, 06 Nov 1994 08:49:37 GMT") is Error(InvalidText(0)))
+}
+```
+
+It prints:
+
+```text
+Sun, 06 Nov 1994 08:49:37 GMT
+1994-11-06T08:49:37Z
+1994-11-06T08:49:37Z
+true
+```
 
 ```sg
 Result<void, DateError> main() {

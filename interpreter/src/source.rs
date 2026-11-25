@@ -32,7 +32,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("net.sg", include_str!("std/net.sg"), &["SocketAddress", "UdpSocket", "Received"]),
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
     ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),
-    ("encoding.sg", include_str!("std/encoding.sg"), &["Hex", "Base64", "DecodeError"]),
+    ("encoding.sg", include_str!("std/encoding.sg"), &["Hex", "Base64", "Percent", "DecodeError"]),
     ("checksum.sg", include_str!("std/checksum.sg"), &["Crc32", "Adler32"]),
     ("hash.sg", include_str!("std/hash.sg"), &["Sha256", "Hmac", "Bytes"]),
     ("command_line.sg", include_str!("std/command_line.sg"), &["CommandLine", "Arguments", "CommandLineError"]),
@@ -46,9 +46,9 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of
-/// (`File.info(path)` and `File.createTemp()` are `FileInfo`'s): a program that names `File` and
-/// one of them gets the file of `FileInfo`.
-pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp"];
+/// (`File.info(path)` and `File.createTemp()` are `FileInfo`'s, and their async versions): a program
+/// that names `File` and one of them gets the file of `FileInfo`.
+pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync"];
 
 /// The methods of the built-in `TcpStream` that the language's own module does the work of
 /// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of

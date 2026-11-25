@@ -1,0 +1,427 @@
+// The file server of the server lane in SG (choices 1861-1871), on `HttpConnection` of the language's
+// own module: GET and HEAD of the files under a folder, over HTTP/1.1 with connections kept open, as
+// `../c/files.c` describes it for all four versions.
+//
+//     files PORT ROOT [--idle-limit MS] [--grace MS]
+//
+// Every connection is a task of a `TaskGroup`, as in `../../http/sg/http.sg`. What a request asks of
+// the disk is asked as a task (`File.infoAsync`, `File.openTextAsync`, `readSomeAsync`), so a disk
+// that is slow holds up only the connection that waits for it (choice 1871). A body goes out in
+// pieces of 64 KB, read into one buffer the answer owns (1864).
+
+// The most bytes read and sent at a time.
+const nint Piece = 65536
+
+// A position past any file, where a number of a range that is longer stops (2^62).
+const long Far = 4611686018427387904
+
+// What a request asks for, taken out of its view before the disk is asked.
+struct Asked {
+    bool head
+    // The path, decoded and checked, as it is written after ROOT.
+    string path
+    // The path as the client wrote it, without its query: where a folder is sent with a `/`.
+    string written
+    // `If-Modified-Since`, in seconds since 1970, when it is there and a date.
+    long? since
+    // The range of `Range`: none (0), from `first` to `last` (1), the last `last` bytes (2).
+    int range
+    long first
+    long last
+}
+
+// The number at `at` in decimal digits, `at` moved past them; one longer than `Far` is `Far`.
+// `null` when no digit is there.
+long? digitsAt(read byte[] value, ref nint at) {
+    var start = at
+    long n = 0
+    while at < value.length() && value[at] >= '0' && value[at] <= '9' {
+        if n > Far / 10 {
+            n = Far
+        } else {
+            n = n * 10 + (long)(value[at] - '0')
+            if n > Far {
+                n = Far
+            }
+        }
+        at += 1
+    }
+    if at == start {
+        return null
+    }
+    return n
+}
+
+// `bytes=FIRST-LAST`, `bytes=FIRST-` or `bytes=-COUNT` into `asked`; anything else, more than one
+// range among them, leaves it at none, and the whole file is sent (RFC 9110 lets a server do so).
+void rangeOf(read byte[] value, ref Asked asked) {
+    var unit = "bytes=".asBytes()
+    if value.length() < unit.length() || value[0..unit.length()] != unit {
+        return
+    }
+    nint at = unit.length()
+    var first = digitsAt(value, ref at)
+    if at >= value.length() || value[at] != '-' {
+        return
+    }
+    at += 1
+    var last = digitsAt(value, ref at)
+    if at != value.length() {
+        return
+    }
+    if first is null {
+        if last is not null {
+            asked.range = 2
+            asked.last = last
+        }
+        return
+    }
+    if last is null {
+        asked.range = 1
+        asked.first = first
+        asked.last = Far
+        return
+    }
+    if first <= last {
+        asked.range = 1
+        asked.first = first
+        asked.last = last
+    }
+}
+
+// Whether a decoded path may be looked for under ROOT: no zero byte, no `\`, no segment `.` or `..`,
+// no empty segment but the last (`//`).
+bool safe(read byte[] path) {
+    nint start = 1
+    for i in 1..path.length() + 1 {
+        if i < path.length() {
+            var c = path[i]
+            if c == 0 || c == '\\' {
+                return false
+            }
+            if c != '/' {
+                continue
+            }
+        }
+        var segment = path[start..i]
+        var last = i == path.length()
+        if (segment.length() == 0 && !last) || segment == ".".asBytes() || segment == "..".asBytes() {
+            return false
+        }
+        start = i + 1
+    }
+    return true
+}
+
+// The type of a file by the extension of its name, in any case.
+read string typeOf(read string path) {
+    var slash = path.lastIndexOf('/') ?? 0
+    var dot = path.lastIndexOf('.') ?? 0
+    if dot <= slash {
+        return "application/octet-stream"
+    }
+    var ext = path[dot + 1..]
+    if ext.equalsIgnoreAsciiCase("html") || ext.equalsIgnoreAsciiCase("htm") {
+        return "text/html; charset=utf-8"
+    } else if ext.equalsIgnoreAsciiCase("css") {
+        return "text/css; charset=utf-8"
+    } else if ext.equalsIgnoreAsciiCase("js") || ext.equalsIgnoreAsciiCase("mjs") {
+        return "text/javascript; charset=utf-8"
+    } else if ext.equalsIgnoreAsciiCase("json") {
+        return "application/json"
+    } else if ext.equalsIgnoreAsciiCase("txt") {
+        return "text/plain; charset=utf-8"
+    } else if ext.equalsIgnoreAsciiCase("xml") {
+        return "application/xml"
+    } else if ext.equalsIgnoreAsciiCase("svg") {
+        return "image/svg+xml"
+    } else if ext.equalsIgnoreAsciiCase("png") {
+        return "image/png"
+    } else if ext.equalsIgnoreAsciiCase("jpg") || ext.equalsIgnoreAsciiCase("jpeg") {
+        return "image/jpeg"
+    } else if ext.equalsIgnoreAsciiCase("gif") {
+        return "image/gif"
+    } else if ext.equalsIgnoreAsciiCase("webp") {
+        return "image/webp"
+    } else if ext.equalsIgnoreAsciiCase("ico") {
+        return "image/x-icon"
+    } else if ext.equalsIgnoreAsciiCase("wasm") {
+        return "application/wasm"
+    } else if ext.equalsIgnoreAsciiCase("pdf") {
+        return "application/pdf"
+    } else if ext.equalsIgnoreAsciiCase("zip") {
+        return "application/zip"
+    } else if ext.equalsIgnoreAsciiCase("gz") {
+        return "application/gzip"
+    } else if ext.equalsIgnoreAsciiCase("mp4") {
+        return "video/mp4"
+    } else if ext.equalsIgnoreAsciiCase("webm") {
+        return "video/webm"
+    } else if ext.equalsIgnoreAsciiCase("mp3") {
+        return "audio/mpeg"
+    } else if ext.equalsIgnoreAsciiCase("woff2") {
+        return "font/woff2"
+    } else if ext.equalsIgnoreAsciiCase("woff") {
+        return "font/woff"
+    }
+    return "application/octet-stream"
+}
+
+// Reads what the request asks out of its view into `asked`: the status of an answer the request
+// gets at once (400, 405), or 0.
+int take(read HttpRequest req, ref Asked asked, ref List<byte> decoded) {
+    var get = req.method() == "GET"
+    asked.head = req.method() == "HEAD"
+    if !get && !asked.head {
+        return 405
+    }
+    var target = req.target()
+    if target.length() == 0 || target[0] != '/' {
+        return 400
+    }
+    var end = target.indexOf('?') ?? target.length()
+    var written = target[..end]
+    // A `/` written as `%2F` would make two segments of one name.
+    if written.contains("%2f") || written.contains("%2F") {
+        return 400
+    }
+    decoded.clear()
+    if Percent.decodeInto(ref decoded, written) is Error(_) {
+        return 400
+    }
+    if !safe(read decoded) {
+        return 400
+    }
+    match string.fromUtf8(read decoded) {
+        Ok(text) => {
+            asked.path.clear()
+            asked.path.write(text)
+        }
+        Error(_) => return 400
+    }
+    asked.written.clear()
+    asked.written.write(written)
+    asked.since = null
+    if req.header("if-modified-since") is not null {
+        var value = req.header("if-modified-since") ?? "".asBytes()
+        if string.fromUtf8(value) is Ok(text) && DateTime.parseHttpDate(text) is Ok(moment) {
+            asked.since = moment.unixSeconds()
+        }
+    }
+    asked.range = 0
+    if req.header("if-range") is null {
+        if req.header("range") is not null {
+            rangeOf(req.header("range") ?? "".asBytes(), ref asked)
+        }
+    }
+    return 0
+}
+
+async Result<void, IoError> fail(ref HttpConnection conn, int status) {
+    if status == 400 {
+        try await conn.respondAsync(400, "text/plain", "bad request".asBytes())
+    } else if status == 403 {
+        try await conn.respondAsync(403, "text/plain", "forbidden".asBytes())
+    } else if status == 405 {
+        try conn.addHeader("allow", "GET, HEAD")
+        try await conn.respondAsync(405, "text/plain", "method not allowed".asBytes())
+    } else {
+        try await conn.respondAsync(404, "text/plain", "not found".asBytes())
+    }
+    return Ok()
+}
+
+// The status for a file that could not be looked at or opened.
+int statusOf(IoError cause) {
+    if cause == IoError.PermissionDenied {
+        return 403
+    }
+    return 404
+}
+
+// Answers a request whose path is checked, from the file at `full`.
+async Result<void, IoError> answer(ref HttpConnection conn, read Asked asked, read string full) {
+    match await File.infoAsync(full) {
+        Ok(info) => return await answerFile(ref conn, asked, full, info)
+        Error(cause) => return await fail(ref conn, statusOf(cause))
+    }
+}
+
+async Result<void, IoError> answerFile(ref HttpConnection conn, read Asked asked, read string full, FileInfo info) {
+    if info.kind == FileKind.Directory {
+        if asked.path.endsWith('/') {
+            return await fail(ref conn, 404)
+        }
+        try conn.addHeader("location", read $"{asked.written}/".toString())
+        return await conn.respondAsync(301, "text/plain", "moved permanently".asBytes())
+    }
+    if info.kind != FileKind.File {
+        return await fail(ref conn, 404)
+    }
+    var modified = info.modified.toHttpDate()
+    var since = asked.since
+    if since is not null && info.modified.unixSeconds() <= since {
+        try conn.addHeader("last-modified", read modified)
+        return await conn.respondAsync(304, "", "".asBytes())
+    }
+    var size = info.size
+    long start = 0
+    long end = size - 1
+    var status = 200
+    if asked.range != 0 {
+        var whole = asked.range == 1 && asked.first < size || asked.range == 2 && asked.last > 0 && size > 0
+        if !whole {
+            try conn.addHeader("content-range", read $"bytes */{size}".toString())
+            return await conn.respondAsync(416, "text/plain", "range not satisfiable".asBytes())
+        }
+        if asked.range == 1 {
+            start = asked.first
+            if asked.last < end {
+                end = asked.last
+            }
+        } else if asked.last < size {
+            start = size - asked.last
+        }
+        status = 206
+    }
+    match await File.openTextAsync(full) {
+        Ok(reader) => {
+            try conn.addHeader("last-modified", read modified)
+            try conn.addHeader("accept-ranges", "bytes")
+            if status == 206 {
+                try conn.addHeader("content-range", read $"bytes {start}-{end}/{size}".toString())
+            }
+            return await send(ref conn, asked.head, typeOf(full), reader, status, start, end - start + 1)
+        }
+        Error(cause) => return await fail(ref conn, statusOf(cause))
+    }
+}
+
+// Sends `length` bytes of the file from `start`, in pieces.
+async Result<void, IoError> send(ref HttpConnection conn, bool head, read string type, StreamReader reader, int status, long start, long length) {
+    try await conn.beginAsync(status, type, length)
+    if !head {
+        if start > 0 {
+            _ = try reader.seek(SeekFrom.Start(start))
+        }
+        // as large as the body when it is less than a piece: a file of 1 KB is not read into 64 KB
+        nint size = Piece
+        if length < (long)Piece {
+            size = (nint)length
+        }
+        var buffer = List<byte>.repeat(0, size)
+        var left = length
+        while left > 0 {
+            nint most = size
+            if left < (long)size {
+                most = (nint)left
+            }
+            var n = try await reader.readSomeAsync(ref buffer[0..most])
+            if n == 0 {
+                break
+            }
+            try await conn.writeAsync(buffer[0..n])
+            left -= (long)n
+        }
+    }
+    return await conn.endAsync()
+}
+
+async Result<void, IoError> serve(TcpStream stream, HttpOptions options, string root) {
+    var conn = HttpConnection(stream, options)
+    var asked = Asked { head = false, path = string.withCapacity(256), written = string.withCapacity(256), since = null, range = 0, first = 0, last = 0 }
+    var decoded = List<byte>.withCapacity(256)
+    var full = string.withCapacity(512)
+    while try await conn.receiveHeadAsync() {
+        var status = take(read conn.request(), ref asked, ref decoded)
+        if status != 0 {
+            try await fail(ref conn, status)
+            continue
+        }
+        full.clear()
+        full.write(read root)
+        full.write(read asked.path)
+        if asked.path.endsWith('/') {
+            full.write("index.html")
+        }
+        try await answer(ref conn, read asked, read full)
+    }
+    return Ok()
+}
+
+// A connection that fails, or is too slow, ends alone.
+async void connection(TcpStream stream, HttpOptions options, string root) {
+    _ = await serve(stream, options, root)
+}
+
+// Waits for SIGTERM or Ctrl-C and cancels `stop`; the listener goes with it, so a second ends the
+// program.
+async void watch(SignalListener signals, CancellationSource stop) {
+    if await signals.nextAsync() is Ok(_) {
+        stop.cancel()
+    }
+}
+
+// Takes connections until a signal comes with `grace` given, for ever without; one the listener
+// fails to take (too many open files, say) is tried again after 10 ms.
+async Result<void, IoError> listen(int port, string root, HttpOptions options, int grace) {
+    var address = $":{port}".toString()
+    var listener = try TcpListener.bind(read address)
+    var connections = TaskGroup()
+    var accepting = CancellationToken.None
+    if grace > 0 {
+        var stop = CancellationSource()
+        accepting = stop.token()
+        connections.add(watch(Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate }), stop))
+    }
+    while true {
+        match await listener.acceptAsync(read accepting) {
+            Ok(conn) => connections.add(connection(conn, options, root.clone()))
+            Error(Cancelled(_)) => break
+            Error(_) => await Task.delay(10)
+        }
+    }
+    var late = CancellationSource.after(grace)
+    _ = await connections.whenAll(read late.token())
+    return Ok()
+}
+
+const string Usage = "usage: files PORT ROOT [--idle-limit MS] [--grace MS]"
+
+void main(List<string> args) {
+    if args.length() % 2 != 0 || args.length() < 2 || int.parse(args[0]) is not Ok(port) {
+        printError(Usage)
+        exit(2)
+    }
+    // ROOT without the `/` at its end, so that a path, which starts with one, follows it.
+    var root = args[1].clone()
+    while root.length() > 1 && root.endsWith('/') {
+        root = root[..root.length() - 1].clone()
+    }
+    if !Directory.exists(read root) {
+        printError($"files: {root} is not a folder".toString())
+        exit(2)
+    }
+    var options = HttpOptions {}
+    int grace = 0
+    for i in 1..args.length() / 2 {
+        var name = args[2 * i]
+        if int.parse(args[2 * i + 1]) is not Ok(ms) || ms <= 0 {
+            printError(Usage)
+            exit(2)
+        }
+        if name == "--idle-limit" {
+            options.idleTimeout = ms
+            options.headTimeout = ms
+        } else if name == "--grace" {
+            grace = ms
+        } else {
+            printError(Usage)
+            exit(2)
+        }
+    }
+    if listen(port, root, options, grace).wait() is Error(e) {
+        printError($"files: {e}".toString())
+        exit(1)
+    }
+}

@@ -1,0 +1,15 @@
+a%20b%2F%C3%A7
+AZaz09-._~%21%2A%27%28%29%3B%3A%40%26%3D%2B%24%2C%2F%3F%23%5B%5D
+%00%7F%FF
+ -> 
+abc -> 616263
+%41%62%2f%2F -> 41622f2f
+a+b%20c -> 612b622063
+%: not percent at 0
+%4: not percent at 0
+%G1: not percent at 1
+%4G: not percent at 2
+ab%: not percent at 2
+%c0%ae%00 -> c0ae00
+300 €
+900 %E2%82%AC

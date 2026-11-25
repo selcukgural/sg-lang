@@ -2,11 +2,12 @@
 
 SG is meant for servers: stores like Redis, databases, HTTP servers. Since 22 November 2026 the line it holds
 there is this: on the network SG is never to be worse than the best rival, in speed or in memory, under load or
-idle. This page measures two servers written in SG, in Rust, in Zig and in C, under one load, and shows where
-SG stands, including where it does not hold the line yet (choices 1698-1707). The code is in
+idle. This page measures three servers written in SG, in Rust, in Zig and in C, under one load, and shows where
+SG stands, including where it does not hold the line yet (choices 1698-1707): a store, an HTTP server, and a
+server of files, with nginx beside it ([Files](#files)). The code is in
 [`trials/server`](../trials/server).
 
-These are the numbers of one run of each case, taken on 22 November 2026 with the runtime of the 157th slice, a loop of the network on each thread of the pool (choices 1708-1714); the median of three runs will replace them. A cell of answers gives the answers a second, the p99 and the memory the server holds at the end; a cell of idle connections gives the memory each connection adds, the memory held, and the processor's time in 10 seconds of silence.
+The numbers of the store and of HTTP are those of one run of each case, taken on 22 November 2026 with the runtime of the 157th slice, a loop of the network on each thread of the pool (choices 1708-1714); the median of three runs will replace them. A cell of answers gives the answers a second, the p99 and the memory the server holds at the end; a cell of idle connections gives the memory each connection adds, the memory held, and the processor's time in 10 seconds of silence.
 
 <!-- Linux 7.1.3-200.fc44.aarch64 aarch64, 8 cores; rustc 1.99.1 (58cf8f9c3 2026-10-13); zig 0.17.1; cc (Debian 14.2.0-19) 14.2.0 -->
 
@@ -200,6 +201,60 @@ those before it, and both go quiet. SG keeps its tail for the whole half hour; `
 p99 is near a second, for a reason not looked into (the rival's, not SG's to mend). SG holds 9 MB more than
 `tokio` here, which goes into [Slower than C](slower-than-c.md).
 
+## Files
+
+The third server of the lane serves the files under a folder over HTTP/1.1: GET and HEAD, `index.html`, ranges,
+`If-Modified-Since`, 404 and 403 (choices 1861-1872, [`trials/server/files`](../trials/server/files/README.md)).
+SG, Rust, Zig and C send a body in pieces of 64 KB read into the program; C with `sendfile` and nginx, which
+sends with `sendfile` as it is usually run, are beside them, as what that copy costs. The files lie on a volume
+of xfs in the system's cache, read into it before each case. One run of each case, 24 November 2026; the median
+of three will replace them; nginx's column is of 25 November, after its room for connections was set to 4,096
+from 100,000, which it lays out when it starts and which had cost it 175 MB and up to a quarter of its answers. A
+cell gives the answers a second (or the bytes of the body a second, for one client), the p99 and the most memory
+the server held (nginx's is the sum of its five processes' proportional sets, which counts what they share
+once).
+
+<!-- Linux 7.1.3-200.fc44.aarch64 aarch64, 8 cores; rustc 1.99.1 (58cf8f9c3 2026-10-13); zig 0.17.1; cc (Debian 14.2.0-19) 14.2.0 -->
+
+| Case | SG | Rust | Zig | C | C, `sendfile` | nginx |
+|---|---|---|---|---|---|---|
+| 1,000 files of 1 KB, 50 connections | 395k/s, 213 µs, 2.2 MB | 52.5k/s, 1.94 ms, 7.6 MB | 486k/s, 245 µs, 14.6 MB | 598k/s, 220 µs, 1.8 MB | 489k/s, 238 µs, 1.6 MB | 521k/s, 159 µs, 15.4 MB |
+| 1,000 files of 1 KB, 1,000 connections | 339k/s, 3.61 ms, 11.9 MB | 52.2k/s, 31.46 ms, 33.8 MB | 409k/s, 4.26 ms, 281.9 MB | 646k/s, 2.09 ms, 7.5 MB | 538k/s, 2.83 ms, 5.7 MB | 498k/s, 2.63 ms, 15.1 MB |
+| 100 files of 64 KB, 50 connections | 235k/s, 293 µs, 2.4 MB | 48.7k/s, 1.93 ms, 16.9 MB | 286k/s, 362 µs, 17.6 MB | 333k/s, 322 µs, 5.0 MB | 465k/s, 248 µs, 1.6 MB | 152k/s, 111 µs, 14.3 MB |
+| 100 files of 64 KB, 1,000 connections | 196k/s, 48.63 ms, 11.3 MB | 36.6k/s, 58.33 ms, 86.7 MB | 131k/s, 10.16 ms, 340.5 MB | 128k/s, 11.27 ms, 71.9 MB | 371k/s, 7.98 ms, 5.7 MB | 441k/s, 3.81 ms, 14.6 MB |
+| 20 files of 1 MB, 50 connections | 22.4k/s, 4.57 ms, 2.4 MB | 5.5k/s, 19.60 ms, 18.9 MB | 21.4k/s, 6.47 ms, 17.6 MB | 21.9k/s, 5.78 ms, 5.0 MB | 37.4k/s, 3.69 ms, 1.6 MB | 40.6k/s, 4.55 ms, 14.1 MB |
+| 20 files of 1 MB, 1,000 connections | 22.4k/s, 85.46 ms, 11.3 MB | 5.2k/s, 430.96 ms, 150.1 MB | 19.4k/s, 83.62 ms, 340.5 MB | 18.6k/s, 90.96 ms, 71.9 MB | 37.0k/s, 266.86 ms, 5.7 MB | 36.0k/s, 50.46 ms, 21.3 MB |
+| A file of 1 GB, one client | 6,979 MB/s, 1.7 MB | 1,611 MB/s, 3.4 MB | 6,818 MB/s, 0.9 MB | 7,194 MB/s, 1.5 MB | 13,153 MB/s, 1.4 MB | 14,657 MB/s, 13.8 MB |
+| 4 KB at random places of the file of 1 GB, 50 connections | 216k/s, 456 µs, 3.0 MB | 36.7k/s, 3.60 ms, 8.4 MB | 393k/s, 375 µs, 14.8 MB | 511k/s, 266 µs, 2.1 MB | 455k/s, 301 µs, 1.6 MB | 530k/s, 155 µs, 13.9 MB |
+| 304 Not Modified, 50 connections | 597k/s, 185 µs, 2.1 MB | 130k/s, 989 µs, 6.2 MB | 638k/s, 209 µs, 14.6 MB | 850k/s, 195 µs, 1.6 MB | 874k/s, 163 µs, 1.6 MB | 656k/s, 132 µs, 13.9 MB |
+| 10,000 files of 4 KB, 50 connections | 303k/s, 364 µs, 2.4 MB | 44.7k/s, 2.90 ms, 8.5 MB | 368k/s, 347 µs, 14.8 MB | 463k/s, 312 µs, 2.1 MB | 414k/s, 349 µs, 1.6 MB | 531k/s, 172 µs, 13.9 MB |
+| 404 Not Found, 50 connections | 667k/s, 170 µs, 2.2 MB | 112k/s, 1.17 ms, 6.3 MB | 649k/s, 201 µs, 14.6 MB | 965k/s, 140 µs, 1.6 MB | 943k/s, 166 µs, 1.6 MB | 800k/s, 107 µs, 13.8 MB |
+
+**Small files.** SG answers 0.66 times C's requests of 1 KB with 50 connections and 0.52 times with 1,000, a 404
+0.69 and a 304 0.70 times; ahead of Zig on the 404, behind it on files of 1 KB, and behind nginx on both. The disk is not
+the difference: on Linux SG asks the kernel first for the state of a file, its opening and its read with the
+promise not to wait, and hands a call to a thread only when the kernel would wait (choice 1872), so a 404 makes
+the calls of the system C makes. What is left is the processor for each answer, 7.7 ms for a thousand in SG
+against 4.8 in C, spread over the parsing in `std/http`, the head of the answer, the task of a connection and
+its wakes ([Slower than C](slower-than-c.md#tasks-async-and-signals)). Every call of the disk handed to a
+thread, as SG did at first, gave SG 60,400 answers a second here; Rust, which hands every call of `tokio::fs` to
+its pool, gives 52,000.
+
+**Large files.** Files of 1 MB go at C's speed in SG, Zig and C (22,400, 21,400 and 21,900 a second), and a
+file of 1 GB at 6,979 MB/s against C's 7,194; `sendfile` nearly doubles both, which is the copy into the
+program that the four make and nginx does not. With files of 64 KB and 1,000 connections SG answers the most of
+the four, but its p99 is 48.6 ms against C's 11.3. nginx's 152,000 with 50 connections and files of 64 KB are not
+its speed: about one answer in a few hundred waits some 40 ms, the time of a delayed acknowledgement (its p99.9
+is 41.7 ms), which with 1,000 connections does not show.
+
+**A range.** 4 KB at random places of the file of 1 GB: SG 216,000 a second, C 511,000. A reader of a file fills
+its block of 64 KB after a seek, so each range reads 64 KB; the reader keeps that rule
+([Slower than C](slower-than-c.md#tasks-async-and-signals)).
+
+**Memory.** SG holds 2.2 to 11.9 MB in every case, about what C holds, and less than C's 71.6 MB with 1,000
+connections asking for 64 KB or more; nginx's five processes hold 14 to 21 MB. Zig, a thread for each
+connection, holds 282 to 340 MB with 1,000.
+
 ## How it is measured
 
 `python3 trials/server/measure.py` builds every server and the load and runs each case on Linux, in the image
@@ -218,7 +273,8 @@ the long runs, `--runs 3` takes the median of three, and `--table` prints these 
   `#[tokio::main]` makes, and hyper 1.12 for HTTP; Zig is `std.Io` on `Io.Threaded`, a thread for each connection,
   and `std.http.Server`, built `ReleaseFast` (Zig 0.17.1's `Io.Evented` on io_uring has no `netAccept` yet);
   C is a thread on each core, each with a listener of its own (`SO_REUSEPORT`) and its own loop on epoll, built
-  with `-O2`. Rust and SG hash the keys with SipHash-1-3 and a key drawn at the start, as C does; Zig's map uses
+  with `-O2`. The server of files is described in [its folder](../trials/server/files/README.md), and what each
+  version does the same way at the top of [`files/c/files.c`](../trials/server/files/c/files.c). Rust and SG hash the keys with SipHash-1-3 and a key drawn at the start, as C does; Zig's map uses
   Wyhash, with no key. Rust, Zig and C set `TCP_NODELAY` on each connection, as servers do; SG has no way to ask
   for it yet. hyper adds a `date` to every answer. SG's keys must be UTF-8, the others take any bytes.
 - **Waiting to the nanosecond.** Since the 160th slice the load waits with `epoll_pwait2` on Linux (to the

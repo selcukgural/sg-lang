@@ -1,0 +1,30 @@
+Sun, 06 Nov 1994 08:49:37 GMT
+Thu, 01 Jan 1970 00:00:00 GMT
+Wed, 31 Dec 1969 23:59:59 GMT
+Fri, 11 Apr 2262 23:47:16 GMT
+Tue, 21 Sep 1677 00:12:44 GMT
+Sun, 06 Nov 1994 08:49:37 GMT -> 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+Sunday, 06-Nov-94 08:49:37 GMT -> 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+Sun Nov  6 08:49:37 1994 -> 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+Thu Feb 29 12:00:00 2024 -> 2024-02-29T12:00:00Z Thu, 29 Feb 2024 12:00:00 GMT
+Wednesday, 01-Jan-69 00:00:00 GMT: InvalidText(0)
+Thursday, 01-Jan-70 00:00:00 GMT -> 1970-01-01T00:00:00Z Thu, 01 Jan 1970 00:00:00 GMT
+Mon, 06 Nov 1994 08:49:37 GMT: InvalidText(0)
+sun, 06 Nov 1994 08:49:37 GMT: InvalidText(0)
+Sun, 06 Nov 1994 08:49:37 gmt: InvalidText(26)
+Sun, 06 Nov 1994 08:49:37 GMT : InvalidText(29)
+Sun, 6 Nov 1994 08:49:37 GMT: InvalidText(6)
+Sun, 31 Feb 1994 08:49:37 GMT: InvalidDay
+Sun, 06 Nov 1994 24:00:00 GMT: InvalidHour
+Sun, 06 Nov 1994 08:49:60 GMT: InvalidSecond
+Sun, 06 Nov 9999 08:49:37 GMT: OutOfRange
+Sun, 06 Xyz 1994 08:49:37 GMT: InvalidText(8)
+Sun Nov 06 08:49:37 1994 -> 1994-11-06T08:49:37Z Sun, 06 Nov 1994 08:49:37 GMT
+Sun Nov  6 08:49:37 1994 GMT: InvalidText(24)
+Sundae, 06-Nov-94 08:49:37 GMT: InvalidText(3)
+: InvalidText(0)
+Sun: InvalidText(3)
+Sun,: InvalidText(4)
+Sun, 06 Nov 1994 08:49:37 GM: InvalidText(28)
+Mon, 11 Apr 2262 23:47:16 GMT: InvalidText(0)
+Fri, 11 Apr 2262 23:47:17 GMT: OutOfRange

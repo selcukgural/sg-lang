@@ -1,13 +1,14 @@
 ---
-title: Hex and Base64
-description: Hex and Base64, bytes written as text and read back, strictly.
+title: Hex, Base64 and percent
+description: Hex, Base64 and the percent-encoding of URLs, bytes written as text and read back, strictly.
 sidebar_position: 9
 ---
 
-# Hex and Base64
+# Hex, Base64 and percent
 
 Bytes go into text, a URL, a header or a file of settings as hex or as Base64 (RFC 4648), and come back out
-the same. Both are written in SG in the module `std`.
+the same; a URL carries what its characters cannot as `%` and two hex digits (RFC 3986). All three are
+written in SG in the module `std`.
 
 Reading is strict. A space, a line break, a character of another alphabet, padding where it cannot be, or bits
 left over beyond the last byte is an error with its place, never skipped: two programs cannot read one text as
@@ -33,6 +34,42 @@ after they are taken out (`text.replaceAll("\n", "")`).
 | `Result<List<byte>, DecodeError> Base64.decodeUrl(read string text)` | The bytes of an unpadded text in the URL alphabet |
 | `void Base64.encodeInto(ref string target, read byte[] data)`, `encodeUrlInto` | The digits of `encode` or `encodeUrl` written at the end of `target` |
 | `Result<void, DecodeError> Base64.decodeInto(ref List<byte> target, read string text)`, `decodeUrlInto` | The bytes of `decode` or `decodeUrl` added at the end of `target`; a text that cannot be read leaves it as it was |
+
+## `Percent`
+
+| Signature | What it does |
+|---|---|
+| `string Percent.encode(read byte[] data)` | Each byte that is not unreserved (`A`-`Z`, `a`-`z`, `0`-`9`, `-`, `.`, `_`, `~`) as `%` and two upper-case digits |
+| `void Percent.encodeInto(ref string target, read byte[] data)` | The same text written at the end of `target` |
+| `Result<List<byte>, DecodeError> Percent.decode(read string text)` | The bytes of the text, each `%` and two digits, upper or lower case, taken as the byte they write |
+| `Result<void, DecodeError> Percent.decodeInto(ref List<byte> target, read string text)` | The same bytes added at the end of `target`; a text that cannot be read leaves it as it was |
+
+What is decoded is bytes, not text: `%FF` is a byte a URL may hold that UTF-8 never writes, and
+`string.fromUtf8` makes text of the bytes where the program wants text. A `+` stays a `+`, as it is in a
+path; it is a space only in a form. A `%` without two hex digits after it is `InvalidCharacter` at the first
+that is not one, or at the `%` when the text ends before them. `encode` encodes `/` too, so a path is encoded
+a segment at a time.
+
+```sg
+void main() {
+    print(Percent.encode("a b/ç".asBytes()))
+    var bytes = Percent.decode("caf%C3%A9%20au+lait") ?? List<byte>()
+    print(string.fromUtf8(read bytes) ?? "not UTF-8")
+    match Percent.decode("100%") {
+        Ok(_) => print("read")
+        Error(InvalidCharacter(at)) => print($"no digits after the % at {at}")
+        Error(InvalidLength) => print("a length")
+    }
+}
+```
+
+It prints:
+
+```text
+a%20b%2F%C3%A7
+café au+lait
+no digits after the % at 3
+```
 
 ## `DecodeError`
 

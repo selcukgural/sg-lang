@@ -1,0 +1,49 @@
+// The calls of the file system as tasks (choice 1871): each does what the call without `Async`
+// does, and a cancelled token does nothing.
+async Result<void, IoError> main() {
+    var root = try await Directory.createTempAsync()
+    var nested = Path.join(read root, "a/b/c")
+    try await Directory.createAllAsync(read nested)
+    try await Directory.createAllAsync(read nested)
+    var file = Path.join(read root, "a/one.txt")
+    try await File.writeTextAsync(read file, "hello")
+    var info = try await File.infoAsync(read file)
+    print($"{info.kind} {info.size}")
+    print(await File.existsAsync(read file))
+    print(await File.existsAsync(read nested))
+    print(await Directory.existsAsync(read nested))
+    var other = Path.join(read root, "a/two.txt")
+    try await File.copyAsync(read file, read other)
+    try await File.moveAsync(read other, read Path.join(read root, "a/three.txt"))
+    try await File.replaceAsync(read Path.join(read root, "a/three.txt"), read file)
+    for entry in try await Directory.listAsync(read Path.join(read root, "a")) {
+        print($"{entry.name} {entry.kind}")
+    }
+    try await Directory.syncAsync(read root)
+    match await File.infoAsync(read Path.join(read root, "none")) {
+        Ok(_) => print("found?")
+        Error(e) => print(e)
+    }
+    try await File.deleteAsync(read file)
+    match await Directory.deleteAsync(read Path.join(read root, "a")) {
+        Ok => print("deleted?")
+        Error(e) => print(e)
+    }
+    var temp = try await File.createTempAsync()
+    var made = try await File.infoAsync(read temp)
+    print(made.size)
+    try await File.deleteAsync(read temp)
+    var source = CancellationSource()
+    source.cancel()
+    match await File.infoAsync(read root, read source.token()) {
+        Ok(_) => print("not cancelled?")
+        Error(e) => print(e)
+    }
+    match await Directory.listAsync(read root, read source.token()) {
+        Ok(_) => print("not cancelled?")
+        Error(e) => print(e)
+    }
+    try await Directory.deleteAllAsync(read root)
+    print(await Directory.existsAsync(read root))
+    return Ok()
+}

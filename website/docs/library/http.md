@@ -97,9 +97,9 @@ Tasks](./tasks.md) does; `trials/server/http/sg/http.sg` is the HTTP server of t
 | `async Result<bool, IoError> receiveBodyAsync(ref this, read CancellationToken token = None)` | Reads its body whole into the block, sending `100 Continue` first if the client waits for it; `false` as above, or when the body is over `maxBodyBytes` (answered 413) |
 | `Result<void, IoError> addHeader(ref this, read string name, read string value)` | A header of the next answer; `InvalidInput` for a name that is not a token, a value with a line break or another control byte, or `content-length`, `transfer-encoding`, `connection` and `date`, which the module writes |
 | `async Result<void, IoError> respondAsync(ref this, int status, read string contentType, read byte[] body, read CancellationToken token = None)` | Answers with a body of known length; `contentType` empty writes none; `InvalidInput` for a type with a line break |
-| `async Result<void, IoError> beginAsync(ref this, int status, read string contentType, read CancellationToken token = None)` | Starts an answer of a length not known yet: in chunks, or for HTTP/1.0 until the connection closes |
+| `async Result<void, IoError> beginAsync(ref this, int status, read string contentType, long? length = null, read CancellationToken token = None)` | Starts an answer sent in parts: of `length` bytes with `content-length`, or, without it, in chunks, or for HTTP/1.0 until the connection closes |
 | `async Result<void, IoError> writeAsync(ref this, read byte[] part, read CancellationToken token = None)` | A part of it; an empty part sends nothing |
-| `async Result<void, IoError> endAsync(ref this, read CancellationToken token = None)` | Ends it |
+| `async Result<void, IoError> endAsync(ref this, read CancellationToken token = None)` | Ends it; `InvalidInput` for an answer begun with a length and not all sent, after the connection is closed |
 | `async Result<void, IoError> flushAsync(ref this, read CancellationToken token = None)` | Sends the answers that wait for the next request (see below) |
 | `void closeAfterAnswer(ref this)` | Closes the connection once the request being served is answered: an answer not begun yet says `connection: close`, and the next `receiveHeadAsync` gives `false`; called after the answer, the connection ends without waiting for another request |
 | `int? refused(read this)` | The status the module refused a request with (400, 413, 414, 431, 501, 505), or `null` |
@@ -107,6 +107,16 @@ Tasks](./tasks.md) does; `trials/server/http/sg/http.sg` is the HTTP server of t
 Each has a version that waits on the thread, without `Async` and without a token: `receiveHead`,
 `receiveBody`, `respond`, `begin`, `write`, `end`, `flush`. They have no time limits, since a blocking call of
 the network has none to give them.
+
+An answer begun with a length (choice 1865) says `content-length`, has no chunks, and keeps the connection,
+HTTP/1.0's too: what a file is sent with, its size known before its bytes are read. A part past the length is a
+panic, a mistake of the program, which said how much it would send. An end before the length has come closes
+the connection once what was sent is out, so that the client sees the answer cut and does not take the next
+bytes for a new answer, as nginx does when a file shrinks while it is sent; `endAsync` then gives
+`InvalidInput`. For HEAD the parts are counted and not sent, and an end before the length is no error.
+A part of 16 KB or more of an answer not in chunks goes out as it lies, after what waits before it, in one send
+of pieces (`writev`), without being copied into the connection's block. `trials/server/files/sg/files.sg` is a
+file server written so.
 
 A request that is not answered before the next is received is a panic, as is an answer to no request, a
 second answer, or a body asked for after the answer: each is a mistake in the program, and the client would
@@ -212,6 +222,10 @@ which has had no answer to them, asks again.
 The HTTP server of the measurements is written on `HttpConnection`, with its limits on. With 1,000
 connections kept open it answers within 2.2% of the server SG had before, written by hand on `TcpStream`
 with the same limits, and faster with 50 ([the library's measurements](https://github.com/selcukgural/sg-lang/blob/main/benchmarks/library.md#http)).
+
+A server of files written on it answers files of 1 KB at 0.66 times the rate of the same server in C, files of
+1 MB and of 1 GB at C's rate, and holds what C holds; the difference on small files is the work of each answer,
+not the disk ([the server of files](https://github.com/selcukgural/sg-lang/blob/main/benchmarks/server.md#files)).
 
 ## Not here yet
 

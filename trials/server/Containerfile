@@ -1,11 +1,12 @@
 # The Linux the server lane is measured on (choice 1699): Rust, Clang for SG's C, Zig 0.17.1 (its
-# tarball checked against the checksum ziglang.org publishes), and redis-benchmark and wrk to hold
-# the load of `load/load.c` against once. Built once, with the network, from the repository's root:
+# tarball checked against the checksum ziglang.org publishes), redis-benchmark and wrk to hold
+# the load of `load/load.c` against once, and nginx, measured beside the file servers (choice 1861).
+# Built once, with the network, from the repository's root:
 #   podman build -t sg-server -f trials/server/Containerfile trials/server
 # `measure.py` starts it and runs everything inside; see the top of that file.
 FROM docker.io/library/rust:1.99.1
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clang procps redis-tools wrk xz-utils \
+ && apt-get install -y --no-install-recommends clang procps redis-tools wrk xz-utils nginx-light util-linux \
  && rm -rf /var/lib/apt/lists/*
 ARG ZIG=0.17.1
 RUN set -e; arch="$(uname -m)"; \

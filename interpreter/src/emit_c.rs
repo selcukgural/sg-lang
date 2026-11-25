@@ -10496,10 +10496,25 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
         if (!name) return code;
     }
     struct stat info;
-    int failed = stat(name, &info);
+    int failed;
+#if defined(__linux__)
+    if (sg_nowait) {
+        /* 1872: a path the cache holds, looked at through a descriptor of the path alone, which
+           opens nothing (a FIFO is not waited for) */
+        int fd = sg_open_cached(name, O_PATH | O_CLOEXEC);
+        failed = fd < 0 || fstat(fd, &info) != 0;
+        int error = sg_os_error();
+        if (fd >= 0) close(fd);
+        if (name != local) free(name);
+        if (failed) return error;
+    } else
+#endif
+    {
+    failed = stat(name, &info);
     int error = sg_os_error();
     if (name != local) free(name);
     if (failed) return error;
+    }
 #ifdef __APPLE__
     int64_t seconds = (int64_t)info.st_mtimespec.tv_sec, ns = (int64_t)info.st_mtimespec.tv_nsec;
 #else
@@ -10850,8 +10865,58 @@ static bool sg_sys_colour(void) {
 #define SG_E_IS_DIR EISDIR
 #define SG_E_NOT_DIR ENOTDIR
 #define SG_E_EXISTS EEXIST
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <sys/uio.h>
+/* Choice 1872: on Linux an async call of the disk is first tried on the task's own thread, in the
+   forms the kernel keeps from waiting: a path found from the cache alone (`openat2` with
+   `RESOLVE_CACHED`), a read of what the cache holds (`preadv2` with `RWF_NOWAIT`). When the kernel
+   says it would wait (`EAGAIN`), or has neither (an old kernel, a filter of system calls, a file
+   system without them), `sg_would_wait` is set, nothing of the call has been done, and it goes to a
+   thread of input and output as before. io_uring tries an operation the same way before it gives it
+   to a thread of its own. */
+static _Thread_local bool sg_nowait = false;
+static _Thread_local bool sg_would_wait = false;
+#ifndef RWF_NOWAIT
+#define RWF_NOWAIT 0x00000008
+#endif
+#ifndef RESOLVE_CACHED
+#define RESOLVE_CACHED 0x20
+#endif
+static inline bool sg_wait_told(int e) { return e == EAGAIN || e == ENOSYS || e == EINVAL || e == E2BIG || e == EPERM || e == EOPNOTSUPP; }
+/* `openat2(name, flags)` with `RESOLVE_CACHED`: the descriptor, or -1 with `errno`, and
+   `sg_would_wait` set when only a path not in the cache, or no `openat2`, stopped it. */
+static int sg_open_cached(const char* name, int flags) {
+#ifdef SYS_openat2
+    struct { uint64_t flags, mode, resolve; } how = { (uint64_t)flags, 0, RESOLVE_CACHED };
+    int fd = (int)syscall(SYS_openat2, AT_FDCWD, name, &how, sizeof how);
+    if (fd < 0 && sg_wait_told(errno)) sg_would_wait = true;
+    return fd;
+#else
+    (void)name;
+    (void)flags;
+    sg_would_wait = true;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+#endif
 static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
     for (;;) {
+#if defined(__linux__)
+        if (sg_nowait) {
+            struct iovec v = { to, (size_t)n };
+            long r = syscall(SYS_preadv2, fd, &v, 1, -1L, -1L, RWF_NOWAIT);
+            if (r < 0 && errno == EINTR) continue;
+            if (r < 0) {
+                *got = 0;
+                if (sg_wait_told(errno)) { sg_would_wait = true; return EAGAIN; }
+                return sg_os_error();
+            }
+            *got = r;
+            return 0;
+        }
+#endif
         ssize_t read_n = read(fd, to, (size_t)n);
         if (read_n < 0) { if (errno == EINTR) continue; *got = 0; return sg_os_error(); }
         *got = read_n;
@@ -11511,10 +11576,34 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
+    struct stat info;
+#if defined(__linux__)
+    if (sg_nowait) {
+        /* 1872: only a file the cache finds is opened here, and only a plain file, so that nothing
+           waits and no FIFO is opened (opening one waits for a writer, and would let one go);
+           it is looked at first through a descriptor of the path alone. Opened without waiting,
+           and looked at again, for a path changed in between. */
+        int look = sg_open_cached(name, O_PATH | O_CLOEXEC);
+        if (look < 0) { int error = sg_os_error(); free(name); return error; }
+        bool plain = fstat(look, &info) == 0 && S_ISREG(info.st_mode);
+        close(look);
+        if (!plain) { free(name); sg_would_wait = true; return EAGAIN; }
+        /* `O_NONBLOCK` keeps a path made a FIFO in between from waiting; on a plain file it does
+           nothing (open(2)), so it is left on. A FIFO opened so is read on a thread of input and
+           output, where its reads may wait. */
+        int fd = sg_open_cached(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+        int error = sg_os_error();
+        free(name);
+        if (fd < 0) return error;
+        uint8_t* block = malloc(65536);
+        if (!block) abort();
+        *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
+        return 0;
+    }
+#endif
     int fd = open(name, O_RDONLY | O_CLOEXEC);
     free(name);
     if (fd < 0) return sg_os_error();
-    struct stat info;
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
@@ -19824,10 +19913,17 @@ impl<'a> Emitter<'a> {
     /// `File.delete(path)`, `Directory.list` through `System.list`, and the other calls of the
     /// file system and of the environment: a function of the glue for each, written once.
     fn system(&mut self, call: SystemCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
-        let span = expr.span;
+        let fname = self.system_glue(call, &expr.ty, expr.span)?;
+        self.call(fname.to_string(), None, args, head, &expr.ty)
+    }
+
+    /// The function of the glue a call of the system goes through, giving `result`, written
+    /// once, and its name; `await System.statusAsync(...)` hands the same one to a thread of
+    /// input and output (1871).
+    fn system_glue(&mut self, call: SystemCall, result: &Ty, span: Span) -> Res<&'static str> {
         self.made.insert("files".to_string());
         self.io_error(span)?;
-        let gives = self.ctype(&expr.ty, span)?;
+        let gives = self.ctype(result, span)?;
         let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = || Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))));
@@ -20059,7 +20155,7 @@ impl<'a> Emitter<'a> {
             ),
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
-        self.call(fname.to_string(), None, args, head, &expr.ty)
+        Ok(fname)
     }
 
     /// `sg_io_error(code)` and `sg_io_bad_text(at)`: the `IoError` for a code the system gave,
@@ -20395,7 +20491,15 @@ impl<'a> Emitter<'a> {
     /// Where a task is started (`sg_site`), as the first value of the call that starts it: the
     /// name of its function, in C, and the line.
     fn site(&mut self, name: String, span: Span) -> Part {
-        let loc = self.loc(span);
+        // The record is a constant, so a task started inside the language's own module is placed
+        // where it is started there, not where the program called the module (`sg_caller`).
+        let loc = match self.at {
+            true => {
+                self.locs.push((self.sources.snippet(span), false));
+                format!("sg_loc_{}", self.locs.len() - 1)
+            }
+            false => self.loc(span),
+        };
         self.sites.push(format!("{{ {name}, {loc} }}"));
         Part {
             ctype: "const sg_site*".to_string(),
@@ -20582,6 +20686,12 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Method { args, callee: Callee::IoAsync(call), .. } => {
                 let fname = self.io_whole(*call, &expr.ty, inner.span)?;
+                let params = self.sigs[fname].clone();
+                let value = self.await_io(fname, &params, None, args, head, expr)?;
+                result(self, value)
+            }
+            ExprKind::Method { args, callee: Callee::SystemAsync(call), .. } | ExprKind::Call { args, callee: Callee::SystemAsync(call), .. } => {
+                let fname = self.system_glue(*call, &expr.ty, inner.span)?;
                 let params = self.sigs[fname].clone();
                 let value = self.await_io(fname, &params, None, args, head, expr)?;
                 result(self, value)
@@ -21053,10 +21163,26 @@ impl<'a> Emitter<'a> {
                 ),
                 None => String::new(),
             };
+            // On Linux the stat, the open and the read of a file are first tried on the task's own
+            // thread in the forms the kernel keeps from waiting, and go to a thread of input and
+            // output only when it would wait (1872; `sg_nowait` in `IO_RUNTIME`). Not the input,
+            // which a thread of its own may be filling, nor a connection, read on the loop.
+            let tried = match (fname, &reader) {
+                ("sg_system_status" | "sg_file_open_text", _) => format!(
+                    "\n#if defined(__linux__)\n {{ sg_nowait = true; sg_would_wait = false; x->r = {fname}({gets}); sg_nowait = false; \
+                     if (!sg_would_wait) {{ x->io.done = 1; return; }} }}\n#endif\n"
+                ),
+                ("sg_reader_some_r", Some(_)) => format!(
+                    "\n#if defined(__linux__)\n if (x->a0 != &sg_stdin\n#if SG_NET\n && !x->a0->sock\n#endif\n) \
+                     {{ sg_nowait = true; sg_would_wait = false; x->r = {fname}({gets}); sg_nowait = false; \
+                     if (!sg_would_wait) {{ x->io.done = 1; return; }} }}\n#endif\n"
+                ),
+                _ => String::new(),
+            };
             let _ = writeln!(
                 self.glue,
                 "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ x->mode = 0; {hold}\
-                 if (x->cancelled) {{ {cancelled} }}{net}{lapped}{now} \
+                 if (x->cancelled) {{ {cancelled} }}{net}{lapped}{now}{tried} \
                  sg_io_start(&x->io, sg_io_run_{fname}, loc); }}\n\
                  static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
                  if (!sg_wait_settled(&x->w)) return false; \
@@ -22713,7 +22839,7 @@ impl<'a> Emitter<'a> {
                     let (ctype, loc) = (self.ctype(&expr.ty, expr.span)?, self.loc(expr.span));
                     Ok(format!("(({ctype})sg_delay_task_new({ms}, {loc}))"))
                 }
-                Callee::IoAsync(_) | Callee::StreamAsync(_) | Callee::NetAsync(_) => unreachable!("the checker has async input and output awaited where it is written"),
+                Callee::IoAsync(_) | Callee::SystemAsync(_) | Callee::StreamAsync(_) | Callee::NetAsync(_) => unreachable!("the checker has async input and output awaited where it is written"),
                 Callee::Cancel(CancelCall::After) => {
                     self.made.insert("tasks".to_string());
                     let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;

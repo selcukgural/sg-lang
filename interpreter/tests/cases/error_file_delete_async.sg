@@ -1,8 +1,0 @@
-// The calls of the file system have no async version: they are made as they are.
-async Result<void, IoError> clean(string path) {
-    try await File.deleteAsync(read path)
-    return Ok()
-}
-
-void main() {
-}

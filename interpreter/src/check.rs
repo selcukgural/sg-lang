@@ -12325,7 +12325,7 @@ impl<'a> Checker<'a> {
     /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
     /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
     #[allow(clippy::too_many_arguments)]
-    fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+    fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut Vec<Expr>, callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         // `File.readTextAsync(path)`: the same work as a task, with a token that may come last.
@@ -12354,27 +12354,41 @@ impl<'a> Checker<'a> {
                 *callee = Callee::System(call);
                 return Ok(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))));
             }
+            // The same as a task, done on a thread of input and output (1871).
+            ("File", "delete" | "move" | "replace" | "copy") => {
+                let (call, params) = match base {
+                    "delete" => (SystemCall::Delete, vec![text()]),
+                    "move" => (SystemCall::Move, vec![text(), text()]),
+                    "replace" => (SystemCall::Replace, vec![text(), text()]),
+                    _ => (SystemCall::Copy, vec![text(), text()]),
+                };
+                self.async_args(name, args, &params, span)?;
+                self.awaited_here(&format!("File.{name}"), awaited, args, span)?;
+                *callee = Callee::SystemAsync(call);
+                return Ok(Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))))));
+            }
             // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`, and
-            // `File.createTemp()` is `FileInfo.makeTemp()`.
-            ("File", "info" | "exists" | "createTemp") if !is_async => {
+            // `File.createTemp()` is `FileInfo.makeTemp()`; `File.infoAsync(path)` is
+            // `FileInfo.ofAsync(path)` (1871).
+            ("File", "info" | "exists" | "createTemp") => {
                 let owner = format!("{STD_MODULE}.FileInfo");
-                let inner = match base {
-                    "info" => "of",
-                    "exists" => "isFile",
-                    _ => "makeTemp",
+                let inner = match (base, is_async) {
+                    ("info", false) => "of",
+                    ("exists", false) => "isFile",
+                    (_, false) => "makeTemp",
+                    ("info", true) => "ofAsync",
+                    ("exists", true) => "isFileAsync",
+                    (_, true) => "makeTempAsync",
                 };
                 let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `File.{base}` gets the file of `FileInfo`") };
+                self.fill_defaults(name, sig, args, span)?;
                 self.args(name, args, &sig.params, span)?;
                 *callee = Callee::Static { owner, name: inner.to_string() };
-                return Ok(sig.ret.clone());
-            }
-            ("File", "delete" | "move" | "replace" | "copy" | "info" | "exists" | "createTemp") => {
-                return Err(Diag::error(name_span, format!("`File.{base}` has no async version"))
-                    .note(format!("the calls of the file system are quick and are made as they are, also in an async function: `File.{base}(...)`")));
+                return self.method_gives(name, sig, None, args, span, awaited);
             }
             _ => {
                 let known: &[&str] = match is_async {
-                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync", "openWriteAsync"],
+                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync", "openWriteAsync", "deleteAsync", "moveAsync", "replaceAsync", "copyAsync", "infoAsync", "existsAsync", "createTempAsync"],
                     false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend", "openWrite", "delete", "move", "replace", "copy", "info", "exists", "createTemp"],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
@@ -12402,20 +12416,36 @@ impl<'a> Checker<'a> {
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        // The calls of the file system, and the same as a task done on a thread of input and
+        // output while the task waits (1871).
+        let disk = |name: &str| -> Option<(SystemCall, Vec<Ty>, Ty)> {
+            Some(match name {
+                "createDirectory" => (SystemCall::CreateDirectory, vec![text()], io(Ty::Void)),
+                "removeDirectory" => (SystemCall::RemoveDirectory, vec![text()], io(Ty::Void)),
+                "removeAll" => (SystemCall::RemoveAll, vec![text()], io(Ty::Void)),
+                "syncDirectory" => (SystemCall::SyncDirectory, vec![text()], io(Ty::Void)),
+                "list" => (
+                    SystemCall::List,
+                    vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
+                    io(Ty::Void),
+                ),
+                "status" => (SystemCall::Status, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+                "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
+                "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
+                _ => return None,
+            })
+        };
+        if let Some((call, params, ret)) = name.strip_suffix("Async").and_then(disk) {
+            if !self.is_async {
+                return Err(Diag::error(span, format!("`System.{name}` is awaited in an async function")));
+            }
+            self.async_args(name, args, &params, span)?;
+            self.awaited_here(&format!("System.{name}"), awaited, args, span)?;
+            *callee = Callee::SystemAsync(call);
+            return Ok(Ty::Task(Box::new(ret)));
+        }
         let (call, params, ret) = match name {
-            "createDirectory" => (SystemCall::CreateDirectory, vec![text()], io(Ty::Void)),
-            "removeDirectory" => (SystemCall::RemoveDirectory, vec![text()], io(Ty::Void)),
-            "removeAll" => (SystemCall::RemoveAll, vec![text()], io(Ty::Void)),
-            "syncDirectory" => (SystemCall::SyncDirectory, vec![text()], io(Ty::Void)),
-            "list" => (
-                SystemCall::List,
-                vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
-                io(Ty::Void),
-            ),
-            "status" => (SystemCall::Status, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
             "current" => (SystemCall::Current, Vec::new(), io(Ty::Str)),
-            "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
-            "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
             "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
@@ -12515,7 +12545,10 @@ impl<'a> Checker<'a> {
                     _ => (SystemCall::LookupAsync, vec![text(), found(), token()], task(Ty::Void)),
                 }
             }
-            _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
+            _ => match disk(name) {
+                Some(found) => found,
+                None => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
+            },
         };
         self.args(name, args, &params, span)?;
         if matches!(call, SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync) {

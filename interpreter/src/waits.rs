@@ -236,7 +236,7 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
             }
             let call = |name: &str, span: Span| {
                 holds.get(name)?;
-                let diag = Diag::error(span, format!("`{}` holds the thread until it is done, and an async function does not hold its thread", short_name(name)));
+                let diag = Diag::error(span, format!("`{}` holds the thread until it is done, and an async function does not hold its thread", shown(name)));
                 Some(explained(diag, name, holds).note(NO_HOLD).hint(RUN_APART))
             };
             error = match &expr.kind {
@@ -259,6 +259,19 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                             diag.hint(format!("`await {recv}.{name}Async({})` does the same work without holding the thread", shown.join(", ")))
                         }
                         _ => diag,
+                    })
+                }
+                // `File.info(path)` is `FileInfo.of(path)`, and is named as it is written (1871).
+                ExprKind::Call { callee: Callee::Static { owner, name }, name_span, args, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, args, .. }
+                    if file_alias(&format!("{owner}.{name}")).is_some() =>
+                {
+                    let full = format!("{owner}.{name}");
+                    let alias = file_alias(&full).expect("tested");
+                    holds.get(&full).map(|_| {
+                        let shown: Vec<String> = args.iter().map(written_arg).collect();
+                        Diag::error(*name_span, format!("`File.{alias}` holds the thread until it is done, and an async function does not hold its thread"))
+                            .note(NO_HOLD)
+                            .hint(format!("`await File.{alias}Async({})` does the same work without holding the thread", shown.join(", ")))
                     })
                 }
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, args, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, args, .. } => {
@@ -366,7 +379,41 @@ const ASYNC_METHODS: [&str; 9] = [
 ];
 
 /// The functions of the language's own module that hold the thread and have an async version.
-const ASYNC_FUNCTIONS: [&str; 1] = ["std.SocketAddress.lookup"];
+const ASYNC_FUNCTIONS: [&str; 9] = [
+    "std.SocketAddress.lookup",
+    "std.Directory.create",
+    "std.Directory.createAll",
+    "std.Directory.delete",
+    "std.Directory.deleteAll",
+    "std.Directory.sync",
+    "std.Directory.list",
+    "std.Directory.exists",
+    "std.Directory.createTemp",
+];
+
+/// The calls of the file system the language's own module makes, which wait for the disk (1871).
+const DISK: [&str; 8] = ["status", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile"];
+
+/// A function as a message names it: as the program writes it, `Directory.list` and `File.info`
+/// for those of the language's own module, the name alone for the program's own.
+fn shown(name: &str) -> String {
+    match (name.strip_prefix(STD_PREFIX), file_alias(name)) {
+        (_, Some(alias)) => format!("File.{alias}"),
+        (Some(_), None) => shown_std(name),
+        (None, None) => short_name(name).to_string(),
+    }
+}
+
+/// What a program writes for the functions of `FileInfo` that `File.info`, `File.exists` and
+/// `File.createTemp` are.
+fn file_alias(full: &str) -> Option<&'static str> {
+    match full {
+        "std.FileInfo.of" => Some("info"),
+        "std.FileInfo.isFile" => Some("exists"),
+        "std.FileInfo.makeTemp" => Some("createTemp"),
+        _ => None,
+    }
+}
 
 const NO_HOLD: &str = "the tasks of async functions share a few threads: one that holds its thread keeps the others from running";
 const RUN_APART: &str = "a function that does it runs on a thread of its own with `await Task.run(work, x)`";
@@ -401,6 +448,12 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
             Some((*name_span, format!("`File.{}`", call.name())))
         }
+        // The calls of the file system wait for the disk (1871): `File.delete` and the others a
+        // program writes, and those `Directory` and `FileInfo` are built on.
+        ExprKind::Call { callee: Callee::System(call), name_span, .. } | ExprKind::Method { callee: Callee::System(call), name_span, .. } if call.on_disk().is_some() => {
+            let owner = if matches!(call, SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy) { "File" } else { "System" };
+            Some((*name_span, format!("`{owner}.{}`", call.on_disk().expect("tested"))))
+        }
         // A reader seeks without writing or reading: it only asks the system where the file stands.
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Seek), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
         // Looking at the block of a reader, and giving out of it, do not read.
@@ -427,6 +480,10 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
 fn async_version(expr: &Expr) -> Option<String> {
     let (written, args) = match &expr.kind {
         ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => (format!("File.{}Async", call.name()), args),
+        ExprKind::Call { callee: Callee::System(call @ (SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy)), args, .. }
+        | ExprKind::Method { callee: Callee::System(call @ (SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy)), args, .. } => {
+            (format!("File.{}Async", call.on_disk().expect("a call of the file system")), args)
+        }
         ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,
         ExprKind::Call { callee: Callee::Net(NetCall::Connect), args, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), args, .. } => ("TcpStream.connectAsync".to_string(), args),
         ExprKind::Method { recv, name, callee: Callee::Net(NetCall::Accept | NetCall::Receive | NetCall::Send | NetCall::SendPieces), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
@@ -552,14 +609,17 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
             scan.itself.get_or_insert((expr.span, How::Await));
             match &inner.kind {
                 ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => scan.awaits.push((name.clone(), *name_span)),
-                ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } | ExprKind::Call { name_span, callee: Callee::Static { owner, name }, .. } => {
-                    scan.awaits.push((format!("{owner}.{name}"), *name_span))
-                }
+                ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. }
+                | ExprKind::Call { name_span, callee: Callee::Static { owner, name }, .. }
+                | ExprKind::Method { name_span, callee: Callee::Static { owner, name }, .. } => scan.awaits.push((format!("{owner}.{name}"), *name_span)),
                 _ => {}
             }
         }
         ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => scan.calls.push((format!("{owner}.{name}"), *name_span)),
-        ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => scan.calls.push((format!("{owner}.{name}"), *name_span)),
+        // `Directory.list(path)` and `File.info(path)` are written as methods of their type.
+        ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, .. } => {
+            scan.calls.push((format!("{owner}.{name}"), *name_span))
+        }
         ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => scan.calls.push((name.clone(), *name_span)),
         ExprKind::Call { args, name_span, callee: Callee::Value | Callee::FieldValue(_), .. }
         | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => scan.values.push((args.len(), expr.ty.clone(), *name_span)),
@@ -616,7 +676,7 @@ fn unwoken_here(expr: &Expr) -> Option<(Span, &'static str)> {
     match callee {
         Callee::Clock(_) => Some((*name_span, "reads the clock")),
         Callee::Entropy => Some((*name_span, "draws random bytes of the system")),
-        Callee::Io(_) | Callee::IoAsync(_) | Callee::Stream(_) | Callee::StreamAsync(_) | Callee::Net(_) | Callee::NetAsync(_) | Callee::System(_) => {
+        Callee::Io(_) | Callee::IoAsync(_) | Callee::Stream(_) | Callee::StreamAsync(_) | Callee::Net(_) | Callee::NetAsync(_) | Callee::System(_) | Callee::SystemAsync(_) => {
             Some((*name_span, "reads or writes outside the program"))
         }
         Callee::Plain if matches!(expr.kind, ExprKind::Call { .. }) && (name == "print" || name == "printError") => Some((*name_span, "writes out")),
@@ -918,7 +978,7 @@ fn called(name: &str, span: Span, waits: &HashMap<String, Why>) -> Option<Diag> 
 /// Shows where the function named `name` waits, following its calls to the `lock` or the
 /// `wait` that makes it wait.
 fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
-    let mut chain = vec![short_name(name).to_string()];
+    let mut chain = vec![shown(name)];
     let mut at = name.to_string();
     for _ in 0..waits.len() {
         // What a function of the language's own module does inside is not shown: the message
@@ -928,6 +988,8 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
                 Some("`System.run`" | "`System.wait`") => "waits for another program to end".to_string(),
                 Some("`System.udpSend`" | "`System.udpReceive`") => "waits for the network".to_string(),
                 Some("`System.lookup`") => "waits for a name to be looked up".to_string(),
+                Some("`System.signalNext`") => "waits for a signal".to_string(),
+                Some(what) if what.starts_with("`System.") && DISK.iter().any(|call| what == format!("`System.{call}`")) => "waits for the disk".to_string(),
                 Some(what) => format!("does {what}"),
                 None => "waits".to_string(),
             };
@@ -959,7 +1021,7 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
                 return diag.related(*span, path);
             }
             Why::Calls(callee) | Why::CallsValue(callee) => {
-                chain.push(short_name(callee).to_string());
+                chain.push(shown(callee));
                 at = callee.clone();
             }
         }

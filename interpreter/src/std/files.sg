@@ -61,11 +61,37 @@ public struct FileInfo : Copyable, Equatable, Formattable {
     bool isFile(read string path) {
         return isKind(path, 0)
     }
+
+    // `File.infoAsync(path)`, `File.existsAsync(path)` and `File.createTempAsync()`: the same, for an
+    // async function, the system asked on a thread of input and output while the task waits (1871).
+    async Result<FileInfo, IoError> ofAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var fields = long[3]
+        try await System.statusAsync(path, ref fields, read token)
+        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+    }
+
+    async bool isFileAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await isKindAsync(path, 0, read token)
+    }
+
+    async Result<string, IoError> makeTempAsync(read CancellationToken token = CancellationToken.None) {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return await System.makeTempFileAsync(read template, read token)
+    }
 }
 
 bool isKind(read string path, long kind) {
     var fields = long[3]
     if System.status(path, ref fields) is Error(_) {
+        return false
+    }
+    return fields[0] == kind
+}
+
+async bool isKindAsync(read string path, long kind, read CancellationToken token) {
+    var fields = long[3]
+    if await System.statusAsync(path, ref fields, read token) is Error(_) {
         return false
     }
     return fields[0] == kind
@@ -182,5 +208,88 @@ public struct Directory {
         var folder = Directory.temp()
         var template = Path.join(read folder, "sg-XXXXXX")
         return System.makeTemp(read template)
+    }
+
+    // The same for an async function (1871): each asks the system on a thread of input and output
+    // while the task waits, and gives `IoError.Cancelled` for a token cancelled before. `current`
+    // and `temp` ask nothing of the disk and are called as they are.
+
+    public async Result<void, IoError> createAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await System.createDirectoryAsync(path, read token)
+    }
+
+    // As `createAll`, going up the path to the first folder there and making those below it in a
+    // loop, since an async function does not await itself.
+    public async Result<void, IoError> createAllAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var missing = List<string>()
+        var at = path.clone()
+        while true {
+            match await System.createDirectoryAsync(read at, read token) {
+                Ok => break
+                Error(cause) => {
+                    if cause == IoError.AlreadyExists && await Directory.existsAsync(read at, read token) {
+                        break
+                    }
+                    if cause != IoError.NotFound {
+                        return Error(cause)
+                    }
+                }
+            }
+            var parent = Path.parent(read at)
+            if parent.length() == 0 || parent == at {
+                return Error(IoError.NotFound)
+            }
+            var up = parent.clone()
+            missing.add(at)
+            at = up
+        }
+        var i = missing.length()
+        while i > 0 {
+            i -= 1
+            match await System.createDirectoryAsync(read missing[i], read token) {
+                Ok => {}
+                Error(cause) => {
+                    if cause != IoError.AlreadyExists || !await Directory.existsAsync(read missing[i], read token) {
+                        return Error(cause)
+                    }
+                }
+            }
+        }
+        return Ok()
+    }
+
+    public async Result<void, IoError> deleteAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await System.removeDirectoryAsync(path, read token)
+    }
+
+    public async Result<void, IoError> deleteAllAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await System.removeAllAsync(path, read token)
+    }
+
+    public async Result<void, IoError> syncAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await System.syncDirectoryAsync(path, read token)
+    }
+
+    public async Result<List<DirectoryEntry>, IoError> listAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var names = List<string>()
+        var kinds = List<byte>()
+        try await System.listAsync(path, ref names, ref kinds, read token)
+        var entries = List<DirectoryEntry>()
+        var at = 0
+        for name in names {
+            entries.add(DirectoryEntry { name = name, kind = kindOf((long)kinds[at]) })
+            at += 1
+        }
+        return Ok(entries)
+    }
+
+    public async bool existsAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        return await isKindAsync(path, 1, read token)
+    }
+
+    public async Result<string, IoError> createTempAsync(read CancellationToken token = CancellationToken.None) {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return await System.makeTempAsync(read template, read token)
     }
 }
