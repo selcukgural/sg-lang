@@ -163,6 +163,17 @@ says what is slower, by how much and against what, the choice that measured it, 
   local in both (choice 1894) the two take the same time.
 - **`lox`: calls and objects** (slice 181): `fib(35)` 0.820 s against 0.658, `trees` 1.597 against 1.129 in 100.7 MB
   against 84.2: the checks, and an object as large as the largest variant of the enum `Obj`.
+- **`gifsicle`: the LZW encoder** (sg-gifsicle, choices 1895-1905): reading and writing again, without
+  options, against gifsicle 1.99 as Homebrew builds it (median of seven): a 4000 by 4000 GIF 0.108 s against
+  0.096, 3000 by 3000 of noise 0.295 against 0.244, blocks 0.088 against 0.081; reading alone is at C's time
+  (0.042 against 0.041, 0.062 against 0.057, 0.035 against 0.037). Every write goes through it, so
+  `--colors` (1.08-1.14 times) and `--lossy` (1.09-1.19) carry it; the dithers are faster than C's (0.88-0.91).
+  Not the checks: the C of the port with no index checks takes the same time. clang puts the lossy search,
+  called once, inside the encoder, and the loop that finds the longest code then keeps the bases of the five
+  arrays of nodes on the stack: 3.85 billion instructions against C's 3.19 on the noise. With the lossy search
+  kept out (`noinline` in the C), 3.52 billion and 1.17 times on the noise, 1.04 on the large GIF. The nodes
+  as one array of structs, as C keeps them, were slower (1.33 times). What would fix it: a way for the program
+  to keep a function apart, or an encoder written as two functions, the lossy one and the plain one.
 - **`kv`: the memory of a million gets, sets and deletes over 100,000 keys** (slice 175): 35.4 MB against
   Rust's 24.6 MB and Zig's 20.2 MB, in the same time. Not looked into yet.
 - **`jq`: a text of 100 MB** (`length`): 0.30 s and 222 MB against Zig's 0.21 s and 113 MB (Rust 0.13 s,
