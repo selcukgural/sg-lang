@@ -335,3 +335,27 @@
   color: #ffffff;
   border-color: rgba(255, 255, 255, 0.75);
 }
+
+.showcase {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2.5rem;
+  align-items: center;
+  max-width: 60rem;
+}
+
+.showcaseImage {
+  margin: 0;
+  text-align: center;
+}
+
+.showcaseImage figcaption {
+  max-width: 14rem;
+  margin: 0.5rem auto 0;
+}
+
+@media (max-width: 700px) {
+  .showcase {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

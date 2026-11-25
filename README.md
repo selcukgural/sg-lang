@@ -31,6 +31,10 @@ kept in the open.
   compile errors, each with the fix when it is known.
 - **As fast as C.** SG compiles through C with no runtime to carry. Of 61 programs written in SG and
   in C by hand, 37 take the time of C within 5% and 13 are faster ([the numbers](benchmarks/README.md)).
+- **Real programs.** [gifsicle](https://www.lcdf.org/gifsicle/) 1.99, the GIF tool, is written in SG as
+  [sg-gifsicle](https://github.com/selcukgural/sg-gifsicle): every option, the same bytes as gifsicle in 58,767
+  runs, 1.01 to 1.31 times its time, and frames resized on several threads with no lock
+  ([the measurements](benchmarks/programs.md#gifsicle)).
 - **Small.** A feature pays for itself in what it costs when the program runs and in what it costs
   to learn; the safe way is the default and the risky way is written on purpose (`unsafe`).
 

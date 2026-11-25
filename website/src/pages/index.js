@@ -1,6 +1,6 @@
 // The front page (choices 1384, 1404 and 1405), laid out as the pages of Rust and Zig are: what SG is in one
 // sentence beside a program that runs, why it exists, what the compiler catches, what it is built for, how
-// fast it is, and where to go next.
+// fast it is, a real program written in it, and where to go next.
 import React from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
@@ -257,6 +257,37 @@ export default function Home() {
                 <Link to={use.to}>{use.link} →</Link>
               </div>
             ))}
+          </div>
+        </section>
+        <section className={styles.section}>
+          <h2 className={styles.heading}>Written in SG</h2>
+          <div className={styles.showcase}>
+            <figure className={styles.showcaseImage}>
+              <img
+                src="/img/pasha-turning.gif"
+                loading="lazy"
+                width="180"
+                height="180"
+                alt="Pasha, the cat of SG, turning a quarter at a time"
+              />
+              <figcaption className={styles.small}>
+                Pasha turning: four frames, resized on four threads and optimized by sg-gifsicle.
+              </figcaption>
+            </figure>
+            <div>
+              <p>
+                <a href="https://www.lcdf.org/gifsicle/">gifsicle</a> 1.99, the tool that shrinks and edits GIF
+                images, translated file by file into SG: every option it has, the same bytes as gifsicle in
+                58,767 runs, and 1.01 to 1.31 times its time.
+              </p>
+              <p>
+                <Words text="With `-j` it resizes the frames of an animation on several threads. Each frame is owned by one thread at a time, so there is no lock where gifsicle has two, and the thread rule checks it when the program compiles." />
+              </p>
+              <div className={styles.buttonsInline}>
+                <Link className="button button--primary" href="https://github.com/selcukgural/sg-gifsicle">sg-gifsicle on GitHub</Link>
+                <Link className="button button--outline button--primary" to="/docs/benchmarks/programs#gifsicle">The measurements</Link>
+              </div>
+            </div>
           </div>
         </section>
         <section className={styles.band}>
