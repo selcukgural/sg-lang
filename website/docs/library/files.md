@@ -159,6 +159,7 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | Signature | What it does |
 |---|---|
 | `Result<StreamReader, IoError> File.openText(read string path)` | A reader of the file |
+| `Result<StreamReader, IoError> File.openRegular(read string path)` | The same, but only of a regular file: a folder is `IsDirectory`, anything else `NotAFile` |
 | `Result<bool, IoError> readLine(ref this, ref string line)` | The next line into `line`, without its `\n` or `\r\n`; `false` at the end |
 | `Result<bool, IoError> readLineBytes(ref this, ref List<byte> line)` | The same with the bytes of the line as they are, none checked to be UTF-8, for a search with `isMatchBytes` |
 | `Result<string, IoError> readText(ref this)` | All that is left |
@@ -169,11 +170,22 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | `read byte[] buffered(read this)` | What the block holds and has not been given out, lent where it lies |
 | `consume(ref this, nint n)` | Gives out the first `n` bytes of the block; more than it holds is a panic |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Moves, inside its block when it can; gives the new place |
+| `Result<FileInfo, IoError> info(read this)` | What the system knows of the file it reads, asked of the open file |
 
 Text that is not UTF-8 is `IoError.InvalidText(position)`, counted from the start of the file; a program
 that must go on past such a line, as `grep` does, reads it with `readLineBytes`. `SeekFrom` is
 `Start(long offset)`, `End(long offset)` or `Current(long offset)`; a place before the start is
 `InvalidInput`.
+
+`File.openRegular` opens only a regular file (choice 1873). A folder is `IsDirectory`, and a pipe, a
+device or a socket is `NotAFile`, refused before it is opened: a FIFO in a folder a server sends files
+from is never opened, so the server does not wait on it, and a writer waiting for a reader of it is not
+let go. (On Windows a device is known only by its handle, so it is opened and closed again.) `info()`
+is `File.info` of the open file, as Rust's `File::metadata` and Go's `f.Stat()` are: what it says is of
+the file the reader reads, also after its path has been given to another, and it walks no path, so it
+waits for nothing and an async function calls it as it is. A server opens a file with `openRegular` and
+asks the reader for its size and its time, which asks the disk once less than `File.info` and then
+`openText`. `Stdin` and the reader of a connection have no `info()`.
 
 ### Reading from the block
 
@@ -273,13 +285,13 @@ end
 ```
 
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
-`writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`;
+`writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `openRegularAsync`, `createTextAsync`, `openAppendAsync`;
 on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
 `fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`,
 `syncDataAsync`, `syncAsync`, `setLengthAsync`, `seekAsync`. Each may take a `read CancellationToken` last (not
 `closeAsync`). In an async function the calls without `Async` are an error, since they would hold the thread.
 `buffered` and `consume` do not wait, and neither does a reader's `seek`, which asks the system where the
-file stands and reads nothing: they are called as they are.
+file stands and reads nothing, nor its `info`: they are called as they are.
 
 The calls of the file system have async versions too (choice 1871), done on a thread of input and output
 while the task waits: `File.infoAsync`, `existsAsync`, `deleteAsync`, `moveAsync`, `replaceAsync`, `copyAsync`,
@@ -291,7 +303,7 @@ async function the calls without `Async` are an error here too, also through a f
 `Directory.current()` and `Directory.temp()` ask the process, not the disk, and are called as they are.
 
 A thread taken for each call costs a hand-over, as it costs `tokio::fs`. On Linux, compiled, `File.infoAsync`
-(and `existsAsync`, `Directory.existsAsync`), `File.openTextAsync` and a file reader's `readSomeAsync` are first
+(and `existsAsync`, `Directory.existsAsync`), `File.openTextAsync`, `openRegularAsync` and a file reader's `readSomeAsync` are first
 tried on the task's own thread in the forms the kernel answers only from what it already holds: a path found from
 its cache alone (`openat2` with `RESOLVE_CACHED`), a read of what its cache holds (`preadv2` with `RWF_NOWAIT`).
 Where it would wait, or has neither (a kernel before 5.12, a filter of system calls, overlayfs and tmpfs, which
@@ -481,6 +493,7 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `InvalidText(long position)` | A byte that is not UTF-8, at that place |
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
+| `NotAFile` | `File.openRegular` met a pipe, a device or a socket, and did not open it |
 | `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `AddressNotAvailable`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
 
 Printed, an `IoError` is a sentence in lower case, as Go's errors are: `not found`, `permission denied`,

@@ -213,6 +213,10 @@ def model_get(root, method, target, headers):
         return text_answer(301, b"moved permanently", {"location": written + "/"})
     if not stat.S_ISREG(info.st_mode):
         return text_answer(404, b"not found")
+    # The file is opened before its headers are looked at (1873): one not readable is 403 whatever
+    # they ask, as nginx answers it.
+    if not os.access(full, os.R_OK):
+        return text_answer(403, b"forbidden")
     mtime = int(info.st_mtime // 1)
     modified = http_date(mtime)
     since = headers.get(b"if-modified-since")
@@ -234,8 +238,6 @@ def model_get(root, method, target, headers):
         else:
             return text_answer(416, b"range not satisfiable", {"content-range": f"bytes */{size}"})
         partial = True
-    if not os.access(full, os.R_OK):
-        return text_answer(403, b"forbidden")
     length = end - start + 1
     out = {"content-type": type_of(full), "content-length": str(length), "last-modified": modified, "accept-ranges": "bytes"}
     if partial:

@@ -47,6 +47,14 @@ public struct FileInfo : Copyable, Equatable, Formattable {
         return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
     }
 
+    // `reader.info()`: what the system knows of the file the reader reads, asked of the open file, so
+    // what it says is of that file even when its path has been given to another since (1873).
+    Result<FileInfo, IoError> ofReader(read StreamReader reader) {
+        var fields = long[3]
+        try System.readerStatus(read reader, ref fields)
+        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+    }
+
     // `File.createTemp()`: a new empty file with a name nobody else has, inside `Directory.temp()`, that
     // only the user of the program can read and write, and gives its path. Removing it is the
     // program's work (`File.delete`).

@@ -223,7 +223,7 @@ The HTTP server of the measurements is written on `HttpConnection`, with its lim
 connections kept open it answers within 2.2% of the server SG had before, written by hand on `TcpStream`
 with the same limits, and faster with 50 ([the library's measurements](https://github.com/selcukgural/sg-lang/blob/main/benchmarks/library.md#http)).
 
-A server of files written on it answers files of 1 KB at 0.66 times the rate of the same server in C, files of
+A server of files written on it answers files of 1 KB at 0.71 times the rate of the same server in C, files of
 1 MB and of 1 GB at C's rate, and holds what C holds; the difference on small files is the work of each answer,
 not the disk ([the server of files](https://github.com/selcukgural/sg-lang/blob/main/benchmarks/server.md#files)).
 

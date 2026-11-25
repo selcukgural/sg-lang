@@ -1,0 +1,4 @@
+error: `info` takes no arguments, 1 given
+  --> error_info_args.sg:4:20
+ 4 |     var info = try reader.info(1)
+   |                    ^^^^^^^^^^^^^^

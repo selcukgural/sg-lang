@@ -1,0 +1,5 @@
+error: `Stdin` is the input of the program, not a file it opened
+  a reader of `File.openText(path)` or `File.openRegular(path)` has `info()`
+  --> error_info_stdin.sg:3:20
+ 3 |     var info = try Stdin.info()
+   |                    ^^^^^

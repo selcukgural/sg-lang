@@ -1,0 +1,6 @@
+// The input of the program is not a file it opened: `Stdin` has no `info()`.
+Result<void, IoError> main() {
+    var info = try Stdin.info()
+    print(info.size)
+    return Ok()
+}

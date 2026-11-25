@@ -1,0 +1,7 @@
+// `info()` takes no arguments.
+Result<void, IoError> main() {
+    var reader = try File.openRegular("a.txt")
+    var info = try reader.info(1)
+    print(info.size)
+    return Ok()
+}

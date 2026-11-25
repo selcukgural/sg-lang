@@ -5,9 +5,11 @@
 //     files PORT ROOT [--idle-limit MS] [--grace MS]
 //
 // Every connection is a task of a `TaskGroup`, as in `../../http/sg/http.sg`. What a request asks of
-// the disk is asked as a task (`File.infoAsync`, `File.openTextAsync`, `readSomeAsync`), so a disk
-// that is slow holds up only the connection that waits for it (choice 1871). A body goes out in
-// pieces of 64 KB, read into one buffer the answer owns (1864).
+// the disk is asked as a task (`File.openRegularAsync`, `readSomeAsync`), so a disk that is slow
+// holds up only the connection that waits for it (choice 1871). Only a regular file is opened, so a
+// pipe under ROOT is never opened, and its size and time are asked of the open file
+// (`reader.info()`, choice 1873). A body goes out in pieces of 64 KB, read into one buffer the
+// answer owns (1864).
 
 // The most bytes read and sent at a time.
 const nint Piece = 65536
@@ -239,25 +241,31 @@ int statusOf(IoError cause) {
     return 404
 }
 
-// Answers a request whose path is checked, from the file at `full`.
+// Answers a request whose path is checked, from the file at `full`. Only a regular file is opened:
+// a folder is `IsDirectory`, and a pipe, a device or a socket `NotAFile`, which is a 404.
 async Result<void, IoError> answer(ref HttpConnection conn, read Asked asked, read string full) {
-    match await File.infoAsync(full) {
-        Ok(info) => return await answerFile(ref conn, asked, full, info)
+    match await File.openRegularAsync(full) {
+        Ok(reader) => {
+            match reader.info() {
+                Ok(info) => return await answerFile(ref conn, asked, full, reader, info)
+                Error(cause) => return await fail(ref conn, statusOf(cause))
+            }
+        }
+        Error(IsDirectory) => return await answerFolder(ref conn, asked)
         Error(cause) => return await fail(ref conn, statusOf(cause))
     }
 }
 
-async Result<void, IoError> answerFile(ref HttpConnection conn, read Asked asked, read string full, FileInfo info) {
-    if info.kind == FileKind.Directory {
-        if asked.path.endsWith('/') {
-            return await fail(ref conn, 404)
-        }
-        try conn.addHeader("location", read $"{asked.written}/".toString())
-        return await conn.respondAsync(301, "text/plain", "moved permanently".asBytes())
-    }
-    if info.kind != FileKind.File {
+// A folder asked without its `/` is sent there; one asked with it has no `index.html` that is a file.
+async Result<void, IoError> answerFolder(ref HttpConnection conn, read Asked asked) {
+    if asked.path.endsWith('/') {
         return await fail(ref conn, 404)
     }
+    try conn.addHeader("location", read $"{asked.written}/".toString())
+    return await conn.respondAsync(301, "text/plain", "moved permanently".asBytes())
+}
+
+async Result<void, IoError> answerFile(ref HttpConnection conn, read Asked asked, read string full, StreamReader reader, FileInfo info) {
     var modified = info.modified.toHttpDate()
     var since = asked.since
     if since is not null && info.modified.unixSeconds() <= since {
@@ -284,17 +292,12 @@ async Result<void, IoError> answerFile(ref HttpConnection conn, read Asked asked
         }
         status = 206
     }
-    match await File.openTextAsync(full) {
-        Ok(reader) => {
-            try conn.addHeader("last-modified", read modified)
-            try conn.addHeader("accept-ranges", "bytes")
-            if status == 206 {
-                try conn.addHeader("content-range", read $"bytes {start}-{end}/{size}".toString())
-            }
-            return await send(ref conn, asked.head, typeOf(full), reader, status, start, end - start + 1)
-        }
-        Error(cause) => return await fail(ref conn, statusOf(cause))
+    try conn.addHeader("last-modified", read modified)
+    try conn.addHeader("accept-ranges", "bytes")
+    if status == 206 {
+        try conn.addHeader("content-range", read $"bytes {start}-{end}/{size}".toString())
     }
+    return await send(ref conn, asked.head, typeOf(full), reader, status, start, end - start + 1)
 }
 
 // Sends `length` bytes of the file from `start`, in pieces.

@@ -1,12 +1,12 @@
 # The file server
 
-GET and HEAD of the files under a folder over HTTP/1.1, in SG, Rust, Zig and C (choices 1861-1871), under
+GET and HEAD of the files under a folder over HTTP/1.1, in SG, Rust, Zig and C (choices 1861-1873), under
 the lane's load, with nginx measured beside them. What every version does the same way is written at the top
 of [`c/files.c`](c/files.c); the numbers are in [Servers against Rust, Zig and C](../../../benchmarks/server.md#files).
 
 | Folder | What it is |
 |---|---|
-| [sg](sg/files.sg) | On `HttpConnection` of `std/http`: the disk asked as tasks (`File.infoAsync`, `File.openTextAsync`, `readSomeAsync`), each connection a task, a body begun with its length (`beginAsync(status, type, length)`) and sent in pieces of 64 KB |
+| [sg](sg/files.sg) | On `HttpConnection` of `std/http`: the disk asked as tasks (`File.openRegularAsync`, which opens only a regular file, and `readSomeAsync`), the size and the time asked of the open file (`reader.info()`), each connection a task, a body begun with its length (`beginAsync(status, type, length)`) and sent in pieces of 64 KB |
 | [rust](rust) | hyper 1 on tokio with `tokio::fs` and `tokio-util`'s `ReaderStream`, written by hand and not with `tower-http`'s `ServeDir`, whose own ways (a folder listed, its own 404s and ranges) would keep the four from being held to one another |
 | [zig](zig/files.zig) | `std.http.Server` on `Io.Threaded`, a thread for each connection; the file read with `readPositional` into a buffer of 64 KB and written, never with `sendFile` |
 | [c](c/files.c) | epoll, a loop on each core, `stat`, `open` and `pread` in the loop as nginx does without `aio threads`; with `-DSENDFILE` the body goes out with `sendfile`, measured beside the four as what the copy of the other four costs (1864) |
@@ -33,6 +33,11 @@ python3 trials/server/files/check.py --stand sg=trials/target/server-bin-darwin/
   would (choices 1871, 1872: SG's rule is that nothing holds the thread in async code); Zig blocks the thread of
   its connection; C blocks its loop, as nginx does by default. Zig's io_uring (`Io.Evented`, `zig/uring.zig`)
   was to be measured beside its default and does not compile in Zig 0.17.1, which `measure.py` says.
+- Each version opens the file before it looks at `If-Modified-Since` and `Range`, so a file that cannot be read
+  is 403 whatever they ask, as nginx answers it (1873). C, Rust and Zig ask what the path is first (`stat`) and
+  then open it, two calls; SG opens with `File.openRegular`, which on Linux looks at the path through a
+  descriptor of the path alone and at the open file again, since nothing opens only a regular file in one call
+  before Linux 7.2 (`OPENAT2_REGULAR`): four calls, two of them walking the path.
 - What each language's HTTP refuses before the server sees it (a lower-case method, a byte that is not ASCII
   in the target) is held to its status only, or to the connection closed; Zig's `std.http.Server` writes
   `content-length: 0` on a 304, which `check.py` lets be.
@@ -51,5 +56,8 @@ python3 trials/server/files/check.py --stand sg=trials/target/server-bin-darwin/
 - The scan of which function holds its thread missed a static function written `Type.f(...)`, so a function
   calling `File.exists` or `SocketAddress.lookup` was not found holding; and a task started inside `std` by
   another function of `std` was placed where the program called it, which C could not take as a constant.
+- For a file of 1 KB SG made twice C's calls of the system: `File.infoAsync` and then `File.openTextAsync` each
+  looked at the path through a descriptor of its own before the file was opened, so that no FIFO would be.
+  `File.openRegular` and `reader.info()` (1873) take one walk of the path and one close away: 0.71 times C's answers of 1 KB with 50 connections where it was 0.66, and 0.63 with 1,000 where it was 0.52.
 - Rust and Zig served a target with a byte that is not ASCII, which HTTP does not allow; SG accepted the last
   second a `DateTime` holds, where the three others stopped a second early. The four agree now.

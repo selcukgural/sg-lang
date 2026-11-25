@@ -865,6 +865,10 @@ pub enum IoCall {
     AppendText,
     /// `File.openText(path)`: a `StreamReader` that reads the file piece by piece.
     OpenText,
+    /// `File.openRegular(path)`: the same, but only a regular file is opened; a folder is
+    /// `IsDirectory`, and a pipe, a device or a socket `NotAFile`, refused before it is opened
+    /// (choice 1873).
+    OpenRegular,
     /// `File.createText(path)`: a `StreamWriter` into the file, which is made or emptied.
     CreateText,
     /// `File.openAppend(path)`: a `StreamWriter` that writes after what the file holds; a
@@ -902,6 +906,9 @@ pub enum SystemCall {
     List,
     /// `System.status(path, ref fields)`: the kind, the size and the time of the last write.
     Status,
+    /// `System.readerStatus(read reader, ref fields)`: the same of the file a reader reads
+    /// (`fstat`), for `reader.info()` (1873).
+    ReaderStatus,
     /// `System.current()`: the folder the program works in.
     Current,
     /// `System.makeTemp(template)`: `mkdtemp`.
@@ -1046,6 +1053,7 @@ impl IoCall {
             IoCall::WriteBytes => "writeBytes",
             IoCall::AppendText => "appendText",
             IoCall::OpenText => "openText",
+            IoCall::OpenRegular => "openRegular",
             IoCall::CreateText => "createText",
             IoCall::OpenAppend => "openAppend",
             IoCall::OpenWrite => "openWrite",

@@ -240,6 +240,22 @@ its wakes ([Slower than C](slower-than-c.md#tasks-async-and-signals)). Every cal
 thread, as SG did at first, gave SG 60,400 answers a second here; Rust, which hands every call of `tokio::fs` to
 its pool, gives 52,000.
 
+**After `File.openRegular` (25 November, SG and C only).** The server opened each file twice over: `File.info` and
+then `File.openText` each looked at the path through a descriptor of its own, so that no FIFO would be opened.
+Opened once with `File.openRegular`, which opens only a regular file, and its size and time asked of the open file
+(`reader.info()`, choice 1873), and measured again for SG and C (one run of each, the whole table at night):
+
+| Case | SG | C | SG / C | Processor, SG and C, for 1,000 answers |
+|---|---|---|---|---|
+| 1,000 files of 1 KB, 50 connections | 452k/s, 183 µs, 2.2 MB | 637k/s, 196 µs, 1.8 MB | 0.71 (was 0.66) | 6.6 ms, 4.5 ms |
+| 1,000 files of 1 KB, 1,000 connections | 409k/s, 3.04 ms, 11.7 MB | 649k/s, 2.10 ms, 7.5 MB | 0.63 (was 0.52) | 7.3 ms, 4.7 ms |
+| 304 Not Modified, 50 connections | 514k/s, 169 µs, 2.1 MB | 713k/s, 160 µs, 1.6 MB | 0.72 (was 0.70) | 5.9 ms, 4.0 ms |
+| 404 Not Found, 50 connections | 885k/s, 112 µs, 2.1 MB | 1,259k/s, 89 µs, 1.6 MB | 0.70 (was 0.69) | 3.1 ms, 2.1 ms |
+
+The machine gave more today (C's 404 is 30% above the table's), so the ratio is what compares. Every version now
+opens the file before it looks at `If-Modified-Since`, so that a file that cannot be read is 403 whatever is
+asked, as nginx answers it: a 304 costs an open and a close it did not, and both SG and C lost a seventh there.
+
 **Large files.** Files of 1 MB go at C's speed in SG, Zig and C (22,400, 21,400 and 21,900 a second), and a
 file of 1 GB at 6,979 MB/s against C's 7,194; `sendfile` nearly doubles both, which is the copy into the
 program that the four make and nginx does not. With files of 64 KB and 1,000 connections SG answers the most of

@@ -77,6 +77,7 @@ extern "system" {
     fn GetCurrentProcess() -> Handle;
     fn GetProcessAffinityMask(process: Handle, mine: *mut usize, system: *mut usize) -> Bool;
     fn GetActiveProcessorCount(group: u16) -> u32;
+    fn GetFileType(file: Handle) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -520,6 +521,27 @@ pub(crate) fn sync_file(file: &std::fs::File, data: bool) -> std::io::Result<()>
         true => file.sync_data(),
         false => file.sync_all(),
     }
+}
+
+/// `File.openRegular(path)` (1873): a file of the disk opened to read; a folder is `IS_DIR`, and
+/// anything else `None`. A folder is told before it is opened; a device (`NUL`, `COM1`) or a pipe
+/// is known only by its handle (`GetFileType`), so it is opened and closed again, as compiled code
+/// does.
+pub(crate) fn open_regular(path: &str) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::windows::io::AsRawHandle;
+    const FILE_TYPE_DISK: u32 = 1;
+    if std::fs::metadata(path).is_ok_and(|info| info.is_dir()) {
+        return Err(std::io::Error::from_raw_os_error(IS_DIR));
+    }
+    let file = std::fs::File::open(path)?;
+    // SAFETY: the handle is the open file's; `GetFileType` only asks what it is.
+    if unsafe { GetFileType(file.as_raw_handle() as Handle) } != FILE_TYPE_DISK {
+        return Ok(None);
+    }
+    if file.metadata()?.is_dir() {
+        return Err(std::io::Error::from_raw_os_error(IS_DIR));
+    }
+    Ok(Some(file))
 }
 
 /// `writer.setLength(n)`: Rust's `set_len`, which needs the right to write the file's data. A writer

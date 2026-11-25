@@ -10154,6 +10154,19 @@ static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
     *count = k;
     return 0;
 }
+/* The kind, the size and the time of the last write in nanoseconds since 1970, of an open handle. */
+static int sg_fs_status_of_handle(HANDLE h, int64_t* fields) {
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)) return sg_win_error();
+    bool folder = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+    fields[0] = folder ? 1 : GetFileType(h) == FILE_TYPE_DISK ? 0 : 3;
+    fields[1] = folder ? 0 : (int64_t)(((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    int64_t units = (int64_t)(((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime);
+    fields[2] = (units - INT64_C(116444736000000000)) * 100;
+    return 0;
+}
+/* The same of an open file (`reader.info()`, 1873). */
+static int sg_fs_status_of(int fd, int64_t* fields) { return sg_fs_status_of_handle((HANDLE)(intptr_t)fd, fields); }
 /* The kind, the size and the time of the last write in nanoseconds since 1970, a link followed. */
 static int sg_fs_status(sg_str path, int64_t* fields) {
     int code = 0;
@@ -10166,15 +10179,9 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
         return code;
     }
     free(name);
-    BY_HANDLE_FILE_INFORMATION info;
-    if (!GetFileInformationByHandle(h, &info)) { code = sg_win_error(); CloseHandle(h); return code; }
-    bool folder = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
-    fields[0] = folder ? 1 : GetFileType(h) == FILE_TYPE_DISK ? 0 : 3;
+    code = sg_fs_status_of_handle(h, fields);
     CloseHandle(h);
-    fields[1] = folder ? 0 : (int64_t)(((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow);
-    int64_t units = (int64_t)(((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime);
-    fields[2] = (units - INT64_C(116444736000000000)) * 100;
-    return 0;
+    return code;
 }
 /* The folder the program works in, as bytes of its own. */
 static int sg_fs_current(uint8_t** bytes, int64_t* len) {
@@ -10482,6 +10489,27 @@ static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
     *count = n;
     return 0;
 }
+/* The kind, the size and the time of the last write in nanoseconds since 1970, of what the system
+   said of a file. */
+static void sg_fs_fields(const struct stat* info, int64_t* fields) {
+#ifdef __APPLE__
+    int64_t seconds = (int64_t)info->st_mtimespec.tv_sec, ns = (int64_t)info->st_mtimespec.tv_nsec;
+#else
+    int64_t seconds = (int64_t)info->st_mtim.tv_sec, ns = (int64_t)info->st_mtim.tv_nsec;
+#endif
+    fields[0] = sg_fs_kind(info->st_mode);
+    fields[1] = (int64_t)info->st_size;
+    if (seconds >= INT64_MAX / 1000000000) fields[2] = INT64_MAX;
+    else if (seconds <= INT64_MIN / 1000000000) fields[2] = INT64_MIN;
+    else fields[2] = seconds * 1000000000 + ns;
+}
+/* The same of an open file (`reader.info()`, 1873): `fstat`, which walks no path. */
+static int sg_fs_status_of(int fd, int64_t* fields) {
+    struct stat info;
+    if (fstat(fd, &info) != 0) return sg_os_error();
+    sg_fs_fields(&info, fields);
+    return 0;
+}
 /* The kind, the size and the time of the last write in nanoseconds since 1970, a link followed. */
 static int sg_fs_status(sg_str path, int64_t* fields) {
     int code = 0;
@@ -10515,16 +10543,7 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     if (name != local) free(name);
     if (failed) return error;
     }
-#ifdef __APPLE__
-    int64_t seconds = (int64_t)info.st_mtimespec.tv_sec, ns = (int64_t)info.st_mtimespec.tv_nsec;
-#else
-    int64_t seconds = (int64_t)info.st_mtim.tv_sec, ns = (int64_t)info.st_mtim.tv_nsec;
-#endif
-    fields[0] = sg_fs_kind(info.st_mode);
-    fields[1] = (int64_t)info.st_size;
-    if (seconds >= INT64_MAX / 1000000000) fields[2] = INT64_MAX;
-    else if (seconds <= INT64_MIN / 1000000000) fields[2] = INT64_MIN;
-    else fields[2] = seconds * 1000000000 + ns;
+    sg_fs_fields(&info, fields);
     return 0;
 }
 /* The folder the program works in, as bytes of its own. */
@@ -10590,7 +10609,8 @@ const IO_RUNTIME: &str = r#"
    the language's own module gives; 16 MessageTooLong, a datagram too long to send whole or for the
    buffer it was received into; 17 NotSeekable, `seek` on a stream that is not a file opened to
    seek; 18 TooLong, `fill` on a reader whose block holds its limit already; 19 AddressNotAvailable,
-   an address not of the machine or no local port left. The runtime gives
+   an address not of the machine or no local port left; 20 NotAFile, a pipe, a device or a socket
+   that `File.openRegular` did not open (1873). The runtime gives
    these itself as codes of its own, as it gives a place before the start of a file to `seek` as
    `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
@@ -10598,6 +10618,7 @@ const IO_RUNTIME: &str = r#"
 #define SG_INVALID_INPUT (-15)
 #define SG_NOT_SEEKABLE (-17)
 #define SG_TOO_LONG (-18)
+#define SG_NOT_A_FILE (-20)
 #if defined(_WIN32)
 /* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
    too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
@@ -10613,6 +10634,7 @@ static int sg_io_kind(int code) {
     case SG_INVALID_INPUT: return 15;
     case SG_NOT_SEEKABLE: return 17;
     case SG_TOO_LONG: return 18;
+    case SG_NOT_A_FILE: return 20;
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
     case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
@@ -10970,6 +10992,7 @@ static int sg_io_kind(int code) {
     case SG_INVALID_INPUT: return 15;
     case SG_NOT_SEEKABLE: return 17;
     case SG_TOO_LONG: return 18;
+    case SG_NOT_A_FILE: return 20;
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
     case EMSGSIZE: return 16;
@@ -11571,6 +11594,25 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
     return 0;
 }
+/* `File.openRegular(path)` (1873): only a file of the disk. A folder is told by its attributes
+   before it is opened; a device (`NUL`, `COM1`) or a pipe only by its handle (`GetFileType`), so it
+   is opened and closed again. */
+static int sg_open_regular(sg_str path, sg_reader* out) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    DWORD attributes = GetFileAttributesW(name);
+    free(name);
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_DIRECTORY_NOT_SUPPORTED;
+    if ((code = sg_open_reader(path, out))) return code;
+    if (GetFileType(sg_handle(out->fd)) != FILE_TYPE_DISK) {
+        sg_sys_close(out->fd);
+        free(out->block);
+        out->block = NULL;
+        return SG_NOT_A_FILE;
+    }
+    return 0;
+}
 #else
 static int sg_open_reader(sg_str path, sg_reader* out) {
     int code = 0;
@@ -11605,6 +11647,46 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     free(name);
     if (fd < 0) return sg_os_error();
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
+    return 0;
+}
+/* `File.openRegular(path)` (1873): only a regular file is opened. What the path is is asked
+   before, through a descriptor of the path alone on Linux (`O_PATH`, which opens nothing) and with
+   `stat` on macOS, so a pipe is never opened and no writer waiting on it is let go; the file is
+   opened without waiting (`O_NONBLOCK`, which a regular file does not heed) and looked at again,
+   for a path changed in between. On Linux, in an async call, the path is found from the cache
+   alone first (`sg_nowait`, 1872). */
+static int sg_open_regular(sg_str path, sg_reader* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    struct stat info;
+#if defined(__linux__)
+    int look = sg_nowait ? sg_open_cached(name, O_PATH | O_CLOEXEC) : open(name, O_PATH | O_CLOEXEC);
+    if (look < 0) { int error = sg_os_error(); free(name); return error; }
+    int looked = fstat(look, &info) == 0 ? 0 : sg_os_error();
+    close(look);
+    if (looked) { free(name); return looked; }
+#else
+    if (stat(name, &info) != 0) { int error = sg_os_error(); free(name); return error; }
+#endif
+    if (!S_ISREG(info.st_mode)) { free(name); return S_ISDIR(info.st_mode) ? EISDIR : SG_NOT_A_FILE; }
+    int flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY;
+#if defined(__linux__)
+    int fd = sg_nowait ? sg_open_cached(name, flags) : open(name, flags);
+#else
+    int fd = open(name, flags);
+#endif
+    int error = sg_os_error();
+    free(name);
+    if (fd < 0) return error;
+    int again = fstat(fd, &info) == 0 ? 0 : sg_os_error();
+    if (again || !S_ISREG(info.st_mode)) {
+        close(fd);
+        return again ? again : S_ISDIR(info.st_mode) ? EISDIR : SG_NOT_A_FILE;
+    }
     uint8_t* block = malloc(65536);
     if (!block) abort();
     *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
@@ -19964,6 +20046,15 @@ impl<'a> Emitter<'a> {
                     failed("sg_io_bad_text(bad)")
                 ),
             ),
+            SystemCall::ReaderStatus => (
+                "sg_system_reader_status",
+                vec![Ty::Read(Box::new(Ty::Reader(false))), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                format!(
+                    "int64_t f[3]; int code = sg_fs_status_of(a0->fd, f); if (code) {} \
+                     for (int64_t i = 0; i < 3 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                    failed("sg_io_error(code)")
+                ),
+            ),
             SystemCall::Status => (
                 "sg_system_status",
                 vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
@@ -20239,9 +20330,10 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
+            IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let (fname, open, ctype) = match call {
                     IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
+                    IoCall::OpenRegular => ("sg_file_open_regular", "sg_open_regular(a0, ", "sg_reader"),
                     IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, 1, ", "sg_writer"),
                     IoCall::OpenAppend => ("sg_file_open_append", "sg_open_writer(a0, 2, ", "sg_writer"),
                     _ => ("sg_file_open_write", "sg_open_writer(a0, 3, ", "sg_writer"),
@@ -21168,7 +21260,7 @@ impl<'a> Emitter<'a> {
             // output only when it would wait (1872; `sg_nowait` in `IO_RUNTIME`). Not the input,
             // which a thread of its own may be filling, nor a connection, read on the loop.
             let tried = match (fname, &reader) {
-                ("sg_system_status" | "sg_file_open_text", _) => format!(
+                ("sg_system_status" | "sg_file_open_text" | "sg_file_open_regular", _) => format!(
                     "\n#if defined(__linux__)\n {{ sg_nowait = true; sg_would_wait = false; x->r = {fname}({gets}); sg_nowait = false; \
                      if (!sg_would_wait) {{ x->io.done = 1; return; }} }}\n#endif\n"
                 ),

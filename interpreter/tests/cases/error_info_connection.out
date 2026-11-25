@@ -1,0 +1,5 @@
+error: the reader of a connection reads the network, not a file
+  a reader of `File.openText(path)` or `File.openRegular(path)` has `info()`
+  --> error_info_connection.sg:4:20
+ 4 |     var info = try reader.info()
+   |                    ^^^^^^

@@ -50,6 +50,10 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
 /// that names `File` and one of them gets the file of `FileInfo`.
 pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync"];
 
+/// `reader.info()` gives a `FileInfo` (1873): a program that names `info` and a reader (`File`, which
+/// opens one, or `StreamReader`, the type of one it is given) gets the file of `FileInfo`.
+pub const STD_READER_CALLS: &[&str] = &["info"];
+
 /// The methods of the built-in `TcpStream` that the language's own module does the work of
 /// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of
 /// `SocketAddress`.
@@ -152,6 +156,9 @@ impl Sources {
             names_in(&self.text[..file.end], file.start, &mut named);
         }
         if named.contains("File") && STD_FILE_CALLS.iter().any(|name| named.contains(*name)) {
+            named.insert("FileInfo".to_string());
+        }
+        if STD_READER_CALLS.iter().any(|name| named.contains(*name)) && (named.contains("File") || named.contains("StreamReader")) {
             named.insert("FileInfo".to_string());
         }
         if STD_STREAM_CALLS.iter().any(|name| named.contains(*name)) {

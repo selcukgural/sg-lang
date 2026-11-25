@@ -336,6 +336,26 @@ pub(crate) fn sync_file(file: &std::fs::File, data: bool) -> std::io::Result<()>
     }
 }
 
+/// `File.openRegular(path)` (1873): a regular file opened to read; a folder is `IS_DIR`, and
+/// anything else (a pipe, a device, a socket) `None`, looked at before it is opened, so a pipe is
+/// never opened and no writer waiting on it is let go. Opened without waiting (`O_NONBLOCK`,
+/// which a regular file does not heed) and looked at again, for a path changed in between, as
+/// compiled code does.
+pub(crate) fn open_regular(path: &str) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const NONBLOCK: i32 = if cfg!(target_os = "linux") { 0o4000 } else { 0x4 };
+    const NO_TERMINAL: i32 = if cfg!(target_os = "linux") { 0o400 } else { 0x20000 };
+    let regular = |info: std::fs::Metadata| match info.is_dir() {
+        true => Err(std::io::Error::from_raw_os_error(IS_DIR)),
+        false => Ok(info.is_file()),
+    };
+    if !regular(std::fs::metadata(path)?)? {
+        return Ok(None);
+    }
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(NONBLOCK | NO_TERMINAL).open(path)?;
+    Ok(regular(file.metadata()?)?.then_some(file))
+}
+
 /// `writer.setLength(n)`: `ftruncate`, which a file opened to append may do too.
 pub(crate) fn set_length(file: &std::fs::File, length: u64) -> std::io::Result<()> {
     file.set_len(length)

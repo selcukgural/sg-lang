@@ -17,7 +17,9 @@
    - the file is ROOT followed by the path, `index.html` after it when the path ends with `/`; links
      are followed, as nginx does. What it is is asked first (`stat`): not there 404, not allowed 403,
      a folder 301 to the path written with `/` after it (404 when the path ended with `/` already,
-     there is no listing), anything but a file 404 (a FIFO is never opened, it would wait);
+     there is no listing), anything but a file 404 (a FIFO is never opened, it would wait). The
+     file is opened next, before its headers are looked at, so one not readable is 403 whatever
+     they ask, as nginx answers it (choice 1873);
    - `If-Modified-Since`, read as RFC 9110 reads a date (IMF-fixdate, RFC 850, asctime; the day of
      the week must be the date's; a moment `DateTime` cannot hold is no date), at or after the
      second the file was last written: 304 with `last-modified`;
@@ -436,6 +438,8 @@ static void answer_file(conn* c, const uint8_t* target, size_t target_len, bool 
         return;
     }
     if (!S_ISREG(st.st_mode)) { simple(c, 404, keep, head_only, NULL); return; }
+    int fd = open(full, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { simple(c, (errno == EACCES || errno == EPERM) ? 403 : 404, keep, head_only, NULL); return; }
 #ifdef __APPLE__
     int64_t mtime = (int64_t)st.st_mtimespec.tv_sec;
 #else
@@ -445,6 +449,7 @@ static void answer_file(conn* c, const uint8_t* target, size_t target_len, bool 
     http_date(modified, mtime);
     int64_t since;
     if (since_v && parse_http_date(since_v, since_n, &since) && mtime <= since) {
+        close(fd);
         head(c, "304 Not Modified", keep, NULL, -1);
         puts_(c, "last-modified: ");
         puts_(c, modified);
@@ -458,6 +463,7 @@ static void answer_file(conn* c, const uint8_t* target, size_t target_len, bool 
         if (!whole) {
             char extra[64];
             snprintf(extra, sizeof extra, "content-range: bytes */%lld\r\n", (long long)size);
+            close(fd);
             simple(c, 416, keep, head_only, extra);
             return;
         }
@@ -468,8 +474,6 @@ static void answer_file(conn* c, const uint8_t* target, size_t target_len, bool 
             start = size - last;
         }
     }
-    int fd = open(full, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { simple(c, (errno == EACCES || errno == EPERM) ? 403 : 404, keep, head_only, NULL); return; }
     int64_t length = end - start + 1;
     head(c, kind ? "206 Partial Content" : "200 OK", keep, type_of(full, len), length);
     puts_(c, "last-modified: ");

@@ -1741,6 +1741,11 @@ fn io_line_too_long() -> Value {
     Value::Enum("IoError".into(), 11, Rc::new(Vec::new()))
 }
 
+/// `IoError.NotAFile`: `File.openRegular` met a pipe, a device or a socket (1873).
+fn io_not_a_file() -> Value {
+    Value::Enum("IoError".into(), 20, Rc::new(Vec::new()))
+}
+
 /// `IoError.TooLong`: `fill` on a reader whose block holds its limit already.
 fn io_too_long() -> Value {
     Value::Enum("IoError".into(), 18, Rc::new(Vec::new()))
@@ -1809,6 +1814,21 @@ fn text_read(bytes: Vec<u8>, at: u64) -> Value {
 
 /// The kind of a file as `System.list` and `System.status` give it: 0 a file, 1 a folder, 2 a
 /// link, 3 anything else.
+/// `System.status` and `System.readerStatus`: the kind, the size and the time of the last write
+/// in nanoseconds since 1970, into the three fields.
+fn status_fields(info: &std::fs::Metadata, fields: &Value) -> Value {
+    let modified = info.modified().map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
+        Err(before) => -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX),
+    });
+    let modified = modified.unwrap_or(0).clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+    let size = i128::from(info.len()).min(i128::from(i64::MAX));
+    for (slot, value) in cells_of(fields).iter().zip([i128::from(kind_code(&info.file_type())), size, modified]) {
+        *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+    }
+    ok(Value::Void)
+}
+
 fn kind_code(kind: &std::fs::FileType) -> u8 {
     match () {
         _ if kind.is_file() => 0,
@@ -6034,7 +6054,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             Callee::IoAsync(call) => {
                 let mut values = self.values(args, frame)?;
                 let params = match call {
-                    IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
+                    IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
                     IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
                 };
                 let source = match values.len() > params {
@@ -7461,6 +7481,12 @@ impl<'a, 'e> Interp<'a, 'e> {
                 true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
                 false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
             })),
+            // Only a regular file is opened: anything else is refused before it is (1873).
+            IoCall::OpenRegular => match crate::sys::open_regular(&path) {
+                Ok(Some(file)) => ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
+                Ok(None) => failed(io_not_a_file()),
+                Err(error) => done(Err(error)),
+            },
             IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let opened = match call {
                     IoCall::CreateText => std::fs::File::create(&path),
@@ -7562,6 +7588,18 @@ impl<'a, 'e> Interp<'a, 'e> {
         if call == SystemCall::Executable {
             return Ok(Value::Int(IntTy::Long, executable(&text(0))));
         }
+        // `reader.info()`: what the system knows of the open file (1873).
+        if call == SystemCall::ReaderStatus {
+            let Value::Reader(reader) = &values[0] else { unreachable!("the checker makes it a reader") };
+            let info = match &reader.borrow().file {
+                Some(block) => block.get_ref().metadata(),
+                None => return Ok(failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new())))),
+            };
+            return Ok(match info {
+                Ok(info) => status_fields(&info, &values[1]),
+                Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+            });
+        }
         if call == SystemCall::Run {
             return self.run_child(values);
         }
@@ -7635,19 +7673,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 ok(Value::Void)
             }
             SystemCall::Status => match std::fs::metadata(text(0)) {
-                Ok(info) => {
-                    let modified = info.modified().map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
-                        Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
-                        Err(before) => -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX),
-                    });
-                    let modified = modified.unwrap_or(0).clamp(i128::from(i64::MIN), i128::from(i64::MAX));
-                    let fields = cells_of(&values[1]);
-                    let size = i128::from(info.len()).min(i128::from(i64::MAX));
-                    for (slot, value) in fields.iter().zip([i128::from(kind_code(&info.file_type())), size, modified]) {
-                        *slot.borrow_mut() = Value::Int(IntTy::Long, value);
-                    }
-                    ok(Value::Void)
-                }
+                Ok(info) => status_fields(&info, &values[1]),
                 Err(error) => done(Err(error)),
             },
             SystemCall::Current => match std::env::current_dir() {
@@ -7658,6 +7684,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::MakeTempFile => done(make_temp(&text(0), true).map(|file| Value::Str(Rc::new(file)))),
             SystemCall::TempFolder => ok(Value::Str(Rc::new(crate::sys::temp_folder()))),
             SystemCall::Executable
+            | SystemCall::ReaderStatus
             | SystemCall::Run
             | SystemCall::Start
             | SystemCall::Wait

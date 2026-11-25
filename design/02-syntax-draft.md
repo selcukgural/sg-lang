@@ -1399,6 +1399,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     NotSeekable                                  // seek on a pipe, the program's input, a writer at the end
     TooLong                                      // fill on a reader whose block holds its limit already
     AddressNotAvailable                          // not an address of the machine, or no local port left
+    NotAFile                                     // File.openRegular met a pipe, a device or a socket
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name

@@ -1,0 +1,10 @@
+// What a reader of a connection reads is the network, not a file: it has no `info()`.
+Result<void, IoError> first(ref TcpStream conn) {
+    var reader = conn.reader()
+    var info = try reader.info()
+    print(info.size)
+    return Ok()
+}
+
+void main() {
+}

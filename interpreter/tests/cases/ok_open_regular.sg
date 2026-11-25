@@ -1,0 +1,50 @@
+// `File.openRegular` opens only a regular file (1873): a folder is `IsDirectory`, and the reader's
+// `info()` is asked of the open file, so it sees the file grow and is the file's, not its path's,
+// once the path names another. The folder is the first word of the command line.
+void show(read string path, read string shown) {
+    match File.openRegular(path) {
+        Ok(reader) => {
+            match reader.info() {
+                Ok(info) => print($"{shown}: {info.kind} {info.size}")
+                Error(cause) => print($"{shown}: info {cause}")
+            }
+        }
+        Error(IsDirectory) => print($"{shown}: a folder")
+        Error(cause) => print($"{shown}: {cause}")
+    }
+}
+
+async Result<void, IoError> grows(string path) {
+    var reader = try await File.openRegularAsync(read path)
+    var before = try reader.info()
+    try await File.appendTextAsync(read path, " world")
+    var after = try reader.info()
+    print($"{before.size} -> {after.size}, {after.kind}")
+    var line = ""
+    _ = try await reader.readLineAsync(ref line)
+    print(line)
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var dir = args[0]
+    var path = Path.join(read dir, "a.txt")
+    var other = Path.join(read dir, "b.txt")
+    try File.writeText(read path, "hello")
+    try File.writeText(read other, "a longer text")
+    show(read path, "a.txt")
+    var folder = Path.join(read dir, "folder")
+    try Directory.create(read folder)
+    show(read folder, "folder")
+    show(read Path.join(read dir, "missing"), "missing")
+    try grows(path.clone()).wait()
+    // The reader keeps its file when another takes its name.
+    var reader = try File.openRegular(read path)
+    try File.replace(read other, read path)
+    var info = try reader.info()
+    var now = try File.info(read path)
+    print($"{info.size} {now.size}")
+    print(IoError.NotAFile)
+    print(IoError.NotAFile == IoError.IsDirectory)
+    return Ok()
+}

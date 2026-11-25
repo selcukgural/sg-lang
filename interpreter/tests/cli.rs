@@ -2925,6 +2925,106 @@ fn the_processor_count_is_one_number() {
     }
 }
 
+/// `File.openRegular` (1873) opens only a regular file, interpreted and compiled alike, in a plain
+/// call and as a task: a folder is `IsDirectory`, a device (`/dev/null`, `NUL` on Windows) and a FIFO
+/// are `NotAFile`, and a FIFO is never opened, so a writer waiting for a reader of it is not let go.
+/// `reader.info()` asks the open file, so it sees the file grow.
+#[test]
+fn opens_only_a_regular_file() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("opens_only_a_regular_file");
+    let files = dir.join("files");
+    std::fs::create_dir_all(files.join("folder")).unwrap();
+    let device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let source = write(
+        &dir,
+        "open.sg",
+        &format!(
+            r#"void show(string path, string shown) {{
+    match File.openRegular(read path) {{
+        Ok(reader) => {{
+            match reader.info() {{
+                Ok(info) => print($"{{shown}}: {{info.kind}} {{info.size}}")
+                Error(cause) => print($"{{shown}}: info {{cause}}")
+            }}
+        }}
+        Error(cause) => print($"{{shown}}: {{cause}}")
+    }}
+}}
+async void showAsync(string path, string shown) {{
+    match await File.openRegularAsync(read path) {{
+        Ok(reader) => {{
+            match reader.info() {{
+                Ok(info) => print($"async {{shown}}: {{info.kind}} {{info.size}}")
+                Error(cause) => print($"async {{shown}}: info {{cause}}")
+            }}
+        }}
+        Error(cause) => print($"async {{shown}}: {{cause}}")
+    }}
+}}
+Result<void, IoError> main(List<string> args) {{
+    var dir = args[0]
+    var path = Path.join(read dir, "a.txt")
+    try File.writeText(read path, "hello")
+    show(path.clone(), "a.txt")
+    show(Path.join(read dir, "folder"), "folder")
+    show(Path.join(read dir, "missing"), "missing")
+    show("{device}", "device")
+    if args.length() > 1 {{
+        show(Path.join(read dir, "fifo"), "fifo")
+        showAsync(Path.join(read dir, "fifo"), "fifo").wait()
+    }}
+    showAsync(path.clone(), "a.txt").wait()
+    showAsync(Path.join(read dir, "folder"), "folder").wait()
+    showAsync("{device}", "device").wait()
+    var reader = try File.openText(read path)
+    var before = try reader.info()
+    try File.appendText(read path, " world")
+    var after = try reader.info()
+    print($"{{before.size}} -> {{after.size}}")
+    print(IoError.NotAFile)
+    return Ok()
+}}
+"#
+        ),
+    )
+    .to_string_lossy()
+    .into_owned();
+    let built = program(&dir, "open").to_string_lossy().into_owned();
+    assert_eq!(ran(&sg(&dir, &["build", &source, "-o", &built])), (0, String::new(), String::new()));
+    let folder = files.to_string_lossy().into_owned();
+    let mut args = vec![folder.clone()];
+    let mut writer = None;
+    let released = dir.join("released");
+    if cfg!(unix) {
+        let fifo = files.join("fifo");
+        let _ = std::fs::remove_file(&fifo);
+        assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let script = format!("echo x > '{}' && touch '{}'", fifo.display(), released.display());
+        writer = Some(Command::new("sh").args(["-c", &script]).spawn().unwrap());
+        args.push("fifo".to_string());
+    }
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let interpreted = ran(&sg(&dir, &[&[source.as_str()][..], &words].concat()));
+    let compiled = ran(&Command::new(&built).args(&words).current_dir(&dir).stdin(Stdio::null()).finished());
+    assert_eq!(interpreted, compiled);
+    let mut want = vec!["a.txt: File 5", "folder: is a folder", "missing: not found", "device: not a file"];
+    if cfg!(unix) {
+        want.extend(["fifo: not a file", "async fifo: not a file"]);
+    }
+    want.extend(["async a.txt: File 5", "async folder: is a folder", "async device: not a file", "5 -> 11", "not a file"]);
+    assert_eq!(compiled, (0, want.join("\n") + "\n", String::new()));
+    if let Some(mut writer) = writer {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!released.exists(), "a writer waiting on the FIFO was let go");
+        assert!(writer.try_wait().unwrap().is_none(), "the writer of the FIFO ended");
+        writer.kill().unwrap();
+        writer.wait().unwrap();
+    }
+}
+
 /// The trial of `hashsum` (choices 1854-1859): the SHA-256 of files from a pool of workers, built and
 /// run interpreted and compiled, with one worker and with several: the lines of GNU's `sha256sum` in
 /// the order of the files, a name with a `\` escaped (not on Windows, where it is a separator), a

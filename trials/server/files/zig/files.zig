@@ -296,6 +296,9 @@ fn answer(io: Io, root: []const u8, request: *http.Server.Request, keep: bool) !
         return simple(request, keep, .moved_permanently, "moved permanently", .{ .name = "location", .value = location });
     }
     if (info.kind != .file) return simple(request, keep, .not_found, "not found", null);
+    // Opened before its headers are looked at (1873): one not readable is 403 whatever they ask.
+    const file = Io.Dir.cwd().openFile(io, full, .{}) catch |err| return failed(request, keep, err);
+    defer file.close(io);
     const mtime: i64 = @intCast(@divFloor(info.mtime.toNanoseconds(), std.time.ns_per_s));
     var modified: [29]u8 = undefined;
     httpDate(&modified, mtime);
@@ -329,8 +332,6 @@ fn answer(io: Io, root: []const u8, request: *http.Server.Request, keep: bool) !
         const range = try std.fmt.bufPrint(&range_buffer, "bytes */{d}", .{size});
         return simple(request, keep, .range_not_satisfiable, "range not satisfiable", .{ .name = "content-range", .value = range });
     }
-    const file = Io.Dir.cwd().openFile(io, full, .{}) catch |err| return failed(request, keep, err);
-    defer file.close(io);
     const length = end - start + 1;
     var range_buffer: [80]u8 = undefined;
     var headers = [_]http.Header{

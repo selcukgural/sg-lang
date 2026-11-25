@@ -542,10 +542,16 @@ requests of 1 KB a second; asked first, 395,000, against C's 598,000, Zig's 486,
 read through the reader's block, is in [Slower than C](../../benchmarks/slower-than-c.md) ([the
 tables](../../benchmarks/server.md#files)).
 
+Slice 178 (1873) measures what each request costs a server. For a file of 1 KB the file server made twice C's
+calls of the system: `File.infoAsync` and then `File.openTextAsync` each walked the path through a descriptor
+of its own before the file was opened, so that no FIFO would be. `File.openRegular` opens only a regular file,
+refusing anything else before it is opened (`IoError.NotAFile`), and `reader.info()` asks the open file:
+opened first, a file walks its path twice where it walked it three times. Files of 1 KB get 452,000 answers a second where C gets 637,000 (0.71 times, from 0.66), and with 1,000 connections 0.63 times (from 0.52); a 304, which opens the file now in all four as nginx does, cost both a seventh.
+
 ## Next
 
-Next comes the cost of each request in `std/http` and the runtime, which the file server shows at 1.5 to 1.6
-times C's processor for each answer, measured by itself and brought down; then the heavy level of the stand, run
+Next comes the rest of the cost of each request in `std/http` and the runtime, SG's own code, 0.3 to 0.8 µs an
+answer on every path; then the heavy level of the stand, run
 at night,
 a GIF tool and an interpreter of Lox. XML is not in `std` (1551, in place of 1413)
 and will be a package of the language's own. After them come the reference of the language on the site

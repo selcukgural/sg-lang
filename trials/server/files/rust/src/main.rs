@@ -329,6 +329,11 @@ async fn answer(request: Request<Incoming>, root: Arc<String>) -> Result<Respons
     if !info.is_file() {
         return Ok(simple(StatusCode::NOT_FOUND, "not found"));
     }
+    // Opened before its headers are looked at (1873): one not readable is 403 whatever they ask.
+    let mut file = match tokio::fs::File::open(&full).await {
+        Ok(file) => file,
+        Err(cause) => return Ok(failed(&cause)),
+    };
     let mtime = match info.modified().map(|t| t.duration_since(UNIX_EPOCH)) {
         Ok(Ok(since)) => since.as_secs() as i64,
         Ok(Err(before)) => -(before.duration().as_secs_f64().ceil() as i64),
@@ -362,10 +367,6 @@ async fn answer(request: Request<Incoming>, root: Arc<String>) -> Result<Respons
             return Ok(response);
         }
     }
-    let mut file = match tokio::fs::File::open(&full).await {
-        Ok(file) => file,
-        Err(cause) => return Ok(failed(&cause)),
-    };
     let length = end - start + 1;
     let body = if head || length == 0 {
         Empty::new().map_err(|never| match never {}).boxed()
