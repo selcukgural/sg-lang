@@ -7,20 +7,16 @@
 public enum VariableError : Copyable, Equatable, Hashable, Formattable {
     // The variable is not set.
     Missing
-    // What it holds is not UTF-8: the first byte that is not, counted from its start.
-    InvalidText(long position)
 }
 
 public struct Environment {
-    // The text of the variable: `Environment.get("HOME") ?? "/"`.
+    // The text of the variable: `Environment.get("HOME") ?? "/"`. A name and a value are names of
+    // the system (choice 1950): what is not UTF-8 in them is written as `Path.systemBytes` reads it.
     public Result<string, VariableError> get(read string name) {
         var bytes = List<byte>()
         if !System.variable(name, ref bytes) {
             return Error(VariableError.Missing)
         }
-        match string.fromUtf8(read bytes) {
-            Ok(text) => return Ok(text.clone())
-            Error(cause) => return Error(VariableError.InvalidText((long)cause.position))
-        }
+        return Ok(System.nameText(read bytes))
     }
 }

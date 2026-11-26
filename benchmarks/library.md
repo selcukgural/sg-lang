@@ -436,7 +436,8 @@ Zig keeps a view of the arguments; `clap` keeps each word twice, as a text and a
 ## environment
 
 `trials/std/environment`: `get` reads a variable that is there, one that is not and one that is not UTF-8
-(`caf\xe9`), each as text; `read` reads one variable a million times, each time as a new text, as
+(`caf\xe9`), each as text (since slice 189 SG gives the last as text with its byte escaped, `caf` and U+10FFE9,
+where Rust and Zig say it is not text; the numbers below were taken before, with SG's error); `read` reads one variable a million times, each time as a new text, as
 `Environment.get` gives it (1799). Memory and size alone (1801). Apple M3 Max, 23 November 2026:
 
 | Case | SG | SG, checked | Rust | Zig | Zig, safe |

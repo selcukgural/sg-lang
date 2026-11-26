@@ -607,6 +607,12 @@ Slice 188 (1943-1949) makes a compiled program debuggable on the lines of its ow
 `-g` on the three systems, and the C names before each statement the line of SG it stands for, with the file's
 absolute path, so gdb, lldb and the debugger of Windows stop on lines of `.sg` files. Tested with lldb and gdb.
 
+Slice 189 (1950-1959) carries names of the system that are not text without a loss: a word of the command
+line, a variable of the environment or a name in a folder comes as a `string`, each byte that is not UTF-8 a
+character from U+10FF80, which goes back to that byte when the name is given to the system; on Windows a half
+of a pair alone does the same through WTF-8. `Path.systemBytes` and `Path.fromSystemBytes` give the bytes and
+take them; `VariableError` keeps `Missing` alone.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

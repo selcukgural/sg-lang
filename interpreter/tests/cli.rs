@@ -1924,7 +1924,8 @@ fn the_trials_of_command_line_environment_and_path() {
             ));
         }
         if cfg!(unix) && module == "environment" {
-            cases.push((vec!["get", "SG_TRIAL_BYTES"], "SG_TRIAL_BYTES not text\n"));
+            // Not UTF-8: the byte 0xE9 comes as U+10FFE9 (choice 1950).
+            cases.push((vec!["get", "SG_TRIAL_BYTES"], "SG_TRIAL_BYTES caf\u{10FFE9}\n"));
         }
         for (args, expected) in &cases {
             assert_eq!(interpreted(args), (0, expected.to_string(), String::new()), "{module} {args:?}, interpreted");

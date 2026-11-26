@@ -1,0 +1,35 @@
+// Names of the system that are not text (choices 1950 to 1957), as `tests/names.rs` drives them.
+//
+// `echo <word>...`: for each word of the command line, the bytes the system gave, in hex.
+// `walk <folder> <program...>`: for each file of the folder, its name's bytes in hex; whether the
+// file holds that hex (the test wrote it there); whether its info is there; what a child started
+// with the name as its word says it was given (the words after the folder start the child, this
+// program again); then the file moved to a name with `.moved` after it, and deleted.
+void main(List<string> args) {
+    if args[0] == "echo" {
+        for i in 1..args.length() {
+            var bytes = Path.systemBytes(read args[i])
+            print(Hex.encode(read bytes))
+        }
+        return
+    }
+    var folder = args[1]
+    var entries = Directory.list(read folder) ?? panic("the folder cannot be listed")
+    for entry in entries {
+        var bytes = Path.systemBytes(read entry.name)
+        var hex = Hex.encode(read bytes)
+        var path = Path.join(read folder, read entry.name)
+        var held = File.readText(read path) ?? "(not read)"
+        var info = File.info(read path) is Ok(_)
+        var child = Command.create(read args[2])
+        for i in 3..args.length() {
+            child.arg(read args[i])
+        }
+        child.arg("echo")
+        child.arg(read entry.name)
+        var said = child.output() ?? "(no child)"
+        var moved = $"{path}.moved".toString()
+        var gone = File.move(read path, read moved) is Ok && File.delete(read moved) is Ok
+        print($"{hex} held {held == hex} info {info} child {said.trim()} gone {gone}")
+    }
+}

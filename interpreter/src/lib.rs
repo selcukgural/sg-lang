@@ -25,6 +25,7 @@ pub mod signals;
 #[cfg(windows)]
 #[path = "sys/signals_windows.rs"]
 pub mod signals;
+pub mod names;
 pub mod source;
 pub mod project;
 pub mod fetch;

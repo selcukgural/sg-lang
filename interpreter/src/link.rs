@@ -18,7 +18,8 @@ use crate::diag::Diag;
 /// of the command line, for a folder that is not there, and for one others may write into,
 /// since the program looks for its libraries there when it starts (`rpath`).
 pub fn folder(written: &str) -> Result<PathBuf, String> {
-    let path = Path::new(written);
+    let path = PathBuf::from(crate::names::os_of(written));
+    let path = path.as_path();
     let meta = std::fs::metadata(path).map_err(|_| format!("-L {written}: no such folder"))?;
     if !meta.is_dir() {
         return Err(format!("-L {written}: not a folder"));

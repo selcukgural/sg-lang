@@ -1503,6 +1503,37 @@ static wchar_t* sg_wide_of(const uint8_t* ptr, int64_t len, int64_t* count) {
     *count = made;
     return w;
 }
+/* A name as Windows takes it, in UTF-16 ended by a zero, in a block of `malloc`, and the units it
+   has: the bytes the name stands for (`sg_name_unescape`) read as WTF-8, so a half of a pair that
+   came alone goes back alone. A byte that is no part of WTF-8, which only a text not made from a
+   name of the system can give, is U+FFFD (choice 1959). */
+static inline int sg_utf8_step(const uint8_t* p, int64_t n, int64_t at, uint32_t* out, bool halves);
+static int64_t sg_name_unescape(const uint8_t* p, int64_t n, uint8_t* out);
+static wchar_t* sg_name_wide(const uint8_t* ptr, int64_t len, int64_t* count) {
+    uint8_t* b = malloc((size_t)len + 1);
+    if (!b) abort();
+    int64_t m = sg_name_unescape(ptr, len, b);
+    wchar_t* w = malloc(((size_t)m + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    int64_t k = 0;
+    for (int64_t at = 0; at < m;) {
+        uint32_t c;
+        int step = sg_utf8_step(b, m, at, &c, true);
+        if (step == 0) { w[k++] = 0xFFFD; at++; continue; }
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            w[k++] = (wchar_t)(0xD800 + (c >> 10));
+            w[k++] = (wchar_t)(0xDC00 + (c & 0x3FF));
+        } else {
+            w[k++] = (wchar_t)c;
+        }
+        at += step;
+    }
+    w[k] = 0;
+    free(b);
+    *count = k;
+    return w;
+}
 #endif
 
 /* A panic ends the process. A library (`sg build --library` or `--shared`) aborts: other
@@ -2613,6 +2644,92 @@ static int64_t sg_utf8_valid(const uint8_t* b, int64_t len) {
 static inline int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
     int64_t valid = sg_utf8_valid(bytes, len);
     return valid == len ? -1 : valid;
+}
+/* The character at `at` of bytes that may not be UTF-8 and its length, or 0 when the byte there
+   starts no character. With `halves`, a half of a pair of UTF-16 alone (U+D800 to U+DFFF, three
+   bytes from `ED A0 80`) is a character too, as WTF-8 writes it. */
+static inline int sg_utf8_step(const uint8_t* p, int64_t n, int64_t at, uint32_t* out, bool halves) {
+    uint8_t b = p[at];
+    if (b < 0x80) { *out = b; return 1; }
+    int k; uint32_t c, least;
+    if (b >= 0xC2 && b <= 0xDF) { k = 2; c = b & 0x1F; least = 0x80; }
+    else if (b >= 0xE0 && b <= 0xEF) { k = 3; c = b & 0x0F; least = 0x800; }
+    else if (b >= 0xF0 && b <= 0xF4) { k = 4; c = b & 0x07; least = 0x10000; }
+    else return 0;
+    if (at + k > n) return 0;
+    for (int i = 1; i < k; i++) {
+        uint8_t t = p[at + i];
+        if ((t & 0xC0) != 0x80) return 0;
+        c = (c << 6) | (t & 0x3F);
+    }
+    if (c < least || c > 0x10FFFF || (!halves && c >= 0xD800 && c < 0xE000)) return 0;
+    *out = c;
+    return k;
+}
+/* A name of the system as text (choice 1950): a byte that is not part of UTF-8, and each byte of
+   a character from U+10FF80 to U+10FFFF, stands as the character U+10FF00 + the byte, which
+   `sg_name_unescape` gives back. NULL when the name is text as it is; otherwise a block of its
+   own, ended by a zero byte, and its length in `*len`. */
+static uint8_t* sg_name_escape(const uint8_t* p, int64_t n, int64_t* len) {
+    int64_t extra = 0;
+    bool any = false;
+    for (int64_t at = 0; at < n;) {
+        uint32_t c;
+        int k = sg_utf8_step(p, n, at, &c, false);
+        if (k == 0) { extra += 3; any = true; at += 1; }
+        else if (c >= 0x10FF80) { extra += 12; any = true; at += k; }
+        else at += k;
+    }
+    if (!any) return NULL;
+    uint8_t* out = malloc((size_t)(n + extra) + 1);
+    if (!out) abort();
+    int64_t o = 0;
+    for (int64_t at = 0; at < n;) {
+        uint32_t c;
+        int k = sg_utf8_step(p, n, at, &c, false);
+        if (k != 0 && c < 0x10FF80) {
+            memcpy(out + o, p + at, (size_t)k);
+            o += k;
+            at += k;
+            continue;
+        }
+        int m = k == 0 ? 1 : k;
+        for (int i = 0; i < m; i++) {
+            uint32_t e = 0x10FF00u + p[at + i];
+            out[o++] = 0xF4;
+            out[o++] = (uint8_t)(0x80 | ((e >> 12) & 0x3F));
+            out[o++] = (uint8_t)(0x80 | ((e >> 6) & 0x3F));
+            out[o++] = (uint8_t)(0x80 | (e & 0x3F));
+        }
+        at += m;
+    }
+    out[o] = 0;
+    *len = o;
+    return out;
+}
+/* The bytes the system is given for a name, into `out`, which holds `n`: each character from
+   U+10FF80 to U+10FFFF is the byte it stands for, the rest is as it is. */
+static int64_t sg_name_unescape(const uint8_t* p, int64_t n, uint8_t* out) {
+    int64_t o = 0;
+    for (int64_t at = 0; at < n;) {
+        if (p[at] == 0xF4 && at + 3 < n && p[at + 1] == 0x8F && (p[at + 2] & 0xFE) == 0xBE) {
+            out[o++] = (uint8_t)(0x80 | ((p[at + 2] & 1) << 6) | (p[at + 3] & 0x3F));
+            at += 4;
+            continue;
+        }
+        out[o++] = p[at++];
+    }
+    return o;
+}
+/* Bytes of the system made a text: the block is kept when it is text as it is, and otherwise
+   given back for the escaped one (`sg_name_escape`). The block is `malloc`'s, ended by a zero. */
+static void sg_name_own(uint8_t** bytes, int64_t* len) {
+    int64_t n;
+    uint8_t* escaped = sg_name_escape(*bytes, *len, &n);
+    if (!escaped) return;
+    free(*bytes);
+    *bytes = escaped;
+    *len = n;
 }
 SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...);
 /* Set by the program of tests: there `exit` fails the test, as in the interpreter. */
@@ -9224,10 +9341,13 @@ static int64_t sg_proc_executable(sg_str path) {
     free(name);
     return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
 }
-/* Text of UTF-8 as UTF-16 ended by a zero, in a block of `malloc`. */
+/* A text a program is started with, as Windows takes it (`sg_name_wide`, choice 1950), in a block
+   of `malloc`. The language's own module has made sure no zero byte is in it; one that came would
+   cut the text short without a word, so it ends the program instead (1956). */
 static wchar_t* sg_proc_wide(const uint8_t* ptr, int64_t len) {
+    if (len > 0 && memchr(ptr, 0, (size_t)len)) abort();
     int64_t n;
-    return sg_wide_of(ptr, len, &n);
+    return sg_name_wide(ptr, len, &n);
 }
 /* An argument as C's library reads it back, as Rust writes it: quoted when it is empty or holds a
    space or a tab; a quote in it after `n` backslashes is written after `2n+1`, and the
@@ -9718,12 +9838,15 @@ static int64_t sg_proc_executable(sg_str path) {
     free(name);
     return found;
 }
-/* A text as the system takes it: the language's own module has made sure no zero byte is in it. */
+/* A text as the system takes it, the bytes it stands for (`sg_name_unescape`, choice 1950). The
+   language's own module has made sure no zero byte is in it; one that came would cut the text
+   short without a word, so it ends the program instead (1956). */
 static char* sg_proc_text(const uint8_t* ptr, int64_t len) {
+    if (len > 0 && memchr(ptr, 0, (size_t)len)) abort();
     char* text = malloc((size_t)len + 1);
     if (!text) abort();
-    if (len > 0) memcpy(text, ptr, (size_t)len);
-    text[len] = 0;
+    int64_t n = sg_name_unescape(ptr, len, (uint8_t*)text);
+    text[n] = 0;
     return text;
 }
 /* Whether the change at `at` is the last one of its name. */
@@ -9742,25 +9865,33 @@ static char** sg_proc_environment(bool clear, const sg_string* names, const sg_s
     char** fresh = malloc(sizeof(char*) * (size_t)(changes + 1));
     if (!table || !fresh) abort();
     int64_t n = 0, m = 0;
+    /* The names as the system writes them (choice 1950). */
+    char** plain = malloc(sizeof(char*) * (size_t)(changes + 1));
+    if (!plain) abort();
+    for (int64_t j = 0; j < changes; j++) plain[j] = sg_proc_text(names[j].ptr, names[j].len);
     for (int64_t i = 0; i < own; i++) {
         const char* entry = environ[i];
         const char* equals = strchr(entry, '=');
         size_t len = equals ? (size_t)(equals - entry) : strlen(entry);
         bool changed = false;
-        for (int64_t j = 0; j < changes && !changed; j++) changed = (size_t)names[j].len == len && memcmp(names[j].ptr, entry, len) == 0;
+        for (int64_t j = 0; j < changes && !changed; j++) changed = strlen(plain[j]) == len && memcmp(plain[j], entry, len) == 0;
         if (!changed) table[n++] = environ[i];
     }
     for (int64_t j = 0; j < changes; j++) {
         if (!kept[j] || !sg_proc_last(names, changes, j)) continue;
-        char* entry = malloc((size_t)(names[j].len + values[j].len + 2));
+        char* value = sg_proc_text(values[j].ptr, values[j].len);
+        size_t name_len = strlen(plain[j]), value_len = strlen(value);
+        char* entry = malloc(name_len + value_len + 2);
         if (!entry) abort();
-        memcpy(entry, names[j].ptr, (size_t)names[j].len);
-        entry[names[j].len] = '=';
-        if (values[j].len > 0) memcpy(entry + names[j].len + 1, values[j].ptr, (size_t)values[j].len);
-        entry[names[j].len + 1 + values[j].len] = 0;
+        memcpy(entry, plain[j], name_len);
+        entry[name_len] = '=';
+        memcpy(entry + name_len + 1, value, value_len + 1);
+        free(value);
         table[n++] = entry;
         fresh[m++] = entry;
     }
+    for (int64_t j = 0; j < changes; j++) free(plain[j]);
+    free(plain);
     table[n] = NULL;
     *made = fresh;
     *count = m;
@@ -10399,16 +10530,19 @@ static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t*
 }
 /* The folder for files that do not have to stay, as `GetTempPath2W` gives it where Windows has
    it (a folder of the system's own for a service), else `GetTempPathW`; without the `\` at its
-   end. */
+   end. As long as Windows lets a path be (32767 units), as the interpreter reads it (1956). */
 static int sg_fs_temp_folder(uint8_t** bytes, int64_t* len) {
     typedef DWORD (WINAPI *sg_temp_fn)(DWORD, LPWSTR);
     sg_temp_fn get = (sg_temp_fn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetTempPath2W");
     if (!get) get = GetTempPathW;
-    wchar_t w[MAX_PATH + 2];
-    DWORD n = get(MAX_PATH + 1, w);
-    if (n == 0 || n > MAX_PATH + 1) return sg_win_error();
+    enum { room = 32768 };
+    wchar_t* w = (malloc)(sizeof(wchar_t) * (room + 1));
+    if (!w) abort();
+    DWORD n = get(room, w);
+    if (n == 0 || n > room) { int code = n == 0 ? sg_win_error() : ERROR_INSUFFICIENT_BUFFER; (free)(w); return code; }
     if (n > 3 && w[n - 1] == L'\\') n--;
     *bytes = (uint8_t*)sg_owned_from_wide(w, (int64_t)n, len);
+    (free)(w);
     return 0;
 }
 /* The bytes of a variable of the environment, or NULL when it is not set; names are matched
@@ -10417,18 +10551,16 @@ static int sg_fs_temp_folder(uint8_t** bytes, int64_t* len) {
 static const char* sg_env_variable(sg_str name, int64_t* len) {
     /* Windows keeps names of at most 32767 characters; `MultiByteToWideChar` counts in `int`. */
     if (name.len == 0 || name.len > 0x7FFFFFFF || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
-    int n = MultiByteToWideChar(CP_UTF8, 0, (const char*)name.ptr, (int)name.len, NULL, 0);
-    wchar_t* key = (malloc)(((size_t)n + 1) * sizeof(wchar_t));
-    if (!key) abort();
-    MultiByteToWideChar(CP_UTF8, 0, (const char*)name.ptr, (int)name.len, key, n);
-    key[n] = 0;
+    /* The name as Windows writes it (choice 1950). */
+    int64_t n;
+    wchar_t* key = sg_name_wide(name.ptr, name.len, &n);
     static _Thread_local char* held = NULL;
     DWORD size = GetEnvironmentVariableW(key, NULL, 0);
-    if (size == 0) { (free)(key); return NULL; }
+    if (size == 0) { free(key); return NULL; }
     wchar_t* value = (malloc)((size_t)size * sizeof(wchar_t));
     if (!value) abort();
     DWORD got = GetEnvironmentVariableW(key, value, size);
-    (free)(key);
+    free(key);
     (free)(held);
     held = sg_from_wide(value, (int64_t)(got < size ? got : 0), len);
     (free)(value);
@@ -10683,8 +10815,7 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     char local[256];
     char* name = local;
     if (path.len < (int64_t)sizeof local && !(path.len > 0 && memchr(path.ptr, 0, (size_t)path.len))) {
-        if (path.len > 0) memcpy(local, path.ptr, (size_t)path.len);
-        local[path.len] = 0;
+        local[sg_name_unescape(path.ptr, path.len, (uint8_t*)local)] = 0;
     } else {
         name = sg_path(path, &code);
         if (!name) return code;
@@ -10745,10 +10876,10 @@ static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t*
    thread. */
 static const char* sg_env_variable(sg_str name, int64_t* len) {
     if (name.len == 0 || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
+    /* The name as the system writes it (choice 1950). */
     char* key = malloc((size_t)name.len + 1);
     if (!key) abort();
-    memcpy(key, name.ptr, (size_t)name.len);
-    key[name.len] = 0;
+    key[sg_name_unescape(name.ptr, name.len, (uint8_t*)key)] = 0;
     const char* value = getenv(key);
     free(key);
     if (value) *len = (int64_t)strlen(value);
@@ -10856,7 +10987,7 @@ static int sg_lapped_call(int fd, void* bytes, DWORD n, DWORD* done, bool write)
 static wchar_t* sg_wide(sg_str path, int* code) {
     if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ERROR_FILE_NOT_FOUND; return NULL; }
     int64_t n;
-    wchar_t* w = sg_wide_of(path.ptr, path.len, &n);
+    wchar_t* w = sg_name_wide(path.ptr, path.len, &n);
     if (n < 248 || wcsncmp(w, L"\\\\?\\", 4) == 0) return w;
     DWORD full = GetFullPathNameW(w, 0, NULL, NULL);
     if (full == 0) return w;
@@ -11180,14 +11311,15 @@ static int sg_io_kind(int code) {
     }
 }
 #endif
-/* A path as the system takes it, ended by a zero byte. No file has a zero byte in its name
-   (the system would see the name end there), so such a path is not found. */
+/* A path as the system takes it, the bytes it stands for (`sg_name_unescape`, choice 1950) ended
+   by a zero byte. No file has a zero byte in its name (the system would see the name end there),
+   so such a path is not found. */
 static char* sg_path(sg_str path, int* code) {
     if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ENOENT; return NULL; }
     char* name = malloc((size_t)path.len + 1);
     if (!name) abort();
-    if (path.len > 0) memcpy(name, path.ptr, (size_t)path.len);
-    name[path.len] = 0;
+    int64_t n = sg_name_unescape(path.ptr, path.len, (uint8_t*)name);
+    name[n] = 0;
     return name;
 }
 #if defined(_WIN32)
@@ -17329,7 +17461,8 @@ impl<'a> Emitter<'a> {
     /// ends with the exit code 1.
     fn start(&mut self, main: &Func) -> Res<String> {
         // `main(List<string> args)`: the words after the program's name, looked at where the
-        // system keeps them (a text of capacity 0 owns nothing), each checked to be UTF-8.
+        // system keeps them (a text of capacity 0 owns nothing); a word that is not UTF-8 is
+        // made text in a block of its own (`sg_name_escape`, choice 1950).
         let (head, call) = match main.params.is_empty() {
             true => ("static int sg_main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    sg_start(NULL, NULL);\n".to_string(), "f_main()".to_string()),
             false => {
@@ -17339,8 +17472,8 @@ impl<'a> Emitter<'a> {
                         "static int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
                          if (!args.ptr) abort();\n    \
                          for (int i = 1; i < argc; i++) {{\n        int64_t n = (int64_t)strlen(argv[i]);\n        \
-                         if (sg_utf8_bad((const uint8_t*)argv[i], n) >= 0) {{ fprintf(stderr, \"error: args[%d] is not valid UTF-8\\n\", i - 1); free(args.ptr); return 1; }}\n        \
-                         args.ptr[i - 1] = SG_LIT(argv[i], n);\n    }}\n"
+                         int64_t m; uint8_t* escaped = sg_name_escape((const uint8_t*)argv[i], n, &m);\n        \
+                         args.ptr[i - 1] = escaped ? (sg_string){{ escaped, m, m + 1 }} : SG_LIT(argv[i], n);\n    }}\n"
                     ),
                     "f_main(args)".to_string(),
                 )
@@ -20431,14 +20564,13 @@ impl<'a> Emitter<'a> {
         let read_bytes = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         // A call that gives `Ok()` or the error of a code.
         let plain = |code: &str| format!("int code = {code}; if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)"));
-        // A text the system gave as bytes of their own: checked to be UTF-8.
+        // A name the system gave as bytes of their own, made text (`sg_name_own`, choice 1950).
         let owned_text = |code: &str| {
             format!(
                 "uint8_t* bytes = NULL; int64_t n = 0; int code = {code}; if (code) {} \
-                 int64_t bad = sg_utf8_bad(bytes, n); if (bad >= 0) {{ free(bytes); {} }} \
+                 sg_name_own(&bytes, &n); \
                  return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_string){{ bytes, n, n }} }} }};",
-                failed("sg_io_error(code)"),
-                failed("sg_io_bad_text(bad)")
+                failed("sg_io_error(code)")
             )
         };
         let (fname, params, body) = match call {
@@ -20455,14 +20587,12 @@ impl<'a> Emitter<'a> {
                 vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), bytes()],
                 format!(
                     "sg_fs_entry* e = NULL; int64_t n = 0; int code = sg_fs_list(a0, &e, &n); if (code) {} \
-                     for (int64_t i = 0; i < n; i++) {{ int64_t bad = sg_utf8_bad((const uint8_t*)e[i].name, e[i].len); \
-                     if (bad >= 0) {{ for (int64_t j = 0; j < n; j++) free(e[j].name); free(e); {} }} }} \
+                     for (int64_t i = 0; i < n; i++) sg_name_own((uint8_t**)&e[i].name, &e[i].len); \
                      if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr, _Alignof(__typeof__(*a1->ptr))); \
                      if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr, _Alignof(__typeof__(*a2->ptr))); }} \
                      for (int64_t i = 0; i < n; i++) {{ a1->ptr[a1->len++] = (sg_string){{ (uint8_t*)e[i].name, e[i].len, e[i].len + 1 }}; a2->ptr[a2->len++] = e[i].kind; }} \
                      free(e); return ({gives}){{ .tag = 0 }};",
-                    failed("sg_io_error(code)"),
-                    failed("sg_io_bad_text(bad)")
+                    failed("sg_io_error(code)")
                 ),
             ),
             SystemCall::ReaderStatus => (
@@ -20635,6 +20765,23 @@ impl<'a> Emitter<'a> {
                 self.made.insert("unicode".to_string());
                 ("sg_system_char_fold", vec![Ty::Char], "return sg_uni_fold1(a0);".to_string())
             }
+            // Names of the system as text and back (choices 1950 and 1952).
+            SystemCall::NameBytes => (
+                "sg_system_name_bytes",
+                vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
+                "if (a0.len > 0) { if (a1->len + a0.len > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + a0.len, 1, 1); \
+                 a1->len += sg_name_unescape(a0.ptr, a0.len, a1->ptr + a1->len); }"
+                    .to_string(),
+            ),
+            SystemCall::NameText => (
+                "sg_system_name_text",
+                vec![read_bytes()],
+                "int64_t m; uint8_t* e = sg_name_escape(a0.ptr, a0.len, &m); if (e) return (sg_string){ e, m, m + 1 }; \
+                 if (a0.len == 0) return SG_LIT(\"\", 0); \
+                 uint8_t* t = malloc((size_t)a0.len + 1); if (!t) abort(); memcpy(t, a0.ptr, (size_t)a0.len); t[a0.len] = 0; \
+                 return (sg_string){ t, a0.len, a0.len + 1 };"
+                    .to_string(),
+            ),
             SystemCall::Normalize => {
                 self.made.insert("normalization".to_string());
                 ("sg_system_normalize", vec![text(), Ty::Bool, Ty::Bool], "return sg_uni_normalize(a0, a1, a2);".to_string())

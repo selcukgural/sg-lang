@@ -165,13 +165,10 @@ nint logCharAt(read byte[] bytes, nint at, ref int code) {
 // level is told in a line of its own, and `Info` is used: the program goes on (1449).
 int logStartLevel() {
     var given = ""
+    // A value that is not UTF-8 comes as a name of the system does (choice 1950) and names no level.
     match Environment.get("SG_LOG") {
         Ok(text) => given = text
         Error(Missing) => return (int)(byte)LogLevel.Info
-        Error(InvalidText(_)) => {
-            logLine(LogLevel.Warn, "SG_LOG is not UTF-8, so it names no level (trace, debug, info, warn, error, off); Info is used")
-            return (int)(byte)LogLevel.Info
-        }
     }
     var names = string[6] { "trace", "debug", "info", "warn", "error", "off" }
     if given.length() == 0 {

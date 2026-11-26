@@ -934,6 +934,12 @@ pub enum SystemCall {
     /// `System.charFold(c)`: the simple case folding of a character (the C and S lines of
     /// CaseFolding.txt), by which `(?i)` of a `Regex` compares (choice 1477).
     CharFold,
+    /// `System.nameBytes(name, ref bytes)`: the bytes the system is given for a name (choice
+    /// 1952), each character from U+10FF80 to U+10FFFF the byte it stands for.
+    NameBytes,
+    /// `System.nameText(bytes)`: bytes of a name of the system as a text, a byte that is not
+    /// part of UTF-8 made such a character (choice 1950).
+    NameText,
     /// `System.normalize(text, compose, compat)`: the text in a normal form of Unicode (choice
     /// 1599): C with `compose`, D without, KC and KD with `compat`.
     Normalize,

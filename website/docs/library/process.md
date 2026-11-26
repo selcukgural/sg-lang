@@ -174,7 +174,8 @@ it ran and did not end with 0. It prints as the `IoError` does (`not found`), or
 |---|---|
 | `Result<string, VariableError> Environment.get(read string name)` | The text of the variable |
 
-`VariableError` is `Missing`, or `InvalidText(long position)` when what the variable holds is not UTF-8. The
+`VariableError` is `Missing`. A name or a value that is not UTF-8 is a name of the system, written as
+[Names that are not text](./files.md#names-that-are-not-text) says; so is a word of the command line. The
 variables are only read: setting one while another thread reads one is not safe in C, and a program run by a
 `Command` gets an environment of its own through `setVariable`. `Environment.set(...)` is an error that says
 so. The words of the command line come to `void main(List<string> args)`.

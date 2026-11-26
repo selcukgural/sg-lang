@@ -371,7 +371,7 @@ fn named_paths(text: &str, range: Span) -> Vec<String> {
 /// folder is called even when the path is `.`.
 pub fn program_name(path: &Path) -> String {
     let path = if path.is_dir() { std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) } else { path.to_path_buf() };
-    path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "library".to_string())
+    path.file_stem().map(crate::names::text_of_os).unwrap_or_else(|| "library".to_string())
 }
 
 pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {

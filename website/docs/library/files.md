@@ -402,7 +402,8 @@ to the output
 | `string Directory.temp()` | The folder for files that do not have to stay: `TMPDIR` or `/tmp`, on Windows the one Windows gives |
 | `Result<string, IoError> Directory.createTemp()` | A new folder in it that only the user can go into, and its path |
 
-A `DirectoryEntry` has `name` (without the folder) and `kind`. A `FileInfo` has `kind`, `size` (in bytes, a
+A `DirectoryEntry` has `name` (without the folder) and `kind`; a name that is not UTF-8 comes as
+[below](#names-that-are-not-text), and opens the same file. A `FileInfo` has `kind`, `size` (in bytes, a
 `long`) and `modified` (a [`DateTime`](./time.md)). `FileKind` is `File`, `Directory`, `Link` or `Other`; only
 a listing tells a `Link`, since `File.info` follows links.
 
@@ -458,6 +459,8 @@ and `\` on Windows, where a path may also start with a drive (`C:\`) or a share 
 | `read string Path.fileName(read string path)` | What comes after the last separator |
 | `read string Path.extension(read string path)` | The end of the name from its last `.`, the `.` with it, or the empty text |
 | `read string Path.parent(read string path)` | What comes before the last separator; a root stays whole |
+| `List<byte> Path.systemBytes(read string name)` | The bytes the system is given for a name (below) |
+| `string Path.fromSystemBytes(read byte[] bytes)` | The name the bytes are, as the program writes it; it never fails |
 
 `joinInside` refuses an empty name or part, a root, `\`, `:`, `..`, a part that ends in `.` or a space, a
 control character (C0, DEL and C1), and Windows' device names (`CON`, `NUL`, `COM1`, also `nul.txt`). A name from a request, an
@@ -493,6 +496,37 @@ logs/2026
 uploads/2026/report.txt
 invalid input
 ```
+
+### Names that are not text
+
+A name of the system is any bytes on Linux and macOS, and any units of UTF-16 on Windows, while a `string`
+is always UTF-8. Such a name comes into the program all the same: a word of the command line, a variable of
+the environment, a name `Directory.list` gives. Each byte that is not UTF-8 is written as a character from
+U+10FF80 to U+10FFFF (U+10FF00 and the byte), which goes back to that byte when the name is given to the
+system, so `File.open(entry.name)` opens the file whatever its name holds. On Windows a half of a pair of
+UTF-16 alone is three such bytes. `Path.systemBytes` gives the bytes themselves, to write a name as it is or
+to compare it; `Path.fromSystemBytes` makes a name of bytes read out of data, such as an entry of an archive.
+
+```sg
+void main() {
+    var bytes = Hex.decode("636166e9") ?? panic("hex")
+    var name = Path.fromSystemBytes(read bytes)
+    print(name == "caf\u{10FFE9}")
+    var back = Path.systemBytes(read name)
+    print(Hex.encode(read back))
+}
+```
+
+It prints:
+
+```text
+true
+636166e9
+```
+
+Printed, such a character is written as UTF-8, as any other; a program that lists names as `ls` does writes
+`Path.systemBytes(name)` to the output instead. Only bytes from 0x80 come out of these characters, so a name
+checked for `/`, `\`, `.` or a zero byte stays checked.
 
 ## `IoError`
 

@@ -90,11 +90,17 @@ fn wide(text: &str) -> Vec<u16> {
     std::ffi::OsStr::new(text).encode_wide().chain([0]).collect()
 }
 
+/// A name written as a text, as Windows takes it (choice 1950): UTF-16 ended by a zero.
+fn wide_name(text: &str) -> Vec<u16> {
+    crate::names::os_of(text).encode_wide().chain([0]).collect()
+}
+
 /// A path as Windows takes it. One too long for the old limit of 260 characters is made whole and
 /// given with `\\?\` in front, as Rust's own functions of files give it, so that it opens on every
-/// Windows whether long paths are turned on or not.
+/// Windows whether long paths are turned on or not. The whole path stays in UTF-16, so a half of a
+/// pair in the folder it is made from is kept (1956).
 fn wide_path(path: &str) -> Vec<u16> {
-    let plain = wide(path);
+    let plain = wide_name(path);
     if plain.len() < 248 || path.starts_with(r"\\?\") {
         return plain;
     }
@@ -105,12 +111,17 @@ fn wide_path(path: &str) -> Vec<u16> {
         return plain;
     }
     full.truncate(n);
-    let text = String::from_utf16_lossy(&full);
-    let verbatim = match text.strip_prefix(r"\\") {
-        Some(share) => format!(r"\\?\UNC\{share}"),
-        None => format!(r"\\?\{text}"),
-    };
-    wide(&verbatim)
+    let slash = u16::from(b'\\');
+    let mut verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    match full.starts_with(&[slash, slash]) {
+        true => {
+            verbatim.extend("UNC".encode_utf16());
+            verbatim.extend_from_slice(&full[1..]);
+        }
+        false => verbatim.extend_from_slice(&full),
+    }
+    verbatim.push(0);
+    verbatim
 }
 
 /// `Entropy.fill(ref bytes)`: the random bytes of the system, from `ProcessPrng` as compiled code
@@ -199,7 +210,7 @@ pub(crate) fn local_offset(seconds: i64) -> i32 {
 /// `System.executable`: 1 for a file, 0 for none (a folder is none). Windows has no right to run a
 /// file apart from the right to read it: whether it runs, starting it says.
 pub(crate) fn executable(path: &str) -> i128 {
-    match std::fs::metadata(path) {
+    match std::fs::metadata(crate::names::os_of(path)) {
         Ok(info) if info.is_file() => 1,
         _ => 0,
     }
@@ -228,12 +239,14 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
             })
             .collect::<Vec<String>>()
     };
+    // The names as Windows writes them (choice 1950).
+    let os = crate::names::os_of;
     let words = texts(1);
-    let mut command = std::process::Command::new(text(0));
-    command.args(&words[1..]);
+    let mut command = std::process::Command::new(os(&text(0)));
+    command.args(words[1..].iter().map(|word| os(word)));
     let folder = text(2);
     if !folder.is_empty() {
-        command.current_dir(folder);
+        command.current_dir(os(&folder));
     }
     let names = texts(4);
     if matches!(values[3], Value::Bool(true)) {
@@ -247,8 +260,8 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
     let kept = items(6);
     for ((name, value), kept) in names.iter().zip(texts(5)).zip(kept) {
         match kept {
-            Value::Bool(true) => command.env(name, value),
-            _ => command.env_remove(name),
+            Value::Bool(true) => command.env(os(name), os(&value)),
+            _ => command.env_remove(os(name)),
         };
     }
     let input = match &values[7] {
@@ -283,7 +296,7 @@ pub(crate) fn not_started(error: std::io::Error, folder: &Value) -> std::io::Err
     if error.raw_os_error() != Some(NOT_DIR) || folder.is_empty() {
         return error;
     }
-    std::fs::metadata(&folder).err().unwrap_or(error)
+    std::fs::metadata(crate::names::os_of(&folder)).err().unwrap_or(error)
 }
 
 pub(crate) fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
@@ -336,16 +349,22 @@ pub(crate) fn open_library(path: &std::path::Path, folders: &[std::path::PathBuf
     const SEARCH_USER_DIRS: u32 = 0x400;
     const SEARCH_SYSTEM32: u32 = 0x800;
     for folder in folders {
-        // `AddDllDirectory` takes a path without `\\?\`.
-        let text = folder.to_string_lossy();
-        let plain = text.strip_prefix(r"\\?\UNC\").map(|rest| format!(r"\\{rest}")).or_else(|| text.strip_prefix(r"\\?\").map(str::to_string)).unwrap_or_else(|| text.to_string());
-        let name = wide(&plain);
+        // `AddDllDirectory` takes a path without `\\?\`, worked out in UTF-16 so that no unit is lost.
+        let units: Vec<u16> = folder.as_os_str().encode_wide().collect();
+        let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+        let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+        let mut name: Vec<u16> = match () {
+            () if units.starts_with(&unc) => r"\\".encode_utf16().chain(units[unc.len()..].iter().copied()).collect(),
+            () if units.starts_with(&verbatim) => units[verbatim.len()..].to_vec(),
+            () => units,
+        };
+        name.push(0);
         // SAFETY: the name ends with a zero.
         if unsafe { AddDllDirectory(name.as_ptr()) }.is_null() {
-            return Err(format!("the folder {plain} cannot be looked in for DLLs: {}", last_error()));
+            return Err(format!("the folder {} cannot be looked in for DLLs: {}", folder.display(), last_error()));
         }
     }
-    let name = wide(&path.to_string_lossy());
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: the name ends with a zero; the library stays loaded for the process.
     let module = unsafe { LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), SEARCH_USER_DIRS | SEARCH_SYSTEM32) };
     match module.is_null() {
@@ -502,7 +521,7 @@ pub(crate) fn rename_new(from: &str, to: &str) -> std::io::Result<()> {
 /// it could not write whole. A target that is there is `AlreadyExists`, a folder `IsDirectory`.
 pub(crate) fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
     const FAIL_IF_EXISTS: u32 = 0x1;
-    if std::fs::metadata(from)?.is_dir() {
+    if std::fs::metadata(crate::names::os_of(from))?.is_dir() {
         return Err(std::io::Error::from_raw_os_error(IS_DIR));
     }
     let (from, to) = (wide_path(from), wide_path(to));
@@ -530,10 +549,11 @@ pub(crate) fn sync_file(file: &std::fs::File, data: bool) -> std::io::Result<()>
 pub(crate) fn open_regular(path: &str) -> std::io::Result<Option<std::fs::File>> {
     use std::os::windows::io::AsRawHandle;
     const FILE_TYPE_DISK: u32 = 1;
-    if std::fs::metadata(path).is_ok_and(|info| info.is_dir()) {
+    let path = crate::names::os_of(path);
+    if std::fs::metadata(&path).is_ok_and(|info| info.is_dir()) {
         return Err(std::io::Error::from_raw_os_error(IS_DIR));
     }
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(&path)?;
     // SAFETY: the handle is the open file's; `GetFileType` only asks what it is.
     if unsafe { GetFileType(file.as_raw_handle() as Handle) } != FILE_TYPE_DISK {
         return Ok(None);
@@ -570,7 +590,7 @@ pub(crate) fn set_length(file: &std::fs::File, length: u64) -> std::io::Result<(
 /// `Directory.sync(path)`: Windows keeps the names of a folder with the files themselves, so
 /// there is nothing to do but to tell a path that is not a folder.
 pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
+    match std::fs::metadata(crate::names::os_of(path)) {
         Ok(info) if info.is_dir() => Ok(()),
         Ok(_) => Err(std::io::Error::from_raw_os_error(NOT_DIR)),
         Err(error) => Err(refine(path, error)),
@@ -580,10 +600,11 @@ pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
 /// A folder and all it holds: Rust's `remove_dir_all`, which works from the handle of each folder
 /// and follows no link or junction. A path that is a link, or a file, is `NotDirectory`.
 pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_dir() {
+    let path = crate::names::os_of(path);
+    if !std::fs::symlink_metadata(&path)?.is_dir() {
         return Err(std::io::Error::from_raw_os_error(NOT_DIR));
     }
-    std::fs::remove_dir_all(path)
+    std::fs::remove_dir_all(&path)
 }
 
 /// A new folder, or with `file` a new empty file, named from the template with its `XXXXXX` made
@@ -680,11 +701,12 @@ pub(crate) fn temp_folder() -> String {
         }
     } as usize;
     buffer.truncate(n.min(buffer.len()));
-    let mut text = String::from_utf16_lossy(&buffer);
-    if text.ends_with('\\') && text.len() > 3 {
-        text.pop();
+    // Without the `\` at its end, as compiled code gives it; a half of a pair in it is kept (1956).
+    if buffer.len() > 3 && buffer.last() == Some(&u16::from(b'\\')) {
+        buffer.pop();
     }
-    text
+    use std::os::windows::ffi::OsStringExt;
+    crate::names::text_of_os(&std::ffi::OsString::from_wide(&buffer))
 }
 
 /// A new folder in the temporary folder that only this user can open.
@@ -733,7 +755,7 @@ pub(crate) fn private_dir() -> std::io::Result<std::path::PathBuf> {
 /// which Windows does not find (`ERROR_PATH_NOT_FOUND`), is `NotDirectory`.
 pub(crate) fn refine(path: &str, error: std::io::Error) -> std::io::Error {
     match error.raw_os_error() {
-        Some(5) if std::fs::metadata(path).is_ok_and(|info| info.is_dir()) => std::io::Error::from_raw_os_error(IS_DIR),
+        Some(5) if std::fs::metadata(crate::names::os_of(path)).is_ok_and(|info| info.is_dir()) => std::io::Error::from_raw_os_error(IS_DIR),
         Some(3) if file_on_the_way(path) => std::io::Error::from_raw_os_error(NOT_DIR),
         _ => error,
     }
@@ -741,7 +763,8 @@ pub(crate) fn refine(path: &str, error: std::io::Error) -> std::io::Error {
 
 /// Whether the nearest folder on the way that is there is a file.
 fn file_on_the_way(path: &str) -> bool {
-    let mut on = std::path::Path::new(path).parent();
+    let path = std::path::PathBuf::from(crate::names::os_of(path));
+    let mut on = path.parent();
     while let Some(folder) = on {
         if folder.as_os_str().is_empty() {
             return false;

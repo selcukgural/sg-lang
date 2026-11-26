@@ -5,4 +5,6 @@ true
 [PA\0TH]: Missing
 /nowhere
 SG_TEST_TEXT = café
-[SG_TEST_BYTES]: InvalidText(1)
+SG_TEST_BYTES as the system has it: true
+it starts with c and ends with fé: true
+the variable whose name is not text: x

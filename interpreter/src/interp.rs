@@ -1840,7 +1840,7 @@ fn kind_code(kind: &std::fs::FileType) -> u8 {
 
 /// Writes the bytes into the file, which is made if it is not there; `append` keeps what
 /// it holds and puts them after it.
-fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
+fn write_file(path: &std::ffi::OsStr, bytes: &[u8], append: bool) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     match append {
         true => options.append(true).create(true),
@@ -2679,16 +2679,14 @@ fn run_main(interp: &mut Interp) -> Result<(), Stop> {
     let first = LIVE.with(|live| live.borrow().next);
     open_streams();
     let main = interp.funcs["main"];
-    // `main(List<string> args)`: the words of the command line, each checked to be text.
+    // `main(List<string> args)`: the words of the command line, each a name of the system made
+    // text (choice 1950).
     let mut args = Vec::new();
     if !main.params.is_empty() {
         let mut words = Vec::new();
         let given = std::mem::take(&mut interp.io.world.borrow_mut().args);
-        for (number, word) in given.into_iter().enumerate() {
-            match String::from_utf8(word) {
-                Ok(word) => words.push(cell(Value::Str(Rc::new(word)))),
-                Err(_) => return Err(Stop::Failed(format!("args[{number}] is not valid UTF-8"))),
-            }
+        for word in given {
+            words.push(cell(Value::Str(Rc::new(crate::names::text_of(&word)))));
         }
         args.push(Value::List(Rc::new(RefCell::new(words))));
     }
@@ -7518,6 +7516,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         if path.contains('\0') {
             return Ok(failed(io_cause(None, Some(crate::sys::NOT_FOUND))));
         }
+        // The name as the system writes it (choice 1950).
+        let name = crate::names::os_of(&path);
         // What Windows says differently is said as Linux and macOS say it (`refine`).
         let done = |result: std::io::Result<Value>| match result {
             Ok(value) => ok(value),
@@ -7527,23 +7527,23 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         };
         Ok(match call {
-            IoCall::ReadText => match std::fs::read(&path) {
+            IoCall::ReadText => match std::fs::read(&name) {
                 Ok(bytes) => text_read(bytes, 0),
                 Err(error) => done(Err(error)),
             },
-            IoCall::ReadBytes => done(std::fs::read(&path).map(|bytes| {
+            IoCall::ReadBytes => done(std::fs::read(&name).map(|bytes| {
                 Value::List(Rc::new(RefCell::new(bytes.into_iter().map(|byte| cell(Value::Int(IntTy::Byte, byte as i128))).collect())))
             })),
             IoCall::WriteText | IoCall::AppendText => {
                 let Some(Value::Str(text)) = values.next() else { unreachable!("the checker makes the second argument text") };
-                done(write_file(&path, text.as_bytes(), call == IoCall::AppendText).map(|()| Value::Void))
+                done(write_file(&name, text.as_bytes(), call == IoCall::AppendText).map(|()| Value::Void))
             }
             IoCall::WriteBytes => {
                 let bytes = byte_values(&values.next().expect("bytes"));
-                done(write_file(&path, &bytes, false).map(|()| Value::Void))
+                done(write_file(&name, &bytes, false).map(|()| Value::Void))
             }
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
-            IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
+            IoCall::OpenText => done(std::fs::File::open(&name).and_then(|file| match file.metadata()?.is_dir() {
                 true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
                 false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
             })),
@@ -7555,9 +7555,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             },
             IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let opened = match call {
-                    IoCall::CreateText => std::fs::File::create(&path),
-                    IoCall::OpenWrite => std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&path),
-                    _ => std::fs::OpenOptions::new().append(true).create(true).open(&path),
+                    IoCall::CreateText => std::fs::File::create(&name),
+                    IoCall::OpenWrite => std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&name),
+                    _ => std::fs::OpenOptions::new().append(true).create(true).open(&name),
                 };
                 let seekable = call != IoCall::OpenAppend;
                 done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable, pipe: false })))))
@@ -7651,6 +7651,17 @@ impl<'a, 'e> Interp<'a, 'e> {
             let Value::Char(c) = values[0] else { unreachable!("the checker makes it a `char`") };
             return Ok(Value::Char(crate::unicode::simple_fold(c)));
         }
+        // Names of the system as text and back (choices 1950 and 1952).
+        if call == SystemCall::NameBytes {
+            let Value::List(into) = &values[1] else { unreachable!("the checker makes it a list") };
+            let name = text(0);
+            let bytes = crate::names::bytes_of(&name);
+            into.borrow_mut().extend(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, i128::from(*byte)))));
+            return Ok(Value::Void);
+        }
+        if call == SystemCall::NameText {
+            return Ok(Value::Str(Rc::new(crate::names::text_of(&byte_values(&values[0])))));
+        }
         if call == SystemCall::Executable {
             return Ok(Value::Int(IntTy::Long, executable(&text(0))));
         }
@@ -7703,18 +7714,20 @@ impl<'a, 'e> Interp<'a, 'e> {
         if call != SystemCall::Variable && (0..paths).any(|at| text(at).contains('\0')) {
             return Ok(not_found());
         }
+        // A path as the system writes it (choice 1950).
+        let os = |at: usize| crate::names::os_of(&text(at));
         Ok(match call {
             SystemCall::Delete => done(remove_file(&text(0)).map(|()| Value::Void)),
             SystemCall::Move => done(rename_new(&text(0), &text(1)).map(|()| Value::Void)),
-            SystemCall::Replace => done(std::fs::rename(text(0), text(1)).map(|()| Value::Void)),
+            SystemCall::Replace => done(std::fs::rename(os(0), os(1)).map(|()| Value::Void)),
             SystemCall::Copy => done(copy_new(&text(0), &text(1)).map(|()| Value::Void)),
-            SystemCall::CreateDirectory => done(std::fs::create_dir(text(0)).map(|()| Value::Void)),
-            SystemCall::RemoveDirectory => done(std::fs::remove_dir(text(0)).map(|()| Value::Void)),
+            SystemCall::CreateDirectory => done(std::fs::create_dir(os(0)).map(|()| Value::Void)),
+            SystemCall::RemoveDirectory => done(std::fs::remove_dir(os(0)).map(|()| Value::Void)),
             SystemCall::RemoveAll => done(remove_all(&text(0)).map(|()| Value::Void)),
             SystemCall::SyncDirectory => done(crate::sys::sync_folder(&text(0)).map(|()| Value::Void)),
             SystemCall::List => {
                 let mut found = Vec::new();
-                let listed = std::fs::read_dir(text(0)).and_then(|entries| {
+                let listed = std::fs::read_dir(os(0)).and_then(|entries| {
                     for entry in entries {
                         let entry = entry?;
                         let kind = entry.file_type().map(|kind| kind_code(&kind)).unwrap_or(3);
@@ -7726,24 +7739,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                     return Ok(done(Err(error)));
                 }
                 found.sort();
-                let mut names = Vec::new();
-                for (name, _) in &found {
-                    match std::str::from_utf8(name) {
-                        Ok(name) => names.push(cell(Value::Str(Rc::new(name.to_string())))),
-                        Err(error) => return Ok(failed(io_cause(None, None).invalid_text(error.valid_up_to() as u64))),
-                    }
-                }
+                // Each name made text (choice 1950), after the sort by its bytes.
+                let names: Vec<_> = found.iter().map(|(name, _)| cell(Value::Str(Rc::new(crate::names::text_of(name))))).collect();
                 let (Value::List(into), Value::List(kinds)) = (&values[1], &values[2]) else { unreachable!("the checker makes them lists") };
                 into.borrow_mut().extend(names);
                 kinds.borrow_mut().extend(found.iter().map(|(_, kind)| cell(Value::Int(IntTy::Byte, i128::from(*kind)))));
                 ok(Value::Void)
             }
-            SystemCall::Status => match std::fs::metadata(text(0)) {
+            SystemCall::Status => match std::fs::metadata(os(0)) {
                 Ok(info) => status_fields(&info, &values[1]),
                 Err(error) => done(Err(error)),
             },
             SystemCall::Current => match std::env::current_dir() {
-                Ok(folder) => text_read(folder.as_os_str().as_encoded_bytes().to_vec(), 0),
+                Ok(folder) => ok(Value::Str(Rc::new(crate::names::text_of_os(folder.as_os_str())))),
                 Err(error) => done(Err(error)),
             },
             SystemCall::MakeTemp => done(make_temp(&text(0), false).map(|folder| Value::Str(Rc::new(folder)))),
@@ -7779,6 +7787,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::StackLow
             | SystemCall::CharCategory
             | SystemCall::CharFold
+            | SystemCall::NameBytes
+            | SystemCall::NameText
             | SystemCall::Normalize
             | SystemCall::IsNormalized
             | SystemCall::Crc32Hardware
@@ -7788,7 +7798,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // A name with `=` or a zero byte in it is no variable's name.
                 let found = match name.is_empty() || name.contains(['=', '\0']) {
                     true => None,
-                    false => std::env::var_os(&name),
+                    false => std::env::var_os(crate::names::os_of(&name)),
                 };
                 match found {
                     Some(value) => {

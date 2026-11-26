@@ -230,14 +230,12 @@
   the same list (`extend_from_within`), a sort that does not allocate (choices 235, 236, 239). A sort or
   a search in order with a function that compares, or by a key (`sortBy`, `binarySearchBy`; 1254).
 - A panic of a shift names no way out: there is no `tryShiftLeft` yet.
-- The command line as bytes (a word that is not UTF-8 stops the program). `IoError` does not carry the path
+- `IoError` does not carry the path
   (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no test: the tests cannot make a file
   they may not read or fill a disk.
 - **Of folders and the environment**: making a link and reading where one points, changing permissions and
-  owners, watching a folder, patterns of names (`*.txt`), a listing of a whole tree, the names of a folder
-  or the variables of the environment as bytes, all the variables at once, the path of the program itself,
-  the `Async` forms (the calls are made as they are, also in an async function). A name in a folder that is not UTF-8 is an `InvalidText`, but has no test: macOS does
-  not let a program make such a name (571). A path opened by the handle of a folder (Go's `os.Root`,
+  owners, watching a folder, patterns of names (`*.txt`), a listing of a whole tree, all the variables at once, the path of the program itself,
+  the `Async` forms (the calls are made as they are, also in an async function). A path opened by the handle of a folder (Go's `os.Root`,
   `openat`), so that a link inside the folder cannot lead out of it as it can after `Path.joinInside`
   (954).
 - **Of seeking in a file**: reading and

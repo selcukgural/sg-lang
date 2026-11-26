@@ -215,6 +215,26 @@ public struct Path {
         return at
     }
 
+    // The bytes the system is given for a name (choice 1952). A name of the system that is not
+    // UTF-8 comes into the program with each byte that is not text written as a character from
+    // U+10FF80 to U+10FFFF (U+10FF00 and the byte), and goes back to the system as it came:
+    // `File.open(entry.name)` opens the file whatever bytes its name has. This gives those bytes,
+    // to write a name as the system has it (`out.write(Path.systemBytes(name))`, as `ls` writes it)
+    // or to compare it with bytes. On Windows a name is UTF-16, and a half of a pair that stands
+    // alone in it is the three bytes WTF-8 writes it with.
+    public List<byte> systemBytes(read string name) {
+        var bytes = List<byte>()
+        System.nameBytes(name, ref bytes)
+        return bytes
+    }
+
+    // Bytes of a name as the program writes it: what is not UTF-8 is written as `systemBytes`
+    // reads it, so the text names the same file. For a name read out of data, the name of an entry
+    // of an archive or a line of `find -print0`. It never fails.
+    public string fromSystemBytes(read byte[] bytes) {
+        return System.nameText(bytes)
+    }
+
     // What comes after the last separator: `report.txt` in `logs/report.txt`, and the empty text in
     // `logs/` and in a root (`/`, and on Windows `C:\`). On Windows the drive is not part of the name:
     // `report.txt` in `C:report.txt`.

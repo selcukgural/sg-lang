@@ -12717,6 +12717,8 @@ impl<'a> Checker<'a> {
             "stackLow" => (SystemCall::StackLow, Vec::new(), Ty::Bool),
             "charCategory" => (SystemCall::CharCategory, vec![Ty::Char], Ty::Int(IntTy::Int)),
             "charFold" => (SystemCall::CharFold, vec![Ty::Char], Ty::Char),
+            "nameBytes" => (SystemCall::NameBytes, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Void),
+            "nameText" => (SystemCall::NameText, vec![bytes()], Ty::Str),
             "normalize" => (SystemCall::Normalize, vec![text(), Ty::Bool, Ty::Bool], Ty::Str),
             "isNormalized" => (SystemCall::IsNormalized, vec![text(), Ty::Bool, Ty::Bool], Ty::Bool),
             "crc32Hardware" => (SystemCall::Crc32Hardware, vec![Ty::Int(IntTy::Uint), bytes()], Ty::Int(IntTy::Long)),

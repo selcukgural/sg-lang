@@ -1,8 +1,11 @@
 // The variables of the environment, read with `Environment.get`. The test sets one through C, as no
 // SG program can: with bytes of UTF-8 on Linux and macOS, with units of UTF-16 on Windows, where a
-// lone surrogate is what is not text.
+// lone surrogate is what is not text. What is not text comes as a name of the system does (choice
+// 1950): each byte a character from U+10FF80, which `Path.systemBytes` gives back as the byte; on
+// Windows the lone surrogate is the three bytes WTF-8 writes it with.
 extern {
     int setenv(read CString name, raw byte value, int overwrite)
+    int putenv(raw byte entry)
     int SetEnvironmentVariableW(raw ushort name, raw ushort value)
 }
 
@@ -47,6 +50,13 @@ void main() {
             _ = SetEnvironmentVariableW(text, v)
             v[1] = 0xd800
             _ = SetEnvironmentVariableW(bytes, v)
+            // A name with the lone surrogate in it, and the value `x`.
+            var odd = wide("SG_TEST_XX")
+            odd[8] = 0xdc00
+            v[0] = 0x78
+            v[1] = 0
+            _ = SetEnvironmentVariableW(odd, v)
+            Memory.free(odd)
             Memory.free(v)
             Memory.free(text)
             Memory.free(bytes)
@@ -65,8 +75,37 @@ void main() {
             var bad = CString.from("SG_TEST_BYTES") ?? panic("zero byte")
             _ = setenv(read bad, p, 1)
             Memory.free(p)
+            // A name with the byte 0xFE in it, and the value `x`: `SG_TEST_\xFEX=x`, which
+            // `putenv` keeps, so it is never freed.
+            var entry = Memory.allocate<byte>(13)
+            var ascii = "SG_TEST_XX=x".asBytes()
+            for i in 0..ascii.length() {
+                entry[i] = ascii[i]
+            }
+            entry[8] = 0xfe
+            entry[12] = 0
+            _ = putenv(entry)
         }
     }
     show("SG_TEST_TEXT")
-    show("SG_TEST_BYTES")
+    var value = Environment.get("SG_TEST_BYTES") ?? panic("SG_TEST_BYTES is set")
+    var expected = OperatingSystem.isWindows() ? "63eda08066c3a9" : "63ff66c3a9"
+    var given = Path.systemBytes(read value)
+    print($"SG_TEST_BYTES as the system has it: {Hex.encode(read given) == expected}")
+    print($"it starts with c and ends with fé: {value.startsWith("c") && value.endsWith("fé")}")
+    // The odd name, written from its bytes.
+    var name = List<byte>()
+    for b in "SG_TEST_".asBytes() {
+        name.add(b)
+    }
+    if OperatingSystem.isWindows() {
+        name.add(0xed)
+        name.add(0xb0)
+        name.add(0x80)
+    } else {
+        name.add(0xfe)
+    }
+    name.add(0x58)
+    var odd = Path.fromSystemBytes(read name)
+    print($"the variable whose name is not text: {Environment.get(read odd) ?? "not found"}")
 }

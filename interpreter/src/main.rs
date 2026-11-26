@@ -91,7 +91,7 @@ struct Machine {
 }
 
 fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &Machine, dirs: &[PathBuf]) -> ExitCode {
-    let mut sources = match sg::load(std::path::Path::new(path), made == Made::Tests) {
+    let mut sources = match sg::load(&os_path(path), made == Made::Tests) {
         Ok(sources) => sources,
         Err(error) => {
             tell!("error: {error}");
@@ -168,7 +168,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let object = work.path().join(format!("{name}.o"));
     match made {
         Made::Program | Made::Tests => {
-            cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
+            cc.arg("-o").arg(os_path(&out)).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
         }
         // Code that may be placed anywhere is all Windows has.
         Made::Static => {
@@ -186,7 +186,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             if let Some(target) = &machine.target {
                 cc.arg(format!("--target={target}"));
             }
-            cc.arg("-o").arg(&out).arg(&c_file);
+            cc.arg("-o").arg(os_path(&out)).arg(&c_file);
         }
         // What goes to the linker with a name in it is given whole with `-Xlinker`: after
         // `-Wl,` a comma in a name would be read as the start of another option (choice 1339).
@@ -196,13 +196,13 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // On Windows only what is exported from the DLL is seen anyway, and its import library is
         // `x.dll.lib`, beside it (Rust's name: `x.lib` is the static one).
         Made::Shared if cfg!(windows) => {
-            cc.args(["-shared", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
+            cc.args(["-shared", "-o"]).arg(os_path(&out)).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
             cc.args(["-Xlinker".to_string(), format!("/IMPLIB:{out}.lib")]);
         }
         Made::Shared => {
-            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
+            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(os_path(&out)).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
             if cfg!(target_os = "macos") {
-                let file = std::path::Path::new(&out).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                let file = os_path(&out).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 cc.args(["-Xlinker", "-install_name", "-Xlinker"]).arg(format!("@rpath/{file}"));
             } else {
                 cc.arg("-Wl,-z,nodelete");
@@ -217,7 +217,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         (Made::Static, Ok(status)) if status.success() => {
             let _ = std::fs::remove_file(&out);
             let archiver = if cfg!(windows) { "llvm-lib" } else { "ar" };
-            let archived = sg::cc::archive(std::path::Path::new(&out), &object).status();
+            let archived = sg::cc::archive(&os_path(&out), &object).status();
             match archived {
                 Ok(archived) if archived.success() => Ok(archived),
                 Ok(_) => {
@@ -245,12 +245,12 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         Ok(status) if status.success() => {
             // Windows has no `rpath`: the DLLs of the libraries of `-L` go beside the program.
             if cfg!(windows) && matches!(made, Made::Program | Made::Tests | Made::Shared) {
-                for line in sg::link::copy_dlls(&libs, dirs, std::path::Path::new(&out)) {
+                for line in sg::link::copy_dlls(&libs, dirs, &os_path(&out)) {
                     tell!("{line}");
                 }
             }
             let Some(header) = header else { return ExitCode::SUCCESS };
-            let header_path = std::path::Path::new(&out).with_file_name(format!("{name}.h"));
+            let header_path = os_path(&out).with_file_name(format!("{name}.h"));
             if let Err(error) = std::fs::write(&header_path, header) {
                 tell!("error: cannot write {}: {error}", header_path.display());
                 return ExitCode::FAILURE;
@@ -261,7 +261,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 Made::Static => with_folders.iter().cloned().chain(["-lm".to_string(), "-pthread".to_string()]).fold(out.clone(), |line, flag| format!("{line} {flag}")),
                 Made::Shared if cfg!(windows) => format!("{out}.lib"),
                 _ => {
-                    let dir = std::path::Path::new(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
+                    let dir = os_path(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
                     format!("-L{dir} -l{name}")
                 }
             };
@@ -318,8 +318,13 @@ fn say(text: &str) -> ExitCode {
     }
 }
 
+/// A path sg was given, as the system writes it (choice 1956).
+fn os_path(path: &str) -> PathBuf {
+    PathBuf::from(sg::names::os_of(path))
+}
+
 fn library_name(path: &str) -> String {
-    sg::source::program_name(std::path::Path::new(path))
+    sg::source::program_name(&os_path(path))
 }
 
 /// The test command on compiled code: the tests are built into a program in a folder of its own
@@ -421,7 +426,8 @@ fn bytes(word: std::ffi::OsString) -> Vec<u8> {
 fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
+    // sg's own words as names of the system made text (choice 1956), and back to paths by `path`.
+    let args: Vec<String> = words.iter().map(|word| sg::names::text_of_os(word)).collect();
     const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
         tell!("{USAGE}");
@@ -548,7 +554,7 @@ fn main() -> ExitCode {
                 Made::Shared if cfg!(target_os = "macos") => Some(format!("lib{name}.dylib")),
                 Made::Shared => Some(format!("lib{name}.so")),
                 Made::Freestanding => Some(format!("{name}.o")),
-                _ => std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()),
+                _ => os_path(path).file_stem().map(sg::names::text_of_os),
             };
             let named = out.is_some();
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
@@ -557,7 +563,8 @@ fn main() -> ExitCode {
             // program of a folder is named by default when it is built from the folder above it
             // (1398, as Go tells it).
             if let Some(out) = &out {
-                let folder = std::path::Path::new(out).parent().filter(|folder| !folder.as_os_str().is_empty());
+                let whole = os_path(out);
+                let folder = whole.parent().filter(|folder| !folder.as_os_str().is_empty());
                 if let Some(folder) = folder.filter(|folder| !folder.is_dir()) {
                     tell!("error: cannot write {out}: there is no folder {}", folder.display());
                     return ExitCode::from(2);
@@ -566,7 +573,7 @@ fn main() -> ExitCode {
                     Made::Program | Made::Tests => sg::cc::program_file(out),
                     _ => out.clone(),
                 };
-                if std::path::Path::new(&file).is_dir() {
+                if os_path(&file).is_dir() {
                     match named {
                         true => tell!("error: cannot write {file}: it is a folder"),
                         false => tell!("error: `{file}` is a folder; name the program with -o"),
@@ -592,7 +599,7 @@ fn main() -> ExitCode {
     };
     // A folder is a program whose root module is every file in it; the test command then runs
     // the tests of every module under it.
-    let mut sources = match sg::load(std::path::Path::new(&path), tests) {
+    let mut sources = match sg::load(&os_path(&path), tests) {
         Ok(sources) => sources,
         Err(error) => {
             tell!("error: {error}");

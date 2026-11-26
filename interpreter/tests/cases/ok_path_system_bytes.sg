@@ -1,0 +1,61 @@
+// Names of the system as text and back (choices 1950 and 1952): `Path.fromSystemBytes` writes a
+// byte that is not part of UTF-8, and each byte of a character from U+10FF80 to U+10FFFF, as the
+// character U+10FF00 + the byte; `Path.systemBytes` gives each such character back as its byte.
+// The interpreter and compiled code must agree on every case.
+
+List<byte> bytesOf(read string hex) {
+    return Hex.decode(hex) ?? panic("hex")
+}
+
+// The name made from the bytes, its characters, and whether it goes back to the same bytes.
+void show(read string label, List<byte> bytes) {
+    var name = Path.fromSystemBytes(read bytes)
+    var codes = ""
+    for c in name.chars() {
+        codes = $"{codes} {(int)c:x}".toString()
+    }
+    var back = Path.systemBytes(read name)
+    print($"{label}:{codes} back {back == bytes}")
+}
+
+void main() {
+    // Text stays as it is.
+    show("ascii", bytesOf("612f5c2e3a"))
+    show("utf-8", bytesOf("c3a7e697a5f09f9880"))
+    show("below the escape", bytesOf("f48fbe7f"))
+    show("U+10FF7F", bytesOf("f48fbdbf"))
+    // What is not UTF-8.
+    show("cut short", bytesOf("e697"))
+    show("overlong", bytesOf("c080"))
+    show("a half of a pair", bytesOf("eda080"))
+    show("past U+10FFFF", bytesOf("f4908080"))
+    show("a start, then ascii", bytesOf("f09f41"))
+    show("ff fe", bytesOf("61fffe62"))
+    // The escape itself, as UTF-8: each of its bytes is escaped, so it comes back as it was.
+    show("U+10FF80 as utf-8", bytesOf("f48fbe80"))
+    show("U+10FFFF as utf-8", bytesOf("f48fbfbf"))
+    // Every byte from 0x80 alone, between two letters.
+    var all = true
+    for b in 0x80..0x100 {
+        var bytes = List<byte>()
+        bytes.add(0x6e)
+        bytes.add((byte)b)
+        bytes.add(0x6d)
+        var name = Path.fromSystemBytes(read bytes)
+        var count = 0
+        var middle = 0
+        for c in name.chars() {
+            if count == 1 {
+                middle = (int)c
+            }
+            count += 1
+        }
+        all = all && count == 3 && middle == 0x10ff00 + b && Path.systemBytes(read name) == bytes
+    }
+    print($"every byte from 0x80 goes and comes back: {all}")
+    // A text written with a character of the escape is its byte; others are their UTF-8.
+    print($"U+10FF80 written: {Path.systemBytes("\u{10FF80}")}")
+    print($"U+10FFFF written: {Path.systemBytes("\u{10FFFF}")}")
+    print($"U+10FF7F written: {Path.systemBytes("\u{10FF7F}")}")
+    print($"empty: {Path.systemBytes("").length()} {Path.fromSystemBytes(read List<byte>()).length()}")
+}

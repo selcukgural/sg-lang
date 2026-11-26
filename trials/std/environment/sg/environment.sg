@@ -1,8 +1,9 @@
 // `environment`: `std`'s variables of the environment measured (choices 1553, 1637, 1795, 1799).
 // Two ways of using them:
 //
-//     environment get NAME...          each variable as text: `NAME value`, `NAME missing`, or
-//                                      `NAME not text` when what it holds is not UTF-8
+//     environment get NAME...          each variable as text: `NAME value` or `NAME missing`; a
+//                                      value that is not UTF-8 is text too, each byte that is not
+//                                      written as a character from U+10FF80 (choice 1950)
 //     environment read NAME COUNT      the variable read COUNT times, each time as a new text;
 //                                      prints how many reads and how many bytes they gave
 //
@@ -14,7 +15,6 @@ void get(read List<string> args) {
         match Environment.get(read name) {
             Ok(value) => print($"{name} {value}")
             Error(Missing) => print($"{name} missing")
-            Error(InvalidText(_)) => print($"{name} not text")
         }
     }
 }

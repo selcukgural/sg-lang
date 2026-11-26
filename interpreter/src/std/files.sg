@@ -172,7 +172,8 @@ public struct Directory {
     }
 
     // The names in the folder, without `.` and `..`, in the order of their bytes: the same on every
-    // system. A name that is not UTF-8 is an `InvalidText` at its first byte that is not.
+    // system. A name that is not UTF-8 comes as `Path.systemBytes` reads it (choice 1950), and opens
+    // the same file.
     public Result<List<DirectoryEntry>, IoError> list(read string path) {
         var names = List<string>()
         var kinds = List<byte>()

@@ -1,0 +1,17 @@
+ascii: 61 2f 5c 2e 3a back true
+utf-8: e7 65e5 1f600 back true
+below the escape: 10fff4 10ff8f 10ffbe 7f back true
+U+10FF7F: 10ff7f back true
+cut short: 10ffe6 10ff97 back true
+overlong: 10ffc0 10ff80 back true
+a half of a pair: 10ffed 10ffa0 10ff80 back true
+past U+10FFFF: 10fff4 10ff90 10ff80 10ff80 back true
+a start, then ascii: 10fff0 10ff9f 41 back true
+ff fe: 61 10ffff 10fffe 62 back true
+U+10FF80 as utf-8: 10fff4 10ff8f 10ffbe 10ff80 back true
+U+10FFFF as utf-8: 10fff4 10ff8f 10ffbf 10ffbf back true
+every byte from 0x80 goes and comes back: true
+U+10FF80 written: [128]
+U+10FFFF written: [255]
+U+10FF7F written: [244, 143, 189, 191]
+empty: 0 0

@@ -117,9 +117,10 @@ pub(crate) fn executable(path: &str) -> i128 {
     if path.contains('\0') {
         return 0;
     }
-    match std::fs::metadata(path) {
+    let path = crate::names::os_of(path);
+    match std::fs::metadata(&path) {
         Ok(info) if info.is_file() => {
-            let Ok(name) = std::ffi::CString::new(std::ffi::OsStr::new(path).as_bytes()) else { return 0 };
+            let Ok(name) = std::ffi::CString::new(path.as_bytes()) else { return 0 };
             // SAFETY: the name is a text ended by a zero byte; 1 is X_OK.
             match unsafe { access(name.as_ptr(), 1) } {
                 0 => 1,
@@ -194,12 +195,14 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
             })
             .collect::<Vec<String>>()
     };
+    // The names as the system writes them (choice 1950).
+    let os = crate::names::os_of;
     let words = texts(1);
-    let mut command = std::process::Command::new(text(0));
-    command.arg0(&words[0]).args(&words[1..]);
+    let mut command = std::process::Command::new(os(&text(0)));
+    command.arg0(os(&words[0])).args(words[1..].iter().map(|word| os(word)));
     let folder = text(2);
     if !folder.is_empty() {
-        command.current_dir(folder);
+        command.current_dir(os(&folder));
     }
     if matches!(values[3], Value::Bool(true)) {
         command.env_clear();
@@ -207,8 +210,8 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
     let kept = items(6);
     for ((name, value), kept) in texts(4).iter().zip(texts(5)).zip(kept) {
         match kept {
-            Value::Bool(true) => command.env(name, value),
-            _ => command.env_remove(name),
+            Value::Bool(true) => command.env(os(name), os(&value)),
+            _ => command.env_remove(os(name)),
         };
     }
     let input = match &values[7] {
@@ -260,14 +263,15 @@ pub(crate) fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
     }
 }
 
-/// The C string of a path that holds no zero byte.
+/// The C string of a path that holds no zero byte: the bytes it stands for (choice 1950).
 fn c_path(path: &str) -> std::ffi::CString {
-    std::ffi::CString::new(path).expect("a path without a zero byte")
+    std::ffi::CString::new(crate::names::bytes_of(path).into_owned()).expect("a path without a zero byte")
 }
 
 /// `unlink`; a folder is `IsDirectory` on every system (macOS says `EPERM`).
 pub(crate) fn remove_file(path: &str) -> std::io::Result<()> {
-    std::fs::remove_file(path).map_err(|error| match std::fs::symlink_metadata(path) {
+    let path = crate::names::os_of(path);
+    std::fs::remove_file(&path).map_err(|error| match std::fs::symlink_metadata(path) {
         Ok(info) if info.is_dir() => std::io::Error::from_raw_os_error(IS_DIR),
         _ => error,
     })
@@ -278,7 +282,7 @@ pub(crate) fn remove_file(path: &str) -> std::io::Result<()> {
 /// done: it is `EEXIST` too.
 pub(crate) fn rename_new(from: &str, to: &str) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    if let (Ok(a), Ok(b)) = (std::fs::symlink_metadata(from), std::fs::symlink_metadata(to)) {
+    if let (Ok(a), Ok(b)) = (std::fs::symlink_metadata(crate::names::os_of(from)), std::fs::symlink_metadata(crate::names::os_of(to))) {
         if a.dev() == b.dev() && a.ino() == b.ino() {
             return Err(std::io::Error::from_raw_os_error(EXISTS));
         }
@@ -311,17 +315,18 @@ pub(crate) fn rename_new(from: &str, to: &str) -> std::io::Result<()> {
 /// be written whole is removed.
 pub(crate) fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut source = std::fs::File::open(from)?;
+    let (from, to) = (crate::names::os_of(from), crate::names::os_of(to));
+    let mut source = std::fs::File::open(&from)?;
     let info = source.metadata()?;
     if info.is_dir() {
         return Err(std::io::Error::from_raw_os_error(IS_DIR));
     }
-    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(to)?;
+    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&to)?;
     let written = std::io::copy(&mut source, &mut target)
         .and_then(|_| target.set_permissions(std::fs::Permissions::from_mode(info.permissions().mode() & 0o777)));
     if written.is_err() {
         drop(target);
-        let _ = std::fs::remove_file(to);
+        let _ = std::fs::remove_file(&to);
     }
     written
 }
@@ -349,10 +354,11 @@ pub(crate) fn open_regular(path: &str) -> std::io::Result<Option<std::fs::File>>
         true => Err(std::io::Error::from_raw_os_error(IS_DIR)),
         false => Ok(info.is_file()),
     };
-    if !regular(std::fs::metadata(path)?)? {
+    let path = crate::names::os_of(path);
+    if !regular(std::fs::metadata(&path)?)? {
         return Ok(None);
     }
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(NONBLOCK | NO_TERMINAL).open(path)?;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(NONBLOCK | NO_TERMINAL).open(&path)?;
     Ok(regular(file.metadata()?)?.then_some(file))
 }
 
@@ -365,7 +371,7 @@ pub(crate) fn set_length(file: &std::fs::File, length: u64) -> std::io::Result<(
 /// `F_FULLFSYNC` on macOS), so that a name made, renamed or removed in it stays. A path that is a
 /// file is `NotDirectory`, as compiled code's `O_DIRECTORY` gives it.
 pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
-    let folder = std::fs::File::open(path)?;
+    let folder = std::fs::File::open(crate::names::os_of(path))?;
     if !folder.metadata()?.is_dir() {
         return Err(std::io::Error::from_raw_os_error(NOT_DIR));
     }
@@ -374,10 +380,11 @@ pub(crate) fn sync_folder(path: &str) -> std::io::Result<()> {
 
 /// A folder and all it holds, links not followed: a path that is a link, or a file, is `ENOTDIR`.
 pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_dir() {
+    let path = crate::names::os_of(path);
+    if !std::fs::symlink_metadata(&path)?.is_dir() {
         return Err(std::io::Error::from_raw_os_error(NOT_DIR));
     }
-    std::fs::remove_dir_all(path)
+    std::fs::remove_dir_all(&path)
 }
 
 /// `mkdtemp`: a new folder that only the user can go into, its name made from the template; with
@@ -401,7 +408,7 @@ pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
         return Err(std::io::Error::last_os_error());
     }
     name.pop();
-    Ok(String::from_utf8(name).expect("the template is text and the system puts letters in it"))
+    Ok(crate::names::text_of(&name))
 }
 
 /// Codes of the system the interpreter gives itself where the system gave none: no such file,
@@ -546,7 +553,7 @@ pub(crate) fn colour_console() -> bool {
 }
 
 pub(crate) fn temp_folder() -> String {
-    std::env::temp_dir().to_string_lossy().into_owned()
+    crate::names::text_of_os(std::env::temp_dir().as_os_str())
 }
 
 /// The error of a call on the path, as Linux and macOS give it already (see `windows.rs`).
