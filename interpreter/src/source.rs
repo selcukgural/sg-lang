@@ -137,13 +137,17 @@ pub struct Sources {
     /// How the program's own files write the names of modules.
     map: Arc<ModuleMap>,
     pub packages: Vec<Package>,
+    /// The name of the program: its file without `.sg`, or its folder. The C of a build is
+    /// written to a file of this name, and a library takes it.
+    pub name: String,
 }
 
 impl Sources {
     /// A program that is one text.
     pub fn single(src: &str, path: &str) -> Sources {
         let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true, map: Arc::default() };
-        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new() };
+        let name = Path::new(path).file_stem().map_or_else(|| "program".to_string(), |stem| stem.to_string_lossy().into_owned());
+        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new(), name };
         sources.add_std();
         sources
     }
@@ -221,7 +225,7 @@ impl Sources {
             return None;
         }
         let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), map: file.map.clone(), ..*file }).collect();
-        let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone(), map: self.map.clone(), packages: Vec::new() };
+        let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone(), map: self.map.clone(), packages: Vec::new(), name: self.name.clone() };
         // Named as `load` names them: without `./` in front.
         let base = if root == Path::new(".") { PathBuf::new() } else { root.clone() };
         for module in modules {
@@ -363,6 +367,13 @@ fn named_paths(text: &str, range: Span) -> Vec<String> {
 /// A folder is a program whose root module is every file in it. The folders next to the root
 /// files are the modules; one is read when a file names it. With `every_module` all of them
 /// are read and their tests run: that is what the test command does with a folder.
+/// The name of the program a path holds: the file without `.sg`, or the folder, as the
+/// folder is called even when the path is `.`.
+pub fn program_name(path: &Path) -> String {
+    let path = if path.is_dir() { std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) } else { path.to_path_buf() };
+    path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "library".to_string())
+}
+
 pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {
     load_over(path, every_module, &HashMap::new())
 }
@@ -375,7 +386,7 @@ pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String
         Some(text) => Ok(text.clone()),
         None => std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path))),
     };
-    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new() };
+    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new(), map: Arc::default(), packages: Vec::new(), name: program_name(path) };
     let (root, root_files) = if path.is_dir() {
         let files = sg_files(path);
         if files.is_empty() {

@@ -129,8 +129,9 @@ pub fn shown_here() -> String {
 }
 
 /// What the C compiler is given before the C file: on Windows LLVM's linker, and C's library
-/// linked into the program, so that it needs nothing installed to run. A debug build on Windows
-/// also writes what a debugger reads beside the program (`x.pdb`).
+/// linked into the program, so that it needs nothing installed to run. A debug build carries
+/// what a debugger reads, with the lines of SG the C names (choice 1943): inside the program on
+/// Linux, beside it on macOS (`x.dSYM`, which the C compiler makes) and on Windows (`x.pdb`).
 pub fn compile_flags(debug: bool) -> Vec<String> {
     let mut flags = Vec::new();
     // A frame larger than the page the system leaves free below a stack is touched page by
@@ -142,9 +143,10 @@ pub fn compile_flags(debug: bool) -> Vec<String> {
     }
     if cfg!(windows) {
         flags.extend(["-fuse-ld=lld", "-fms-runtime-lib=static"].map(String::from));
-        if debug {
-            flags.push("-g".to_string());
-        }
+    }
+    // The columns would be those of the C, which the line of SG does not have.
+    if debug {
+        flags.extend(["-g", "-gno-column-info"].map(String::from));
     }
     flags
 }

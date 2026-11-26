@@ -603,6 +603,10 @@ Slice 187 (1935-1941) gives every build flags of C after `--`, after sg's own: m
 fractional results, take a guard away or touch SG's runtime with a warning on every build, and those sg owns or
 that change the layout of C refused. No flag turns off a check of SG.
 
+Slice 188 (1943-1949) makes a compiled program debuggable on the lines of its own files: a debug build carries
+`-g` on the three systems, and the C names before each statement the line of SG it stands for, with the file's
+absolute path, so gdb, lldb and the debugger of Windows stop on lines of `.sg` files. Tested with lldb and gdb.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

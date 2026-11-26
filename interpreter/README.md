@@ -12,6 +12,7 @@ cargo run -- test examples/shop                 # the tests of every module of t
 cargo run -- test examples/shop --compiled      # the same tests, compiled through C
 cargo run -- examples/zlib/main.sg              # a library of C (zlib) behind a safe module
 cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `cc`)
+gdb ./primes                                    # a debug build in the debugger, on the lines of SG (lldb on macOS)
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
 cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps

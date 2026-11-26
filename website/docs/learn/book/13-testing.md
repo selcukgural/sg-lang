@@ -206,7 +206,7 @@ them as a debug build and runs that. The report is the interpreter's, letter for
 failing tests alike. Compiled, each test runs in a process of its own:
 the program of tests starts itself again for each one, so a test that crashes cannot take the others with it.
 `sg build example.sg --test -o tests` keeps that program, and `./tests --only 0` runs the first test alone,
-for a debugger.
+for a debugger ([Debugging a program](./15-debugging.md)): `gdb --args ./tests --only 0`.
 
 ## Tests of a module, and of a folder
 

@@ -121,6 +121,9 @@ on an overflow, and only `--release` leaves the checks out.
 Tests are compiled too: `sg test main.sg --compiled` builds and runs them, each in a process of its own, and
 `sg build main.sg --test -o tests` keeps the program that runs them.
 
+A debug build carries what the debugger of its system reads, on the lines of the `.sg` files: that is
+[Debugging a program](./15-debugging.md).
+
 ## Libraries of C: `-L`
 
 A library an `extern` block names (`extern "sqlite3" { }`) is looked for where the C compiler looks. When it
@@ -151,8 +154,8 @@ in [Working with C](./11-c.md).
   machines, so building for another one (below) takes LLVM's Clang, named in `CC`.
 - **Windows**: the C compiler is LLVM's Clang with the Build Tools of Visual Studio, and `CC` may name another
   Clang. A program gets `.exe`, carries C's library inside it so it needs nothing installed, reads and writes
-  text as UTF-8, takes long paths, and has 1 GB of stack for `main` and each task, as on the other systems. A debug build
-  writes the file a debugger reads (`main.pdb`). Windows has no `rpath`, so `sg build` copies the DLLs it
+  text as UTF-8, takes long paths, and has 1 GB of stack for `main` and each task, as on the other systems. What a debugger
+  reads is beside the program, in `main.pdb`. Windows has no `rpath`, so `sg build` copies the DLLs it
   linked from the `-L` folders beside the program. C's `long` is 32 bits there, which is why SG writes it
   `CLong`. In an `if` on `OperatingSystem.isWindows()`, a function of C of the other system is not linked, so
   one file calls each system's own.

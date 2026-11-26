@@ -138,6 +138,12 @@
   C's other types of a size that differs (`size_t` is `nuint` already, `wchar_t` is 16 bits on Windows)
   have no type of their own;
   the interpreter runs a function C calls only on a thread that is in a call of C (736).
+- **Of the debugger (1943-1949)**: the names of SG in place of those of the C (`total` for `v_total_1`), and
+  printers of `List`, `HashMap` and `string` for gdb and lldb, as `rust-gdb` has; the text of the language's own
+  module, which lies inside `sg` and is named `<built-in>/std/...`; a path written shorter into the program
+  (Rust's `--remap-path-prefix`); the columns of a line. In an optimised build given `-g` a line that only
+  computes may have no place to stop on, its arithmetic inlined from helpers of the runtime that keep the lines
+  of the C.
 - **Of tests**: running the compiled tests at once, several processes side by side (974); the bytes and
   the places of the blocks a debug build reports as not given back, which a build under the sanitizers
   shows (975).
@@ -234,7 +240,7 @@
   not let a program make such a name (571). A path opened by the handle of a folder (Go's `os.Root`,
   `openat`), so that a link inside the folder cannot lead out of it as it can after `Path.joinInside`
   (954).
-- **Of seeking in a file**: making a file shorter or longer (`setLength`, POSIX's `ftruncate`), reading and
+- **Of seeking in a file**: reading and
   writing one file through one stream (C's `"r+"`), a temporary file with no name that goes when it is closed
   (C's `tmpfile`), and where a stream stands without moving it other than by `seek(SeekFrom.Current(0))`
   (1211-1222).

@@ -25,7 +25,8 @@ are built and tested on Linux, macOS and Windows; what is written here can still
   zones, random numbers, Unicode, hex and Base64, CRC-32 and Adler-32, SHA-256 and HMAC, the command line,
   JSON, a log, regular expressions, compression (DEFLATE, zlib and gzip), and zip archives.
 - **A machine without a system**: a program built for one (`--freestanding`), and a small kernel for RISC-V.
-- **Tools**: `sg test`, a debug build that counts every block of memory and reports leaks, `sg lsp` with an
+- **Tools**: `sg test`, a debug build that counts every block of memory and reports leaks and that gdb, lldb
+  and the debugger of Windows read on the lines of SG, `sg lsp` with an
   extension for VS Code, and packages without a registry: `sg add` fetches them by `git`, pinned by the SHA-256
   of their files in `sg.lock`.
 

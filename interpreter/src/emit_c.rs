@@ -12973,6 +12973,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         written_stmts: prog.freestanding.then(Vec::new),
         in_func: String::new(),
         func_bodies: Vec::new(),
+        newlines: sources.text.match_indices('\n').map(|(at, _)| at).collect(),
         consts: &prog.const_values,
         consts_used: std::collections::BTreeSet::new(),
         sizes: &prog.sizes,
@@ -13376,7 +13377,81 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let flags: Vec<String> = libs.iter().map(|lib| format!("-l{lib}")).collect();
         out.insert_str(0, &format!("/* sg-link: {} */\n", flags.join(" ")));
     }
-    Ok(out)
+    Ok(place_lines(&out, sources))
+}
+
+/// A path as `#line` takes it: a string in which C reads no number of a byte (`\\303`), so the
+/// letters that are not ASCII stand as their bytes of UTF-8, and only `\\`, `\"` and `\?` (a
+/// trigraph) are written with a backslash. A character below a space, which no such string can
+/// hold, is written `_`: a debugger does not find that file, and nothing else changes.
+fn line_file(path: &str) -> String {
+    let mut out = String::from("\"");
+    for c in path.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '?' => out.push_str("\\?"),
+            c if (c as u32) < 32 || c as u32 == 127 => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The marks of lines made while the C was written, made `#line`s: a file of SG named by its
+/// number gets its path, absolute, since the C compiler runs in a folder of its own that is gone
+/// when the debugger reads the program (choice 1944); a file of the language's own module keeps
+/// the name messages give it (1947). The end of the lines of SG gives the C after it its own
+/// lines again, in the file of the C that `sg build` writes (1945).
+fn place_lines(code: &str, sources: &Sources) -> String {
+    let paths: Vec<String> = sources
+        .files
+        .iter()
+        .map(|file| {
+            let path = std::path::Path::new(&file.path);
+            let shown = match file.path.starts_with("<built-in>") {
+                true => file.path.clone(),
+                false => std::path::absolute(path).map_or_else(|_| file.path.clone(), |path| path.to_string_lossy().into_owned()),
+            };
+            line_file(&shown)
+        })
+        .collect();
+    let c_file = line_file(&format!("{}.c", sources.name));
+    let mut out = String::with_capacity(code.len() + code.len() / 4);
+    // The line of SG the C lines stand for now, and whether the line after the `#line` that
+    // gave it is still to come: `#line N` numbers the lines after it N, N + 1 and on, and every
+    // line of C a statement takes is its one line, so each line after the first is given it
+    // again. Not after a line that goes on (`\` at its end), nor before a line of the
+    // preprocessor.
+    let mut current: Option<&str> = None;
+    let mut fresh = false;
+    let mut physical = 0usize;
+    for line in code.split_inclusive('\n') {
+        physical += 1;
+        let Some(mark) = line.strip_prefix("#line ") else {
+            if let Some(number) = current.filter(|_| !fresh && !line.trim_start().starts_with('#') && !out.trim_end_matches('\n').ends_with('\\')) {
+                let _ = writeln!(out, "#line {number}");
+                physical += 1;
+            }
+            fresh = false;
+            out.push_str(line);
+            continue;
+        };
+        let mark = mark.trim_end_matches('\n');
+        if mark == "@c" {
+            // `#line N` names the line after it.
+            let _ = writeln!(out, "#line {} {c_file}", physical + 1);
+            current = None;
+        } else if let Some((number, path)) = mark.split_once(" @").and_then(|(number, file)| Some((number, paths.get(file.parse::<usize>().ok()?)?))) {
+            let _ = writeln!(out, "#line {number} {path}");
+            current = Some(number);
+            fresh = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// The functions of a text of C, each with the names its body uses: a definition is a name, its
@@ -14583,9 +14658,31 @@ struct Emitter<'a> {
     /// The C function being written, and the C of each function with its name in SG.
     in_func: String,
     func_bodies: Vec<(String, String, String)>,
+    /// Where each line of the source ends, to tell the line of a place (see `line_mark`).
+    newlines: Vec<usize>,
 }
 
+/// The mark that ends the lines of SG: what follows is the C's own (see `place_lines`).
+const C_LINES: &str = "#line @c\n";
+
 impl<'a> Emitter<'a> {
+    /// A `#line` that gives the C after it the line of `span` in its file of SG, so that a
+    /// debugger shows the program's own lines (choice 1944). The file is written by its number
+    /// here and by its path at the end (see `place_lines`), so that no text of a path stands in
+    /// the C that is searched for names while it is written.
+    fn line_mark(&self, span: Span, out: &mut String) {
+        if span.start == 0 && span.end == 0 {
+            return;
+        }
+        let Some(file) = self.sources.files.iter().position(|file| span.start <= file.end) else { return };
+        let start = self.sources.files[file].start;
+        let line = self.newlines.partition_point(|&at| at < span.start) - self.newlines.partition_point(|&at| at < start) + 1;
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        let _ = writeln!(out, "#line {line} @{file}");
+    }
+
     /// Whether the program is built for this operating system: a program without one (whose
     /// statements are kept, `written_stmts`) runs on none.
     fn runs_on(&self, os: Os) -> bool {
@@ -17298,6 +17395,7 @@ impl<'a> Emitter<'a> {
     fn test(&mut self, test: &'a TestDecl, number: usize, protos: &mut String, bodies: &mut String) -> Res<()> {
         let head = format!("static void t_{number}(void)");
         let _ = writeln!(protos, "{head};");
+        self.line_mark(test.name_span, bodies);
         let _ = writeln!(bodies, "{head} {{");
         self.ret = Ty::Void;
         self.temps = 0;
@@ -17315,7 +17413,9 @@ impl<'a> Emitter<'a> {
         self.scopes.clear();
         self.declare_guards(bodies);
         bodies.push_str(&body);
-        bodies.push_str("}\n\n");
+        bodies.push_str("}\n");
+        bodies.push_str(C_LINES);
+        bodies.push('\n');
         Ok(())
     }
 
@@ -17415,13 +17515,18 @@ impl<'a> Emitter<'a> {
                 "void" => format!("{call};"),
                 _ => format!("return {call};"),
             };
+            self.line_mark(func.name_span, bodies);
             let _ = writeln!(bodies, "{head} {{\n    sg_probe_stack({bytes}u);\n    {ends}\n}}\n");
+            self.line_mark(func.name_span, bodies);
             let _ = writeln!(bodies, "__attribute__((noinline)) static {ret_c} {inner}({params}) {{");
         } else {
+            self.line_mark(func.name_span, bodies);
             let _ = writeln!(bodies, "{head} {{");
         }
         bodies.push_str(&text);
-        bodies.push_str("}\n\n");
+        bodies.push_str("}\n");
+        bodies.push_str(C_LINES);
+        bodies.push('\n');
         Ok(())
     }
 
@@ -17549,6 +17654,7 @@ impl<'a> Emitter<'a> {
             "{start} {{\n    {job}* j = sg_alloc(sizeof *j, _Alignof({job}));\n    if (!j) abort();\n    j->base.head.aligned = _Alignof({job}) > 16;\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
         );
         bodies.push_str(&defines);
+        self.line_mark(func.name_span, bodies);
         let _ = writeln!(bodies, "{poll} {{");
         if hoisted.resumes > 0 {
             bodies.push_str("    switch (sg_f->sg_state) {\n    case 0: break;\n");
@@ -17559,6 +17665,7 @@ impl<'a> Emitter<'a> {
         }
         bodies.push_str(&hoisted.text);
         bodies.push_str("}\n");
+        bodies.push_str(C_LINES);
         bodies.push_str(&undefines);
         bodies.push('\n');
         Ok(())
@@ -17976,6 +18083,7 @@ impl<'a> Emitter<'a> {
     fn stmt(&mut self, stmt: &'a Stmt, depth: usize, out: &mut String) -> Res<()> {
         let from = self.guards.len();
         self.reserving = None;
+        self.line_mark(stmt.span, out);
         let start = out.len();
         let named = match &stmt.kind {
             StmtKind::While { label: Some(label), .. } | StmtKind::For { label: Some(label), .. } | StmtKind::ForEach { label: Some(label), .. } => {
@@ -24741,6 +24849,15 @@ fn c_tokens(text: &str) -> Vec<(CTok, usize, usize)> {
         }
         if c == b'/' && bytes.get(at + 1) == Some(&b'*') {
             at = text[at + 2..].find("*/").map_or(bytes.len(), |end| at + 2 + end + 2);
+            continue;
+        }
+        // A line of the preprocessor (the `#line` of a statement, choice 1944) is no token of
+        // C: it is passed over with the lines it goes on to.
+        let before = text[..at].trim_end_matches([' ', '\t']);
+        if c == b'#' && (before.is_empty() || before.ends_with('\n')) {
+            while at < bytes.len() && !(bytes[at] == b'\n' && bytes[at - 1] != b'\\') {
+                at += 1;
+            }
             continue;
         }
         let kind = if c == b'_' || c.is_ascii_alphabetic() {

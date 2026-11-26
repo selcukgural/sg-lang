@@ -319,9 +319,7 @@ fn say(text: &str) -> ExitCode {
 }
 
 fn library_name(path: &str) -> String {
-    let path = std::path::Path::new(path);
-    let path = if path.is_dir() { std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) } else { path.to_path_buf() };
-    path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "library".to_string())
+    sg::source::program_name(std::path::Path::new(path))
 }
 
 /// The test command on compiled code: the tests are built into a program in a folder of its own
