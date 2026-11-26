@@ -1,0 +1,123 @@
+// Where the streams of a program go (2017): a file read as its input (`inputFrom`), its output
+// and its standard error into files made empty first or written at their end, nowhere, or the
+// standard error where the output goes (`errorToOutput`). A file is opened as the program starts:
+// one that cannot be is the error, and the program does not start. The last word for a stream is
+// the one that counts. The folder is the first word of the command line; the program started is
+// `sg-test-tool` (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+string shown(read string path) {
+    match File.readText(read path) {
+        Ok(text) => return text.replaceAll("\r\n", "\n").replaceAll("\n", "|")
+        Error(cause) => return $"({cause})".toString()
+    }
+}
+
+Result<void, ProcessError> main(List<string> args) {
+    var dir = args[0].clone()
+    var out = Path.join(read dir, "out.txt")
+    var err = Path.join(read dir, "err.txt")
+
+    // `>` and `2>`, then `>>` and `2>>`.
+    var both = tool(read List<string> { "out=one", "err=e1" })
+    both.outputTo(read out)
+    both.errorTo(read err)
+    try both.run()
+    var more = tool(read List<string> { "out=two", "err=e2" })
+    more.appendOutputTo(read out)
+    more.appendErrorTo(read err)
+    try more.run()
+    print($"out: {shown(read out)}")
+    print($"err: {shown(read err)}")
+    // `>` again makes the file empty first.
+    var again = tool(read List<string> { "out=three" })
+    again.outputTo(read out)
+    try again.run()
+    print($"out: {shown(read out)}")
+
+    // `<`: the file is what the program reads.
+    var upper = tool(read List<string> { "upper" })
+    upper.inputFrom(read out)
+    var shouted = try upper.output()
+    print($"upper: {shouted.trim()}")
+
+    // `2>&1`: into the text `output` gives, in the order written.
+    var joined = tool(read List<string> { "out=a", "err=b", "out=c" })
+    joined.errorToOutput()
+    var text = try joined.output()
+    print($"joined: {text.replaceAll("\r\n", "\n").replaceAll("\n", "|")}")
+    // And into a file.
+    var into = tool(read List<string> { "out=x", "err=y" })
+    into.outputTo(read out)
+    into.errorToOutput()
+    try into.run()
+    print($"file: {shown(read out)}")
+
+    // Nowhere: nothing reaches this program's output or a file.
+    var quiet = tool(read List<string> { "out=lost", "err=lost too" })
+    quiet.discardOutput()
+    quiet.discardError()
+    try quiet.run()
+    print("quiet ran")
+
+    // `output` of a program whose output goes to a file: the text is empty.
+    var away = tool(read List<string> { "out=away" })
+    away.outputTo(read out)
+    var none = try away.output()
+    print($"away: [{none}] file: {shown(read out)}")
+
+    // The last word counts: `pipeOutput` after `outputTo` is a pipe again.
+    var turned = tool(read List<string> { "out=piped" })
+    turned.outputTo(read out)
+    turned.pipeOutput()
+    var process = try turned.start()
+    var reader = process.takeOutput() ?? panic("asked for with pipeOutput")
+    var piped = try reader.readText()
+    var ended = try process.wait()
+    print($"turned: {piped.trim()} {ended}")
+    // `input` after `inputFrom` is the text, and `inputFrom` after `input` the file.
+    var fed = tool(read List<string> { "upper" })
+    fed.inputFrom(read out)
+    fed.input("given")
+    var given = try fed.output()
+    print($"fed: {given}")
+
+    // A file that cannot be opened: the program does not start.
+    var missing = tool(read List<string> { "out=never" })
+    missing.inputFrom(read Path.join(read dir, "no-such-file"))
+    match missing.status() {
+        Ok(status) => print($"started: {status}")
+        Error(cause) => print($"input: {cause}")
+    }
+    var nowhere = tool(read List<string> { "out=never" })
+    nowhere.outputTo(read Path.join(read Path.join(read dir, "no-such-folder"), "out.txt"))
+    match nowhere.start() {
+        Ok(started) => {
+            var status = try started.wait()
+            print($"started: {status}")
+        }
+        Error(cause) => print($"output: {cause}")
+    }
+    var zero = tool(read List<string> { "out=never" })
+    zero.errorTo("bad\0name")
+    match zero.run() {
+        Ok => print("ran")
+        Error(cause) => print($"zero byte: {cause}")
+    }
+
+    // A name that is not ASCII, and a file of one megabyte through `<` and `>`.
+    var named = Path.join(read dir, "çıktı ünicode.txt")
+    var big = tool(read List<string> { "cat" })
+    big.input(read "0123456789abcdef".repeat(65536))
+    big.outputTo(read named)
+    try big.run()
+    var counted = tool(read List<string> { "count" })
+    counted.inputFrom(read named)
+    var count = try counted.output()
+    print($"count: {count.trim()}")
+    return Ok()
+}

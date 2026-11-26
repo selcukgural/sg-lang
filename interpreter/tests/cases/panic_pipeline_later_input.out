@@ -1,0 +1,4 @@
+panic: program 2 of the pipeline has an input of its own, where the pipe from the one before comes
+  --> panic_pipeline_later_input.sg:9:20
+ 9 |     var text = try pipeline.output()
+   |                    ^^^^^^^^^^^^^^^^^

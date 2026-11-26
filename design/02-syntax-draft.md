@@ -2319,6 +2319,36 @@ var subject = try await git.outputAsync()      // also runAsync(), statusAsync()
 var status = try await process.waitAsync(read source.token())
 ```
 
+A stream goes into a file, comes from one, goes nowhere, or the standard error goes where the output goes, as a
+shell's `>`, `>>`, `<` and `2>&1`; programs are joined by pipes with a `Pipeline`, which fails as `set -o
+pipefail` says, but not for one before the last that `SIGPIPE` stopped; `tryWait` looks without waiting, and
+`detach` lets a program go on after this one, which the runtime takes away once it ends:
+
+```
+var build = Command("make")
+build.outputTo("build.log")                    // > build.log; appendOutputTo is >>
+build.errorToOutput()                          // 2>&1
+build.inputFrom("answers.txt")                 // < answers.txt; discardOutput() is > /dev/null
+try build.run()
+
+var pipeline = Pipeline()
+pipeline.add(Command("yes"))                   // add takes the Command
+var head = Command("head")
+head.args(read List<string> { "-n", "3" })
+pipeline.add(head)
+var three = try pipeline.output()              // yes, stopped by SIGPIPE, did not fail
+var ends = try pipeline.status()               // List<ExitStatus>, in order
+
+var server = try Command("server").start()
+if try server.tryWait() is null {              // ExitStatus?: null while it runs
+    server.detach()                            // goes on; never a zombie
+} else {
+    print(try server.wait())                   // the end tryWait saw, at once
+}
+print(Process.currentId())                     // also parentId()
+try Process.signalId(4242, Signal.Terminate)   // a program by its number; killId(id) sends 9
+```
+
 A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
 is written; one that takes `this` by value may start as a task of its own.
 

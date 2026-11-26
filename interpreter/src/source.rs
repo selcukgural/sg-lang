@@ -28,7 +28,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
-    ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "ExitStatus", "ProcessError"]),
+    ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "Pipeline", "ExitStatus", "ProcessError"]),
     ("net.sg", include_str!("std/net.sg"), &["SocketAddress", "UdpSocket", "Received"]),
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
     ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),

@@ -1,0 +1,69 @@
+// The numbers of programs (2022): this one's, the one that started it, and a signal to a program
+// by its number, which need not be one this program started. A program started here sees this
+// one as its parent. A number of 0 or less, which would name a group of programs, is
+// `InvalidInput`; one no program has is `NotFound`. The program started is `sg-test-tool`
+// (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+Result<void, ProcessError> main() {
+    var me = Process.currentId()
+    print($"mine: {me > 0}, parent: {Process.parentId() > 0}, not the same: {me != Process.parentId()}")
+    var child = tool(read List<string> { "pid", "ppid" })
+    child.pipeOutput()
+    var process = try child.start()
+    var output = process.takeOutput() ?? panic("asked for with pipeOutput")
+    var own = ""
+    var parent = ""
+    _ = try output.readLine(ref own)
+    _ = try output.readLine(ref parent)
+    var itsId = $"{process.id()}".toString()
+    var mine = $"{me}".toString()
+    print($"its own number is its id: {own == itsId}")
+    print($"its parent is this one: {parent == mine}")
+    var ended = try process.wait()
+    print($"ended: {ended}")
+
+    // By number: stopped as `kill` stops it.
+    var sleeper = try tool(read List<string> { "sleep=10000" }).start()
+    match Process.killId(sleeper.id()) {
+        Ok => print("killed by its number")
+        Error(cause) => print($"kill: {cause}")
+    }
+    var stopped = try sleeper.wait()
+    print($"stopped: {stopped}")
+    var polite = try tool(read List<string> { "sleep=10000" }).start()
+    var politeId = polite.id()
+    match Process.signalId(politeId, Signal.Terminate) {
+        Ok => print("asked by its number")
+        Error(cause) => print($"terminate: {cause}")
+    }
+    var asked = try polite.wait()
+    print($"asked: {asked}")
+    // Once it has been waited for, its number names no program on Linux and macOS. Windows may
+    // keep a program that has ended a moment longer, while its console still holds it.
+    if !OperatingSystem.isWindows() {
+        match Process.signalId(politeId, Signal.Terminate) {
+            Ok => print("found after the wait")
+            Error(cause) => print($"after the wait: {cause}")
+        }
+    }
+    for id in read (List<int> { 0, -1, int.MinValue }) {
+        match Process.signalId(id, Signal.Terminate) {
+            Ok => print($"{id}: sent")
+            Error(cause) => print($"{id}: {cause}")
+        }
+    }
+    match Process.killId(0) {
+        Ok => print("0: killed")
+        Error(cause) => print($"kill 0: {cause}")
+    }
+    match Process.signalId(int.MaxValue, Signal.Terminate) {
+        Ok => print("max: sent")
+        Error(cause) => print($"max: {cause}")
+    }
+    return Ok()
+}

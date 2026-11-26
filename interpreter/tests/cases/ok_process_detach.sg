@@ -1,0 +1,83 @@
+// A program let go of (2021): it goes on after its `Process`, and this program's runtime takes it
+// away once it has ended, so none stays behind as a program that has ended and was never asked
+// how. That is seen by its number: `Process.signalId` with `WindowChange`, which no program is
+// stopped by, finds a program that has ended and was not taken away, and `NotFound` once it was.
+// The folder is the first word of the command line; the program started is `sg-test-tool`
+// (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+// A pause, as another program's run.
+Result<void, ProcessError> pause(int ms) {
+    return tool(read List<string> { $"sleep={ms}".toString() }).run()
+}
+
+// Whether the program of that number has been taken away, looked at for up to ten seconds.
+Result<bool, ProcessError> gone(int id) {
+    for _ in 0..500 {
+        if Process.signalId(id, Signal.WindowChange) is Error(NotFound) {
+            return Ok(true)
+        }
+        try pause(20)
+    }
+    return Ok(false)
+}
+
+Result<void, ProcessError> main(List<string> args) {
+    var dir = args[0].clone()
+    var late = Path.join(read dir, "late.txt")
+    var writer = tool(read List<string> { "sleep=300", "out=late" })
+    writer.outputTo(read late)
+    var started = try writer.start()
+    var id = started.id()
+    started.detach()
+    print("let go of")
+    var text = ""
+    for _ in 0..500 {
+        match File.readText(read late) {
+            Ok(got) when got.length() > 0 => {
+                text = got.trim().clone()
+                break
+            }
+            _ => try pause(20)
+        }
+    }
+    print($"it wrote: {text}")
+    var away = try gone(id)
+    print($"taken away: {away}")
+
+    // Many at once, ended before and after they are let go of.
+    var ids = List<int>()
+    for i in 0..100 {
+        var steps = List<string>()
+        if i % 2 == 0 {
+            steps.add("sleep=50")
+        }
+        var quick = try tool(read steps).start()
+        ids.add(quick.id())
+        quick.detach()
+    }
+    var left = 0
+    for each in read ids {
+        var taken = try gone(each)
+        if !taken {
+            left += 1
+        }
+    }
+    print($"of 100, left behind: {left}")
+
+    // One whose pipes were asked for: those not taken are closed, a reader taken stays open.
+    var talker = tool(read List<string> { "out=still here" })
+    talker.pipeOutput()
+    talker.pipeInput()
+    var process = try talker.start()
+    var reader = process.takeOutput() ?? panic("asked for with pipeOutput")
+    process.detach()
+    var line = ""
+    _ = try reader.readLine(ref line)
+    print($"read after: {line}")
+    return Ok()
+}

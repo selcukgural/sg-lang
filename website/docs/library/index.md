@@ -16,7 +16,7 @@ it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
 `DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 and Adler-32 (`Crc32`, `Adler32`), compression (`Deflate`, `Zlib`, `Gzip`), zip archives (`ZipReader`, `ZipWriter`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), a log (`Log`), regular expressions (`Regex`), the general category of a character (`UnicodeCategory`), folders and paths (`Directory`, `Path`,
-`FileInfo`), other programs (`Command`, `Process`), `Environment`, `Signals`, `MemoryOrder`, and the network
+`FileInfo`), other programs (`Command`, `Process`, `Pipeline`), `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can
 reach the calls of the system under it, so a program always goes through a type that gives the call its
@@ -65,7 +65,7 @@ from each item to its source.
 - [Time](./time.md): `Duration`, `Instant`, `DateTime`, `DateTimeOffset` and the clocks under them.
 - [Tasks](./tasks.md): `Task<R>`, `Channel<T>` and `Sender<T>`, `shared locked T`, atomics and cancellation.
 - [Random numbers](./random.md): `Random`, with a seed, and `SecureRandom`.
-- [Programs and the system](./process.md): `Command`, `Process`, `ExitStatus`, `Environment` and `Signals`.
+- [Programs and the system](./process.md): `Command`, `Process`, `Pipeline`, `ExitStatus`, `Environment` and `Signals`.
 - [Hex, Base64 and percent](./encoding.md): `Hex`, `Base64` and `Percent`, bytes written as text and read back strictly.
 - [CRC-32 and Adler-32](./checksum.md): `Crc32`, the checksum of gzip, PNG and ZIP, and `Adler32`, that of zlib.
 - [SHA-256 and HMAC](./hash.md): `Sha256`, `Hmac.sha256` and `Bytes.equalInConstantTime`.

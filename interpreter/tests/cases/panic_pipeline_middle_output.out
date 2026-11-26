@@ -1,0 +1,4 @@
+panic: program 1 of the pipeline sends its output elsewhere, where the pipe to the next one goes
+  --> panic_pipeline_middle_output.sg:9:9
+ 9 |     try pipeline.run()
+   |         ^^^^^^^^^^^^^^

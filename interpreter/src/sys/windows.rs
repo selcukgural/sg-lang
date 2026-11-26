@@ -80,6 +80,25 @@ extern "system" {
     fn GetFileType(file: Handle) -> u32;
     fn GetFileInformationByHandleEx(handle: Handle, class: i32, info: *mut c_void, size: u32) -> Bool;
     fn DeviceIoControl(handle: Handle, code: u32, input: *const c_void, input_size: u32, output: *mut c_void, output_size: u32, returned: *mut u32, overlapped: *mut c_void) -> Bool;
+    fn GetLastError() -> u32;
+    fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> Handle;
+    fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry) -> Bool;
+    fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry) -> Bool;
+}
+
+/// `PROCESSENTRY32W`: a program in a snapshot of the system's.
+#[repr(C)]
+struct ProcessEntry {
+    size: u32,
+    usage: u32,
+    pid: u32,
+    heap: usize,
+    module: u32,
+    threads: u32,
+    parent: u32,
+    priority: i32,
+    flags: u32,
+    exe: [u16; 260],
 }
 
 #[link(name = "advapi32")]
@@ -220,10 +239,10 @@ pub(crate) fn executable(path: &str) -> i128 {
 
 /// The command of `System.run` and `System.start`: the program at the path, the words after its
 /// name (std writes the path as the name, quoted), the folder and the environment, whose names
-/// have no case; and where its input comes from (the number the call was given). A cleared
+/// have no case; where its streams go is set by the caller. A cleared
 /// environment gets `SystemRoot` back when no change gave it, as compiled code gives it. Only the
 /// three streams reach the program: std makes every handle it opens one no program inherits.
-pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
+pub(crate) fn command_of(values: &[Value]) -> std::process::Command {
     let text = |at: usize| match &values[at] {
         Value::Str(text) => text.to_string(),
         _ => unreachable!("the checker makes it text"),
@@ -266,15 +285,12 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
             _ => command.env_remove(os(name)),
         };
     }
-    let input = match &values[7] {
-        Value::Int(_, input) => *input,
-        _ => unreachable!("the checker makes it a number"),
-    };
-    (command, input)
+    command
 }
 
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const PROCESS_TERMINATE: u32 = 0x0001;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
 /// Waits until program `pid` has ended. Its number names no other program meanwhile: the
 /// interpreter keeps its handle until it is waited for.
@@ -318,6 +334,63 @@ pub(crate) fn signal(pid: i64, signal: i64) {
             TerminateProcess(process, 1);
             CloseHandle(process);
         }
+    }
+}
+
+/// `Process.parentId()`: the number of the program that started this one, from a snapshot of
+/// the programs of the system; 0 when it cannot be found.
+pub(crate) fn parent_id() -> i64 {
+    const TH32CS_SNAPPROCESS: u32 = 2;
+    let me = std::process::id();
+    // SAFETY: the entry is as large as it says, and the snapshot is closed after the walk.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() || snapshot as isize == -1 {
+            return 0;
+        }
+        let mut entry: ProcessEntry = std::mem::zeroed();
+        entry.size = std::mem::size_of::<ProcessEntry>() as u32;
+        let mut parent = 0;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            if entry.pid == me {
+                parent = i64::from(entry.parent);
+                break;
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        parent
+    }
+}
+
+/// `Process.signalId`: as `signal`, to a program this one need not have started. No program of
+/// that number is `NotFound`; one that may not be stopped `PermissionDenied`; one that has ended
+/// but is still known (its handle held somewhere) takes it as done, as Linux and macOS do.
+pub(crate) fn signal_id(pid: i64, signal: i64) -> std::io::Result<()> {
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+    const STILL_ACTIVE: u32 = 259;
+    let Ok(pid) = u32::try_from(pid) else { return Err(std::io::Error::from_raw_os_error(2)) };
+    let access = if signal == 28 { SYNCHRONIZE } else { PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION };
+    // SAFETY: the handle is closed after the call.
+    unsafe {
+        let process = OpenProcess(access, 0, pid);
+        if process.is_null() {
+            return Err(match GetLastError() {
+                ERROR_INVALID_PARAMETER => std::io::Error::from_raw_os_error(2),
+                code => std::io::Error::from_raw_os_error(code as i32),
+            });
+        }
+        let mut done = Ok(());
+        if signal != 28 && TerminateProcess(process, 1) == 0 {
+            let error = std::io::Error::last_os_error();
+            let mut code = 0;
+            if GetExitCodeProcess(process, &mut code) == 0 || code == STILL_ACTIVE {
+                done = Err(error);
+            }
+        }
+        CloseHandle(process);
+        done
     }
 }
 

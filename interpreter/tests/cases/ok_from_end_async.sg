@@ -1,0 +1,13 @@
+// `xs[^n]` in an async function, whose temporaries live in its frame across an `await` (185).
+async int last(List<int> xs) {
+    var before = xs[^1]
+    await Task.delay(1)
+    var item = xs[^2]
+    xs[^1] = before + item
+    return xs[^1]
+}
+
+async void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(await last(xs))
+}

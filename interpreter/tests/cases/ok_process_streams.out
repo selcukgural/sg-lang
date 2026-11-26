@@ -1,0 +1,14 @@
+out: one|two|
+err: e1|e2|
+out: three|
+upper: THREE
+joined: a|b|c|
+file: x|y|
+quiet ran
+away: [] file: away|
+turned: piped exited with code 0
+fed: GIVEN
+input: not found
+output: not found
+zero byte: not found
+count: 1048576

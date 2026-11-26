@@ -11,6 +11,9 @@
 //   sleep=MS    waits MS milliseconds                 env=NAME  `NAME=value`, or `NAME unset`
 //   is=NAME     `NAME is set`, or `NAME unset`        pwd       the folder it works in
 //   args        each word after it as `[word]`
+//   yes=TEXT    TEXT and a new line to the output, again and again, until no one reads it,
+//               when it ends by `SIGPIPE` (by `print`) on Linux and macOS
+//   pid         its own number, as the system knows it  ppid      the number of its parent
 //   listen      listens for `Interrupt`, `Terminate` and `Hangup`, says `ready`, and when one
 //               comes says `caught` and ends with 5
 async Result<void, IoError> main(List<string> args) {
@@ -87,6 +90,20 @@ async Result<void, IoError> main(List<string> args) {
             "pwd" => {
                 var here = try Directory.current()
                 try await Stdout.writeLineAsync(read here)
+                try await Stdout.flushAsync()
+            }
+            "yes" => {
+                // `print`, which ends the program by `SIGPIPE` once no one reads, as `yes` ends.
+                while true {
+                    print(value)
+                }
+            }
+            "pid" => {
+                try await Stdout.writeLineAsync($"{Process.currentId()}")
+                try await Stdout.flushAsync()
+            }
+            "ppid" => {
+                try await Stdout.writeLineAsync($"{Process.parentId()}")
                 try await Stdout.flushAsync()
             }
             "args" => {

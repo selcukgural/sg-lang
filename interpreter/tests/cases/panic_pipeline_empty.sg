@@ -1,0 +1,6 @@
+// A pipeline with no program in it does not run (2018).
+Result<void, ProcessError> main() {
+    var pipeline = Pipeline()
+    try pipeline.run()
+    return Ok()
+}

@@ -646,8 +646,16 @@ leaves the check out.
 
 Slice 195 closes four places where the checker took a program that broke the rules of borrowing, found by the
 generator of slice 194: a value that borrows written into an item of a list, an item lent from a list whose items
-carry a borrow, and a variable declared with a borrow lent to a call beside its place, also as windows. Next are
-the processes of the system: pipes, `try_wait`, groups, signals.
+carry a borrow, and a variable declared with a borrow lent to a call beside its place, also as windows.
+
+Slice 196 (2016-2029, with the plan of 197 and 198) sends the streams of a program where a shell sends them:
+`outputTo`, `appendOutputTo`, `inputFrom`, `errorTo`, `appendErrorTo`, `discardOutput`, `discardError` and
+`errorToOutput` (`2>&1`). `Pipeline` joins programs by pipes of the system, as fast as C's `posix_spawn` and pipes
+and faster than `sh` for small ones, and fails as `set -o pipefail` says but not for `yes | head`. `tryWait` looks
+without waiting, `detach` lets a program go on and has the runtime take it away once it ends, and
+`Process.currentId`, `parentId`, `signalId` and `killId` name programs by their numbers. `xs[^1]` in an async
+function compiles now. Next are groups, sessions and the signals of job control (197), then a terminal of its own
+and the raw mode of a terminal (198).
 
 ## Next
 

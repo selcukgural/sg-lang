@@ -1,0 +1,14 @@
+mine: true, parent: true, not the same: true
+its own number is its id: true
+its parent is this one: true
+ended: exited with code 0
+killed by its number
+stopped: was stopped by signal 9
+asked by its number
+asked: was stopped by signal 15
+after the wait: not found
+0: invalid input
+-1: invalid input
+-2147483648: invalid input
+kill 0: invalid input
+max: not found

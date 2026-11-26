@@ -1,10 +1,11 @@
 // Running another program: `Command`, which runs it and waits for it or starts it and goes on, the
-// program that runs (`Process`), how a program ended (`ExitStatus`) and why it did not do its work
-// (`ProcessError`). No shell reads the words: each argument reaches the program as it is written, so
-// a text from outside never becomes a command of its own. Written in SG and brought along by the
-// language; only the calls of the system under it (`System.run`, `System.start`, `System.wait`,
-// `System.signal`, the streams of the pipes and the question whether a file can be run) are the
-// compiler's own, and only this module can call them.
+// program that runs (`Process`), programs joined by pipes (`Pipeline`), how a program ended
+// (`ExitStatus`) and why it did not do its work (`ProcessError`). No shell reads the words: each
+// argument reaches the program as it is written, so a text from outside never becomes a command of
+// its own. Written in SG and brought along by the language; only the calls of the system under it
+// (`System.run`, `System.start`, `System.wait`, `System.tryWait`, `System.detach`,
+// `System.signal`, `System.signalId`, `System.processId`, the pipes, their streams and the question
+// whether a file can be run) are the compiler's own, and only this module can call them.
 
 // How a program ended.
 public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
@@ -48,9 +49,10 @@ public enum ProcessError : Copyable, Equatable, Formattable {
     }
 }
 
-// A program to run, with its arguments, the folder it works in and the changes to its environment;
-// `run`, `output` or `status` runs it and waits for it to end. A program it starts gets the output and
-// the standard error of this one, what was printed before it already written out.
+// A program to run, with its arguments, the folder it works in, the changes to its environment and
+// where its input comes from and its output goes; `run`, `output` or `status` runs it and waits for
+// it to end. A program it starts gets the output and the standard error of this one, what was
+// printed before it already written out, unless it was told otherwise.
 public struct Command {
     // As it was given: a name looked for in `PATH`, or a path.
     string program
@@ -65,13 +67,18 @@ public struct Command {
     List<string> names
     List<string> values
     List<bool> kept
-    // What the program reads as its input, when `input` gave it one.
-    bool fed
+    // Where its input comes from: the input of this program (0), nothing (1), the text of `input`
+    // (2), a pipe kept by the `Process` that `start` gives (3), or the file at `inPath` (4).
+    long inWay
+    string inPath
     string text
-    // The streams of a program `start` starts that are pipes kept by this one.
-    bool inPipe
-    bool outPipe
-    bool errPipe
+    // Where its output goes: the output of this program (0), a pipe kept by the `Process` (1),
+    // nowhere (2), the file at `outPath`, made empty first (3) or written at its end (4).
+    long outWay
+    string outPath
+    // Where its standard error goes: as for the output, or where its output goes (6).
+    long errWay
+    string errPath
 
     // The program to run. A name without `/` is looked for in the folders of `PATH` when it runs,
     // leaving out an empty folder and one that does not start with `/`, so a file of the folder this
@@ -82,8 +89,8 @@ public struct Command {
         words.add(program.clone())
         return Command {
             program = program.clone(), words = words, folder = "", clear = false,
-            names = List<string>(), values = List<string>(), kept = List<bool>(), fed = false, text = "",
-            inPipe = false, outPipe = false, errPipe = false
+            names = List<string>(), values = List<string>(), kept = List<bool>(),
+            inWay = 0, inPath = "", text = "", outWay = 0, outPath = "", errWay = 0, errPath = ""
         }
     }
 
@@ -127,51 +134,108 @@ public struct Command {
     }
 
     // What the program reads as its input, given while what it writes is read, so that neither waits
-    // for the other. A program that ends before it read all of it is no error.
+    // for the other. A program that ends before it read all of it is no error. In place of what
+    // `pipeInput` or `inputFrom` said.
     public void input(ref this, read string text) {
-        this.fed = true
-        this.inPipe = false
+        this.inWay = 2
+        this.inPath = ""
         this.text = text.clone()
     }
 
     // The program `start` starts reads what this one writes to the `StreamWriter` that
-    // `takeInput` gives; in place of a text of `input`. Only `start` looks at it.
+    // `takeInput` gives; in place of a text of `input` or a file of `inputFrom`. Only `start` looks
+    // at it: a program `run` runs reads the input of this one.
     public void pipeInput(ref this) {
-        this.inPipe = true
-        this.fed = false
+        this.inWay = 3
+        this.inPath = ""
+        this.text = ""
+    }
+
+    // The program reads the file at `path`, as `< path` at a shell; in place of a text of `input`
+    // or a pipe of `pipeInput`. The file is opened as the program starts: one that cannot be
+    // opened is the error of `run`, `status`, `output` or `start`, and the program does not start.
+    public void inputFrom(ref this, read string path) {
+        this.inWay = 4
+        this.inPath = path.clone()
         this.text = ""
     }
 
     // What the program `start` starts writes to its output is read from the `StreamReader` that
-    // `takeOutput` gives. Only `start` looks at it.
+    // `takeOutput` gives. Only `start` looks at it. In place of a file or of `discardOutput`.
     public void pipeOutput(ref this) {
-        this.outPipe = true
+        this.outWay = 1
+        this.outPath = ""
+    }
+
+    // What the program writes to its output goes nowhere, as `> /dev/null` at a shell.
+    public void discardOutput(ref this) {
+        this.outWay = 2
+        this.outPath = ""
+    }
+
+    // What the program writes to its output goes into the file at `path`, as `> path` at a
+    // shell: a file that is there is made empty first, one that is not is made (with the mode
+    // 0o666 less what the mask of this program takes away). It is opened as the program starts.
+    public void outputTo(ref this, read string path) {
+        this.outWay = 3
+        this.outPath = path.clone()
+    }
+
+    // The same at the end of what the file holds, as `>> path`: each write goes to the end, even
+    // when another program writes to the file too.
+    public void appendOutputTo(ref this, read string path) {
+        this.outWay = 4
+        this.outPath = path.clone()
     }
 
     // What the program `start` starts writes to its standard error is read from the
     // `StreamReader` that `takeError` gives. Only `start` looks at it.
     public void pipeError(ref this) {
-        this.errPipe = true
+        this.errWay = 1
+        this.errPath = ""
     }
 
-    // Starts the program and goes on while it runs. Its input, output and standard error are
-    // pipes where `pipeInput`, `pipeOutput` and `pipeError` asked for them, and those of this
-    // program otherwise; a text of `input` is written into its input while it runs. The
-    // `Process` it gives is waited for (`wait`, `waitAsync`); one that ends without that stops
-    // the program.
+    // What the program writes to its standard error goes nowhere, as `2> /dev/null`.
+    public void discardError(ref this) {
+        this.errWay = 2
+        this.errPath = ""
+    }
+
+    // What the program writes to its standard error goes into the file at `path`, as `2> path`,
+    // made empty first.
+    public void errorTo(ref this, read string path) {
+        this.errWay = 3
+        this.errPath = path.clone()
+    }
+
+    // The same at the end of what the file holds, as `2>> path`.
+    public void appendErrorTo(ref this, read string path) {
+        this.errWay = 4
+        this.errPath = path.clone()
+    }
+
+    // What the program writes to its standard error goes where its output goes, as `2>&1`: into
+    // the text `output` gives, the pipe of `pipeOutput`, the file of `outputTo` or the next program
+    // of a `Pipeline`.
+    public void errorToOutput(ref this) {
+        this.errWay = 6
+        this.errPath = ""
+    }
+
+    // Starts the program and goes on while it runs. Its input, output and standard error are what
+    // the calls above said: pipes kept by the `Process` it gives where `pipeInput`, `pipeOutput`
+    // and `pipeError` asked for them, and those of this program where nothing was said; a text of
+    // `input` is written into its input while it runs. The `Process` it gives is waited for
+    // (`wait`, `waitAsync`); one that ends without that stops the program.
     public Result<Process, IoError> start(read this) {
-        long input = 0
-        if this.fed {
-            input = 2
-        } else if this.inPipe {
-            input = 3
-        }
-        return this.begin(input, this.outPipe, this.errPipe)
+        var ways = long[5] { this.inWay, this.outWay, this.errWay, -1, -1 }
+        return this.begin(read ways)
     }
 
     // Runs the program and waits for it to end. It reads the input of this program, unless `input`
-    // gave it one, and writes to the output and the standard error of this program. An end with
-    // anything but 0 is `Failed`.
+    // or `inputFrom` gave it another, and writes where its output and its standard error were sent,
+    // to those of this program when they were not; a pipe asked for is one only for `start`. An
+    // end with anything but 0 is `Failed`.
     public Result<void, ProcessError> run(read this) {
         var nothing = ""
         match this.runWaiting(false, ref nothing) {
@@ -186,8 +250,10 @@ public struct Command {
     }
 
     // Runs the program and gives what it wrote to its output, which must be UTF-8. Its standard error
-    // is the standard error of this program, and it reads nothing, unless `input` gave it something to
-    // read. An end with anything but 0 is `Failed`, whatever it wrote.
+    // is the standard error of this program, unless it was sent elsewhere (`errorToOutput` puts it
+    // into the text too), and it reads nothing, unless `input` or `inputFrom` gave it something to
+    // read. An output sent to a file or nowhere is not read: the text is then empty. An end with
+    // anything but 0 is `Failed`, whatever it wrote.
     public Result<string, ProcessError> output(read this) {
         var text = ""
         match this.runWaiting(true, ref text) {
@@ -223,18 +289,25 @@ public struct Command {
     // a token cancelled before, it does not start.
     public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
         try Command.unless(read token)
-        long input = 1
-        if this.fed {
-            input = 2
+        var ways = this.waysOf(true)
+        var process = try this.begin(read ways)
+        var text = ""
+        match process.takeOutput() {
+            null => {}
+            var reader => {
+                var written = await reader.readTextAsync(read token)
+                var status = try await process.waitAsync(read token)
+                if !status.success() {
+                    return Error(ProcessError.Failed(status))
+                }
+                text = try written
+                return Ok(text)
+            }
         }
-        var process = try this.begin(input, true, false)
-        var reader = process.takeOutput() ?? panic("the output of the program is a pipe")
-        var written = await reader.readTextAsync(read token)
         var status = try await process.waitAsync(read token)
         if !status.success() {
             return Error(ProcessError.Failed(status))
         }
-        var text = try written
         return Ok(text)
     }
 
@@ -242,11 +315,8 @@ public struct Command {
     // a token cancelled before, it does not start.
     public async Result<ExitStatus, IoError> statusAsync(read this, read CancellationToken token = CancellationToken.None) {
         try token.check()
-        long input = 0
-        if this.fed {
-            input = 2
-        }
-        var process = try this.begin(input, false, false)
+        var ways = this.waysOf(false)
+        var process = try this.begin(read ways)
         return await process.waitAsync(read token)
     }
 
@@ -256,17 +326,47 @@ public struct Command {
         return Ok()
     }
 
-    // Starts the program with its input from `input` (this program's, nothing, the text or a pipe)
-    // and its output and standard error pipes where asked for.
-    Result<Process, IoError> begin(read this, long input, bool output, bool error) {
+    // Where the streams of a program that is run and waited for go: a pipe asked for is one only for
+    // `start`, so it is the stream of this program here; the output is a pipe read into the text
+    // when `capture`, unless it was sent to a file or nowhere, and the input is then nothing unless
+    // the program was given one.
+    long[5] waysOf(read this, bool capture) {
+        long input = this.inWay
+        if input == 3 || (capture && input == 0) {
+            input = 0
+            if capture {
+                input = 1
+            }
+        }
+        long output = this.outWay
+        if output == 1 {
+            output = 0
+        }
+        if capture && output == 0 {
+            output = 1
+        }
+        long error = this.errWay
+        if error == 1 {
+            error = 0
+        }
+        return long[5] { input, output, error, -1, -1 }
+    }
+
+    // Starts the program with its streams where `ways` says: the three ways, then the ends of
+    // pipes made by a `Pipeline` its input comes from and its output goes to, or -1.
+    Result<Process, IoError> begin(read this, read long[] ways) {
         try this.valid()
         var path = try this.found()
         var made = long[5]
+        var paths = List<string> { this.inPath.clone(), this.outPath.clone(), this.errPath.clone() }
         try System.start(
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
-            input, read this.text, output, error, ref made
+            read ways, read this.text, read paths, ref made
         )
-        var process = Process { pid = made[0], handle = made[4], input = null, output = null, error = null, ended = false }
+        var process = Process {
+            pid = made[0], handle = made[4], input = null, output = null, error = null, ended = false,
+            how = ExitStatus.Code(0)
+        }
         if made[1] >= 0 {
             process.input = System.writer(made[1])
         }
@@ -285,19 +385,14 @@ public struct Command {
     Result<ExitStatus, IoError> runWaiting(read this, bool capture, ref string output) {
         try this.valid()
         var path = try this.found()
-        // Where its input comes from: this program's input, nothing, or the text of `input`.
-        long input = 0
-        if this.fed {
-            input = 2
-        } else if capture {
-            input = 1
-        }
+        var ways = this.waysOf(capture)
+        var paths = List<string> { this.inPath.clone(), this.outPath.clone(), this.errPath.clone() }
         // How it ended, the code or the signal, and where the first byte of its output that is not
         // UTF-8 is (-1 when there is none).
         var ended = long[3]
         try System.run(
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
-            input, read this.text, capture, ref output, ref ended
+            read ways, read this.text, read paths, capture && ways[1] == 1, ref output, ref ended
         )
         var status = ExitStatus.Signal((int)ended[1])
         if ended[0] == 0 {
@@ -310,9 +405,13 @@ public struct Command {
     }
 
     // What the system cannot take: a zero byte would end a word early, and a name of a variable with
-    // `=` in it, or an empty one, would be read as another name.
+    // `=` in it, or an empty one, would be read as another name. A file with a zero byte in its
+    // name is not there.
     Result<void, IoError> valid(read this) {
         if this.program.contains('\0') || this.folder.contains('\0') {
+            return Error(IoError.NotFound)
+        }
+        if this.inPath.contains('\0') || this.outPath.contains('\0') || this.errPath.contains('\0') {
             return Error(IoError.NotFound)
         }
         for word in read this.words {
@@ -424,9 +523,9 @@ public struct Command {
 }
 
 // A program `start` started, which runs while this one goes on. It is waited for with `wait` or
-// `waitAsync`, which give how it ended; one that ends without being waited for (an error that
-// leaves the function, a field or an item that ends) is stopped with the signal 9 and waited for
-// there. The pipes `Command` asked for are taken out of it as streams of their own.
+// `waitAsync`, which give how it ended, or let go of with `detach`; one that ends without that (an
+// error that leaves the function, a field or an item that ends) is stopped with the signal 9 and
+// waited for there. The pipes `Command` asked for are taken out of it as streams of their own.
 public struct Process : Disposable {
     // The number the system knows the program by.
     long pid
@@ -437,12 +536,48 @@ public struct Process : Disposable {
     StreamWriter? input
     StreamReader? output
     StreamReader? error
-    // It has been waited for.
+    // It has been waited for, or let go of: the system may give its number to another program.
     bool ended
+    // How it ended, once it has been waited for.
+    ExitStatus how
 
     // The number the system knows the program by, as `ps` shows it.
     public int id(read this) {
         return (int)this.pid
+    }
+
+    // The number the system knows this program by.
+    public int currentId() {
+        return (int)System.processId(0)
+    }
+
+    // The number of the program that started this one, as the system says it now: when that one
+    // has ended, the program that took this one in (1, or a keeper of orphans, on Linux and
+    // macOS). On Windows the number that program had, which another may have by now.
+    public int parentId() {
+        return (int)System.processId(1)
+    }
+
+    // Sends a signal to the program the system knows by `id`, which need not be one this program
+    // started: `NotFound` when there is none, `PermissionDenied` when this program may not send it
+    // one. The number of a program that has ended may have been given to another since; a
+    // `Process` of this program names its own and no other until it is waited for. An `id` of 0
+    // or less, which would name a group of programs on Linux and macOS, is `InvalidInput`. On
+    // Windows every signal stops the program as `kill` does, but `Signal.WindowChange`, which only
+    // looks whether it is there.
+    public Result<void, IoError> signalId(int id, Signal signal) {
+        if id <= 0 {
+            return Error(IoError.InvalidInput)
+        }
+        return System.signalId(id, signalNumber(signal))
+    }
+
+    // Stops the program the system knows by `id` at once, with the signal 9, as `signalId` sends.
+    public Result<void, IoError> killId(int id) {
+        if id <= 0 {
+            return Error(IoError.InvalidInput)
+        }
+        return System.signalId(id, 9)
     }
 
     // The writer of the input of the program, when `pipeInput` asked for it; `null` when it did not,
@@ -467,20 +602,43 @@ public struct Process : Disposable {
     // ends with `ExitStatus.Signal(9)` unless it had ended before. Once it has ended, nothing. On
     // Windows it ends with `ExitStatus.Code(1)`.
     public void kill(read this) {
-        System.signal(this.handle, 9)
+        if !this.ended {
+            System.signal(this.handle, 9)
+        }
     }
 
     // Asks the program to stop: the signal 15, which it may catch to end in its own way. Windows has
     // no such request to send: there the program is stopped as `kill` stops it.
     public void terminate(read this) {
-        System.signal(this.handle, 15)
+        if !this.ended {
+            System.signal(this.handle, 15)
+        }
     }
 
     // Sends the program a signal: `Signal.Interrupt` is what Ctrl-C at a terminal sends it. Once it
     // has ended, nothing. On Windows every signal stops the program as `kill` does, but
     // `Signal.WindowChange`, which does nothing.
     public void signal(read this, Signal signal) {
-        System.signal(this.handle, signalNumber(signal))
+        if !this.ended {
+            System.signal(this.handle, signalNumber(signal))
+        }
+    }
+
+    // Whether the program has ended, without waiting: `null` while it runs, and how it ended once it
+    // has, which every later call and `wait` give again. A program seen ended here has been waited
+    // for, and is not stopped where its `Process` ends; one still running has not, and is waited
+    // for as before.
+    public Result<ExitStatus?, IoError> tryWait(ref this) {
+        if this.ended {
+            return Ok(this.how)
+        }
+        var ended = long[2]
+        if !try System.tryWait(this.handle, ref ended) {
+            return Ok(null)
+        }
+        this.ended = true
+        this.how = Process.status(read ended)
+        return Ok(this.how)
     }
 
     // Waits for the program to end and gives how it ended. The input it still holds is closed
@@ -488,6 +646,9 @@ public struct Process : Disposable {
     // end of its input, or writes more than a pipe holds, does not wait for this one forever.
     public Result<ExitStatus, IoError> wait(this) {
         this.leave()
+        if this.ended {
+            return Ok(this.how)
+        }
         var ended = long[2]
         System.wait(this.handle, ref ended)
         this.ended = true
@@ -497,10 +658,26 @@ public struct Process : Disposable {
     // `wait` without holding the thread, for an async function. A cancel stops the program.
     public async Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token = CancellationToken.None) {
         this.leave()
+        if this.ended {
+            return Ok(this.how)
+        }
         var ended = long[2]
         try await System.waitAsync(this.handle, read token, ref ended)
         this.ended = true
         return Ok(Process.status(read ended))
+    }
+
+    // Lets the program go on after this one, and after its `Process`: it is not stopped, and not
+    // waited for here. This program's runtime takes it away once it has ended, so that it does not
+    // stay as a program that has ended and was never asked how. The pipes it still holds are
+    // closed; those taken out stay open. It stays in the group and the session of this program:
+    // a terminal that closes still sends it `Hangup`.
+    public void detach(this) {
+        this.leave()
+        if !this.ended {
+            System.detach(this.handle)
+            this.ended = true
+        }
     }
 
     // The pipes it still holds end: the input is written out and closed, the readers let go of.
@@ -526,5 +703,235 @@ public struct Process : Disposable {
             var ended = long[2]
             System.wait(this.handle, ref ended)
         }
+    }
+}
+
+// Programs joined by pipes, as `a | b | c` at a shell: what each writes to its output is what the
+// next one reads as its input, through a pipe of the system from one to the other, never through
+// this program. The input of the first and the output of the last are what their `Command` says;
+// the standard error of each is its own (`errorToOutput` sends it down the pipe too).
+public struct Pipeline {
+    List<Command> commands
+
+    // A pipeline with no program in it yet.
+    public Pipeline create() {
+        return Pipeline { commands = List<Command>() }
+    }
+
+    // One more program, at the end: it reads what the one before writes. The `Command` is taken,
+    // not copied. A program before the last whose output was sent elsewhere (`pipeOutput`,
+    // `outputTo`, `discardOutput`), or one after the first that was given an input of its own, is
+    // a panic where the pipeline starts, since the pipe takes that place.
+    public void add(ref this, Command command) {
+        this.commands.add(command)
+    }
+
+    // Starts every program and goes on: the `Process` of each, in order. The input of the first is
+    // a `StreamWriter` of its own when its `Command` asked for `pipeInput`, and the output of the
+    // last a `StreamReader` when it asked for `pipeOutput`. A program that cannot start stops
+    // those started before it, which are waited for, and is the error.
+    public Result<List<Process>, IoError> start(read this) {
+        return this.begin(false, false)
+    }
+
+    // Runs every program and waits for them all. The pipeline failed when a program ended with
+    // anything but 0 (as `set -o pipefail` says at a shell), and the last one that did is the
+    // error. A program before the last stopped by the signal `SIGPIPE` failed not: that is how a
+    // program ends whose reader, the next one, has read all it wanted and gone (`yes | head -1`).
+    // Windows has no such signal; a program there that could not write ends with a code.
+    public Result<void, ProcessError> run(read this) {
+        var statuses = List<ExitStatus>()
+        match this.status() {
+            Ok(all) => statuses = all
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+        return Pipeline.verdict(read statuses)
+    }
+
+    // Runs every program and gives what the last one wrote to its output, which must be UTF-8; the
+    // pipeline failed as `run` says, whatever it wrote. The first reads nothing unless its
+    // `Command` gave it an input.
+    public Result<string, ProcessError> output(read this) {
+        var processes = List<Process>()
+        match this.begin(true, true) {
+            Ok(all) => processes = all
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+        Result<string, IoError> written = Ok("")
+        match processes[^1].takeOutput() {
+            null => {}
+            var reader => written = reader.readText()
+        }
+        var statuses = List<ExitStatus>()
+        for process in processes {
+            match process.wait() {
+                Ok(status) => statuses.add(status)
+                Error(cause) => return Error(ProcessError.Io(cause))
+            }
+        }
+        try Pipeline.verdict(read statuses)
+        match written {
+            Ok(text) => return Ok(text)
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+    }
+
+    // Runs every program as `run` does and gives how each ended, in order, without taking any end
+    // for an error (bash calls them `PIPESTATUS`).
+    public Result<List<ExitStatus>, IoError> status(read this) {
+        var processes = try this.begin(true, false)
+        var statuses = List<ExitStatus>()
+        for process in processes {
+            statuses.add(try process.wait())
+        }
+        return Ok(statuses)
+    }
+
+    // `run` without holding the thread, for an async function. A cancel stops every program.
+    public async Result<void, ProcessError> runAsync(read this, read CancellationToken token = CancellationToken.None) {
+        match await this.statusAsync(read token) {
+            Ok(statuses) => return Pipeline.verdict(read statuses)
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+    }
+
+    // `output` without holding the thread, for an async function. A cancel stops every program.
+    public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
+        try Command.unless(read token)
+        var processes = List<Process>()
+        match this.begin(true, true) {
+            Ok(all) => processes = all
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+        var text = ""
+        IoError? unread = null
+        var reader = processes[^1].takeOutput()
+        if reader is not null {
+            var written = await reader.readTextAsync(read token)
+            match written {
+                Ok(got) => text = got
+                Error(cause) => unread = cause
+            }
+        }
+        var statuses = List<ExitStatus>()
+        var waited = await Pipeline.waitAll(ref processes, ref statuses, read token)
+        if waited is Error(cause) {
+            return Error(ProcessError.Io(cause))
+        }
+        try Pipeline.verdict(read statuses)
+        if unread is not null {
+            return Error(ProcessError.Io(unread))
+        }
+        return Ok(text)
+    }
+
+    // Waits for every program, in order, and puts how each ended into `statuses`.
+    async Result<void, IoError> waitAll(ref List<Process> processes, ref List<ExitStatus> statuses, read CancellationToken token) {
+        while processes.length() > 0 {
+            var process = processes.removeLast() ?? panic("not empty")
+            statuses.add(try await process.waitAsync(read token))
+        }
+        statuses.reverse()
+        return Ok()
+    }
+
+    // `status` without holding the thread, for an async function. A cancel stops every program.
+    public async Result<List<ExitStatus>, IoError> statusAsync(read this, read CancellationToken token = CancellationToken.None) {
+        try token.check()
+        var processes = try this.begin(true, false)
+        var statuses = List<ExitStatus>()
+        for process in processes {
+            statuses.add(try await process.waitAsync(read token))
+        }
+        return Ok(statuses)
+    }
+
+    // Starts the programs, each joined to the next by a pipe of the system, from the first to the
+    // last. Programs `waiting` here have their streams as `Command.run` gives them: a pipe asked
+    // for is the stream of this program, and when `capture` the output of the last is a pipe read
+    // here and the first reads nothing unless it was given an input.
+    Result<List<Process>, IoError> begin(read this, bool waiting, bool capture) {
+        var count = this.commands.length()
+        if count == 0 {
+            panic("a pipeline with no program in it")
+        }
+        for i in 0..count {
+            var command = read this.commands[i]
+            if i + 1 < count && command.outWay != 0 {
+                panic($"program {i + 1} of the pipeline sends its output elsewhere, where the pipe to the next one goes")
+            }
+            if i > 0 && command.inWay != 0 {
+                panic($"program {i + 1} of the pipeline has an input of its own, where the pipe from the one before comes")
+            }
+        }
+        var processes = List<Process>()
+        // The end of the pipe the next program reads from, kept here until it has started.
+        long reading = -1
+        for i in 0..count {
+            var command = read this.commands[i]
+            var ways = long[5] { command.inWay, command.outWay, command.errWay, -1, -1 }
+            if waiting {
+                ways = command.waysOf(capture)
+            }
+            if i > 0 {
+                ways[0] = 5
+                ways[3] = reading
+            }
+            var writing = (long)-1
+            if i + 1 < count {
+                var ends = long[2]
+                match System.pipeEnds(ref ends) {
+                    Ok => {}
+                    Error(cause) => {
+                        System.closeEnd(reading)
+                        return Error(cause)
+                    }
+                }
+                ways[1] = 5
+                ways[4] = ends[1]
+                writing = ends[1]
+                var next = ends[0]
+                match command.begin(read ways) {
+                    Ok(process) => processes.add(process)
+                    Error(cause) => {
+                        System.closeEnd(reading)
+                        System.closeEnd(writing)
+                        System.closeEnd(next)
+                        return Error(cause)
+                    }
+                }
+                System.closeEnd(reading)
+                System.closeEnd(writing)
+                reading = next
+            } else {
+                match command.begin(read ways) {
+                    Ok(process) => processes.add(process)
+                    Error(cause) => {
+                        System.closeEnd(reading)
+                        return Error(cause)
+                    }
+                }
+                System.closeEnd(reading)
+            }
+        }
+        return Ok(processes)
+    }
+
+    // Whether the pipeline did its work: the last program that ended with anything but 0 is the
+    // error, leaving out one before the last that `SIGPIPE` stopped.
+    Result<void, ProcessError> verdict(read List<ExitStatus> statuses) {
+        nint i = statuses.length()
+        while i > 0 {
+            i -= 1
+            var status = statuses[i]
+            if status.success() {
+                continue
+            }
+            if i + 1 < statuses.length() && !OperatingSystem.isWindows() && status == ExitStatus.Signal(13) {
+                continue
+            }
+            return Error(ProcessError.Failed(status))
+        }
+        return Ok()
     }
 }

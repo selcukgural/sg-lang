@@ -1,0 +1,9 @@
+before: running
+again: running
+got: go
+ended: exited with code 7
+after: exited with code 7
+wait: exited with code 7
+quick: exited with code 0
+long: running
+killed: was stopped by signal 9

@@ -1,0 +1,111 @@
+// Programs joined by pipes (2018, 2019): what each writes is what the next reads, through a pipe
+// of the system. `output` gives what the last wrote, `status` how each ended, and `run` fails
+// when any ended with anything but 0, the last such one being the error, but for one before the
+// last that `SIGPIPE` stopped (`yes | head`). The program started is `sg-test-tool`
+// (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+string lines(read string text) {
+    return text.replaceAll("\r\n", "\n").replaceAll("\n", "|")
+}
+
+void ended(read string what, Result<void, ProcessError> done) {
+    match done {
+        Ok => print($"{what}: done")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, ProcessError> main() {
+    // `printf 'pear\napple\nfig\n' | sort | upper`
+    var fruit = Pipeline()
+    var first = tool(read List<string> { "cat" })
+    first.input("pear\napple\nfig\n")
+    fruit.add(first)
+    fruit.add(tool(read List<string> { "sort" }))
+    fruit.add(tool(read List<string> { "upper" }))
+    var sorted = try fruit.output()
+    print($"sorted: {lines(read sorted)}")
+
+    // One program alone is a pipeline too.
+    var alone = Pipeline()
+    alone.add(tool(read List<string> { "out=alone" }))
+    var single = try alone.output()
+    print($"alone: {lines(read single)}")
+
+    // Every end, in order; `run` fails at the last that did not end with 0.
+    var mixed = Pipeline()
+    mixed.add(tool(read List<string> { "exit=3" }))
+    mixed.add(tool(read List<string> { "cat", "exit=4" }))
+    mixed.add(tool(read List<string> { "cat" }))
+    match mixed.status() {
+        Ok(all) => print($"status: {all.length()} {all[0]} / {all[1]} / {all[2]}")
+        Error(cause) => print($"status: {cause}")
+    }
+    ended("mixed", mixed.run())
+    var last = Pipeline()
+    last.add(tool(read List<string> { "out=x" }))
+    last.add(tool(read List<string> { "cat", "exit=2" }))
+    ended("last", last.run())
+
+    // `yes | head -c 6`: the first ends by `SIGPIPE` on Linux and macOS, which is no failure.
+    var endless = Pipeline()
+    endless.add(tool(read List<string> { "yes=y" }))
+    endless.add(tool(read List<string> { "head=6" }))
+    var six = try endless.output()
+    print($"head: {lines(read six)}")
+    ended("endless", endless.run())
+
+    // The standard error of a program in the middle down the pipe too (`2>&1 |`), and its own.
+    var errors = Pipeline()
+    var noisy = tool(read List<string> { "out=o", "err=e" })
+    noisy.errorToOutput()
+    errors.add(noisy)
+    errors.add(tool(read List<string> { "sort" }))
+    var both = try errors.output()
+    print($"joined: {lines(read both)}")
+
+    // Started: the input of the first and the output of the last are pipes kept here.
+    var talk = Pipeline()
+    var head = tool(read List<string> { "upper" })
+    head.pipeInput()
+    talk.add(head)
+    var tail = tool(read List<string> { "sort" })
+    tail.pipeOutput()
+    talk.add(tail)
+    var processes = try talk.start()
+    var input = processes[0].takeInput() ?? panic("asked for with pipeInput")
+    try input.writeLine("b")
+    try input.writeLine("a")
+    try input.close()
+    var output = processes[^1].takeOutput() ?? panic("asked for with pipeOutput")
+    var told = try output.readText()
+    print($"talk: {lines(read told)}")
+    for process in processes {
+        var status = try process.wait()
+        print($"talk ended: {status}")
+    }
+
+    // Twenty programs and four megabytes, through every pipe.
+    var long = Pipeline()
+    var source = tool(read List<string> { "cat" })
+    source.input(read "abcdefghijklmnop".repeat(262144))
+    long.add(source)
+    for _ in 0..18 {
+        long.add(tool(read List<string> { "cat" }))
+    }
+    long.add(tool(read List<string> { "count" }))
+    var counted = try long.output()
+    print($"twenty: {counted.trim()}")
+
+    // A program that cannot start: those before it are stopped, and it is the error.
+    var broken = Pipeline()
+    broken.add(tool(read List<string> { "sleep=10000" }))
+    broken.add(Command("sg-no-such-program"))
+    ended("broken", broken.run())
+    return Ok()
+}

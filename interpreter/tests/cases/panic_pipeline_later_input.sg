@@ -1,0 +1,12 @@
+// A program after the first of a pipeline that was given an input of its own: the pipe from the
+// one before takes that place (2018).
+Result<void, ProcessError> main() {
+    var pipeline = Pipeline()
+    pipeline.add(Command("sg-test-tool"))
+    var second = Command("sg-test-tool")
+    second.input("its own")
+    pipeline.add(second)
+    var text = try pipeline.output()
+    print(text)
+    return Ok()
+}

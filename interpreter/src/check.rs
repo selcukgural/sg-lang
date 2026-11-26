@@ -13224,6 +13224,7 @@ impl<'a> Checker<'a> {
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
         let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        let longs = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))));
         // The calls of the file system, and the same as a task done on a thread of input and
         // output while the task waits (1871).
         let disk = |name: &str| -> Option<(SystemCall, Vec<Ty>, Ty)> {
@@ -13293,8 +13294,9 @@ impl<'a> Checker<'a> {
                         texts(),
                         texts(),
                         Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
-                        Ty::Int(IntTy::Long),
+                        longs(),
                         text(),
+                        texts(),
                         Ty::Bool,
                         Ty::Ref(Box::new(Ty::Str)),
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
@@ -13314,16 +13316,21 @@ impl<'a> Checker<'a> {
                         texts(),
                         texts(),
                         Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
-                        Ty::Int(IntTy::Long),
+                        longs(),
                         text(),
-                        Ty::Bool,
-                        Ty::Bool,
+                        texts(),
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
                     ],
                     io(Ty::Void),
                 )
             }
             "wait" => (SystemCall::Wait, vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], Ty::Void),
+            "tryWait" => (SystemCall::TryWait, vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Bool)),
+            "detach" => (SystemCall::Detach, vec![Ty::Int(IntTy::Long)], Ty::Void),
+            "pipeEnds" => (SystemCall::PipeEnds, vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+            "closeEnd" => (SystemCall::CloseEnd, vec![Ty::Int(IntTy::Long)], Ty::Void),
+            "processId" => (SystemCall::ProcessId, vec![Ty::Int(IntTy::Int)], Ty::Int(IntTy::Long)),
+            "signalId" => (SystemCall::SignalId, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], io(Ty::Void)),
             "waitAsync" => (
                 SystemCall::WaitAsync,
                 vec![Ty::Int(IntTy::Long), Ty::Read(Box::new(Ty::Token)), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],

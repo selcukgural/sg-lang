@@ -1,0 +1,4 @@
+panic: a pipeline with no program in it
+  --> panic_pipeline_empty.sg:4:9
+ 4 |     try pipeline.run()
+   |         ^^^^^^^^^^^^^^

@@ -9996,6 +9996,7 @@ static bool sg_proc_wait_ready(sg_io_proc* x) {
 
 const PROCESS_RUNTIME: &str = r#"
 #if defined(_WIN32)
+#include <tlhelp32.h>
 /* Other programs on Windows (choices 1032 to 1041): `CreateProcessW`, the command line quoted
    as C's library reads it back, a batch file through `cmd.exe` with its arguments escaped as
    Rust escapes them, an environment block of UTF-16, and named pipes whose end here is
@@ -10218,15 +10219,15 @@ static HANDLE sg_proc_inherit(HANDLE h) {
     if (!h || h == INVALID_HANDLE_VALUE) return NULL;
     return DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &copy, 0, TRUE, DUPLICATE_SAME_ACCESS) ? copy : NULL;
 }
-/* Starts the program at `path`. Its input is this program's (`input` 0), nothing (1, `NUL`) or a
-   pipe (2); its output and its standard error are pipes when `out` and `err` say so, otherwise
-   this program's. `ends` gets the ends of the pipes this program keeps, or -1. What was printed
+/* Starts the program at `path`, its streams where `ways` says (see `SystemCall::Start`): `NUL`
+   for nothing, the files of `paths`, the ends of pipes of a `Pipeline` (handles) in `ways[3]` and
+   `ways[4]`. `ends` gets the ends of the pipes this program keeps, or -1. What was printed
    goes out first. Only the three streams reach the program (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`),
    inheritable only for the call. A word or a name with a quote in it, which cannot be written,
    and a `\r` or a `\n` for a batch file, are ERROR_INVALID_PARAMETER. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         int64_t input, bool out, bool err, HANDLE* process, DWORD* pid, int ends[3]) {
+                         const int64_t* ways, const sg_string* paths, HANDLE* process, DWORD* pid, int ends[3]) {
     for (int i = 0; i < 3; i++) ends[i] = -1;
     int code = 0;
     wchar_t* app = sg_wide(path, &code);
@@ -10279,22 +10280,35 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     sg_drop_string(&line);
     wchar_t* env = sg_proc_env_block(clear, names, values, kept, changes);
     HANDLE given[3] = { NULL, NULL, NULL };
-    if (input == 0) {
-        given[0] = sg_proc_inherit(GetStdHandle(STD_INPUT_HANDLE));
-    } else if (input == 1) {
-        SECURITY_ATTRIBUTES inherited = { sizeof inherited, NULL, TRUE };
-        given[0] = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited, OPEN_EXISTING, 0, NULL);
-        if (given[0] == INVALID_HANDLE_VALUE) { given[0] = NULL; code = sg_win_error(); }
-    } else {
-        code = sg_proc_pipe(false, &ends[0], &given[0]);
-    }
-    if (!code) {
-        if (out) code = sg_proc_pipe(true, &ends[1], &given[1]);
-        else given[1] = sg_proc_inherit(GetStdHandle(STD_OUTPUT_HANDLE));
-    }
-    if (!code) {
-        if (err) code = sg_proc_pipe(true, &ends[2], &given[2]);
-        else given[2] = sg_proc_inherit(GetStdHandle(STD_ERROR_HANDLE));
+    SECURITY_ATTRIBUTES inherited = { sizeof inherited, NULL, TRUE };
+    for (int i = 0; i < 3 && !code; i++) {
+        int64_t way = ways[i];
+        if (way == 0) {
+            given[i] = sg_proc_inherit(GetStdHandle(i == 0 ? STD_INPUT_HANDLE : i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE));
+        } else if ((i == 0 && (way == 2 || way == 3)) || (i > 0 && way == 1)) {
+            code = sg_proc_pipe(i > 0, &ends[i], &given[i]);
+        } else if ((i == 0 && way == 1) || (i > 0 && way == 2)) {
+            given[i] = CreateFileW(L"NUL", i == 0 ? GENERIC_READ : GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited, OPEN_EXISTING, 0, NULL);
+            if (given[i] == INVALID_HANDLE_VALUE) { given[i] = NULL; code = sg_win_error(); }
+        } else if ((i == 0 && way == 4) || (i > 0 && (way == 3 || way == 4))) {
+            /* The file is opened here, before the program starts: one that cannot be is the error
+               of the call. One written at its end has only the right to append, so that every
+               write goes to the end. */
+            wchar_t* name = sg_wide((sg_str){ paths[i].ptr, paths[i].len }, &code);
+            if (name) {
+                DWORD access = i == 0 ? GENERIC_READ : way == 3 ? GENERIC_WRITE : FILE_APPEND_DATA | SYNCHRONIZE;
+                DWORD disposition = i == 0 ? OPEN_EXISTING : way == 3 ? CREATE_ALWAYS : OPEN_ALWAYS;
+                given[i] = CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inherited, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (given[i] == INVALID_HANDLE_VALUE) { given[i] = NULL; code = sg_win_error(); }
+                free(name);
+            }
+        } else if (way == 5) {
+            given[i] = sg_proc_inherit((HANDLE)(intptr_t)ways[i == 0 ? 3 : 4]);
+            if (!given[i]) code = sg_win_error();
+        } else if (i == 2 && way == 6) {
+            /* `2>&1`: the standard error where the output goes. */
+            given[2] = sg_proc_inherit(given[1]);
+        }
     }
     if (!code) {
         HANDLE list[3];
@@ -10428,16 +10442,75 @@ static void sg_proc_signal(int64_t child, int32_t number) {
     if (number == 28) return;
     TerminateProcess((HANDLE)(intptr_t)child, 1);
 }
+/* `System.tryWait`: 1 with `ended` as `sg_proc_reap` gives it, and the handle let go of, when the
+   program has ended; 0 while it runs. */
+static int sg_proc_try_reap(int64_t child, int64_t* ended, int* code) {
+    DWORD state = WaitForSingleObject((HANDLE)(intptr_t)child, 0);
+    if (state == WAIT_TIMEOUT) return 0;
+    if (state != WAIT_OBJECT_0) { *code = sg_win_error(); return 0; }
+    *code = sg_proc_reap(child, ended);
+    return *code ? 0 : 1;
+}
+/* `System.detach`: the handle is let go of; Windows keeps nothing of a program that has ended
+   once no handle names it. */
+static void sg_proc_detach(int64_t child) {
+    CloseHandle((HANDLE)(intptr_t)child);
+}
+/* `System.pipeEnds`: an anonymous pipe, neither end inherited until a start gives one. */
+static int sg_proc_pipe_ends(int64_t* ends) {
+    HANDLE r = NULL, w = NULL;
+    if (!CreatePipe(&r, &w, NULL, 0)) return sg_win_error();
+    ends[0] = (int64_t)(intptr_t)r;
+    ends[1] = (int64_t)(intptr_t)w;
+    return 0;
+}
+static void sg_proc_close_end(int64_t end) {
+    if (end >= 0) CloseHandle((HANDLE)(intptr_t)end);
+}
+/* `System.processId`: this program (0), or the one that started it (1), from a snapshot of the
+   programs of the system; 0 when it is not found. */
+static int64_t sg_proc_id(int32_t which) {
+    DWORD me = GetCurrentProcessId();
+    if (which == 0) return me;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W entry;
+    entry.dwSize = sizeof entry;
+    int64_t parent = 0;
+    for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ProcessID == me) { parent = entry.th32ParentProcessID; break; }
+    }
+    CloseHandle(snapshot);
+    return parent;
+}
+/* `System.signalId`: as `sg_proc_signal`, to a program this one need not have started. None of
+   that number is `NotFound`; one that has ended but is still known takes it as done. */
+static int sg_proc_signal_id(int64_t id, int32_t number) {
+    if (id <= 0 || id > 0xFFFFFFFFLL) return ERROR_FILE_NOT_FOUND;
+    HANDLE h = OpenProcess(number == 28 ? SYNCHRONIZE : PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)id);
+    if (!h) {
+        DWORD e = GetLastError();
+        return e == ERROR_INVALID_PARAMETER ? ERROR_FILE_NOT_FOUND : (int)e;
+    }
+    int code = 0;
+    if (number != 28 && !TerminateProcess(h, 1)) {
+        code = sg_win_error();
+        DWORD left = 0;
+        if (GetExitCodeProcess(h, &left) && left != STILL_ACTIVE) code = 0;
+    }
+    CloseHandle(h);
+    return code;
+}
 /* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
    0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
    otherwise this program's; its standard error is this program's. */
 static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                        const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+                       const int64_t* ways, sg_str text, const sg_string* paths, sg_string* output, int64_t* ended) {
     HANDLE child = NULL;
     DWORD pid = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input, output != NULL, false, &child, &pid, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends);
     if (code) return code;
     int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
     code = sg_proc_reap((int64_t)(intptr_t)child, ended);
@@ -10461,13 +10534,13 @@ static SG_THREAD_MAIN(sg_proc_feed_main, p) {
    input, the output, the standard error, or -1) and its handle. */
 static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         int64_t input, sg_str text, bool out, bool err, int64_t* made) {
+                         const int64_t* ways, sg_str text, const sg_string* paths, int64_t* made) {
     HANDLE child = NULL;
     DWORD pid = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input >= 2 ? 2 : input, out, err, &child, &pid, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends);
     if (code) return code;
-    if (input == 2) {
+    if (ways[0] == 2) {
         sg_proc_feed* f = malloc(sizeof *f);
         uint8_t* copy = malloc((size_t)text.len + 1);
         if (!f || !copy) abort();
@@ -10495,6 +10568,12 @@ static sg_writer sg_proc_writer(int64_t fd) {
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#if defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/syscall.h>
+#else
+#include <sys/event.h>
+#endif
 extern char** environ;
 
 /* `System.executable(path)`: 1 for a file this program may run, 2 for a file that is there and
@@ -10676,16 +10755,38 @@ static void sg_proc_close_on_exec(void) {
 }
 #define SG_PROC_CLOSE_ON_EXEC 1
 #endif
-/* Starts the program at `path` with `posix_spawn`. Its input is this program's (`input` 0),
-   nothing (1) or a pipe (2); its output and its standard error are pipes when `out` and `err` say
-   so, otherwise this program's. `ends` gets the ends of the pipes this program keeps (the input,
-   the output, the standard error), or -1. What was printed goes out first. Only 0, 1 and 2 reach
-   the program: every other descriptor of the runtime is opened close-on-exec, and on macOS the
-   spawn closes every descriptor it is not told to keep, with glibc 2.34 the spawn closes those
-   above 2, and with another C library on Linux they are marked close-on-exec first. */
+/* A descriptor above the three streams, so that `posix_spawn` moves it onto one of them: a dup2
+   of a descriptor onto itself would leave its close-on-exec mark on. One made here is put into
+   `made`, to be closed after the start. */
+static int sg_proc_high(int fd, int* made) {
+    if (fd < 0 || fd > 2) return fd;
+    int high = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+    if (high >= 0) *made = high;
+    return high;
+}
+/* The file a stream of a program is sent to or read from (`ways` 4 for the input, 3 and 4 for the
+   output and the standard error), opened here before the program starts, so that one that cannot
+   be is the error of the call. */
+static int sg_proc_open(int64_t way, bool input, sg_string path, int* fd) {
+    int flags = input ? O_RDONLY : O_WRONLY | O_CREAT | (way == 3 ? O_TRUNC : O_APPEND);
+    if ((input && way != 4) || (!input && way != 3 && way != 4)) return 0;
+    int code = 0;
+    char* name = sg_path((sg_str){ path.ptr, path.len }, &code);
+    if (!name) return code;
+    do { *fd = open(name, flags | O_CLOEXEC | O_NOCTTY, 0666); } while (*fd < 0 && errno == EINTR);
+    free(name);
+    return *fd < 0 ? sg_os_error() : 0;
+}
+/* Starts the program at `path` with `posix_spawn`, its streams where `ways` says (see
+   `SystemCall::Start`): `paths` names the files, `ways[3]` and `ways[4]` the ends of pipes of a
+   `Pipeline`. `ends` gets the ends of the pipes this program keeps (the input, the output, the
+   standard error), or -1. What was printed goes out first. Only 0, 1 and 2 reach the program:
+   every other descriptor of the runtime is opened close-on-exec, and on macOS the spawn closes
+   every descriptor it is not told to keep, with glibc 2.34 the spawn closes those above 2, and
+   with another C library on Linux they are marked close-on-exec first. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         int64_t input, bool out, bool err, pid_t* child, int ends[3]) {
+                         const int64_t* ways, const sg_string* paths, pid_t* child, int ends[3]) {
     char* program = sg_proc_text(path.ptr, path.len);
     char** argv = malloc(sizeof(char*) * (size_t)(count + 1));
     if (!argv) abort();
@@ -10696,10 +10797,14 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     int64_t fresh = 0;
     char** envp = sg_proc_environment(clear, names, values, kept, changes, &made, &fresh);
     int pipes[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
-    bool asked[3] = { input == 2, out, err };
+    bool asked[3] = { ways[0] == 2 || ways[0] == 3, ways[1] == 1, ways[2] == 1 };
+    int files[3] = { -1, -1, -1 };
+    /* Descriptors made here only to be moved onto a stream: closed once the program has started. */
+    int temps[6] = { -1, -1, -1, -1, -1, -1 };
     int code = 0;
     for (int i = 0; i < 3 && !code; i++)
         if (asked[i]) code = sg_proc_pipe(pipes[i]);
+    for (int i = 0; i < 3 && !code; i++) code = sg_proc_open(ways[i], i == 0, paths[i], &files[i]);
     if (!code) {
         posix_spawn_file_actions_t actions;
         posix_spawnattr_t attr;
@@ -10717,10 +10822,30 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         posix_spawnattr_setflags(&attr, flags);
         posix_spawnattr_setsigmask(&attr, &none);
         posix_spawnattr_setsigdefault(&attr, &plain);
-        if (input == 1) posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
-        if (input == 2) posix_spawn_file_actions_adddup2(&actions, pipes[0][0], 0);
-        if (out) posix_spawn_file_actions_adddup2(&actions, pipes[1][1], 1);
-        if (err) posix_spawn_file_actions_adddup2(&actions, pipes[2][1], 2);
+        /* What goes onto each stream: a descriptor, the null device (-2), or this program's own (-1). */
+        int onto[3] = { -1, -1, -1 };
+        if (ways[0] == 1) onto[0] = -2;
+        else if (asked[0]) onto[0] = pipes[0][0];
+        else if (ways[0] == 4) onto[0] = files[0];
+        else if (ways[0] == 5) onto[0] = (int)ways[3];
+        for (int i = 1; i < 3; i++) {
+            if (ways[i] == 2) onto[i] = -2;
+            else if (asked[i]) onto[i] = pipes[i][1];
+            else if (ways[i] == 3 || ways[i] == 4) onto[i] = files[i];
+            else if (i == 1 && ways[i] == 5) onto[i] = (int)ways[4];
+        }
+        for (int i = 0; i < 3 && !code; i++) {
+            if (onto[i] == -2) {
+                posix_spawn_file_actions_addopen(&actions, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
+            } else if (onto[i] >= 0) {
+                int fd = sg_proc_high(onto[i], &temps[i]);
+                if (fd < 0) code = sg_os_error();
+                else posix_spawn_file_actions_adddup2(&actions, fd, i);
+            } else if (i == 2 && ways[2] == 6) {
+                /* `2>&1`: the standard error where the output went, as the step before set it. */
+                posix_spawn_file_actions_adddup2(&actions, 1, 2);
+            }
+        }
         /* POSIX named it without `_np` in 2024; macOS 26 has only that name left undeprecated. */
 #if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000
         if (dir) posix_spawn_file_actions_addchdir(&actions, dir);
@@ -10734,9 +10859,11 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
 #elif defined(SG_PROC_CLOSE_ON_EXEC)
         sg_proc_close_on_exec();
 #endif
-        sg_out_flush();
-        fflush(stderr);
-        code = posix_spawn(child, program, &actions, &attr, argv, envp);
+        if (!code) {
+            sg_out_flush();
+            fflush(stderr);
+            code = posix_spawn(child, program, &actions, &attr, argv, envp);
+        }
         posix_spawn_file_actions_destroy(&actions);
         posix_spawnattr_destroy(&attr);
     }
@@ -10744,6 +10871,8 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     if (pipes[0][0] >= 0) close(pipes[0][0]);
     if (pipes[1][1] >= 0) close(pipes[1][1]);
     if (pipes[2][1] >= 0) close(pipes[2][1]);
+    for (int i = 0; i < 3; i++) if (files[i] >= 0) close(files[i]);
+    for (int i = 0; i < 6; i++) if (temps[i] >= 0) close(temps[i]);
     int kept_ends[3] = { pipes[0][1], pipes[1][0], pipes[2][0] };
     for (int i = 0; i < 3; i++) {
         if (code && kept_ends[i] >= 0) close(kept_ends[i]);
@@ -10774,15 +10903,126 @@ static int sg_proc_reap(int64_t child, int64_t* ended) {
 static void sg_proc_signal(int64_t child, int32_t number) {
     (void)kill((pid_t)child, number);
 }
+/* `System.tryWait`: 1 with `ended` as `sg_proc_reap` gives it when the program has ended and has
+   been taken away; 0 while it runs. */
+static int sg_proc_try_reap(int64_t child, int64_t* ended, int* code) {
+    int status = 0;
+    pid_t got;
+    while ((got = waitpid((pid_t)child, &status, WNOHANG)) < 0 && errno == EINTR) {}
+    if (got < 0) { *code = sg_os_error(); return 0; }
+    if (got == 0) return 0;
+    ended[0] = WIFSIGNALED(status) ? 1 : 0;
+    ended[1] = WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status);
+    return 1;
+}
+/* The keeper of the programs let go of (`detach`, 2021): one thread, started by the first, waits on
+   a queue of the system for their ends (a `pidfd` each on Linux, `EVFILT_PROC` on macOS) and takes
+   each away as it ends, so that none stays as a program that has ended and was never asked how. */
+static sg_mtx sg_reaper_lock = SG_MTX_INIT;
+static int sg_reaper_fd = -1;
+static void sg_reap_now(pid_t pid) {
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+}
+static SG_THREAD_MAIN(sg_reaper_main, p) {
+    int fd = (int)(intptr_t)p;
+    for (;;) {
+#if defined(__linux__)
+        struct epoll_event events[16];
+        int n = epoll_wait(fd, events, 16, -1);
+        for (int i = 0; i < n; i++) {
+            int pidfd = (int)(uint32_t)events[i].data.u64;
+            pid_t pid = (pid_t)(events[i].data.u64 >> 32);
+            epoll_ctl(fd, EPOLL_CTL_DEL, pidfd, NULL);
+            close(pidfd);
+            sg_reap_now(pid);
+        }
+#else
+        struct kevent events[16];
+        int n = kevent(fd, NULL, 0, events, 16, NULL);
+        for (int i = 0; i < n; i++) sg_reap_now((pid_t)events[i].ident);
+#endif
+    }
+    return SG_THREAD_END;
+}
+/* A program waited for by a thread of its own, where there is no queue to wait on. */
+static SG_THREAD_MAIN(sg_reaper_one, p) {
+    sg_reap_now((pid_t)(intptr_t)p);
+    return SG_THREAD_END;
+}
+static void sg_proc_detach(int64_t child) {
+    pid_t pid = (pid_t)child;
+    sg_mtx_lock(&sg_reaper_lock);
+    if (sg_reaper_fd < 0) {
+#if defined(__linux__)
+        int fd = epoll_create1(EPOLL_CLOEXEC);
+#else
+        int fd = kqueue();
+        if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+        sg_thread thread;
+        if (fd >= 0 && sg_thread_start(&thread, sg_reaper_main, (void*)(intptr_t)fd, true) == 0) sg_reaper_fd = fd;
+        else if (fd >= 0) close(fd);
+    }
+    int queue = sg_reaper_fd;
+    sg_mtx_unlock(&sg_reaper_lock);
+    bool queued = false;
+    if (queue >= 0) {
+#if defined(__linux__) && defined(SYS_pidfd_open)
+        int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+        if (pidfd >= 0) {
+            fcntl(pidfd, F_SETFD, FD_CLOEXEC);
+            struct epoll_event e = { .events = EPOLLIN, .data.u64 = ((uint64_t)(uint32_t)pid << 32) | (uint32_t)pidfd };
+            if (epoll_ctl(queue, EPOLL_CTL_ADD, pidfd, &e) == 0) queued = true;
+            else close(pidfd);
+        }
+#elif !defined(__linux__)
+        struct kevent k;
+        EV_SET(&k, (uintptr_t)pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+        if (kevent(queue, &k, 1, NULL, 0, NULL) == 0) queued = true;
+        /* macOS says ESRCH of a program that has ended already: it is taken away now. */
+        else if (errno == ESRCH) { sg_reap_now(pid); return; }
+#endif
+    }
+    if (!queued) {
+        sg_thread thread;
+        if (sg_thread_start(&thread, sg_reaper_one, (void*)(intptr_t)pid, true) != 0) {
+            fprintf(stderr, "the system refused a thread to wait for a program let go of\n");
+            abort();
+        }
+    }
+}
+/* `System.pipeEnds`: a pipe, both ends close-on-exec until a start moves one onto a stream. */
+static int sg_proc_pipe_ends(int64_t* ends) {
+    int fds[2];
+    int code = sg_proc_pipe(fds);
+    if (code) return code;
+    ends[0] = fds[0];
+    ends[1] = fds[1];
+    return 0;
+}
+static void sg_proc_close_end(int64_t end) {
+    if (end >= 0) close((int)end);
+}
+/* `System.processId`: this program (0), or the one that started it (1). */
+static int64_t sg_proc_id(int32_t which) {
+    return which == 0 ? (int64_t)getpid() : (int64_t)getppid();
+}
+/* `System.signalId`: `kill` to one program (`id` above 0); none of that number is `NotFound`. */
+static int sg_proc_signal_id(int64_t id, int32_t number) {
+    if (id <= 0 || id > 0x7FFFFFFF) return ENOENT;
+    if (kill((pid_t)id, number) == 0) return 0;
+    return errno == ESRCH ? ENOENT : sg_os_error();
+}
 /* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
    0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
    otherwise this program's; its standard error is this program's. */
 static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                        const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+                       const int64_t* ways, sg_str text, const sg_string* paths, sg_string* output, int64_t* ended) {
     pid_t child = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input, output != NULL, false, &child, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends);
     if (code) return code;
     int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
     code = sg_proc_reap(child, ended);
@@ -10807,12 +11047,12 @@ static SG_THREAD_MAIN(sg_proc_feed_main, p) {
    the program on Linux and macOS (its handle on Windows). */
 static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         int64_t input, sg_str text, bool out, bool err, int64_t* made) {
+                         const int64_t* ways, sg_str text, const sg_string* paths, int64_t* made) {
     pid_t child = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input >= 2 ? 2 : input, out, err, &child, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends);
     if (code) return code;
-    if (input == 2) {
+    if (ways[0] == 2) {
 #ifdef F_SETNOSIGPIPE
         fcntl(ends[0], F_SETNOSIGPIPE, 1);
 #endif
@@ -21937,8 +22177,9 @@ impl<'a> Emitter<'a> {
             SystemCall::TempFolder => ("sg_system_temp_folder", Vec::new(), owned_text("sg_fs_temp_folder(&bytes, &n)")),
             SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
             SystemCall::Run => {
-                self.made.insert("process".to_string());
+                self.made.extend(["process".to_string(), "io".to_string()]);
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                let longs = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))));
                 (
                     "sg_system_run",
                     vec![
@@ -21949,8 +22190,9 @@ impl<'a> Emitter<'a> {
                         texts(),
                         texts(),
                         Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
-                        Ty::Int(IntTy::Long),
+                        longs(),
                         text(),
+                        texts(),
                         Ty::Bool,
                         Ty::Ref(Box::new(Ty::Str)),
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
@@ -21959,16 +22201,17 @@ impl<'a> Emitter<'a> {
                     // UTF-8 there, and left out when it is not: the third number says where.
                     format!(
                         "int64_t ended[3] = {{ 0, 0, -1 }}; \
-                         int code = sg_proc_run(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7, a8, a9 ? a10 : NULL, ended); \
-                         if (code) {} if (a9) {{ ended[2] = sg_utf8_bad(a10->ptr, a10->len); if (ended[2] >= 0) a10->len = 0; }} \
-                         for (int64_t i = 0; i < 3 && i < a11.len; i++) a11.ptr[i] = ended[i]; return ({gives}){{ .tag = 0 }};",
+                         int code = sg_proc_run(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7.ptr, a8, a9->ptr, a10 ? a11 : NULL, ended); \
+                         if (code) {} if (a10) {{ ended[2] = sg_utf8_bad(a11->ptr, a11->len); if (ended[2] >= 0) a11->len = 0; }} \
+                         for (int64_t i = 0; i < 3 && i < a12.len; i++) a12.ptr[i] = ended[i]; return ({gives}){{ .tag = 0 }};",
                         failed("sg_io_error(code)")
                     ),
                 )
             }
             SystemCall::Start => {
-                self.made.insert("process".to_string());
+                self.made.extend(["process".to_string(), "io".to_string()]);
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                let longs = || Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))));
                 (
                     "sg_system_start",
                     vec![
@@ -21979,16 +22222,15 @@ impl<'a> Emitter<'a> {
                         texts(),
                         texts(),
                         Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
-                        Ty::Int(IntTy::Long),
+                        longs(),
                         text(),
-                        Ty::Bool,
-                        Ty::Bool,
+                        texts(),
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
                     ],
                     format!(
                         "int64_t made[5] = {{ 0, -1, -1, -1, 0 }}; \
-                         int code = sg_proc_start(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7, a8, a9, a10, made); \
-                         if (code) {} for (int64_t i = 0; i < 5 && i < a11.len; i++) a11.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
+                         int code = sg_proc_start(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7.ptr, a8, a9->ptr, made); \
+                         if (code) {} for (int64_t i = 0; i < 5 && i < a10.len; i++) a10.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
                         failed("sg_io_error(code)")
                     ),
                 )
@@ -22004,6 +22246,50 @@ impl<'a> Emitter<'a> {
             SystemCall::Signal => {
                 self.made.insert("process".to_string());
                 ("sg_system_signal", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "sg_proc_signal(a0, a1);".to_string())
+            }
+            SystemCall::TryWait => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_try_wait",
+                    vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!(
+                        "int64_t ended[2] = {{ 0, 0 }}; int code = 0; bool done = sg_proc_try_reap(a0, ended, &code) != 0; \
+                         if (code) {} for (int64_t i = 0; i < 2 && i < a1.len; i++) a1.ptr[i] = ended[i]; return ({gives}){{ .tag = 0, .u.v0 = {{ done }} }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            SystemCall::Detach => {
+                self.made.insert("process".to_string());
+                ("sg_system_detach", vec![Ty::Int(IntTy::Long)], "sg_proc_detach(a0);".to_string())
+            }
+            SystemCall::PipeEnds => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_pipe_ends",
+                    vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!(
+                        "int64_t ends[2] = {{ -1, -1 }}; int code = sg_proc_pipe_ends(ends); \
+                         if (code) {} for (int64_t i = 0; i < 2 && i < a0.len; i++) a0.ptr[i] = ends[i]; return ({gives}){{ .tag = 0 }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            SystemCall::CloseEnd => {
+                self.made.insert("process".to_string());
+                ("sg_system_close_end", vec![Ty::Int(IntTy::Long)], "sg_proc_close_end(a0);".to_string())
+            }
+            SystemCall::ProcessId => {
+                self.made.insert("process".to_string());
+                ("sg_system_process_id", vec![Ty::Int(IntTy::Int)], "return sg_proc_id(a0);".to_string())
+            }
+            SystemCall::SignalId => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_signal_id",
+                    vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)],
+                    format!("int code = sg_proc_signal_id(a0, a1); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                )
             }
             SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber => {
                 self.made.insert("signals".to_string());
@@ -23522,7 +23808,10 @@ impl<'a> Emitter<'a> {
                 let mut from_end_at = None;
                 if let Some(count) = from_end(index) {
                     let temp = self.temp();
-                    self.pre.push(format!("__auto_type {temp} = {address};"));
+                    // Typed, not `__auto_type`, so that an async function can keep it in its
+                    // frame across an `await`.
+                    let list_c = self.ctype(list, expr.span)?;
+                    self.pre.push(format!("const {list_c}* {temp} = {address};"));
                     let count = self.value(count)?;
                     from_end_at = Some(format!("sg_from_end({count}, {temp}->len, {})", self.loc(expr.span)));
                     address = temp;

@@ -742,6 +742,108 @@ struct Kid {
     copies: Vec<(std::thread::JoinHandle<Vec<u8>>, bool)>,
 }
 
+/// The numbers of `ways` that `System.start` and `System.run` are given.
+fn ways_of(value: &Value) -> Vec<i128> {
+    cells_of(value)
+        .iter()
+        .map(|cell| match &*cell.borrow() {
+            Value::Int(_, number) => *number,
+            _ => unreachable!("the checker makes it a number"),
+        })
+        .collect()
+}
+
+/// The texts of a `read List<string>`.
+fn texts_of(value: &Value) -> Vec<String> {
+    match value {
+        Value::List(items) => items
+            .borrow()
+            .iter()
+            .map(|item| match &*item.borrow() {
+                Value::Str(text) => text.to_string(),
+                _ => unreachable!("the checker makes it a list of texts"),
+            })
+            .collect(),
+        _ => unreachable!("the checker makes it a list"),
+    }
+}
+
+/// An end of a pipe that `System.pipeEnds` made and still owns, as a file of its own the program
+/// started is given; the end itself stays open until `System.closeEnd`.
+fn end_copy(end: i128) -> std::io::Result<std::fs::File> {
+    // SAFETY: the end was made by `System.pipeEnds` and is closed only by `System.closeEnd`; the
+    // file made of it here is not dropped, so it does not close it.
+    let file = std::mem::ManuallyDrop::new(unsafe { crate::sys::file_of_fd(end as crate::sys::RawFd) });
+    file.try_clone()
+}
+
+/// The three streams of a program about to start, where `ways` says (see
+/// `SystemCall::Start`), and the ends of the pipes read here: its output and its standard error
+/// when they are this run's (copied out) or kept by its `Process`. The files are opened here, so
+/// one that cannot be is the error before the program starts.
+struct Streams {
+    input: std::process::Stdio,
+    output: std::process::Stdio,
+    error: std::process::Stdio,
+    out_pipe: Option<std::io::PipeReader>,
+    err_pipe: Option<std::io::PipeReader>,
+}
+
+impl Streams {
+    fn of(ways: &[i128], paths: &[String]) -> std::io::Result<Streams> {
+        use std::process::Stdio;
+        let os = crate::names::os_of;
+        let input = match ways[0] {
+            0 => Stdio::inherit(),
+            1 => Stdio::null(),
+            4 => Stdio::from(std::fs::File::open(os(&paths[0]))?),
+            5 => Stdio::from(end_copy(ways[3])?),
+            _ => Stdio::piped(),
+        };
+        // Where an output goes: a pipe read here, nothing, a file, or the end of a pipe; with a
+        // second handle of it when the standard error goes there too.
+        let outlet = |way: i128, path: &str, end: i128, twice: bool| -> std::io::Result<(Stdio, Option<Stdio>, Option<std::io::PipeReader>)> {
+            Ok(match way {
+                2 => (Stdio::null(), twice.then(Stdio::null), None),
+                3 | 4 => {
+                    let file = std::fs::OpenOptions::new().write(true).create(true).truncate(way == 3).append(way == 4).open(os(path))?;
+                    let second = match twice {
+                        true => Some(Stdio::from(file.try_clone()?)),
+                        false => None,
+                    };
+                    (Stdio::from(file), second, None)
+                }
+                5 => {
+                    let file = end_copy(end)?;
+                    let second = match twice {
+                        true => Some(Stdio::from(file.try_clone()?)),
+                        false => None,
+                    };
+                    (Stdio::from(file), second, None)
+                }
+                _ => {
+                    let (reader, writer) = std::io::pipe()?;
+                    let second = match twice {
+                        true => Some(Stdio::from(writer.try_clone()?)),
+                        false => None,
+                    };
+                    (Stdio::from(writer), second, Some(reader))
+                }
+            })
+        };
+        let joined = ways[2] == 6;
+        let (output, second, out_pipe) = outlet(ways[1], &paths[1], ways[4], joined)?;
+        let (error, err_pipe) = match second {
+            Some(second) => (second, None),
+            None => {
+                let (error, _, pipe) = outlet(ways[2], &paths[2], -1, false)?;
+                (error, pipe)
+            }
+        };
+        Ok(Streams { input, output, error, out_pipe, err_pipe })
+    }
+}
+
 /// What a thread keeps of the program running on it, taken to the thread a task runs on
 /// and brought back.
 struct Thread {
@@ -7894,7 +7996,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         for (at, arg) in args.iter().enumerate() {
             let value = self.expr(arg, frame)?;
             // The text `System.run` keeps the output in is written where it is.
-            values.push(if call == SystemCall::Run && at == 10 { value } else { owned(value) });
+            values.push(if call == SystemCall::Run && at == 11 { value } else { owned(value) });
         }
         let text = |at: usize| match &values[at] {
             Value::Str(text) => text.to_string(),
@@ -7990,6 +8092,43 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // its own.
                 crate::sys::signal(number(0) as i64, number(1) as i64);
                 return Ok(Value::Void);
+            }
+            SystemCall::TryWait => return Ok(self.try_reap(number(0) as i64, &values[1])),
+            SystemCall::Detach => {
+                self.detach_child(number(0) as i64, args[0].span)?;
+                return Ok(Value::Void);
+            }
+            SystemCall::PipeEnds => {
+                return Ok(match std::io::pipe() {
+                    Ok((reader, writer)) => {
+                        let ends = [i128::from(crate::sys::fd_of(reader)), i128::from(crate::sys::fd_of(writer))];
+                        for (slot, value) in cells_of(&values[0]).iter().zip(ends) {
+                            *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+                        }
+                        ok(Value::Void)
+                    }
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
+            SystemCall::CloseEnd => {
+                if number(0) >= 0 {
+                    // SAFETY: the end was made by `System.pipeEnds`, and this closes it once.
+                    drop(unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) });
+                }
+                return Ok(Value::Void);
+            }
+            SystemCall::ProcessId => {
+                let id = match number(0) {
+                    0 => i64::from(std::process::id()),
+                    _ => crate::sys::parent_id(),
+                };
+                return Ok(Value::Int(IntTy::Long, i128::from(id)));
+            }
+            SystemCall::SignalId => {
+                return Ok(match crate::sys::signal_id(number(0) as i64, number(1) as i64) {
+                    Ok(()) => ok(Value::Void),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
             }
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
@@ -8123,6 +8262,12 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::Start
             | SystemCall::Wait
             | SystemCall::WaitAsync
+            | SystemCall::TryWait
+            | SystemCall::Detach
+            | SystemCall::PipeEnds
+            | SystemCall::CloseEnd
+            | SystemCall::ProcessId
+            | SystemCall::SignalId
             | SystemCall::Signal
             | SystemCall::PipeReader
             | SystemCall::PipeWriter
@@ -8174,25 +8319,29 @@ impl<'a, 'e> Interp<'a, 'e> {
         })
     }
 
-    /// `System.start`: starts the program and goes on. Its input is the run's, nothing, the text
-    /// (written by a thread of its own) or a pipe whose end the program keeps; its output and its
-    /// standard error are pipes it keeps when asked for, and otherwise pipes read by threads and
-    /// written out to the run's when it is waited for (see `Kid`).
+    /// `System.start`: starts the program and goes on. Its streams go where `ways` says (see
+    /// `SystemCall::Start`): its input is the run's, nothing, the text (written by a thread of its
+    /// own), a pipe whose end the program keeps, a file or the end of a pipe of a `Pipeline`; its
+    /// output and its standard error are pipes it keeps when asked for, files, nothing or the end
+    /// of a pipe, and otherwise pipes read by threads and written out to the run's when it is
+    /// waited for (see `Kid`).
     fn start_child(&mut self, values: Vec<Value>, at: Span) -> Res<Value> {
         use std::io::Read;
-        use std::process::Stdio;
-        let (mut command, input) = command_of(&values);
-        let flag = |at: usize| matches!(values[at], Value::Bool(true));
-        let (out, err) = (flag(9), flag(10));
-        command.stdin(match input {
-            0 => Stdio::inherit(),
-            1 => Stdio::null(),
-            _ => Stdio::piped(),
-        });
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut command = command_of(&values);
+        let ways = ways_of(&values[7]);
+        let streams = match Streams::of(&ways, &texts_of(&values[9])) {
+            Ok(streams) => streams,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
+        let Streams { input, output, error, out_pipe, err_pipe } = streams;
+        command.stdin(input).stdout(output).stderr(error);
         self.flush_out()?;
         let _ = self.io.world.borrow_mut().err.flush();
-        let mut child = match command.spawn() {
+        let spawned = command.spawn();
+        // The ends the program writes into are let go of here, so that a reader of them sees the
+        // end once the program has ended.
+        drop(command);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 let error = crate::sys::not_started(error, &values[2]);
@@ -8213,7 +8362,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         };
         if let Some(feed) = child.stdin.take() {
-            match input {
+            match ways[0] {
                 2 => {
                     let Value::Str(text) = &values[8] else { unreachable!("the checker makes it text") };
                     let text = text.to_string();
@@ -8228,32 +8377,34 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         let mut copies = Vec::new();
-        let output = child.stdout.take().expect("piped");
-        match out {
-            true => made[2] = i128::from(crate::sys::fd_of(output)),
-            false => {
-                let mut output = output;
-                copies.push((copy(&mut child, "the output of a program", Box::new(move || {
-                    let mut kept = Vec::new();
-                    let _ = output.read_to_end(&mut kept);
-                    kept
-                }))?, false));
+        if let Some(output) = out_pipe {
+            match ways[1] {
+                1 => made[2] = i128::from(crate::sys::fd_of(output)),
+                _ => {
+                    let mut output = output;
+                    copies.push((copy(&mut child, "the output of a program", Box::new(move || {
+                        let mut kept = Vec::new();
+                        let _ = output.read_to_end(&mut kept);
+                        kept
+                    }))?, false));
+                }
             }
         }
-        let error = child.stderr.take().expect("piped");
-        match err {
-            true => made[3] = i128::from(crate::sys::fd_of(error)),
-            false => {
-                let mut error = error;
-                copies.push((copy(&mut child, "the output of a program", Box::new(move || {
-                    let mut kept = Vec::new();
-                    let _ = error.read_to_end(&mut kept);
-                    kept
-                }))?, true));
+        if let Some(error) = err_pipe {
+            match ways[2] {
+                1 => made[3] = i128::from(crate::sys::fd_of(error)),
+                _ => {
+                    let mut error = error;
+                    copies.push((copy(&mut child, "the output of a program", Box::new(move || {
+                        let mut kept = Vec::new();
+                        let _ = error.read_to_end(&mut kept);
+                        kept
+                    }))?, true));
+                }
             }
         }
         self.io.children.borrow_mut().insert(made[0] as i64, Kid { child, copies });
-        for (slot, value) in cells_of(&values[11]).iter().zip(made) {
+        for (slot, value) in cells_of(&values[10]).iter().zip(made) {
             *slot.borrow_mut() = Value::Int(IntTy::Long, value);
         }
         Ok(ok(Value::Void))
@@ -8264,7 +8415,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn reap(&mut self, pid: i64) -> (i64, i64) {
         let Some(mut kid) = self.io.children.borrow_mut().remove(&pid) else { return (0, 0) };
         let ended = kid.child.wait().map_or((0, 0), ended_as);
-        for (copy, err) in kid.copies {
+        self.copied(kid.copies);
+        ended
+    }
+
+    /// What a program waited for wrote to an output it shares with the run, written out there.
+    fn copied(&mut self, copies: Vec<(std::thread::JoinHandle<Vec<u8>>, bool)>) {
+        for (copy, err) in copies {
             let bytes = copy.join().unwrap_or_default();
             if bytes.is_empty() {
                 continue;
@@ -8280,7 +8437,47 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         }
-        ended
+    }
+
+    /// `System.tryWait`: takes the program away when it has ended, as `reap` does, and `true`;
+    /// `false` while it runs.
+    fn try_reap(&mut self, pid: i64, ended: &Value) -> Value {
+        let status = match self.io.children.borrow_mut().get_mut(&pid) {
+            Some(kid) => kid.child.try_wait(),
+            None => return ok(Value::Bool(false)),
+        };
+        match status {
+            Ok(None) => ok(Value::Bool(false)),
+            Ok(Some(status)) => {
+                let kid = self.io.children.borrow_mut().remove(&pid).expect("looked at above");
+                self.copied(kid.copies);
+                let (kind, number) = ended_as(status);
+                for (slot, value) in cells_of(ended).iter().zip([kind, number]) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+                }
+                ok(Value::Bool(true))
+            }
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        }
+    }
+
+    /// `System.detach`: the program is let go of. A thread waits for it and takes it away, and
+    /// writes what it wrote to an output it shares with the run straight to the output of the
+    /// process, since the run may have ended by then.
+    fn detach_child(&mut self, pid: i64, at: Span) -> Res<()> {
+        let Some(kid) = self.io.children.borrow_mut().remove(&pid) else { return Ok(()) };
+        let Kid { mut child, copies } = kid;
+        beside(at, "a program let go of", move || {
+            let _ = child.wait();
+            for (copy, err) in copies {
+                let bytes = copy.join().unwrap_or_default();
+                let _ = match err {
+                    true => std::io::stderr().write_all(&bytes),
+                    false => std::io::stdout().write_all(&bytes),
+                };
+            }
+        })?;
+        Ok(())
     }
 
     /// `await System.waitAsync(pid, read token, ref ended)`: a thread waits for the end of the
@@ -8552,30 +8749,35 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     /// `System.run`: starts the program at the path and waits for it to end. What was printed
-    /// goes out first. The program writes into pipes whose bytes are copied, as they come, to
-    /// the output and the standard error of the run (or into the text, for its output when it
-    /// is kept), since those need not be the streams of the process; its input is that of the
-    /// process, nothing, or the text, written by a thread of its own while the output is read.
+    /// goes out first. Where its output and its standard error are this run's, the program writes
+    /// into pipes whose bytes are copied, as they come, to the output and the standard error of
+    /// the run (or into the text, for its output when it is kept), since those need not be the
+    /// streams of the process; a file, nothing or the end of a pipe it gets as they are. Its input
+    /// is that of the process, nothing, a file, or the text, written by a thread of its own while
+    /// the output is read.
     fn run_child(&mut self, values: Vec<Value>) -> Res<Value> {
         use std::io::Read;
-        use std::process::Stdio;
         let text = |at: usize| match &values[at] {
             Value::Str(text) => text.to_string(),
             _ => unreachable!("the checker makes it text"),
         };
-        let flag = |at: usize| matches!(values[at], Value::Bool(true));
-        let (mut command, input) = command_of(&values);
-        command.stdin(match input {
-            0 => Stdio::inherit(),
-            1 => Stdio::null(),
-            _ => Stdio::piped(),
-        });
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut command = command_of(&values);
+        let ways = ways_of(&values[7]);
+        let streams = match Streams::of(&ways, &texts_of(&values[9])) {
+            Ok(streams) => streams,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
+        let Streams { input, output, error, out_pipe, err_pipe } = streams;
+        command.stdin(input).stdout(output).stderr(error);
         let fed = text(8);
-        let capture = flag(9);
+        let capture = matches!(values[10], Value::Bool(true));
         self.flush_out()?;
         let _ = self.io.world.borrow_mut().err.flush();
-        let mut child = match command.spawn() {
+        let spawned = command.spawn();
+        // The ends the program writes into are let go of here, so that their reader sees the end
+        // once the program has ended.
+        drop(command);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 let error = crate::sys::not_started(error, &values[2]);
@@ -8583,8 +8785,6 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         };
         let feed = child.stdin.take();
-        let mut out_pipe = child.stdout.take().expect("piped");
-        let mut err_pipe = child.stderr.take().expect("piped");
         let mut kept_out = Vec::new();
         {
             let mut world = self.io.world.borrow_mut();
@@ -8597,23 +8797,27 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let _ = feed.write_all(fed.as_bytes());
                     });
                 }
-                scope.spawn(move || {
-                    let mut block = [0u8; 65536];
-                    while let Ok(got) = err_pipe.read(&mut block) {
-                        if got == 0 || err.write_all(&block[..got]).and_then(|()| err.flush()).is_err() {
-                            break;
-                        }
-                    }
-                });
-                match capture {
-                    true => {
-                        let _ = out_pipe.read_to_end(&mut kept_out);
-                    }
-                    false => {
+                if let Some(mut err_pipe) = err_pipe {
+                    scope.spawn(move || {
                         let mut block = [0u8; 65536];
-                        while let Ok(got) = out_pipe.read(&mut block) {
-                            if got == 0 || out.write_all(&block[..got]).and_then(|()| out.flush()).is_err() {
+                        while let Ok(got) = err_pipe.read(&mut block) {
+                            if got == 0 || err.write_all(&block[..got]).and_then(|()| err.flush()).is_err() {
                                 break;
+                            }
+                        }
+                    });
+                }
+                if let Some(mut out_pipe) = out_pipe {
+                    match capture {
+                        true => {
+                            let _ = out_pipe.read_to_end(&mut kept_out);
+                        }
+                        false => {
+                            let mut block = [0u8; 65536];
+                            while let Ok(got) = out_pipe.read(&mut block) {
+                                if got == 0 || out.write_all(&block[..got]).and_then(|()| out.flush()).is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -8627,14 +8831,14 @@ impl<'a, 'e> Interp<'a, 'e> {
         // What it wrote, kept where it is UTF-8; otherwise where the first byte that is not.
         let mut bad = -1;
         if capture {
-            let Value::Borrow(slot) = &values[10] else { unreachable!("the checker makes it a `ref string`") };
+            let Value::Borrow(slot) = &values[11] else { unreachable!("the checker makes it a `ref string`") };
             match String::from_utf8(kept_out) {
                 Ok(text) => *behind_borrows(slot.clone()).borrow_mut() = Value::Str(Rc::new(text)),
                 Err(error) => bad = i64::try_from(error.utf8_error().valid_up_to()).unwrap_or(i64::MAX),
             }
         }
         let (kind, number) = ended_as(ended);
-        let fields = cells_of(&values[11]);
+        let fields = cells_of(&values[12]);
         for (slot, value) in fields.iter().zip([kind, number, bad]) {
             *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
         }

@@ -1130,19 +1130,40 @@ pub enum SystemCall {
     /// for no file.
     Executable,
     /// `System.run(path, read words, read folder, clear, read names, read values, read kept,
-    /// input, read text, capture, ref output, ref ended)`: starts a program and waits for it.
-    /// What it wrote is kept in `output` when it is UTF-8; `ended` gets how it ended and where
-    /// the first byte that is not UTF-8 is, or -1.
+    /// read ways, read text, read paths, capture, ref output, ref ended)`: starts a program and
+    /// waits for it. Its streams go where `ways` says (see `Start`); what it wrote is kept in
+    /// `output` when `capture` and it is UTF-8; `ended` gets how it ended and where the first byte
+    /// that is not UTF-8 is, or -1.
     Run,
     /// `System.start(path, read words, read folder, clear, read names, read values, read kept,
-    /// input, read text, output, error, ref made)`: starts a program and goes on. Its input is
-    /// this program's (`input` 0), nothing (1), `text` written by a thread (2) or a pipe (3); its
-    /// output and its standard error are pipes when asked for. `made` gets the number of the
-    /// program, then the ends of the pipes kept here, or -1.
+    /// read ways, read text, read paths, ref made)`: starts a program and goes on. `ways` holds
+    /// where its three streams go and two ends of pipes. Its input (`ways[0]`) is this program's
+    /// (0), nothing (1), `text` written by a thread (2), a pipe kept here (3), the file `paths[0]`
+    /// (4) or the end `ways[3]` (5); its output (`ways[1]`) this program's (0), a pipe kept here
+    /// (1), nowhere (2), the file `paths[1]` made empty (3) or at its end (4), or the end `ways[4]`
+    /// (5); its standard error (`ways[2]`) as the output with `paths[2]`, or where the output goes
+    /// (6). The files are opened before the program starts. `made` gets the number of the
+    /// program, the ends of the pipes kept here, or -1, and what names the program.
     Start,
     /// `System.wait(pid, ref ended)`: waits for the program to end and takes it away; `ended` gets
     /// 0 and the code, or 1 and the signal that stopped it.
     Wait,
+    /// `System.tryWait(pid, ref ended)`: takes the program away when it has ended, with `ended` as
+    /// `wait` gives it, and `true`; `false` while it runs, without waiting (2020).
+    TryWait,
+    /// `System.detach(pid)`: the program is let go of; the runtime takes it away once it has
+    /// ended (2021).
+    Detach,
+    /// `System.pipeEnds(ref ends)`: a pipe of the system, for a `Pipeline`: the end read from,
+    /// then the end written to, neither inherited by a program started unless it is given one.
+    PipeEnds,
+    /// `System.closeEnd(end)`: closes an end of `pipeEnds`; -1 is none.
+    CloseEnd,
+    /// `System.processId(which)`: the number of this program (0) or of the one that started it
+    /// (1) (2022).
+    ProcessId,
+    /// `System.signalId(id, number)`: `kill` to a program that need not be one's own (2022).
+    SignalId,
     /// `System.waitAsync(pid, read token, ref ended)`: the same without holding the thread. A
     /// cancel ends the wait and leaves the program to be stopped.
     WaitAsync,

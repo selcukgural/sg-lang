@@ -93,11 +93,11 @@
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
-- **Of other programs**: two programs joined by a pipe (`a | b`), an output sent straight into a file, a
-  look at whether a program has ended without waiting (`try_wait`; a wait with a time limit is
-  `waitAsync` with a token of `CancellationSource.after(ms)`), a program left to go on after this one
-  (`detach`), groups of processes, a signal to a program that is not one's own, a terminal of its own
-  (pty). A program
+- **Of other programs**: groups of processes and a session of its own (slice 197), a terminal of its own
+  (pty, slice 198); a stream of a program given an open `File` or a socket (Rust's `Stdio::from`; a
+  path is given, 2017); a wait with a time limit is `waitAsync` with a token of
+  `CancellationSource.after(ms)`. A program let go of by `detach` in the interpreter writes what it
+  wrote to an output it shared with the run straight to the output of the process once it has ended. A program
   run by the interpreter sees a pipe for its output and standard error (609), and what a started one
   writes there comes out when it is waited for (629). A `Process` named by `is Ok(process)` is lent, so
   the rule that it is waited for does not see it; it is stopped where the value it is lent from ends.

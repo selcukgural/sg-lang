@@ -171,12 +171,12 @@ fn cloexec_from_3(last: std::ffi::c_int) {
 }
 
 /// The command of `System.run` and `System.start`: the program at the path, the words, the
-/// folder and the environment; and where its input comes from (the number the call was given).
+/// folder and the environment; where its streams go is set by the caller.
 /// Only the input, the output and the standard error reach the program: a descriptor the process
 /// was handed open (a test runner's pipe) is marked close-on-exec in the child, before the
 /// program runs. Marked, not closed, so that Rust's own pipe, which tells the parent why the
 /// start failed, still works.
-pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
+pub(crate) fn command_of(values: &[Value]) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let text = |at: usize| match &values[at] {
         Value::Str(text) => text.to_string(),
@@ -214,10 +214,6 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
             _ => command.env_remove(os(name)),
         };
     }
-    let input = match &values[7] {
-        Value::Int(_, input) => *input,
-        _ => unreachable!("the checker makes it a number"),
-    };
     let last = open_max();
     // SAFETY: between `fork` and `exec` the closure only calls `fcntl` and the system call of
     // `close_range`, which are safe there, and allocates nothing.
@@ -227,7 +223,7 @@ pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
             Ok(())
         });
     }
-    (command, input)
+    command
 }
 
 /// Waits until program `pid` has ended, without taking it away (`waitid` with `WNOWAIT`): its
@@ -525,6 +521,26 @@ pub(crate) fn io_kind(code: i32) -> usize {
 pub(crate) fn signal(pid: i64, signal: i64) {
     // SAFETY: `kill` only sends a signal.
     unsafe { kill(pid as std::ffi::c_int, signal as std::ffi::c_int) };
+}
+
+/// `Process.parentId()`: `getppid`.
+pub(crate) fn parent_id() -> i64 {
+    i64::from(std::os::unix::process::parent_id())
+}
+
+/// `Process.signalId`: `kill` to a program this one need not have started. No program of that
+/// number (`ESRCH`) is `NotFound` (given as ENOENT); one that may not get it `PermissionDenied`.
+pub(crate) fn signal_id(pid: i64, signal: i64) -> std::io::Result<()> {
+    const ESRCH: i32 = 3;
+    let Ok(pid) = std::ffi::c_int::try_from(pid) else { return Err(std::io::Error::from_raw_os_error(2)) };
+    // SAFETY: `kill` only sends a signal; the number is above 0, so it names one program.
+    match unsafe { kill(pid, signal as std::ffi::c_int) } {
+        0 => Ok(()),
+        _ => Err(match std::io::Error::last_os_error() {
+            error if error.raw_os_error() == Some(ESRCH) => std::io::Error::from_raw_os_error(2),
+            error => error,
+        }),
+    }
 }
 
 /// A new folder in the temporary folder that only this user can open.

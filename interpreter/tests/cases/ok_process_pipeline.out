@@ -1,0 +1,17 @@
+sorted: APPLE|FIG|PEAR|
+alone: alone|
+status: 3 exited with code 3 / exited with code 4 / exited with code 0
+mixed: the program exited with code 4
+x
+last: the program exited with code 2
+head: y|y|y|
+y
+y
+y
+endless: done
+joined: e|o|
+talk: A|B|
+talk ended: exited with code 0
+talk ended: exited with code 0
+twenty: 4194304
+broken: not found

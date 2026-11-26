@@ -1,0 +1,61 @@
+// A look at whether a program has ended, without waiting (2020): `null` while it runs, how it
+// ended once it has, the same every time after, and `wait` gives it too. A program seen ended has
+// been waited for: `kill` then does nothing, and the end of its `Process` stops nothing. The
+// program started is `sg-test-tool` (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+void shown(read string what, Result<ExitStatus?, IoError> seen) {
+    match seen {
+        Ok(null) => print($"{what}: running")
+        Ok(status) => print($"{what}: {status ?? ExitStatus.Code(-1)}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, ProcessError> main() {
+    var gate = tool(read List<string> { "line", "exit=7" })
+    gate.pipeInput()
+    var process = try gate.start()
+    shown("before", process.tryWait())
+    shown("again", process.tryWait())
+    var input = process.takeInput() ?? panic("asked for with pipeInput")
+    try input.writeLine("go")
+    try input.close()
+    // Until it has ended, looked at again and again; another program's run is the pause.
+    while true {
+        match process.tryWait() {
+            Ok(null) => try tool(read List<string> { "sleep=20" }).run()
+            Ok(status) => {
+                print($"ended: {status ?? ExitStatus.Code(-1)}")
+                break
+            }
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+    }
+    shown("after", process.tryWait())
+    process.kill()
+    var waited = try process.wait()
+    print($"wait: {waited}")
+
+    // Seen ended: `wait` gives what was seen, without waiting again.
+    var quick = try tool(read List<string> {}).start()
+    while true {
+        match quick.tryWait() {
+            Ok(null) => try tool(read List<string> { "sleep=20" }).run()
+            Ok(_) => break
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+    }
+    var same = try quick.wait()
+    print($"quick: {same}")
+    var killed = try tool(read List<string> { "sleep=10000" }).start()
+    shown("long", killed.tryWait())
+    killed.kill()
+    var stopped = try killed.wait()
+    print($"killed: {stopped}")
+    return Ok()
+}

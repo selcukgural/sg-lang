@@ -1,0 +1,11 @@
+// A program before the last of a pipeline whose output was sent elsewhere: the pipe to the next
+// one takes that place, so the pipeline does not start (2018).
+Result<void, ProcessError> main() {
+    var pipeline = Pipeline()
+    var first = Command("sg-test-tool")
+    first.outputTo("somewhere.txt")
+    pipeline.add(first)
+    pipeline.add(Command("sg-test-tool"))
+    try pipeline.run()
+    return Ok()
+}
