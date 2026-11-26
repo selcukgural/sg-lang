@@ -1,0 +1,5 @@
+error: the reader of a connection has no file to lock
+  a file opened with `File.openText(path)` or `File.openWrite(path)` can be locked
+  --> error_file_lock_connection.sg:5:13
+ 5 |     _ = try reader.tryLock()
+   |             ^^^^^^

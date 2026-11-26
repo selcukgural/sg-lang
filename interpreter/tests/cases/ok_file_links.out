@@ -1,0 +1,39 @@
+a.txt
+hello
+Link
+File
+File
+true
+Link
+true
+inside
+a.link Link
+a.txt File
+inner Directory
+inner.link Link
+Link
+not found
+false
+none.txt
+invalid input
+invalid input
+not found
+not found
+already exists
+not found
+not found
+not found
+false
+hello
+kept
+changed
+File
+changed
+not found
+already exists
+is a folder
+async.txt
+Link
+async
+cancelled
+false

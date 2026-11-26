@@ -25,7 +25,7 @@ pub const STD_MODULE: &str = "std";
 const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
-    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom"]),
+    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "ExitStatus", "ProcessError"]),
@@ -48,11 +48,12 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
 /// The functions of the built-in `File` that the language's own module does the work of
 /// (`File.info(path)` and `File.createTemp()` are `FileInfo`'s, and their async versions): a program
 /// that names `File` and one of them gets the file of `FileInfo`.
-pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync"];
+pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync", "linkInfo", "linkInfoAsync", "mapRead", "mapReadAsync"];
 
-/// `reader.info()` gives a `FileInfo` (1873): a program that names `info` and a reader (`File`, which
-/// opens one, or `StreamReader`, the type of one it is given) gets the file of `FileInfo`.
-pub const STD_READER_CALLS: &[&str] = &["info"];
+/// `reader.info()` gives a `FileInfo` (1873), and `stream.lockAsync()` is done by `FileLock` (1983): a
+/// program that names one and a stream (`File`, which opens one, or `StreamReader` and `StreamWriter`,
+/// the types of one it is given) gets the file of `FileInfo`.
+pub const STD_READER_CALLS: &[&str] = &["info", "lockAsync", "lockSharedAsync"];
 
 /// The methods of the built-in `TcpStream` that the language's own module does the work of
 /// (`stream.remoteAddress()` gives a `SocketAddress`, `stream.setNoDelay(true)` is a call of the
@@ -162,7 +163,7 @@ impl Sources {
         if named.contains("File") && STD_FILE_CALLS.iter().any(|name| named.contains(*name)) {
             named.insert("FileInfo".to_string());
         }
-        if STD_READER_CALLS.iter().any(|name| named.contains(*name)) && (named.contains("File") || named.contains("StreamReader")) {
+        if STD_READER_CALLS.iter().any(|name| named.contains(*name)) && (named.contains("File") || named.contains("StreamReader") || named.contains("StreamWriter")) {
             named.insert("FileInfo".to_string());
         }
         if STD_STREAM_CALLS.iter().any(|name| named.contains(*name)) {

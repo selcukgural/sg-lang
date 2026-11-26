@@ -1,0 +1,7 @@
+// The reader of a connection reads the network, which has no lock.
+Result<void, IoError> main() {
+    var conn = try TcpStream.connect("127.0.0.1:9")
+    var reader = conn.reader()
+    _ = try reader.tryLock()
+    return Ok()
+}

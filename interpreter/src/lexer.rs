@@ -361,14 +361,15 @@ impl<'a> Lexer<'a> {
         false
     }
 
-    /// `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef`. A
+    /// `42`, `0xde`, `0o755`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef`. A
     /// fractional number has digits on both sides of the point, an exponent, or both:
     /// `1.5`, `1e9`, `6.674_30e-11`.
     fn number(&mut self) -> Result<(), Diag> {
         let start = self.pos;
         let (radix, name) = match (self.at(0), self.at(1)) {
-            (Some(b'0'), Some(b'x')) => (16, "hex "),
-            (Some(b'0'), Some(b'b')) => (2, "binary "),
+            (Some(b'0'), Some(b'x')) => (16, "a hex "),
+            (Some(b'0'), Some(b'o')) => (8, "an octal "),
+            (Some(b'0'), Some(b'b')) => (2, "a binary "),
             _ => (10, ""),
         };
         if radix == 10 {
@@ -385,17 +386,18 @@ impl<'a> Lexer<'a> {
             let prefix = &self.src[start..digits];
             return Err(Diag::error(span, format!("`{prefix}` needs digits after it")).hint(match radix {
                 16 => "a hex number: `0xff`",
+                8 => "an octal number: `0o755`",
                 _ => "a binary number: `0b1010`",
             }));
         }
         if let Some(bad) = text.bytes().find(|c| *c != b'_' && !(*c as char).is_digit(radix)) {
-            return Err(Diag::error(span, format!("`{}` is not a {name}digit", bad as char)));
+            return Err(Diag::error(span, format!("`{}` is not {name}digit", bad as char)));
         }
         if text.starts_with('_') || text.ends_with('_') || text.contains("__") {
             return Err(Diag::error(span, "`_` in a number stands between two digits").hint("`1_000_000`"));
         }
         if self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
-            return Err(Diag::error(span, format!("a {name}number has no fractional part")));
+            return Err(Diag::error(span, format!("{name}number has no fractional part")));
         }
         let plain: String = text.chars().filter(|c| *c != '_').collect();
         match u64::from_str_radix(&plain, radix) {

@@ -899,6 +899,16 @@ pub enum SystemCall {
     Replace,
     /// `File.copy(from, to)`: what the file holds and its permissions, into a new file.
     Copy,
+    /// `File.createLink(target, path)`: a symbolic link at `path` to `target`, which is written
+    /// into it as it is given (choice 1973).
+    CreateLink,
+    /// `File.createHardLink(existing, path)`: one more name of the file (choice 1974).
+    CreateHardLink,
+    /// `File.readLink(path)`: what a symbolic link holds (choice 1975).
+    ReadLink,
+    /// `File.setPermissions(path, mode)`: the bits of the mode of Unix; on Windows only the bit
+    /// of the owner's writing, kept as the attribute of a file that may only be read (1978).
+    SetPermissions,
     /// `System.createDirectory(path)`: `mkdir`.
     CreateDirectory,
     /// `System.removeDirectory(path)`: `rmdir`, of an empty folder.
@@ -913,6 +923,14 @@ pub enum SystemCall {
     List,
     /// `System.status(path, ref fields)`: the kind, the size and the time of the last write.
     Status,
+    /// `System.linkStatus(path, ref fields)`: the same of the path itself, a link not followed,
+    /// for `File.linkInfo` (choice 1976).
+    LinkStatus,
+    /// `System.mapRead(path, ref length)`: the file put in the memory of the program to be read,
+    /// its address, and its length in `length` (choice 1980); null for an empty file.
+    MapRead,
+    /// `System.unmap(address, length)`: what `mapRead` gave taken away.
+    Unmap,
     /// `System.readerStatus(read reader, ref fields)`: the same of the file a reader reads
     /// (`fstat`), for `reader.info()` (1873).
     ReaderStatus,
@@ -1038,6 +1056,31 @@ pub enum SystemCall {
 }
 
 impl SystemCall {
+    /// The calls a program writes as `File.delete(path)` and the others, not through the
+    /// language's own module.
+    pub fn of_file(self) -> bool {
+        matches!(
+            self,
+            SystemCall::Delete
+                | SystemCall::Move
+                | SystemCall::Replace
+                | SystemCall::Copy
+                | SystemCall::CreateLink
+                | SystemCall::CreateHardLink
+                | SystemCall::ReadLink
+                | SystemCall::SetPermissions
+        )
+    }
+
+    /// How many of the arguments are paths.
+    pub fn paths(self) -> usize {
+        match self {
+            SystemCall::Current | SystemCall::TempFolder | SystemCall::Unmap => 0,
+            SystemCall::Move | SystemCall::Replace | SystemCall::Copy | SystemCall::CreateLink | SystemCall::CreateHardLink => 2,
+            _ => 1,
+        }
+    }
+
     /// The calls of the file system, which wait for the disk and so have an async version
     /// (choice 1871), by the name `System` gives them.
     pub fn on_disk(self) -> Option<&'static str> {
@@ -1046,6 +1089,12 @@ impl SystemCall {
             SystemCall::Move => "move",
             SystemCall::Replace => "replace",
             SystemCall::Copy => "copy",
+            SystemCall::CreateLink => "createLink",
+            SystemCall::CreateHardLink => "createHardLink",
+            SystemCall::ReadLink => "readLink",
+            SystemCall::SetPermissions => "setPermissions",
+            SystemCall::LinkStatus => "linkStatus",
+            SystemCall::MapRead => "mapRead",
             SystemCall::CreateDirectory => "createDirectory",
             SystemCall::RemoveDirectory => "removeDirectory",
             SystemCall::RemoveAll => "removeAll",
@@ -1135,6 +1184,25 @@ pub enum StreamCall {
     /// Windows a console, `GetConsoleMode`). A connection or the pipe of another program is not
     /// (choice 1901).
     IsTerminal,
+    /// `stream.lock()`: the whole file locked for this stream alone, waited for while another
+    /// holds a lock of it (`flock`, `LockFileEx`; choice 1979). A second call changes the kind.
+    Lock,
+    /// `stream.lockShared()`: the same, shared with other shared locks.
+    LockShared,
+    /// `stream.tryLock()`: as `lock`, but `false` at once where another holds a lock.
+    TryLock,
+    /// `stream.tryLockShared()`: as `lockShared`, `false` at once where another holds the
+    /// lock alone.
+    TryLockShared,
+    /// `stream.unlock()`: the lock let go; a writer writes what its block holds first (1985).
+    Unlock,
+}
+
+impl StreamCall {
+    /// The calls of the lock of a file (choice 1979).
+    pub fn locks(self) -> bool {
+        matches!(self, StreamCall::Lock | StreamCall::LockShared | StreamCall::TryLock | StreamCall::TryLockShared | StreamCall::Unlock)
+    }
 }
 
 /// A type as written: `read Node*?`

@@ -1,0 +1,9 @@
+// The bytes of a mapped file are lent by it: it does not go while they are read.
+Result<void, IoError> main() {
+    var map = try unsafe File.mapRead("data.bin")
+    var bytes = map.bytes()
+    var other = map
+    print(bytes.length())
+    print(other.bytes().length())
+    return Ok()
+}

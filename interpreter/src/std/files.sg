@@ -1,11 +1,12 @@
 // Folders, and what the system knows of a file: `Directory`, `DirectoryEntry`, `FileInfo` and
-// `FileKind`; `File.info(path)`, `File.exists(path)` and `File.createTemp()` are done here too, and
-// `SeekFrom`, which `seek` takes, is here. Written in SG and brought
+// `FileKind`; `File.info(path)`, `File.linkInfo(path)`, `File.exists(path)`, `File.createTemp()` and
+// `File.mapRead(path)` (`MappedFile`) are done here too, and `SeekFrom`, which `seek` takes, is here.
+// Written in SG and brought
 // along by the language; only the calls of the system (`System.list`, `System.status` and the
 // others) are the compiler's own, and only this module can call them.
 
 // What a name in a folder is. `File.info` follows a link to what it points at, so only a listing of a
-// folder tells a `Link`.
+// folder and `File.linkInfo` tell a `Link`. On Windows a junction of folders is `Other`.
 public enum FileKind : Copyable, Equatable, Hashable, Formattable {
     File
     Directory
@@ -32,27 +33,45 @@ FileKind kindOf(long code) {
     }
 }
 
+// What the system said of a file, in the order of `System.status`.
+FileInfo infoOf(read long[] fields) {
+    return FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] }, permissions = (int)fields[3] }
+}
+
 // What the system knows of a file or a folder: `File.info(path)`.
 public struct FileInfo : Copyable, Equatable, Formattable {
     public readonly FileKind kind
-    // In bytes.
+    // In bytes. Of a link itself (`File.linkInfo`), the length of what it holds on Linux and macOS,
+    // and 0 on Windows.
     public readonly long size
     // When what it holds was last written.
     public readonly DateTime modified
+    // The bits of the mode of Unix, from 0 to 0o7777: `0o644` is a file its owner reads and writes
+    // and the others read. On Windows a file is `0o666`, or `0o444` when it may only be read, and
+    // a folder `0o777` or `0o555` (choice 1978).
+    public readonly int permissions
 
     // `File.info(path)`: a link is followed to what it points at.
     Result<FileInfo, IoError> of(read string path) {
-        var fields = long[3]
+        var fields = long[4]
         try System.status(path, ref fields)
-        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+        return Ok(infoOf(read fields))
+    }
+
+    // `File.linkInfo(path)`: what the system knows of the path itself. A link is not followed, and
+    // is of the kind `Link` (choice 1976).
+    Result<FileInfo, IoError> ofLink(read string path) {
+        var fields = long[4]
+        try System.linkStatus(path, ref fields)
+        return Ok(infoOf(read fields))
     }
 
     // `reader.info()`: what the system knows of the file the reader reads, asked of the open file, so
     // what it says is of that file even when its path has been given to another since (1873).
     Result<FileInfo, IoError> ofReader(read StreamReader reader) {
-        var fields = long[3]
+        var fields = long[4]
         try System.readerStatus(read reader, ref fields)
-        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+        return Ok(infoOf(read fields))
     }
 
     // `File.createTemp()`: a new empty file with a name nobody else has, inside `Directory.temp()`, that
@@ -73,9 +92,15 @@ public struct FileInfo : Copyable, Equatable, Formattable {
     // `File.infoAsync(path)`, `File.existsAsync(path)` and `File.createTempAsync()`: the same, for an
     // async function, the system asked on a thread of input and output while the task waits (1871).
     async Result<FileInfo, IoError> ofAsync(read string path, read CancellationToken token = CancellationToken.None) {
-        var fields = long[3]
+        var fields = long[4]
         try await System.statusAsync(path, ref fields, read token)
-        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+        return Ok(infoOf(read fields))
+    }
+
+    async Result<FileInfo, IoError> ofLinkAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var fields = long[4]
+        try await System.linkStatusAsync(path, ref fields, read token)
+        return Ok(infoOf(read fields))
     }
 
     async bool isFileAsync(read string path, read CancellationToken token = CancellationToken.None) {
@@ -90,7 +115,7 @@ public struct FileInfo : Copyable, Equatable, Formattable {
 }
 
 bool isKind(read string path, long kind) {
-    var fields = long[3]
+    var fields = long[4]
     if System.status(path, ref fields) is Error(_) {
         return false
     }
@@ -98,11 +123,136 @@ bool isKind(read string path, long kind) {
 }
 
 async bool isKindAsync(read string path, long kind, read CancellationToken token) {
-    var fields = long[3]
+    var fields = long[4]
     if await System.statusAsync(path, ref fields, read token) is Error(_) {
         return false
     }
     return fields[0] == kind
+}
+
+// The bytes of a file put in the memory of the program to be read: `try unsafe File.mapRead(path)`
+// (choice 1980). The system reads a page of the file from the disk when it is first read, and keeps
+// it with the files it has read; nothing is copied. Where the value ends the file is taken out of
+// the memory again. It is `unsafe` because the bytes are the file's as it is on the disk: another
+// program that writes into the file changes them while they are read, and one that cuts it short
+// stops this one when it reads past the new end (`SIGBUS`). An empty file gives no bytes.
+public struct MappedFile : Disposable, unsafe Sendable {
+    raw byte data
+    long length
+
+    // `File.mapRead(path)`.
+    Result<MappedFile, IoError> open(read string path) {
+        var length = long[1]
+        var data = try System.mapRead(path, ref length)
+        return Ok(MappedFile { data = data, length = length[0] })
+    }
+
+    async Result<MappedFile, IoError> openAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var length = long[1]
+        var data = try await System.mapReadAsync(path, ref length, read token)
+        return Ok(MappedFile { data = data, length = length[0] })
+    }
+
+    // The bytes of the file, as long as this value lives.
+    public read byte[] bytes(read this) from this {
+        return unsafe Memory.view(this.data, (nint)this.length)
+    }
+
+    void dispose(ref this) {
+        System.unmap(this.data, this.length)
+    }
+}
+
+// The lock of a file waited for by an async task: `stream.lockAsync()` and `stream.lockSharedAsync()`
+// (choices 1979, 1983). The lock is tried, and while another holds it the task waits a little on the
+// clock, from 1 ms up to 10, and tries again: a cancel ends the wait at once, and no lock is taken
+// after it. No thread is held; the order in which programs waited is not kept.
+struct FileLock {
+    async Result<void, IoError> reader(ref StreamReader reader, bool together) {
+        var pause = 1
+        while true {
+            var got = false
+            if together {
+                got = try reader.tryLockShared()
+            } else {
+                got = try reader.tryLock()
+            }
+            if got {
+                return Ok()
+            }
+            await Task.delay(pause)
+            pause = longer(pause)
+        }
+    }
+
+    async Result<void, IoError> readerTold(ref StreamReader reader, bool together, read CancellationToken token) {
+        var pause = 1
+        while true {
+            if token.isCancelled() {
+                return Error(IoError.Cancelled(Cancelled { }))
+            }
+            var got = false
+            if together {
+                got = try reader.tryLockShared()
+            } else {
+                got = try reader.tryLock()
+            }
+            if got {
+                return Ok()
+            }
+            if await Task.delay(pause, read token) is Error(cancelled) {
+                return Error(IoError.Cancelled(cancelled))
+            }
+            pause = longer(pause)
+        }
+    }
+
+    async Result<void, IoError> writer(ref StreamWriter writer, bool together) {
+        var pause = 1
+        while true {
+            var got = false
+            if together {
+                got = try writer.tryLockShared()
+            } else {
+                got = try writer.tryLock()
+            }
+            if got {
+                return Ok()
+            }
+            await Task.delay(pause)
+            pause = longer(pause)
+        }
+    }
+
+    async Result<void, IoError> writerTold(ref StreamWriter writer, bool together, read CancellationToken token) {
+        var pause = 1
+        while true {
+            if token.isCancelled() {
+                return Error(IoError.Cancelled(Cancelled { }))
+            }
+            var got = false
+            if together {
+                got = try writer.tryLockShared()
+            } else {
+                got = try writer.tryLock()
+            }
+            if got {
+                return Ok()
+            }
+            if await Task.delay(pause, read token) is Error(cancelled) {
+                return Error(IoError.Cancelled(cancelled))
+            }
+            pause = longer(pause)
+        }
+    }
+}
+
+// The next pause of a lock waited for: twice the last, at most 10 ms.
+int longer(int pause) {
+    if pause >= 5 {
+        return 10
+    }
+    return pause * 2
 }
 
 // A name in a folder and what it is, as `Directory.list` gives it.

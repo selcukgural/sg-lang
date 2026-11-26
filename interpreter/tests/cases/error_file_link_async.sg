@@ -1,0 +1,9 @@
+// Making a link waits for the disk.
+async Result<void, IoError> linked(string path) {
+    try File.createLink("target.txt", read path)
+    return Ok()
+}
+
+void main() {
+    _ = linked("a.link").wait()
+}

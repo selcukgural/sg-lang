@@ -30,13 +30,13 @@ function defineSg(Prism) {
     string: { pattern: /"(?:\\.|[^\\"\n])*"/, greedy: true },
     char: { pattern: /'(?:\\(?:[ntr0\\"']|u\{[0-9A-Fa-f]{1,6}\})|[^'\\\n])'/, alias: 'string' },
     // `alias` is a word only in front of the name it gives a type (choice 1919): `alias Scores = ...`.
-    keyword: new RegExp(`\\b(?:${control}|${declaration}|${modifier})\\b|\\balias(?=[ \\t]+[A-Za-z_]\\w*[ \\t]*[=<])`),
+    keyword: new RegExp(`(?<!\\.)\\b(?:${control}|${declaration}|${modifier})\\b|\\balias(?=[ \\t]+[A-Za-z_]\\w*[ \\t]*[=<])`),
     builtin: new RegExp(`\\b(?:${primitive})\\b`),
     boolean: /\b(?:true|false)\b/,
     constant: /\b(?:null|this)\b/,
     'class-name': /\b[A-Z][A-Za-z0-9_]*\b/,
     function: /\b[a-z_][A-Za-z0-9_]*(?=\s*\()/,
-    number: /\b(?:0x[\dA-Fa-f_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?)\b/,
+    number: /\b(?:0x[\dA-Fa-f_]+|0o[0-7_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?)\b/,
     operator: /=>|\?\?|\?\.|\.\.=?|&&|\|\||==|!=|<=|>=|<<=?|>>=?|[-+*\/%&|^~!<>=]=?/,
     punctuation: /[{}[\]();,.:]/,
   };

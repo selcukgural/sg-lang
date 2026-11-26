@@ -1,0 +1,92 @@
+// A file put in the memory of the program to be read (choice 1980): `File.mapRead` gives a
+// `MappedFile`, whose bytes are those of the file, read where the system keeps them, and which is
+// taken out of the memory where it ends. It is `unsafe`: another program may change the file under it.
+long sum(read byte[] bytes) {
+    long total = 0
+    for b in bytes {
+        total += (long)b
+    }
+    return total
+}
+
+// A mapped file goes to another task, which reads it.
+long counted(MappedFile map) {
+    return sum(map.bytes())
+}
+
+async Result<void, IoError> asynchronous(string path) {
+    var map = try await unsafe File.mapReadAsync(read path)
+    print(map.bytes().length())
+    var cancelled = CancellationSource()
+    cancelled.cancel()
+    match await unsafe File.mapReadAsync(read path, read cancelled.token()) {
+        Ok(_) => print("mapped?")
+        Error(cause) => print(cause)
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var root = try Directory.createTemp()
+    var path = Path.join(read root, "data.bin")
+
+    // Bytes of every value, more than a page, the same as `readBytes` gives.
+    var bytes = List<byte>()
+    for i in 0..200_000 {
+        bytes.add((byte)((i * 7 + i / 256) % 256))
+    }
+    try File.writeBytes(read path, read bytes)
+    var map = try unsafe File.mapRead(read path)
+    var seen = map.bytes()
+    print(seen.length())
+    print(seen[0])
+    print(seen[^1])
+    print(sum(seen) == sum(read bytes))
+    var read_back = try File.readBytes(read path)
+    var same = true
+    for i in 0..read_back.length() {
+        if seen[i] != read_back[i] {
+            same = false
+        }
+    }
+    print(same)
+
+    // Text read where it lies.
+    var note = Path.join(read root, "note.txt")
+    try File.writeText(read note, "mapped text")
+    var text_map = try unsafe File.mapRead(read note)
+    print(string.fromUtf8(text_map.bytes()) ?? "not text")
+
+    // An empty file gives no bytes; what is not a file gives an error.
+    var empty = Path.join(read root, "empty")
+    try File.writeText(read empty, "")
+    var none = try unsafe File.mapRead(read empty)
+    print(none.bytes().length())
+    match unsafe File.mapRead(read root) {
+        Ok(_) => print("a folder mapped?")
+        Error(cause) => print(cause)
+    }
+    match unsafe File.mapRead(read Path.join(read root, "missing")) {
+        Ok(_) => print("mapped?")
+        Error(cause) => print(cause)
+    }
+    match unsafe File.mapRead("zero\0byte") {
+        Ok(_) => print("mapped?")
+        Error(cause) => print(cause)
+    }
+
+    // To another task, and many times over: each is taken out where it ends.
+    var again = try unsafe File.mapRead(read path)
+    var task = Task.run(counted, again)
+    print(task.wait() == sum(read bytes))
+    for _ in 0..1000 {
+        var each = try unsafe File.mapRead(read note)
+        if each.bytes().length() != 11 {
+            print("wrong")
+        }
+    }
+
+    try asynchronous(path.clone()).wait()
+    try Directory.deleteAll(read root)
+    return Ok()
+}

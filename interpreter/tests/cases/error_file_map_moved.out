@@ -1,0 +1,9 @@
+error: `map` cannot be moved here: `bytes` borrows from it and is used again later
+  --> error_file_map_moved.sg:5:17
+ 5 |     var other = map
+   |                 ^^^
+  `bytes` borrowed it here:
+  --> error_file_map_moved.sg:4:17
+ 4 |     var bytes = map.bytes()
+   |                 ^^^
+  hint: finish with `bytes` before this line: a borrow ends at its last use

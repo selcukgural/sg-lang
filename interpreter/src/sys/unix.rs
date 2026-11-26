@@ -411,6 +411,68 @@ pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
     Ok(crate::names::text_of(&name))
 }
 
+/// `File.createLink(target, path)`: `symlink`, the target written into the link as it is given
+/// (choice 1973).
+pub(crate) fn create_link(target: &str, path: &str) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(crate::names::os_of(target), crate::names::os_of(path))
+}
+
+/// `File.readLink(path)`: the bytes a link holds. A path that is no link is `InvalidInput`
+/// (`EINVAL`, choice 1975).
+pub(crate) fn read_link(path: &str) -> std::io::Result<Vec<u8>> {
+    match std::fs::read_link(crate::names::os_of(path)) {
+        Ok(target) => Ok(target.into_os_string().into_encoded_bytes()),
+        Err(error) if error.raw_os_error() == Some(22) => Err(std::io::ErrorKind::InvalidInput.into()),
+        Err(error) => Err(error),
+    }
+}
+
+/// The bits of the mode of Unix a file has, `FileInfo.permissions` (choice 1978).
+pub(crate) fn mode_of(info: &std::fs::Metadata) -> i128 {
+    use std::os::unix::fs::PermissionsExt;
+    i128::from(info.permissions().mode() & 0o7777)
+}
+
+/// The kind `File.linkInfo` gives what `symlink_metadata` said of a path: a link is `Link`.
+pub(crate) fn link_kind(_path: &std::ffi::OsStr, info: &std::fs::Metadata) -> u8 {
+    let kind = info.file_type();
+    match () {
+        _ if kind.is_file() => 0,
+        _ if kind.is_dir() => 1,
+        _ if kind.is_symlink() => 2,
+        _ => 3,
+    }
+}
+
+/// `File.setPermissions(path, mode)`: `chmod`, a link followed; the mode is from 0 to 0o7777.
+pub(crate) fn set_permissions(path: &str, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(crate::names::os_of(path), std::fs::Permissions::from_mode(mode))
+}
+
+/// Whether the open file is a regular file, which alone has a lock (1979).
+pub(crate) fn disk_file(file: &std::fs::File) -> bool {
+    file.metadata().is_ok_and(|info| info.is_file())
+}
+
+/// The lock of a file (1979): `kind` 0 alone and 1 shared, waited for; 2 alone and 3 shared,
+/// tried, `false` where another holds it; 4 let go. `flock`, through std, as compiled code
+/// calls it; a second lock changes the kind.
+pub(crate) fn lock_file(file: &std::fs::File, kind: u8) -> std::io::Result<bool> {
+    let tried = |result: Result<(), std::fs::TryLockError>| match result {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    };
+    match kind {
+        0 => file.lock().map(|()| true),
+        1 => file.lock_shared().map(|()| true),
+        2 => tried(file.try_lock()),
+        3 => tried(file.try_lock_shared()),
+        _ => file.unlock().map(|()| true),
+    }
+}
+
 /// Codes of the system the interpreter gives itself where the system gave none: no such file,
 /// a file where one is to be made, a file where a folder was wanted, a folder where a file was.
 pub(crate) const NOT_FOUND: i32 = 2;

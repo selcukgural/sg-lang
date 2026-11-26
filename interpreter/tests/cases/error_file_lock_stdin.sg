@@ -1,0 +1,5 @@
+// The input of the program is not a file it holds a lock of.
+Result<void, IoError> main() {
+    try Stdin.lock()
+    return Ok()
+}

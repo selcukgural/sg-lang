@@ -618,6 +618,13 @@ a TCP connection is, on Windows too, with the listener's file taken away where i
 kinds of connection; `setNoDelay` and `setKeepAlive` on a `TcpStream`; `[::]` taking v4 too on every system, a v4
 peer given as v4; and `writePieces`, several pieces written to a file with one `writev`.
 
+Slice 191 (1973-1986) adds links (`File.createLink`, `createHardLink`, `readLink`, `linkInfo`), the permissions
+of a file (`info.permissions`, `File.setPermissions`) with numbers written in octal (`0o755`), the lock of a file
+on every reader and writer (`lock`, `lockShared`, `tryLock`, `tryLockShared`, `unlock`, and `lockAsync`, which
+waits on the clock so that a cancel ends it), and a file put in memory to be read, `try unsafe
+File.mapRead(path)`, a `MappedFile`. Each has an async form; `lock` is a word that is the name of a method after a
+dot.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

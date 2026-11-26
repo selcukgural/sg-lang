@@ -1,0 +1,6 @@
+error: `File.mapRead` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_file_map_async.sg:3:31
+ 3 |     var map = try unsafe File.mapRead(read path)
+   |                               ^^^^^^^
+  hint: `await unsafe File.mapReadAsync(read path)` does the same work without holding the thread

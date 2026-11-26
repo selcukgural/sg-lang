@@ -235,11 +235,16 @@
 - `IoError` does not carry the path
   (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no test: the tests cannot make a file
   they may not read or fill a disk.
-- **Of folders and the environment**: making a link and reading where one points, changing permissions and
-  owners, watching a folder, patterns of names (`*.txt`), a listing of a whole tree, all the variables at once, the path of the program itself,
-  the `Async` forms (the calls are made as they are, also in an async function). A path opened by the handle of a folder (Go's `os.Root`,
-  `openat`), so that a link inside the folder cannot lead out of it as it can after `Path.joinInside`
-  (954).
+- **Of folders and the environment**: changing the owner of a file (`chown`), watching a folder, patterns of
+  names (`*.txt`), a listing of a whole tree, all the variables at once, the path of the program itself. A path
+  opened by the handle of a folder (Go's `os.Root`, `openat`), so that a link inside the folder cannot lead out of
+  it as it can after `Path.joinInside` (954). On Windows a junction is no link to `File.linkInfo` and
+  `File.readLink` (`Other`, `InvalidInput`), though `Directory.list` calls it `Link` (1976); the times of a link
+  itself are not set.
+- **Of the lock and the memory of a file (191)**: a lock of a part of a file (`fcntl`'s ranges, `LockFileEx` of
+  a range), the order in which waiting programs get a lock (`lockAsync` tries it every 1 to 10 ms, 1983), a file
+  put in memory to be written or of a part only (`MAP_SHARED` with `PROT_WRITE`, an offset), and advice to the
+  system on how it is read (`madvise`). Permissions are not written in octal by `$"{mode:o}"`.
 - **Of seeking in a file**: reading and
   writing one file through one stream (C's `"r+"`), a temporary file with no name that goes when it is closed
   (C's `tmpfile`), and where a stream stands without moving it other than by `seek(SeekFrom.Current(0))`

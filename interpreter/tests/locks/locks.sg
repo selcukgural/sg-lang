@@ -1,0 +1,40 @@
+// The lock of a file between two programs (choice 1979), started by `tests/locks.rs`:
+//   hold PATH [shared]   locks the file, says `held`, and lets it go when a line comes in
+//   try PATH             says whether it gets the lock alone, then a shared one, at once
+//   wait PATH            waits for the lock alone with `lockAsync`, and says `got`
+
+async Result<void, IoError> waited(string path) {
+    var file = try await File.openTextAsync(read path)
+    try await file.lockAsync()
+    print("got")
+    try file.unlock()
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var path = args[1].clone()
+    if args[0] == "hold" {
+        var file = try File.openText(read path)
+        if args.length() > 2 {
+            try file.lockShared()
+        } else {
+            try file.lock()
+        }
+        print("held")
+        try Stdout.flush()
+        var line = ""
+        _ = try Stdin.readLine(ref line)
+        try file.unlock()
+        print("let go")
+        return Ok()
+    }
+    if args[0] == "try" {
+        var file = try File.openText(read path)
+        var alone = try file.tryLock()
+        try file.unlock()
+        var together = try file.tryLockShared()
+        print($"{alone} {together}")
+        return Ok()
+    }
+    return waited(path).wait()
+}

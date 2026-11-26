@@ -10404,6 +10404,7 @@ static sg_writer sg_proc_writer(int64_t fd) {
 const FILES_RUNTIME: &str = r#"
 #if defined(_WIN32)
 #include <sddl.h>
+#include <winioctl.h>
 #pragma comment(lib, "advapi32")
 #define SG_SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 /* A handle of the file or the folder itself, a link not followed. */
@@ -10689,6 +10690,10 @@ static int sg_fs_status_of_handle(HANDLE h, int64_t* fields) {
     fields[1] = folder ? 0 : (int64_t)(((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow);
     int64_t units = (int64_t)(((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime);
     fields[2] = (units - INT64_C(116444736000000000)) * 100;
+    /* The bits of the mode of Unix Windows is given as (1978): only the attribute of a file that
+       may only be read, which takes the writing away from everyone. */
+    bool fixed = info.dwFileAttributes & FILE_ATTRIBUTE_READONLY;
+    fields[3] = folder ? (fixed ? 0555 : 0777) : (fixed ? 0444 : 0666);
     return 0;
 }
 /* The same of an open file (`reader.info()`, 1873). */
@@ -10716,6 +10721,180 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     if (!code && unfollowed) fields[0] = 3;
     CloseHandle(h);
     return code;
+}
+/* The same of the path itself, a link not followed (`File.linkInfo`, 1976): a symbolic link is of
+   the kind `Link`; a point that stands for another name (a junction) and the file of a socket of
+   the machine are `Other`; a point that only marks a file kept by a service (OneDrive) is the file. */
+static int sg_fs_link_status(sg_str path, int64_t* fields) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = sg_win_itself(name, FILE_READ_ATTRIBUTES, SG_SHARE_ALL);
+    if (h == INVALID_HANDLE_VALUE) {
+        code = sg_win_refine(name, sg_win_error());
+        free(name);
+        return code;
+    }
+    free(name);
+    code = sg_fs_status_of_handle(h, fields);
+    FILE_ATTRIBUTE_TAG_INFO tag;
+    if (!code && GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (tag.ReparseTag == IO_REPARSE_TAG_SYMLINK) fields[0] = 2;
+        else if ((tag.ReparseTag & 0x20000000) || tag.ReparseTag == 0x80000023) fields[0] = 3;
+    }
+    CloseHandle(h);
+    return code;
+}
+/* Whether the target of a link to be made at `link` is a folder, looked for as Windows will look
+   for it: a target that starts with `\` or a drive alone, any other from the folder of the link. */
+static bool sg_win_target_folder(const wchar_t* target, const wchar_t* link) {
+    bool alone = target[0] == L'\\' || (target[0] && target[1] == L':');
+    const wchar_t* end = NULL;
+    for (const wchar_t* c = link; *c; c++) if (*c == L'\\' || *c == L'/') end = c;
+    DWORD attributes;
+    if (alone || !end) attributes = GetFileAttributesW(target);
+    else {
+        size_t front = (size_t)(end - link) + 1, n = wcslen(target);
+        wchar_t* seen = malloc((front + n + 1) * sizeof(wchar_t));
+        if (!seen) abort();
+        memcpy(seen, link, front * sizeof(wchar_t));
+        memcpy(seen + front, target, (n + 1) * sizeof(wchar_t));
+        attributes = GetFileAttributesW(seen);
+        free(seen);
+    }
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+/* `File.createLink(target, path)` (1973): a symbolic link, made without the right of an
+   administrator where Windows lets a user do so (the mode of a developer; without it the call is
+   `PermissionDenied`), and of a folder when the target is one. The `/` of a target is written `\`,
+   which Windows follows; the target is written into the link as it is given otherwise. With
+   `hard`, `File.createHardLink(existing, path)` (1974). */
+static int sg_fs_link(sg_str target, sg_str path, bool hard) {
+    int code = 0;
+    wchar_t* b = sg_wide(path, &code);
+    if (!b) return code;
+    if (hard) {
+        wchar_t* a = sg_wide(target, &code);
+        if (!a) { free(b); return code; }
+        if (!CreateHardLinkW(b, a, NULL)) code = sg_win_refine(a, sg_win_error());
+        free(a);
+        free(b);
+        return code;
+    }
+    if (target.len > 0 && memchr(target.ptr, 0, (size_t)target.len)) { free(b); return ERROR_FILE_NOT_FOUND; }
+    int64_t n;
+    wchar_t* a = sg_name_wide(target.ptr, target.len, &n);
+    for (wchar_t* c = a; *c; c++) if (*c == L'/') *c = L'\\';
+    DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    if (sg_win_target_folder(a, b)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    if (!CreateSymbolicLinkW(b, a, flags)) code = sg_win_error();
+    free(a);
+    free(b);
+    return code;
+}
+/* `File.readLink(path)` (1975): what a symbolic link holds, as Go reads it: the name it
+   substitutes, with `\??\C:\` given as `C:\` and `\??\UNC\` as `\\`. A path that is no link (a
+   junction too) is `InvalidInput`. */
+static int sg_fs_read_link(sg_str path, uint8_t** bytes, int64_t* len) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = sg_win_itself(name, FILE_READ_ATTRIBUTES, SG_SHARE_ALL);
+    if (h == INVALID_HANDLE_VALUE) { code = sg_win_refine(name, sg_win_error()); free(name); return code; }
+    free(name);
+    uint8_t* buffer = malloc(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+    if (!buffer) abort();
+    DWORD got = 0;
+    if (!DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, buffer, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &got, NULL)) {
+        code = sg_win_error();
+        if (code == ERROR_NOT_A_REPARSE_POINT) code = SG_INVALID_INPUT;
+    }
+    CloseHandle(h);
+    uint32_t tag;
+    uint16_t offset, length;
+    uint32_t flags;
+    if (!code) {
+        memcpy(&tag, buffer, 4);
+        memcpy(&offset, buffer + 8, 2);
+        memcpy(&length, buffer + 10, 2);
+        memcpy(&flags, buffer + 16, 4);
+        if (tag != IO_REPARSE_TAG_SYMLINK || got < 20 || 20 + (DWORD)offset + length > got) code = SG_INVALID_INPUT;
+    }
+    if (code) { free(buffer); return code; }
+    int64_t n = length / 2;
+    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    memcpy(w, buffer + 20 + offset, (size_t)n * sizeof(wchar_t));
+    w[n] = 0;
+    free(buffer);
+    wchar_t* from = w;
+    /* `SYMLINK_FLAG_RELATIVE`: a relative target is given as it is. */
+    if (!(flags & 1) && wcsncmp(w, L"\\??\\", 4) == 0) {
+        if (n >= 6 && w[5] == L':') from = w + 4;
+        else if (wcsncmp(w + 4, L"UNC\\", 4) == 0) { from = w + 6; from[0] = L'\\'; from[1] = L'\\'; }
+    }
+    char* text = sg_owned_from_wide(from, n - (int64_t)(from - w), len);
+    free(w);
+    *bytes = (uint8_t*)text;
+    return 0;
+}
+/* `File.setPermissions(path, mode)` (1978): the bit of the owner's writing kept as the attribute of
+   a file that may only be read, Go's way; Windows keeps no other. */
+static int sg_fs_chmod(sg_str path, int32_t mode) {
+    if (mode < 0 || mode > 07777) return SG_INVALID_INPUT;
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    /* Through a handle of what the path leads to, so that a link is followed as `chmod` follows it. */
+    HANDLE h = CreateFileW(name, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, SG_SHARE_ALL, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) { code = sg_win_refine(name, sg_win_error()); free(name); return code; }
+    free(name);
+    FILE_BASIC_INFO info;
+    if (!GetFileInformationByHandleEx(h, FileBasicInfo, &info, sizeof info)) code = sg_win_error();
+    else {
+        DWORD a = info.FileAttributes;
+        DWORD b = (mode & 0200) ? a & ~(DWORD)FILE_ATTRIBUTE_READONLY : a | FILE_ATTRIBUTE_READONLY;
+        if (b == 0) b = FILE_ATTRIBUTE_NORMAL;
+        if (b != a) {
+            info.FileAttributes = b;
+            /* Times of 0 are left as they are. */
+            info.CreationTime.QuadPart = info.LastAccessTime.QuadPart = info.LastWriteTime.QuadPart = info.ChangeTime.QuadPart = 0;
+            if (!SetFileInformationByHandle(h, FileBasicInfo, &info, sizeof info)) code = sg_win_error();
+        }
+    }
+    CloseHandle(h);
+    return code;
+}
+/* `File.mapRead(path)` (1980): a file of the disk, opened as `openRegular` opens it, put in the
+   memory of the program to be read. The handles are closed at once; the view stays until
+   `sg_fs_unmap`, and while it is there Windows lets no program cut the file short. An empty file
+   is put nowhere. */
+static int sg_fs_map(sg_str path, uint8_t** data, int64_t* len) {
+    sg_reader r = { 0 };
+    int code = sg_open_regular(path, &r);
+    if (code) return code;
+    free(r.block);
+    HANDLE h = sg_handle(r.fd);
+    LARGE_INTEGER size;
+    *data = NULL;
+    *len = 0;
+    if (!GetFileSizeEx(h, &size)) code = sg_win_error();
+    else if (size.QuadPart > 0) {
+        HANDLE m = CreateFileMappingW(h, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (!m) code = sg_win_error();
+        else {
+            void* p = MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+            if (!p) code = sg_win_error();
+            else { *data = p; *len = size.QuadPart; }
+            CloseHandle(m);
+        }
+    }
+    sg_sys_close(r.fd);
+    return code;
+}
+static void sg_fs_unmap(uint8_t* data, int64_t len) {
+    (void)len;
+    if (data) UnmapViewOfFile(data);
 }
 /* The folder the program works in, as bytes of its own. */
 static int sg_fs_current(uint8_t** bytes, int64_t* len) {
@@ -11034,6 +11213,7 @@ static void sg_fs_fields(const struct stat* info, int64_t* fields) {
 #endif
     fields[0] = sg_fs_kind(info->st_mode);
     fields[1] = (int64_t)info->st_size;
+    fields[3] = (int64_t)(info->st_mode & 07777);
     if (seconds >= INT64_MAX / 1000000000) fields[2] = INT64_MAX;
     else if (seconds <= INT64_MIN / 1000000000) fields[2] = INT64_MIN;
     else fields[2] = seconds * 1000000000 + ns;
@@ -11079,6 +11259,86 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     }
     sg_fs_fields(&info, fields);
     return 0;
+}
+/* The same of the path itself, a link not followed (`File.linkInfo`, 1976): `lstat`. */
+static int sg_fs_link_status(sg_str path, int64_t* fields) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    struct stat info;
+    if (lstat(name, &info) != 0) code = sg_os_error();
+    else sg_fs_fields(&info, fields);
+    free(name);
+    return code;
+}
+/* `File.createLink(target, path)` (1973): `symlink`, the target written into the link as it is
+   given. With `hard`, `File.createHardLink(existing, path)` (1974): `linkat`, which follows no
+   link, as Rust's `hard_link`. */
+static int sg_fs_link(sg_str target, sg_str path, bool hard) {
+    int code = 0;
+    char* a = sg_path(target, &code);
+    if (!a) return code;
+    char* b = sg_path(path, &code);
+    if (!b) { free(a); return code; }
+    int failed = hard ? linkat(AT_FDCWD, a, AT_FDCWD, b, 0) : symlink(a, b);
+    code = failed ? sg_os_error() : 0;
+    /* A folder has no second name: `IsDirectory` on every system, where Linux and macOS say EPERM. */
+    struct stat info;
+    if (hard && code == EPERM && stat(a, &info) == 0 && S_ISDIR(info.st_mode)) code = EISDIR;
+    free(a);
+    free(b);
+    return code;
+}
+/* `File.readLink(path)` (1975): the bytes the link holds, as bytes of its own; a path that is no
+   link is `InvalidInput` (`EINVAL`). */
+static int sg_fs_read_link(sg_str path, uint8_t** bytes, int64_t* len) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    for (size_t cap = 256;; cap *= 2) {
+        char* block = malloc(cap);
+        if (!block) abort();
+        ssize_t n = readlink(name, block, cap);
+        if (n < 0) { code = errno == EINVAL ? SG_INVALID_INPUT : sg_os_error(); free(block); break; }
+        if ((size_t)n < cap) { *bytes = (uint8_t*)block; *len = (int64_t)n; break; }
+        free(block);
+    }
+    free(name);
+    return code;
+}
+/* `File.setPermissions(path, mode)` (1978): `chmod`, a link followed. */
+static int sg_fs_chmod(sg_str path, int32_t mode) {
+    if (mode < 0 || mode > 07777) return SG_INVALID_INPUT;
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    if (chmod(name, (mode_t)mode) != 0) code = sg_os_error();
+    free(name);
+    return code;
+}
+/* `File.mapRead(path)` (1980): a regular file, opened as `openRegular` opens it, put in the memory
+   of the program to be read (`mmap`). The descriptor is closed at once; the pages stay until
+   `sg_fs_unmap`. An empty file is put nowhere. */
+#include <sys/mman.h>
+static int sg_fs_map(sg_str path, uint8_t** data, int64_t* len) {
+    sg_reader r = { 0 };
+    int code = sg_open_regular(path, &r);
+    if (code) return code;
+    free(r.block);
+    struct stat info;
+    *data = NULL;
+    *len = 0;
+    if (fstat(r.fd, &info) != 0) code = sg_os_error();
+    else if (info.st_size > 0) {
+        void* p = mmap(NULL, (size_t)info.st_size, PROT_READ, MAP_PRIVATE, r.fd, 0);
+        if (p == MAP_FAILED) code = sg_os_error();
+        else { *data = p; *len = (int64_t)info.st_size; }
+    }
+    close(r.fd);
+    return code;
+}
+static void sg_fs_unmap(uint8_t* data, int64_t len) {
+    if (data) munmap(data, (size_t)len);
 }
 /* The folder the program works in, as bytes of its own. */
 static int sg_fs_current(uint8_t** bytes, int64_t* len) {
@@ -11332,6 +11592,28 @@ static int sg_sys_sync(int fd, bool data) {
     (void)data;
     return FlushFileBuffers(sg_handle(fd)) ? 0 : sg_win_error();
 }
+/* The lock of a file (1979): `kind` 0 alone and 1 shared, waited for; 2 alone and 3 shared, tried
+   (SG_LOCK_BUSY where another holds it); 4 let go. `LockFileEx` of the whole file, on the handle of
+   the stream. A second lock changes the kind, as `flock` does: the lock held is let go first. Only
+   a file of the disk has one (`NotAFile`). */
+#define SG_LOCK_BUSY (-21)
+static int sg_sys_lock(int fd, int kind) {
+    HANDLE h = sg_handle(fd);
+    if (GetFileType(h) != FILE_TYPE_DISK) return SG_NOT_A_FILE;
+    OVERLAPPED at;
+    memset(&at, 0, sizeof at);
+    if (!UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &at)) {
+        int code = sg_win_error();
+        if (kind == 4 && code != ERROR_NOT_LOCKED) return code;
+    }
+    if (kind == 4) return 0;
+    DWORD flags = (kind == 0 || kind == 2) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
+    if (kind >= 2) flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    memset(&at, 0, sizeof at);
+    if (LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &at)) return 0;
+    int code = sg_win_error();
+    return kind >= 2 && code == ERROR_LOCK_VIOLATION ? SG_LOCK_BUSY : code;
+}
 /* `setLength`: the end of the file moved to `n` without moving where it is written. A writer of
    `openAppend` holds only the right to append (`FILE_APPEND_DATA`), so the file is opened once more
    through its handle with the right to write, and its end set there; the writer still appends. */
@@ -11511,6 +11793,25 @@ static int sg_sys_sync(int fd, bool data) {
 #endif
         if (r == 0) return 0;
         if (errno != EINTR) return sg_os_error();
+    }
+}
+/* The lock of a file (1979): `kind` 0 alone and 1 shared, waited for; 2 alone and 3 shared, tried
+   (SG_LOCK_BUSY where another holds it); 4 let go. `flock`: of the whole file, on the file the
+   stream opened, and for programs that ask for it. A second lock changes the kind: the lock held
+   is let go first. Only a regular file has one (`NotAFile`). */
+#include <sys/file.h>
+#define SG_LOCK_BUSY (-21)
+static int sg_sys_lock(int fd, int kind) {
+    struct stat info;
+    if (fstat(fd, &info) != 0) return sg_os_error();
+    if (!S_ISREG(info.st_mode)) return SG_NOT_A_FILE;
+    int op = kind == 4 ? LOCK_UN : (kind == 0 || kind == 2) ? LOCK_EX : LOCK_SH;
+    if (kind == 2 || kind == 3) op |= LOCK_NB;
+    for (;;) {
+        if (flock(fd, op) == 0) return 0;
+        if (errno == EINTR) continue;
+        if (errno == EWOULDBLOCK && (op & LOCK_NB)) return SG_LOCK_BUSY;
+        return sg_os_error();
     }
 }
 /* `setLength`: `ftruncate`, which does not move where the file is written. */
@@ -12620,6 +12921,20 @@ static int sg_writer_set_length(sg_writer* w, int64_t n) {
     if (code) return code;
     return sg_sys_set_length(w->fd, n);
 }
+/* `stream.lock()` and the others (1979). The input of the program, a standard stream and the pipe
+   of another program are `NotAFile`. A writer writes what its block holds before it lets its lock
+   go (1985); the lock goes also when that fails, and the error is given. */
+static int sg_reader_lock(sg_reader* r, int kind) {
+    if (r == &sg_stdin || r->sock) return SG_NOT_A_FILE;
+    return sg_sys_lock(r->fd, kind);
+}
+static int sg_writer_lock(sg_writer* w, int kind) {
+    if (w->std || w->pipe) return SG_NOT_A_FILE;
+    if (kind != 4) return sg_sys_lock(w->fd, kind);
+    int code = sg_writer_flush(w);
+    int unlocked = sg_sys_lock(w->fd, 4);
+    return code ? code : unlocked;
+}
 "#;
 
 /// What a program with async input and output needs besides `IO_RUNTIME`: the threads that do
@@ -13063,6 +13378,8 @@ static void sg_io_run_writer(sg_io* io) {
     if (!x->w) { x->r = sg_writer_close(&x->held); return; }
     /* `writePiecesAsync` of more than the block has room for: `len` pieces. */
     if (x->pieces) { x->r = sg_writer_pieces(x->w, x->pieces, x->len); return; }
+    /* `unlockAsync` (1985): the block, then the lock let go whatever the block gave. */
+    if (x->then == 4) { x->r = sg_writer_lock(x->w, 4); return; }
     int code = x->w->failed ? x->w->failed : sg_writer_out(x->w);
     if (!code && x->len > 0) {
         code = sg_writer_put(x->w, x->bytes, x->len);
@@ -13077,6 +13394,11 @@ static inline sg_io_writer sg_io_writer_then(sg_writer* w, int then, int64_t len
 static inline int sg_writer_sync_n(sg_writer* w, bool data) {
     if (sg_failed(w)) return sg_failed(w);
     if (w->std || w->pipe) return sg_writer_sync(w, data);
+    return -1;
+}
+/* `unlockAsync` in place where the block is empty: -1 when it is written on a thread first. */
+static inline int sg_writer_unlock_n(sg_writer* w) {
+    if (w->std || w->pipe || w->buf.len == 0) return sg_writer_lock(w, 4);
     return -1;
 }
 static inline int sg_writer_set_length_n(sg_writer* w, int64_t n) {
@@ -20904,6 +21226,29 @@ impl<'a> Emitter<'a> {
             SystemCall::Move => ("sg_file_move", vec![text(), text()], plain("sg_fs_move(a0, a1, false)")),
             SystemCall::Replace => ("sg_file_replace", vec![text(), text()], plain("sg_fs_move(a0, a1, true)")),
             SystemCall::Copy => ("sg_file_copy", vec![text(), text()], plain("sg_fs_copy(a0, a1)")),
+            SystemCall::CreateLink => ("sg_file_create_link", vec![text(), text()], plain("sg_fs_link(a0, a1, false)")),
+            SystemCall::CreateHardLink => ("sg_file_create_hard_link", vec![text(), text()], plain("sg_fs_link(a0, a1, true)")),
+            SystemCall::ReadLink => ("sg_file_read_link", vec![text()], owned_text("sg_fs_read_link(a0, &bytes, &n)")),
+            SystemCall::SetPermissions => ("sg_file_set_permissions", vec![text(), Ty::Int(IntTy::Int)], plain("sg_fs_chmod(a0, a1)")),
+            SystemCall::LinkStatus => (
+                "sg_system_link_status",
+                vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                format!(
+                    "int64_t f[4]; int code = sg_fs_link_status(a0, f); if (code) {} \
+                     for (int64_t i = 0; i < 4 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                    failed("sg_io_error(code)")
+                ),
+            ),
+            SystemCall::MapRead => (
+                "sg_system_map_read",
+                vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                format!(
+                    "uint8_t* data = NULL; int64_t n = 0; int code = sg_fs_map(a0, &data, &n); if (code) {} \
+                     if (a1.len > 0) a1.ptr[0] = n; return ({gives}){{ .tag = 0, .u.v0 = {{ data }} }};",
+                    failed("sg_io_error(code)")
+                ),
+            ),
+            SystemCall::Unmap => ("sg_system_unmap", vec![Ty::Raw(Box::new(Ty::Int(IntTy::Byte))), Ty::Int(IntTy::Long)], "sg_fs_unmap(a0, a1);".to_string()),
             SystemCall::CreateDirectory => ("sg_system_create_directory", vec![text()], plain("sg_fs_mkdir(a0)")),
             SystemCall::RemoveDirectory => ("sg_system_remove_directory", vec![text()], plain("sg_fs_rmdir(a0)")),
             SystemCall::RemoveAll => ("sg_system_remove_all", vec![text()], plain("sg_fs_remove_all(a0)")),
@@ -20925,8 +21270,8 @@ impl<'a> Emitter<'a> {
                 "sg_system_reader_status",
                 vec![Ty::Read(Box::new(Ty::Reader(false))), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
                 format!(
-                    "int64_t f[3]; int code = sg_fs_status_of(a0->fd, f); if (code) {} \
-                     for (int64_t i = 0; i < 3 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                    "int64_t f[4]; int code = sg_fs_status_of(a0->fd, f); if (code) {} \
+                     for (int64_t i = 0; i < 4 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
                     failed("sg_io_error(code)")
                 ),
             ),
@@ -20934,8 +21279,8 @@ impl<'a> Emitter<'a> {
                 "sg_system_status",
                 vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
                 format!(
-                    "int64_t f[3]; int code = sg_fs_status(a0, f); if (code) {} \
-                     for (int64_t i = 0; i < 3 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                    "int64_t f[4]; int code = sg_fs_status(a0, f); if (code) {} \
+                     for (int64_t i = 0; i < 4 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
                     failed("sg_io_error(code)")
                 ),
             ),
@@ -21285,6 +21630,27 @@ impl<'a> Emitter<'a> {
                 let (temp, writer) = (self.temp(), self.list_address(recv)?);
                 let length = self.value(&args[0])?;
                 Ok(format!("({{ sg_writer* {temp} = {writer}; {}; }})", done(&format!("sg_writer_set_length({temp}, {length})"))))
+            }
+            // The lock of the file (1979): a lock tried gives whether it was got.
+            StreamCall::Lock | StreamCall::LockShared | StreamCall::TryLock | StreamCall::TryLockShared | StreamCall::Unlock => {
+                let kind = match call {
+                    StreamCall::Lock => 0,
+                    StreamCall::LockShared => 1,
+                    StreamCall::TryLock => 2,
+                    StreamCall::TryLockShared => 3,
+                    _ => 4,
+                };
+                let ask = match recv.ty.strip_borrow() {
+                    Ty::Reader(_) => "sg_reader_lock",
+                    _ => "sg_writer_lock",
+                };
+                let stream = self.list_address(recv)?;
+                Ok(match kind {
+                    2 | 3 => format!(
+                        "({{ int c_ = {ask}({stream}, {kind}); c_ == SG_LOCK_BUSY ? ({gives}){{ .tag = 0, .u.v0 = {{ false }} }} : c_ ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(c_) }} }} : ({gives}){{ .tag = 0, .u.v0 = {{ true }} }}; }})"
+                    ),
+                    _ => done(&format!("{ask}({stream}, {kind})")),
+                })
             }
             // The bytes the block holds, looked at where they are.
             StreamCall::Buffered => {
@@ -22073,8 +22439,27 @@ impl<'a> Emitter<'a> {
                 ));
                 return Ok(self.writer_result(&c, &gives));
             }
+            // `unlockAsync` (1985): in place when the block is empty, else on a thread with it.
+            StreamCall::Unlock => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                match token(self, 0)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : sg_writer_unlock_n({w});")),
+                    None => self.pre.push(format!("int {c} = sg_writer_unlock_n({w});")),
+                }
+                let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
+                awaits.push(span);
+                let mark = awaits.len() - 1;
+                self.pre.push(format!(
+                    "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_then({w}, 4, 0); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
+                     SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) {{ return false; }} {c} = {w}i.r; }}"
+                ));
+                return Ok(self.writer_result(&c, &gives));
+            }
             StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
-            StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal => unreachable!("the checker gives these no async form"),
+            StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal | StreamCall::Lock | StreamCall::LockShared | StreamCall::TryLock | StreamCall::TryLockShared => {
+                unreachable!("the checker gives these no async form, or does them in the language's own module")
+            }
             // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
             StreamCall::Seek => {
                 let out = self.list_address(recv)?;

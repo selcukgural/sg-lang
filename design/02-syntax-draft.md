@@ -967,12 +967,13 @@ var f = (int)3.7                                 // 3; NaN or out of range panic
 
 ### Numbers and bit operators
 
-A number can be written in hex and in binary, with `_` between digits. It is a number like any other and takes the
+A number can be written in hex, in octal and in binary, with `_` between digits. It is a number like any other and takes the
 type it is used as:
 
 ```
 var id = byte[4] { 0xde, 0xad, 0xbe, 0xef }
 var flags = 0b1010                               // int
+var mode = 0o755                                 // octal; 010 is ten, not eight
 var million = 1_000_000
 long wide = 0xdead_beef
 int mask = 0xffff_ffff                           // error: `0xffff_ffff` is 4294967295, which does not fit in int
@@ -2165,6 +2166,19 @@ try Directory.deleteAll(read scratch)          // a link inside is removed, not 
 var work = try Directory.createTemp()          // a new folder only this user can go into
 var scratch = try File.createTemp()            // a new empty file only this user can open; deleting it is ours
 var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError>
+
+try File.createLink("notes-2026.txt", read latest)  // ln -s: the target as it is given
+var target = try File.readLink(read latest)    // "notes-2026.txt"; InvalidInput for what is no link
+var itself = try File.linkInfo(read latest)    // the link, not followed: itself.kind is Link
+try File.createHardLink(read final, read copy) // one more name of the same file
+try File.setPermissions(read script, 0o755)    // info.permissions holds the same bits
+
+var db = try File.openWrite(read store)
+if !try db.tryLock() {                         // lock, lockShared, tryLockShared, unlock; lockAsync waits
+    printError("another program has the store")
+}
+var map = try unsafe File.mapRead(read big)    // the file where the system keeps it, until map ends
+var bytes = map.bytes()                        // a read byte[]
 ```
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target

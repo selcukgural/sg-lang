@@ -1,0 +1,4 @@
+error: `8` is not an octal digit
+  --> error_octal_digit.sg:3:11
+ 3 |     print(0o758)
+   |           ^^^^^

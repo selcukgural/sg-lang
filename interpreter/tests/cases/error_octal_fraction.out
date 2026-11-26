@@ -1,0 +1,4 @@
+error: an octal number has no fractional part
+  --> error_octal_fraction.sg:2:11
+ 2 |     print(0o7.5)
+   |           ^^^

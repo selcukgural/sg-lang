@@ -1,0 +1,10 @@
+// Mapping a file opens it, which waits for the disk.
+async Result<void, IoError> count(string path) {
+    var map = try unsafe File.mapRead(read path)
+    print(map.bytes().length())
+    return Ok()
+}
+
+void main() {
+    _ = count("data.bin").wait()
+}

@@ -61,7 +61,7 @@ from each item to its source.
   and saturating arithmetic, bits, math, `parse` and bytes in either order.
 - [Collections](./collections.md): `T[N]`, slices, `List<T>`, `HashMap<K, V>` and `HashSet<T>`.
 - [Files and folders](./files.md): `File`, `StreamReader` and `StreamWriter`, `Stdin`, `Stdout` and `Stderr`,
-  `Directory`, `Path`, `FileInfo` and `IoError`.
+  `Directory`, `Path`, `FileInfo`, `MappedFile` and `IoError`, links, permissions and the lock of a file.
 - [Time](./time.md): `Duration`, `Instant`, `DateTime`, `DateTimeOffset` and the clocks under them.
 - [Tasks](./tasks.md): `Task<R>`, `Channel<T>` and `Sender<T>`, `shared locked T`, atomics and cancellation.
 - [Random numbers](./random.md): `Random`, with a seed, and `SecureRandom`.

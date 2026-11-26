@@ -1,0 +1,83 @@
+// The permissions of a file (choices 1977, 1978): the bits of the mode of Unix, written in octal.
+// Windows keeps only whether a file may be written, the bit of its owner: a file there is `0o666`, or
+// `0o444` when it may only be read, and a folder `0o777` or `0o555`.
+void said(Result<void, IoError> result) {
+    match result {
+        Ok => print("ok")
+        Error(cause) => print(cause)
+    }
+}
+
+// Whether the owner may write, which every system keeps.
+Result<bool, IoError> writable(read string path) {
+    var info = try File.info(path)
+    return Ok((info.permissions & 0o200) != 0)
+}
+
+async Result<void, IoError> asynchronous(string file) {
+    try await File.setPermissionsAsync(read file, 0o444)
+    var info = try await File.infoAsync(read file)
+    print((info.permissions & 0o200) != 0)
+    try await File.setPermissionsAsync(read file, 0o644)
+    info = try await File.linkInfoAsync(read file)
+    print((info.permissions & 0o200) != 0)
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    print(0o755)
+    print(0o7_7_7)
+    print(0o0)
+    print(0o10 == 8)
+    print(010 == 10)
+    long large = 0o777_777_777_777
+    print(large)
+
+    var root = try Directory.createTemp()
+    var file = Path.join(read root, "a.txt")
+    try File.writeText(read file, "hello")
+    print(try writable(read file))
+
+    // Only read, and written again. (Whether a write is refused depends on who runs the test: the
+    // owner of every file, root, is not refused on Linux.)
+    try File.setPermissions(read file, 0o444)
+    print(try writable(read file))
+    print(try File.readText(read file))
+    try File.setPermissions(read file, 0o644)
+    print(try writable(read file))
+    said(File.writeText(read file, "again"))
+
+    // What Linux and macOS keep of every bit.
+    if !OperatingSystem.isWindows() {
+        try File.setPermissions(read file, 0o640)
+        var info = try File.info(read file)
+        print(info.permissions == 0o640)
+        try File.setPermissions(read file, 0o1755)
+        info = try File.info(read file)
+        print(info.permissions == 0o1755)
+        var folder = try File.info(read root)
+        print(folder.permissions == 0o700)
+        try File.setPermissions(read file, 0o600)
+    } else {
+        print(true)
+        print(true)
+        print(true)
+    }
+
+    // Through a link, the file it points at.
+    var link = Path.join(read root, "a.link")
+    try File.createLink("a.txt", read link)
+    try File.setPermissions(read link, 0o444)
+    print(try writable(read file))
+    try File.setPermissions(read file, 0o644)
+
+    // A mode outside the bits, and a path that is not there.
+    said(File.setPermissions(read file, 0o10000))
+    said(File.setPermissions(read file, -1))
+    said(File.setPermissions(read Path.join(read root, "missing"), 0o644))
+    said(File.setPermissions("zero\0byte", 0o644))
+
+    try asynchronous(file.clone()).wait()
+    try Directory.deleteAll(read root)
+    return Ok()
+}

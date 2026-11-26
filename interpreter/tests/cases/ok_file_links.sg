@@ -1,0 +1,120 @@
+// Links (choices 1973 to 1976): a symbolic link holds its target as it was given and is followed by
+// the calls that open a file; `File.linkInfo` and `Directory.list` see the link itself. A hard link
+// is one more name of the same file.
+void said(Result<void, IoError> result) {
+    match result {
+        Ok => print("ok")
+        Error(cause) => print(cause)
+    }
+}
+
+void target(Result<string, IoError> result) {
+    match result {
+        Ok(text) => print(text)
+        Error(cause) => print(cause)
+    }
+}
+
+void kind(Result<FileInfo, IoError> result) {
+    match result {
+        Ok(info) => print(info.kind)
+        Error(cause) => print(cause)
+    }
+}
+
+async Result<void, IoError> asynchronous(string root) {
+    var file = Path.join(read root, "async.txt")
+    try await File.writeTextAsync(read file, "async")
+    var link = Path.join(read root, "async.link")
+    try await File.createLinkAsync("async.txt", read link)
+    print(try await File.readLinkAsync(read link))
+    var info = try await File.linkInfoAsync(read link)
+    print(info.kind)
+    var hard = Path.join(read root, "async.hard")
+    try await File.createHardLinkAsync(read file, read hard)
+    print(try await File.readTextAsync(read hard))
+    var token = CancellationSource()
+    token.cancel()
+    match await File.createLinkAsync("async.txt", read Path.join(read root, "never"), read token.token()) {
+        Ok => print("made?")
+        Error(cause) => print(cause)
+    }
+    print(await File.existsAsync(read Path.join(read root, "never")))
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var root = try Directory.createTemp()
+    var file = Path.join(read root, "a.txt")
+    try File.writeText(read file, "hello")
+
+    // A link to a file, by a path from the folder of the link.
+    var link = Path.join(read root, "a.link")
+    try File.createLink("a.txt", read link)
+    print(try File.readLink(read link))
+    print(try File.readText(read link))
+    kind(File.linkInfo(read link))
+    kind(File.info(read link))
+    kind(File.linkInfo(read file))
+    print(File.exists(read link))
+
+    // A link to a folder, followed by the calls of folders.
+    var folder = Path.join(read root, "inner")
+    try Directory.create(read folder)
+    try File.writeText(read Path.join(read folder, "b.txt"), "inside")
+    var to_folder = Path.join(read root, "inner.link")
+    try File.createLink("inner", read to_folder)
+    kind(File.linkInfo(read to_folder))
+    print(Directory.exists(read to_folder))
+    print(try File.readText(read Path.join(read to_folder, "b.txt")))
+    for entry in try Directory.list(read root) {
+        print($"{entry.name} {entry.kind}")
+    }
+
+    // A link to nothing is there, and leads nowhere.
+    var dangling = Path.join(read root, "none.link")
+    try File.createLink("none.txt", read dangling)
+    kind(File.linkInfo(read dangling))
+    kind(File.info(read dangling))
+    print(File.exists(read dangling))
+    target(File.readLink(read dangling))
+
+    // What is not a link, and what is not there.
+    target(File.readLink(read file))
+    target(File.readLink(read folder))
+    target(File.readLink(read Path.join(read root, "missing")))
+    kind(File.linkInfo(read Path.join(read root, "missing")))
+    said(File.createLink("a.txt", read link))
+    said(File.createLink("a.txt", read Path.join(read root, "no/such/folder/x")))
+    said(File.createLink("a.txt", "zero\0byte"))
+    target(File.readLink("zero\0byte"))
+
+    // Removing a link leaves what it points at, and removing a folder does not follow one.
+    try File.delete(read link)
+    print(File.exists(read link))
+    print(try File.readText(read file))
+    var outside = try Directory.createTemp()
+    try File.writeText(read Path.join(read outside, "kept.txt"), "kept")
+    var holder = Path.join(read root, "holder")
+    try Directory.create(read holder)
+    try File.createLink(read outside, read Path.join(read holder, "out.link"))
+    try Directory.deleteAll(read holder)
+    print(try File.readText(read Path.join(read outside, "kept.txt")))
+    try Directory.deleteAll(read outside)
+
+    // A hard link: one file, two names.
+    var hard = Path.join(read root, "a.hard")
+    try File.createHardLink(read file, read hard)
+    try File.writeText(read hard, "changed")
+    print(try File.readText(read file))
+    kind(File.linkInfo(read hard))
+    try File.delete(read file)
+    print(try File.readText(read hard))
+    said(File.createHardLink(read Path.join(read root, "missing"), read Path.join(read root, "h2")))
+    said(File.createHardLink(read hard, read hard))
+    said(File.createHardLink(read folder, read Path.join(read root, "folder.hard")))
+
+    try asynchronous(root.clone()).wait()
+    try Directory.deleteAll(read root)
+    return Ok()
+}

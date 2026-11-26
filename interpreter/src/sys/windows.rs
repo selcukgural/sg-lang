@@ -78,6 +78,8 @@ extern "system" {
     fn GetProcessAffinityMask(process: Handle, mine: *mut usize, system: *mut usize) -> Bool;
     fn GetActiveProcessorCount(group: u16) -> u32;
     fn GetFileType(file: Handle) -> u32;
+    fn GetFileInformationByHandleEx(handle: Handle, class: i32, info: *mut c_void, size: u32) -> Bool;
+    fn DeviceIoControl(handle: Handle, code: u32, input: *const c_void, input_size: u32, output: *mut c_void, output_size: u32, returned: *mut u32, overlapped: *mut c_void) -> Bool;
 }
 
 #[link(name = "advapi32")]
@@ -352,6 +354,182 @@ pub(crate) fn unfollowed(path: &std::ffi::OsStr, info: &std::fs::Metadata) -> bo
         return false;
     }
     matches!(std::fs::File::open(path), Err(error) if error.raw_os_error() == Some(1920))
+}
+
+/// `IO_REPARSE_TAG_SYMLINK`: the tag of a symbolic link; a junction (`IO_REPARSE_TAG_MOUNT_POINT`)
+/// and the file of a socket of the machine have others.
+const TAG_LINK: u32 = 0xA000_000C;
+
+/// The handle of the path itself, a link not followed, to look at it.
+fn itself(path: &std::ffi::OsStr) -> std::io::Result<Handle> {
+    /// `FILE_READ_ATTRIBUTES`; `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`;
+    /// `OPEN_EXISTING`; `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`.
+    const READ_ATTRIBUTES: u32 = 0x80;
+    let name: Vec<u16> = path.encode_wide().chain([0]).collect();
+    // SAFETY: the name ends with a zero; the handle is closed by the caller.
+    let handle = unsafe { CreateFileW(name.as_ptr(), READ_ATTRIBUTES, 7, std::ptr::null(), 3, 0x0200_0000 | 0x0020_0000, std::ptr::null_mut()) };
+    match handle == INVALID_HANDLE {
+        true => Err(std::io::Error::last_os_error()),
+        false => Ok(handle),
+    }
+}
+
+/// The tag of the point the path itself is, or 0 when it is none.
+fn reparse_tag(path: &std::ffi::OsStr) -> u32 {
+    let Ok(handle) = itself(path) else { return 0 };
+    // `FILE_ATTRIBUTE_TAG_INFO` (`FileAttributeTagInfo`, 9): the attributes and the tag.
+    let mut info = [0u32; 2];
+    // SAFETY: the handle is open and `info` has the size given.
+    let got = unsafe { GetFileInformationByHandleEx(handle, 9, info.as_mut_ptr().cast(), 8) };
+    // SAFETY: opened above, closed once.
+    unsafe { CloseHandle(handle) };
+    match got != 0 && info[0] & 0x400 != 0 {
+        true => info[1],
+        false => 0,
+    }
+}
+
+/// `File.createLink(target, path)`: a symbolic link, made without the right of an administrator
+/// where Windows lets a user do so (the mode of a developer), and of a folder when the target is a
+/// folder, looked for from the folder of the link as Windows will look for it (Go's way). The `/`
+/// of a target is written `\`, which Windows follows (choice 1973).
+pub(crate) fn create_link(target: &str, path: &str) -> std::io::Result<()> {
+    let target = crate::names::os_of(&target.replace('/', "\\"));
+    let path = crate::names::os_of(path);
+    let from = std::path::Path::new(&path).parent().map(|folder| folder.join(&target)).unwrap_or_else(|| std::path::PathBuf::from(&target));
+    let folder = match std::path::Path::new(&target).is_absolute() {
+        true => std::fs::metadata(&target),
+        false => std::fs::metadata(&from),
+    }
+    .is_ok_and(|info| info.is_dir());
+    match folder {
+        true => std::os::windows::fs::symlink_dir(&target, &path),
+        false => std::os::windows::fs::symlink_file(&target, &path),
+    }
+}
+
+/// `File.readLink(path)`: what a symbolic link holds, as Go reads it: the name it substitutes, with
+/// `\??\C:\` given as `C:\` and `\??\UNC\` as `\\`. A path that is no link (a junction too)
+/// is `InvalidInput` (choice 1975).
+pub(crate) fn read_link(path: &str) -> std::io::Result<Vec<u8>> {
+    use std::os::windows::ffi::OsStringExt;
+    let handle = itself(&crate::names::os_of(path))?;
+    // `MAXIMUM_REPARSE_DATA_BUFFER_SIZE`; `FSCTL_GET_REPARSE_POINT`.
+    let mut buffer = vec![0u8; 16 * 1024];
+    let mut got = 0u32;
+    // SAFETY: the handle is open and the buffer has the size given.
+    let done = unsafe { DeviceIoControl(handle, 0x0009_00A8, std::ptr::null(), 0, buffer.as_mut_ptr().cast(), buffer.len() as u32, &mut got, std::ptr::null_mut()) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: opened above, closed once.
+    unsafe { CloseHandle(handle) };
+    let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+    if done == 0 {
+        // `ERROR_NOT_A_REPARSE_POINT`
+        return Err(if error.raw_os_error() == Some(4390) { invalid() } else { error });
+    }
+    let word = |at: usize| u16::from_le_bytes([buffer[at], buffer[at + 1]]) as usize;
+    let tag = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+    if tag != TAG_LINK || got < 20 {
+        return Err(invalid());
+    }
+    let (offset, length) = (word(8), word(10));
+    let flags = u32::from_le_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]);
+    let start = 20 + offset;
+    if start + length > got as usize {
+        return Err(invalid());
+    }
+    let mut name: Vec<u16> = buffer[start..start + length].as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    // `SYMLINK_FLAG_RELATIVE`: a relative target is given as it is.
+    if flags & 1 == 0 {
+        let prefix: Vec<u16> = r"\??\".encode_utf16().collect();
+        if name.starts_with(&prefix) {
+            let rest = name[4..].to_vec();
+            let unc: Vec<u16> = r"UNC\".encode_utf16().collect();
+            if rest.len() >= 2 && rest[1] == u16::from(b':') {
+                name = rest;
+            } else if rest.starts_with(&unc) {
+                name = r"\\".encode_utf16().chain(rest[4..].iter().copied()).collect();
+            }
+        }
+    }
+    let text = crate::names::text_of_os(&std::ffi::OsString::from_wide(&name));
+    Ok(text.into_bytes())
+}
+
+/// The bits of the mode of Unix Windows is given as (choice 1978): only the attribute of a file
+/// that may only be read, which takes the writing away from everyone.
+pub(crate) fn mode_of(info: &std::fs::Metadata) -> i128 {
+    match (info.is_dir(), info.permissions().readonly()) {
+        (true, true) => 0o555,
+        (true, false) => 0o777,
+        (false, true) => 0o444,
+        (false, false) => 0o666,
+    }
+}
+
+/// The kind `File.linkInfo` gives what `symlink_metadata` said of a path: a symbolic link is
+/// `Link`; a junction and the file of a socket of the machine are `Other`.
+pub(crate) fn link_kind(path: &std::ffi::OsStr, info: &std::fs::Metadata) -> u8 {
+    use std::os::windows::fs::MetadataExt;
+    if info.file_attributes() & 0x400 != 0 {
+        let tag = reparse_tag(path);
+        if tag == TAG_LINK {
+            return 2;
+        }
+        // A point that stands for another name (the bit `0x2000_0000`: a junction) and the file
+        // of a socket of the machine (`IO_REPARSE_TAG_AF_UNIX`) are `Other`; a point that only
+        // marks a file kept by a service (the files of OneDrive) is the file it marks.
+        if tag & 0x2000_0000 != 0 || tag == 0x8000_0023 {
+            return 3;
+        }
+    }
+    match info.is_dir() {
+        true => 1,
+        false => 0,
+    }
+}
+
+/// `File.setPermissions(path, mode)`: the bit of the owner's writing kept as the attribute of a
+/// file that may only be read, Go's way; the others are not kept by Windows (choice 1978).
+pub(crate) fn set_permissions(path: &str, mode: u32) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Through a handle of what the path leads to, so that a link is followed as `chmod` follows it:
+    // `FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES`, `FILE_FLAG_BACKUP_SEMANTICS` for a folder.
+    let file = std::fs::OpenOptions::new().access_mode(0x80 | 0x100).custom_flags(0x0200_0000).open(crate::names::os_of(path))?;
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_readonly(mode & 0o200 == 0);
+    file.set_permissions(permissions)
+}
+
+/// Whether the open file is a file of the disk (`GetFileType`), which alone has a lock (1979).
+pub(crate) fn disk_file(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    // SAFETY: the handle is the open file's; `FILE_TYPE_DISK` is 1.
+    unsafe { GetFileType(file.as_raw_handle()) == 1 }
+}
+
+/// The lock of a file (1979): `kind` 0 alone and 1 shared, waited for; 2 alone and 3 shared,
+/// tried, `false` where another holds it; 4 let go. `LockFileEx`, through std, as compiled code
+/// calls it. A second lock changes the kind, as `flock` does: the lock held is let go first.
+pub(crate) fn lock_file(file: &std::fs::File, kind: u8) -> std::io::Result<bool> {
+    /// `ERROR_NOT_LOCKED`
+    const NOT_LOCKED: i32 = 158;
+    let tried = |result: Result<(), std::fs::TryLockError>| match result {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    };
+    let unlocked = file.unlock();
+    match kind {
+        0 => file.lock().map(|()| true),
+        1 => file.lock_shared().map(|()| true),
+        2 => tried(file.try_lock()),
+        3 => tried(file.try_lock_shared()),
+        _ => match unlocked {
+            Err(error) if error.raw_os_error() != Some(NOT_LOCKED) => Err(error),
+            _ => Ok(true),
+        },
+    }
 }
 
 /// Opens the library of wrappers at `path`. It and the DLLs it needs are looked for in the

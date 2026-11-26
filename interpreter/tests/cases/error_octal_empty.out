@@ -1,0 +1,5 @@
+error: `0o` needs digits after it
+  --> error_octal_empty.sg:2:11
+ 2 |     print(0o)
+   |           ^^
+  hint: an octal number: `0o755`

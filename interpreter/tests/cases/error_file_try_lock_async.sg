@@ -1,0 +1,10 @@
+// A lock tried does not wait, so it has no async version.
+async Result<void, IoError> guarded(string path) {
+    var file = try await File.openTextAsync(read path)
+    _ = try await file.tryLockAsync()
+    return Ok()
+}
+
+void main() {
+    _ = guarded("data.txt").wait()
+}

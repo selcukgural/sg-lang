@@ -269,9 +269,10 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                     let alias = file_alias(&full).expect("tested");
                     holds.get(&full).map(|_| {
                         let shown: Vec<String> = args.iter().map(written_arg).collect();
+                        let unsafe_word = if alias == "mapRead" { "unsafe " } else { "" };
                         Diag::error(*name_span, format!("`File.{alias}` holds the thread until it is done, and an async function does not hold its thread"))
                             .note(NO_HOLD)
-                            .hint(format!("`await File.{alias}Async({})` does the same work without holding the thread", shown.join(", ")))
+                            .hint(format!("`await {unsafe_word}File.{alias}Async({})` does the same work without holding the thread", shown.join(", ")))
                     })
                 }
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, args, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, args, .. } => {
@@ -392,7 +393,7 @@ const ASYNC_FUNCTIONS: [&str; 9] = [
 ];
 
 /// The calls of the file system the language's own module makes, which wait for the disk (1871).
-const DISK: [&str; 8] = ["status", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile"];
+const DISK: [&str; 10] = ["status", "linkStatus", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile", "mapRead"];
 
 /// A function as a message names it: as the program writes it, `Directory.list` and `File.info`
 /// for those of the language's own module, the name alone for the program's own.
@@ -411,6 +412,8 @@ fn file_alias(full: &str) -> Option<&'static str> {
         "std.FileInfo.of" => Some("info"),
         "std.FileInfo.isFile" => Some("exists"),
         "std.FileInfo.makeTemp" => Some("createTemp"),
+        "std.FileInfo.ofLink" => Some("linkInfo"),
+        "std.MappedFile.open" => Some("mapRead"),
         _ => None,
     }
 }
@@ -451,13 +454,16 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         // The calls of the file system wait for the disk (1871): `File.delete` and the others a
         // program writes, and those `Directory` and `FileInfo` are built on.
         ExprKind::Call { callee: Callee::System(call), name_span, .. } | ExprKind::Method { callee: Callee::System(call), name_span, .. } if call.on_disk().is_some() => {
-            let owner = if matches!(call, SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy) { "File" } else { "System" };
+            let owner = if call.of_file() { "File" } else { "System" };
             Some((*name_span, format!("`{owner}.{}`", call.on_disk().expect("tested"))))
         }
         // A reader seeks without writing or reading: it only asks the system where the file stands.
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Seek), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
         // Looking at the block of a reader, and giving out of it, do not read.
         ExprKind::Method { callee: Callee::Stream(StreamCall::Buffered | StreamCall::Consume), .. } => None,
+        // A lock tried, and the lock of a reader let go, wait for nothing (1979).
+        ExprKind::Method { callee: Callee::Stream(StreamCall::TryLock | StreamCall::TryLockShared), .. } => None,
+        ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Unlock), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
         ExprKind::Method { recv, name, name_span, callee: Callee::Stream(_), .. } => match stream_name(recv) {
             Some("Stdout" | "Stderr") => None,
             Some("Stdin") => Some((*name_span, format!("`Stdin.{name}`"))),
@@ -484,8 +490,7 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
 fn async_version(expr: &Expr) -> Option<String> {
     let (written, args) = match &expr.kind {
         ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => (format!("File.{}Async", call.name()), args),
-        ExprKind::Call { callee: Callee::System(call @ (SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy)), args, .. }
-        | ExprKind::Method { callee: Callee::System(call @ (SystemCall::Delete | SystemCall::Move | SystemCall::Replace | SystemCall::Copy)), args, .. } => {
+        ExprKind::Call { callee: Callee::System(call), args, .. } | ExprKind::Method { callee: Callee::System(call), args, .. } if call.of_file() => {
             (format!("File.{}Async", call.on_disk().expect("a call of the file system")), args)
         }
         ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,

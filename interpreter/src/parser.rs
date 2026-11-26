@@ -2255,7 +2255,12 @@ impl<'a> Parser<'a> {
             if !self.eat(&Tok::Dot) {
                 break;
             }
-            let (name, name_span) = self.ident("a field or method name")?;
+            // `file.lock()`: the word `lock` is the name of a method after a dot (choice 1986),
+            // and a name nowhere else.
+            let (name, name_span) = match (self.peek(), self.peek_at(1)) {
+                (Tok::Ident(word), Tok::LParen) if word == "lock" => ("lock".to_string(), self.bump().span),
+                _ => self.ident("a field or method name")?,
+            };
             // `billing.Line { ... }`: a struct with its module written in front.
             if *self.peek() == Tok::LBrace && self.struct_literals {
                 if let Some(module) = dotted(&expr) {

@@ -1,0 +1,5 @@
+error: `File.mapRead` gives the bytes of the file where the system keeps them, and another program may change them or cut the file short while they are read, so it is written inside `unsafe`
+  --> error_file_map_unsafe.sg:3:19
+ 3 |     var map = try File.mapRead("data.bin")
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe File.mapRead("data.bin")`, or `unsafe { ... }` around several statements

@@ -1,0 +1,136 @@
+// The lock of a file (choices 1979, 1983, 1985): two openings of one file are two holders, in one
+// program as in two. `tryLock` says at once whether it got the lock; `lockAsync` waits for it on the
+// clock, and a cancel ends the wait; a second lock changes the kind; a writer writes what it holds
+// before it lets its lock go.
+void said(Result<void, IoError> result) {
+    match result {
+        Ok => print("ok")
+        Error(cause) => print(cause)
+    }
+}
+
+void tried(Result<bool, IoError> result) {
+    match result {
+        Ok(got) => print(got)
+        Error(cause) => print(cause)
+    }
+}
+
+// A standard stream reached through a borrow is no file of the program's.
+void standard(ref StreamWriter writer) {
+    tried(writer.tryLock())
+    said(writer.unlock())
+}
+
+async Result<void, IoError> later(string path) {
+    var other = try await File.openTextAsync(read path)
+    try await other.lockAsync()
+    print("the other task has the lock")
+    await Task.delay(30)
+    try other.unlock()
+    print("the other task let it go")
+    return Ok()
+}
+
+async Result<void, IoError> asynchronous(string path) {
+    var a = try await File.openTextAsync(read path)
+    tried(a.tryLock())
+    var task = later(path.clone())
+    await Task.delay(30)
+    print("a lets go")
+    try a.unlock()
+    try await task
+    try await a.lockSharedAsync()
+    print("a has a shared lock")
+
+    // A cancel ends the wait, and no lock is taken after it.
+    var b = try await File.openWriteAsync(read path)
+    var source = CancellationSource()
+    source.cancelAfter(20)
+    match await b.lockAsync(read source.token()) {
+        Ok => print("b got it")
+        Error(cause) => print($"b: {cause}")
+    }
+    tried(b.tryLockShared())
+    var cancelled = CancellationSource()
+    cancelled.cancel()
+    match await b.lockSharedAsync(read cancelled.token()) {
+        Ok => print("b got it")
+        Error(cause) => print($"b: {cause}")
+    }
+    try await b.unlockAsync()
+    try a.unlock()
+
+    // `unlockAsync` writes the block first; a cancelled token writes nothing and keeps the lock.
+    try await b.lockAsync()
+    print("b has it alone")
+    tried(a.tryLockShared())
+    try await b.writeAsync("xyz")
+    match await b.unlockAsync(read cancelled.token()) {
+        Ok => print("let go?")
+        Error(cause) => print(cause)
+    }
+    tried(a.tryLockShared())
+    try await b.unlockAsync()
+    var text = try await File.readTextAsync(read path)
+    print(text)
+    try await b.closeAsync()
+    tried(a.tryLock())
+    try a.unlock()
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "f.txt")
+    try File.writeText(read path, "hello")
+    var a = try File.openText(read path)
+    var b = try File.openText(read path)
+    var w = try File.openWrite(read path)
+
+    // One alone: nobody else gets one.
+    tried(a.tryLock())
+    tried(b.tryLock())
+    tried(b.tryLockShared())
+    tried(w.tryLockShared())
+    said(a.unlock())
+
+    // Shared: others share it, nobody has it alone.
+    tried(b.tryLockShared())
+    tried(w.tryLockShared())
+    tried(a.tryLock())
+    said(b.unlock())
+    said(w.unlock())
+    said(w.unlock())
+
+    // A writer writes what it holds before it lets go. (Windows refuses a write while another
+    // opening holds a lock, so the writer holds it alone.)
+    tried(w.tryLock())
+    try w.write("abc")
+    said(w.unlock())
+    print(try File.readText(read path))
+
+    // A second lock changes the kind.
+    try a.lockShared()
+    try b.lockShared()
+    tried(w.tryLock())
+    said(b.unlock())
+    try a.lock()
+    print("a has it alone")
+    tried(b.tryLockShared())
+    try a.lockShared()
+    tried(b.tryLockShared())
+    said(a.unlock())
+    said(b.unlock())
+
+    // A lock goes with the file that has it.
+    try w.lock()
+    try w.close()
+    tried(a.tryLock())
+    said(a.unlock())
+
+    standard(ref Stdout)
+    said(asynchronous(path.clone()).wait())
+    try Directory.deleteAll(read folder)
+    return Ok()
+}

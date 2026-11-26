@@ -1,0 +1,6 @@
+// The bytes of a mapped file are the disk's, which another program may change: `unsafe` says so.
+Result<void, IoError> main() {
+    var map = try File.mapRead("data.bin")
+    print(map.bytes().length())
+    return Ok()
+}

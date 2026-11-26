@@ -1,0 +1,5 @@
+error: a `StreamReader` has no `tryLockAsync`: `tryLock` does not wait
+  --> error_file_try_lock_async.sg:4:24
+ 4 |     _ = try await file.tryLockAsync()
+   |                        ^^^^^^^^^^^^
+  hint: `file.tryLock()`, in an async function too

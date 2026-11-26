@@ -1,0 +1,10 @@
+// `lock` waits for another program to let go, which holds the thread.
+async Result<void, IoError> guarded(string path) {
+    var file = try await File.openTextAsync(read path)
+    try file.lock()
+    return Ok()
+}
+
+void main() {
+    _ = guarded("data.txt").wait()
+}

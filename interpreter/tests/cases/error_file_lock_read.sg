@@ -1,0 +1,7 @@
+// A lock changes what the stream holds of its file: a `read` borrow does not lock.
+Result<bool, IoError> tried(read StreamReader reader) {
+    return reader.tryLock()
+}
+
+void main() {
+}

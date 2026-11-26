@@ -1,0 +1,5 @@
+error: `Stdin` is the input of the program, which is not a file the program holds a lock of
+  a file opened with `File.openText(path)`, `File.openWrite(path)` or the other functions of `File` that open one can be locked
+  --> error_file_lock_stdin.sg:3:9
+ 3 |     try Stdin.lock()
+   |         ^^^^^

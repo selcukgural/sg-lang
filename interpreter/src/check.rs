@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Clonable", "Formattable", "Equatable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "MappedFile", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -11340,7 +11340,12 @@ impl<'a> Checker<'a> {
         let (ty, is_place) = match self.place(inner)? {
             Some((ty, _)) => (ty, true),
             None => {
-                if matches!(inner.kind, ExprKind::Call { .. } | ExprKind::Method { .. }) {
+                // `await unsafe File.mapReadAsync(path)` awaits the call inside `unsafe`.
+                let call = match &inner.kind {
+                    ExprKind::Unsafe(call) => &call.kind,
+                    kind => kind,
+                };
+                if matches!(call, ExprKind::Call { .. } | ExprKind::Method { .. }) {
                     self.awaiting = true;
                 }
                 let ty = self.expr(inner, None);
@@ -12241,6 +12246,14 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "write" | "writeLine" | "writeBytes" | "writePieces") => 1,
             (Ty::Writer, "flush" | "syncData" | "sync") => 0,
             (Ty::Writer, "setLength") => 1,
+            // A lock is waited for on a thread that a cancel leaves (1983); a writer writes what it
+            // holds before it lets its lock go (1985).
+            (_, "lock" | "lockShared") | (Ty::Writer, "unlock") => 0,
+            (_, "tryLock" | "tryLockShared" | "unlock") => {
+                let stream = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, format!("a `{target}` has no `{name}`: `{base}` does not wait"))
+                    .hint(format!("`{stream}.{base}()`, in an async function too")));
+            }
             // `closeAsync` takes the writer, and is not cancelled: what the writer holds is
             // written, as when it ends without `close`.
             (Ty::Writer, "close") => {
@@ -12272,8 +12285,8 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLineAsync", "readLineBytesAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
-                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "writePiecesAsync", "flushAsync", "closeAsync", "seekAsync", "syncDataAsync", "syncAsync", "setLengthAsync"],
+                    Ty::Reader(_) => &["readLineAsync", "readLineBytesAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync", "lockAsync", "lockSharedAsync"],
+                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "writePiecesAsync", "flushAsync", "closeAsync", "seekAsync", "syncDataAsync", "syncAsync", "setLengthAsync", "lockAsync", "lockSharedAsync", "unlockAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -12604,41 +12617,55 @@ impl<'a> Checker<'a> {
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             ("File", "openWrite") => (IoCall::OpenWrite, vec![text()], Ty::Writer),
-            ("File", "delete" | "move" | "replace" | "copy") if !is_async => {
-                let (call, params) = match base {
-                    "delete" => (SystemCall::Delete, vec![text()]),
-                    "move" => (SystemCall::Move, vec![text(), text()]),
-                    "replace" => (SystemCall::Replace, vec![text(), text()]),
-                    _ => (SystemCall::Copy, vec![text(), text()]),
+            // The calls of the file system a program writes itself; an async one is done on a
+            // thread of input and output (1871). A link and the permissions came in with 191.
+            ("File", "delete" | "move" | "replace" | "copy" | "createLink" | "createHardLink" | "readLink" | "setPermissions") => {
+                let (call, params, ok) = match base {
+                    "delete" => (SystemCall::Delete, vec![text()], Ty::Void),
+                    "move" => (SystemCall::Move, vec![text(), text()], Ty::Void),
+                    "replace" => (SystemCall::Replace, vec![text(), text()], Ty::Void),
+                    "copy" => (SystemCall::Copy, vec![text(), text()], Ty::Void),
+                    "createLink" => (SystemCall::CreateLink, vec![text(), text()], Ty::Void),
+                    "createHardLink" => (SystemCall::CreateHardLink, vec![text(), text()], Ty::Void),
+                    "readLink" => (SystemCall::ReadLink, vec![text()], Ty::Str),
+                    _ => (SystemCall::SetPermissions, vec![text(), Ty::Int(IntTy::Int)], Ty::Void),
                 };
-                self.args(name, args, &params, span)?;
-                *callee = Callee::System(call);
-                return Ok(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))));
-            }
-            // The same as a task, done on a thread of input and output (1871).
-            ("File", "delete" | "move" | "replace" | "copy") => {
-                let (call, params) = match base {
-                    "delete" => (SystemCall::Delete, vec![text()]),
-                    "move" => (SystemCall::Move, vec![text(), text()]),
-                    "replace" => (SystemCall::Replace, vec![text(), text()]),
-                    _ => (SystemCall::Copy, vec![text(), text()]),
-                };
+                let result = Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+                if !is_async {
+                    self.args(name, args, &params, span)?;
+                    *callee = Callee::System(call);
+                    return Ok(result);
+                }
                 self.async_args(name, args, &params, span)?;
                 self.awaited_here(&format!("File.{name}"), awaited, args, span)?;
                 *callee = Callee::SystemAsync(call);
-                return Ok(Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))))));
+                return Ok(Ty::Task(Box::new(result)));
+            }
+            // `File.mapRead(path)` is `MappedFile.open(path)` (choice 1980): the bytes it gives are
+            // those of the disk, which another program may change or cut short while they are read.
+            ("File", "mapRead") => {
+                self.needs_unsafe(span, "`File.mapRead` gives the bytes of the file where the system keeps them, and another program may change them or cut the file short while they are read")?;
+                let owner = format!("{STD_MODULE}.MappedFile");
+                let inner = if is_async { "openAsync" } else { "open" };
+                let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `File.mapRead` gets the file of `MappedFile`") };
+                self.fill_defaults(name, sig, args, span)?;
+                self.args(name, args, &sig.params, span)?;
+                *callee = Callee::Static { owner, name: inner.to_string() };
+                return self.method_gives(name, sig, None, args, span, awaited);
             }
             // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`, and
             // `File.createTemp()` is `FileInfo.makeTemp()`; `File.infoAsync(path)` is
-            // `FileInfo.ofAsync(path)` (1871).
-            ("File", "info" | "exists" | "createTemp") => {
+            // `FileInfo.ofAsync(path)` (1871), and `File.linkInfo(path)` `FileInfo.ofLink(path)` (1976).
+            ("File", "info" | "exists" | "createTemp" | "linkInfo") => {
                 let owner = format!("{STD_MODULE}.FileInfo");
                 let inner = match (base, is_async) {
                     ("info", false) => "of",
                     ("exists", false) => "isFile",
+                    ("linkInfo", false) => "ofLink",
                     (_, false) => "makeTemp",
                     ("info", true) => "ofAsync",
                     ("exists", true) => "isFileAsync",
+                    ("linkInfo", true) => "ofLinkAsync",
                     (_, true) => "makeTempAsync",
                 };
                 let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `File.{base}` gets the file of `FileInfo`") };
@@ -12649,10 +12676,33 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match is_async {
-                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "openRegularAsync", "createTextAsync", "openAppendAsync", "openWriteAsync", "deleteAsync", "moveAsync", "replaceAsync", "copyAsync", "infoAsync", "existsAsync", "createTempAsync"],
-                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "openRegular", "createText", "openAppend", "openWrite", "delete", "move", "replace", "copy", "info", "exists", "createTemp"],
+                    true => &[
+                        "readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "openRegularAsync", "createTextAsync", "openAppendAsync", "openWriteAsync", "deleteAsync", "moveAsync", "replaceAsync", "copyAsync", "infoAsync", "existsAsync", "createTempAsync",
+                        "createLinkAsync", "createHardLinkAsync", "readLinkAsync", "linkInfoAsync", "setPermissionsAsync", "mapReadAsync",
+                    ],
+                    false => &[
+                        "readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "openRegular", "createText", "openAppend", "openWrite", "delete", "move", "replace", "copy", "info", "exists", "createTemp", "createLink",
+                        "createHardLink", "readLink", "linkInfo", "setPermissions", "mapRead",
+                    ],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
+                // Names other languages give the same calls.
+                let other = match base {
+                    "readAll" | "readAllText" | "readToString" | "readFile" | "readString" => Some("readText"),
+                    "readAllBytes" | "readFileBytes" => Some("readBytes"),
+                    "writeAll" | "writeAllText" | "writeFile" | "writeString" => Some("writeText"),
+                    "symlink" | "createSymbolicLink" | "symlinkFile" | "symlinkDir" => Some("createLink"),
+                    "hardLink" | "link" => Some("createHardLink"),
+                    "readlink" | "readSymbolicLink" => Some("readLink"),
+                    "lstat" | "symlinkMetadata" | "linkMetadata" => Some("linkInfo"),
+                    "chmod" | "setPermission" | "setMode" => Some("setPermissions"),
+                    "mmap" | "map" | "memoryMap" => Some("mapRead"),
+                    _ => None,
+                };
+                if let Some(other) = other {
+                    let suffix = if is_async { "Async" } else { "" };
+                    return Err(diag.hint(format!("`{other}{suffix}`")));
+                }
                 return Err(match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
                     None => diag.note(format!("functions for now: {}", known.join(", "))),
@@ -12691,6 +12741,8 @@ impl<'a> Checker<'a> {
                     io(Ty::Void),
                 ),
                 "status" => (SystemCall::Status, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+                "linkStatus" => (SystemCall::LinkStatus, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+                "mapRead" => (SystemCall::MapRead, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Raw(Box::new(Ty::Int(IntTy::Byte))))),
                 "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
                 "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
                 _ => return None,
@@ -12715,6 +12767,7 @@ impl<'a> Checker<'a> {
                 io(Ty::Void),
             ),
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
+            "unmap" => (SystemCall::Unmap, vec![Ty::Raw(Box::new(Ty::Int(IntTy::Byte))), Ty::Int(IntTy::Long)], Ty::Void),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
             "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
             "stackLow" => (SystemCall::StackLow, Vec::new(), Ty::Bool),
@@ -13125,6 +13178,62 @@ impl<'a> Checker<'a> {
         args.insert(0, Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(stream) }, span, ty, moved: false });
         *callee = Callee::Static { owner, name: inner.to_string() };
         Ok(ret)
+    }
+
+    /// `stream.lockAsync(token)` and `stream.lockSharedAsync(token)`: done by the language's own
+    /// module, which tries the lock and waits on the clock between the tries (`FileLock.reader`,
+    /// choice 1983), given the stream through a `ref` borrow. The stream is checked as `lock` is.
+    #[allow(clippy::too_many_arguments)]
+    fn lock_async(
+        &mut self,
+        recv: &mut Expr,
+        target: &Ty,
+        writable: bool,
+        borrowed: bool,
+        name: &str,
+        name_span: Span,
+        args: &mut Vec<Expr>,
+        callee: &mut Callee,
+        span: Span,
+        awaited: bool,
+    ) -> Res<Ty> {
+        let base = name.strip_suffix("Async").expect("an async name");
+        if args.len() > 1 {
+            return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), or 1 with a token last; {} given", args.len())));
+        }
+        self.stream_method(recv, target, writable, borrowed, base, name, name_span, &mut [], callee, span)?;
+        if let Some(token) = args.first_mut() {
+            self.token_arg(token)?;
+        }
+        let owner = format!("{STD_MODULE}.FileLock");
+        let inner = match (target, args.is_empty()) {
+            (Ty::Writer, true) => "writer",
+            (Ty::Writer, false) => "writerTold",
+            (_, true) => "reader",
+            (_, false) => "readerTold",
+        };
+        let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that locks a stream gets the file of `FileLock`") };
+        self.touch(recv, Access::Write);
+        let written = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span: recv.span, ty: Ty::Void, moved: false };
+        let stream = std::mem::replace(recv, written);
+        let at = stream.span;
+        let ty = Ty::Ref(Box::new(match target {
+            Ty::Writer => Ty::Writer,
+            _ => Ty::Reader(false),
+        }));
+        args.insert(0, Expr { kind: ExprKind::Borrow { mutable: true, expr: Box::new(stream) }, span: at, ty, moved: false });
+        args.insert(1, Expr { kind: ExprKind::Bool(base == "lockShared"), span: name_span, ty: Ty::Bool, moved: false });
+        *callee = Callee::Static { owner, name: inner.to_string() };
+        if !awaited {
+            let text = &self.src[span.start..span.end];
+            let stream = if matches!(target, Ty::Reader(_)) { "reader" } else { "writer" };
+            let diag = Diag::error(span, format!("`{name}` lends the {stream}, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
+            return Err(match self.is_async {
+                true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                false => diag.note("a lock is awaited in an async function; elsewhere `lock` and `lockShared` wait for it"),
+            });
+        }
+        Ok(Ty::Task(Box::new(sig.ret.clone())))
     }
 
     /// `reader.info()`: what the system knows of the file a reader reads (`fstat`), done by the
@@ -13831,6 +13940,10 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::Reader(_)) && name == "info" {
             let target = target.clone();
             return self.reader_info(recv, &target, args, callee, span);
+        }
+        if matches!(target, Ty::Reader(_) | Ty::Writer) && matches!(name, "lockAsync" | "lockSharedAsync") {
+            let target = target.clone();
+            return self.lock_async(recv, &target, writable, borrowed, name, name_span, args, callee, span, awaited);
         }
         if matches!(target, Ty::Reader(_) | Ty::Writer) {
             let target = target.clone();
@@ -14806,11 +14919,25 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "setLength") => StreamCall::SetLength,
             (_, "seek") => StreamCall::Seek,
             (_, "isTerminal") => StreamCall::IsTerminal,
+            (_, "lock") => StreamCall::Lock,
+            (_, "lockShared") => StreamCall::LockShared,
+            (_, "tryLock") => StreamCall::TryLock,
+            (_, "tryLockShared") => StreamCall::TryLockShared,
+            (_, "unlock") => StreamCall::Unlock,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info", "isTerminal"],
-                    _ => &["write", "writeLine", "writeBytes", "writePieces", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal"],
+                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
+                    _ => &["write", "writeLine", "writeBytes", "writePieces", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
                 };
+                // Names other languages give the lock of a file.
+                if matches!(name, "flock" | "lockExclusive" | "tryLockExclusive" | "release" | "lockFile") {
+                    let close = match name {
+                        "tryLockExclusive" => "tryLock",
+                        "release" => "unlock",
+                        _ => "lock",
+                    };
+                    return Err(Diag::error(name_span, format!("`{target}` has no method `{name}`")).hint(format!("`{close}`")));
+                }
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -14857,14 +14984,25 @@ impl<'a> Checker<'a> {
         }
         // A standard stream is not a file the program holds: it may be a terminal or a pipe, and
         // a file it was sent into is the caller's to keep.
-        if matches!(call, StreamCall::SyncData | StreamCall::Sync | StreamCall::SetLength) {
+        if matches!(call, StreamCall::SyncData | StreamCall::Sync | StreamCall::SetLength) || call.locks() {
             if let ExprKind::Var(var) = &recv.kind {
                 if let Some(what) = std_stream(var) {
-                    let does = if call == StreamCall::SetLength { "has no length to set" } else { "is not a file the program can put on the disk" };
-                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which {does}"))
-                        .note("a file opened with `File.createText(path)`, `File.openWrite(path)` or `File.openAppend(path)` can"));
+                    let does = match call {
+                        StreamCall::SetLength => "has no length to set",
+                        _ if call.locks() => "is not a file the program holds a lock of",
+                        _ => "is not a file the program can put on the disk",
+                    };
+                    let can = match call.locks() {
+                        true => "a file opened with `File.openText(path)`, `File.openWrite(path)` or the other functions of `File` that open one can be locked",
+                        false => "a file opened with `File.createText(path)`, `File.openWrite(path)` or `File.openAppend(path)` can",
+                    };
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which {does}")).note(can));
                 }
             }
+        }
+        if call.locks() && *target == Ty::Reader(true) {
+            return Err(Diag::error(recv.span, "the reader of a connection has no file to lock")
+                .note("a file opened with `File.openText(path)` or `File.openWrite(path)` can be locked"));
         }
         if call == StreamCall::Buffered {
             arity(0)?;
@@ -14881,6 +15019,8 @@ impl<'a> Checker<'a> {
             let what = match call {
                 StreamCall::Seek => "moves the stream",
                 StreamCall::Consume => "gives out what the block holds",
+                StreamCall::Unlock => "lets the lock of its file go",
+                _ if call.locks() => "locks its file for the stream",
                 _ => "goes on from where the stream is",
             };
             if let Some(diag) = self.readonly(recv) {
@@ -14950,6 +15090,14 @@ impl<'a> Checker<'a> {
             StreamCall::SetLength => {
                 self.args(shown, args, &[Ty::Int(IntTy::Long)], span)?;
                 result(Ty::Void)
+            }
+            StreamCall::Lock | StreamCall::LockShared | StreamCall::Unlock => {
+                arity(0)?;
+                result(Ty::Void)
+            }
+            StreamCall::TryLock | StreamCall::TryLockShared => {
+                arity(0)?;
+                result(Ty::Bool)
             }
             StreamCall::Seek => {
                 arity(1)?;

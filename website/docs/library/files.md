@@ -33,6 +33,12 @@ The programs on this page write into the folder they run in and remove what they
 | `Result<FileInfo, IoError> File.info(read string path)` | What the system knows of it, a link followed |
 | `bool File.exists(read string path)` | Whether the path names a file (a folder is not one) |
 | `Result<string, IoError> File.createTemp()` | A new empty file in `Directory.temp()` that only the user can read and write, and its path |
+| `Result<void, IoError> File.createLink(read string target, read string path)` | A symbolic link at `path` that holds `target` as it is given (see [Links and permissions](#links-and-permissions)) |
+| `Result<void, IoError> File.createHardLink(read string existing, read string path)` | One more name of the file |
+| `Result<string, IoError> File.readLink(read string path)` | What a symbolic link holds; a path that is no link is `InvalidInput` |
+| `Result<FileInfo, IoError> File.linkInfo(read string path)` | What the system knows of the path itself, a link not followed (its `kind` is `Link`) |
+| `Result<void, IoError> File.setPermissions(read string path, int mode)` | The bits of the mode of Unix, `0o644`; on Windows only whether it may be written |
+| `Result<MappedFile, IoError> unsafe File.mapRead(read string path)` | The file put in the memory of the program to be read (see [A file in memory](#a-file-in-memory)) |
 
 ```sg
 Result<void, IoError> main() {
@@ -70,6 +76,98 @@ false
 ```
 
 `Result<void, IoError> main()` lets `try` pass every error on: the program prints it and ends with code 1.
+
+### Links and permissions
+
+`File.createLink(target, path)` makes a symbolic link, as `ln -s target path` does: the target is written into
+the link as it is given, and a target that is not a whole path is looked for from the folder of the link
+(choices 1973 to 1976). Every call that opens a file follows a link; `File.linkInfo` and `Directory.list` see
+the link itself, `File.readLink` reads what it holds, and `File.delete` removes the link and not what it points
+at. A link to nothing can be made; `File.info` of it is `NotFound`. `File.createHardLink(existing, path)` gives
+the file a second name: both are the same file, and it is gone when the last name is. On Windows a link is made
+without the rights of an administrator only in the mode of a developer (`PermissionDenied` otherwise), is a
+link of a folder when its target is a folder, and has its `/` written `\`; a junction is no link there
+(`linkInfo` says `Other`).
+
+`FileInfo.permissions` holds the bits of the mode of Unix, which SG writes in octal: `0o644` is a file its owner
+reads and writes and the others read, `0o755` a program or a folder anybody may run or go into (choices 1977,
+1978). `File.setPermissions(path, mode)` sets them, through a link; a mode outside `0` to `0o7777` is
+`InvalidInput`. Windows keeps only whether a file may be written: a mode without the bit of the owner's writing
+(`0o200`) makes it a file that may only be read, and a file there reads as `0o666` or `0o444`, a folder as `0o777`
+or `0o555`. Who owns a file is not changed here yet.
+
+```sg
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var file = Path.join(read folder, "notes.txt")
+    try File.writeText(read file, "hello")
+    var link = Path.join(read folder, "latest")
+    try File.createLink("notes.txt", read link)
+    print(try File.readLink(read link))
+    print(try File.readText(read link))
+    var itself = try File.linkInfo(read link)
+    print(itself.kind)
+    try File.setPermissions(read file, 0o444)
+    var info = try File.info(read file)
+    print((info.permissions & 0o200) != 0)
+    match File.writeText(read file, "again") {
+        Ok => print("written")
+        Error(cause) => print(cause)
+    }
+    try File.setPermissions(read file, 0o644)
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+notes.txt
+hello
+Link
+false
+permission denied
+```
+
+### A file in memory
+
+`File.mapRead(path)` puts a file in the memory of the program to be read (`mmap`, `MapViewOfFile`; choice
+1980): `map.bytes()` lends its bytes as a `read byte[]`, the system reads each page from the disk the first time
+it is read, and nothing is copied. Where the `MappedFile` ends the file is taken out of the memory again, and the
+bytes it lent go with it, so a borrow of them does not outlive it. The call is written inside `unsafe`, since the
+bytes are the file's as it is on the disk: another program that writes into the file changes them while they are
+read, and one that cuts it short stops this program when it reads past the new end (`SIGBUS`; Windows lets no
+program cut short a file that is mapped). A file that only this program writes, or that nobody changes, is read
+this way safely. An empty file gives no bytes, a folder is `IsDirectory`, and anything that is not a regular file
+is `NotAFile`, as for `File.openRegular`. A `MappedFile` may go to another task. There is no mapping to write yet. Measured, a file of 4 KB is read
+faster with `readBytes` than it is mapped, one of 1 MB costs the same, and one of 64 MB half (macOS) or two
+fifths (Linux) less, since nothing is copied.
+
+```sg
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "data.txt")
+    try File.writeText(read path, "one two three")
+    var map = try unsafe File.mapRead(read path)
+    var bytes = map.bytes()
+    var spaces = 0
+    for b in bytes {
+        if b == (byte)' ' {
+            spaces += 1
+        }
+    }
+    print($"{bytes.length()} bytes, {spaces} spaces")
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+13 bytes, 2 spaces
+```
 
 ## `StreamWriter`
 
@@ -190,6 +288,59 @@ waits for nothing and an async function calls it as it is. A server opens a file
 asks the reader for its size and its time, which asks the disk once less than `File.info` and then
 `openText`. `Stdin` and the reader of a connection have no `info()`.
 
+### The lock of a file
+
+A reader and a writer of a file can lock it, so that programs which ask for the lock take turns (choice 1979):
+
+| Signature | What it does |
+|---|---|
+| `Result<void, IoError> lock(ref this)` | The whole file for this stream alone, waited for while another holds a lock of it |
+| `Result<void, IoError> lockShared(ref this)` | The same, shared with others that lock it shared |
+| `Result<bool, IoError> tryLock(ref this)` | As `lock`, but `false` at once where another holds a lock |
+| `Result<bool, IoError> tryLockShared(ref this)` | As `lockShared`, but `false` at once where another holds it alone |
+| `Result<void, IoError> unlock(ref this)` | Lets the lock go; a writer writes what it holds first, and lets go also when that fails |
+
+The lock is of the whole file and is of the opening, not of the program: two openings of one file in one program
+are two holders. It goes when the stream ends, and when the program ends however it ends. A second lock changes
+the kind; the old one is let go first, so a `tryLock` that fails after a shared lock holds none, as with `flock`.
+It is a lock for programs that ask for it (`flock` on Linux and macOS): one that reads or writes the file without
+asking is not stopped. On Windows (`LockFileEx`) another opening that reads or writes a locked file is refused
+there, in this program or another; a shared lock refuses writes there to its own opening too. The input of the program, a standard stream and the pipe of another program are `NotAFile`.
+
+In an async function `lockAsync()` and `lockSharedAsync()` wait for it, with a token last if they are given one
+(choice 1983): the lock is tried, and while another holds it the task waits on the clock, from 1 ms up to 10, and
+tries again. A cancel ends the wait at once and no lock is taken after it; no thread is held while it waits, and
+the order in which programs waited is not kept. `tryLock`, `tryLockShared` and a reader's `unlock` wait for
+nothing and are called as they are; a writer's `unlockAsync` writes what it holds first (choice 1985).
+
+```sg
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "store.db")
+    try File.writeText(read path, "")
+    var first = try File.openWrite(read path)
+    var second = try File.openText(read path)
+    print(try first.tryLock())
+    print(try second.tryLockShared())
+    try first.write("data")
+    try first.unlock()
+    print(try second.tryLockShared())
+    print(try second.readText())
+    try first.close()
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+true
+false
+true
+data
+```
+
 ### Reading from the block
 
 A parser that finds its own ends (a length in front, a `\r\n\r\n`, a byte that closes a record) reads
@@ -290,15 +441,16 @@ end
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `openRegularAsync`, `createTextAsync`, `openAppendAsync`;
 on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
-`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `writePiecesAsync`, `flushAsync`, `closeAsync`,
-`syncDataAsync`, `syncAsync`, `setLengthAsync`, `seekAsync`. Each may take a `read CancellationToken` last (not
+`fillAsync`, `lockAsync`, `lockSharedAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `writePiecesAsync`, `flushAsync`, `closeAsync`,
+`syncDataAsync`, `syncAsync`, `setLengthAsync`, `seekAsync`, `lockAsync`, `lockSharedAsync`, `unlockAsync`. Each may take a `read CancellationToken` last (not
 `closeAsync`). In an async function the calls without `Async` are an error, since they would hold the thread.
 `buffered` and `consume` do not wait, and neither does a reader's `seek`, which asks the system where the
 file stands and reads nothing, nor its `info`: they are called as they are.
 
 The calls of the file system have async versions too (choice 1871), done on a thread of input and output
 while the task waits: `File.infoAsync`, `existsAsync`, `deleteAsync`, `moveAsync`, `replaceAsync`, `copyAsync`,
-`createTempAsync`, and `Directory.createAsync`, `createAllAsync`, `deleteAsync`, `deleteAllAsync`, `syncAsync`,
+`createTempAsync`, `createLinkAsync`, `createHardLinkAsync`, `readLinkAsync`, `linkInfoAsync`, `setPermissionsAsync`,
+`mapReadAsync` (written `await unsafe File.mapReadAsync(path)`), and `Directory.createAsync`, `createAllAsync`, `deleteAsync`, `deleteAllAsync`, `syncAsync`,
 `listAsync`, `existsAsync`, `createTempAsync`, each giving what the call without `Async` gives and taking a token
 last. On a local disk with its cache warm such a call takes a microsecond; on a disk of the network, a cold one
 or one that hangs it can take as long as a read, and every task of the thread would wait with it, so in an
@@ -405,8 +557,9 @@ to the output
 
 A `DirectoryEntry` has `name` (without the folder) and `kind`; a name that is not UTF-8 comes as
 [below](#names-that-are-not-text), and opens the same file. A `FileInfo` has `kind`, `size` (in bytes, a
-`long`) and `modified` (a [`DateTime`](./time.md)). `FileKind` is `File`, `Directory`, `Link` or `Other`; only
-a listing tells a `Link`, since `File.info` follows links.
+`long`), `modified` (a [`DateTime`](./time.md)) and `permissions` (an `int`, see [Links and
+permissions](#links-and-permissions)). `FileKind` is `File`, `Directory`, `Link` or `Other`; only a listing and
+`File.linkInfo` tell a `Link`, since `File.info` follows links.
 
 ```sg
 Result<void, IoError> main() {
@@ -540,13 +693,13 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `IsDirectory`, `NotDirectory` | A folder where a file was meant, or a file where a folder was |
 | `AlreadyExists`, `DirectoryNotEmpty` | Something is where one was to be made; a folder to remove holds something |
 | `NoSpace` | The disk is full |
-| `InvalidInput` | What was given cannot go to the system, a seek before the start, a length below 0, or a sync of what is not a file |
+| `InvalidInput` | What was given cannot go to the system, a seek before the start, a length below 0, a sync of what is not a file, `readLink` of what is no link, or a mode outside `0o7777` |
 | `NotSeekable` | `seek` on a pipe, on `Stdin` or on a writer of `openAppend`; `setLength` on a standard stream or the input of another program |
 | `TooLong` | `fill` on a reader whose block holds its limit already |
 | `InvalidText(long position)` | A byte that is not UTF-8, at that place |
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
-| `NotAFile` | `File.openRegular` met a pipe, a device or a socket, and did not open it |
+| `NotAFile` | `File.openRegular` or `File.mapRead` met a pipe, a device or a socket, and did not open it; a lock of a stream that is no file |
 | `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `AddressNotAvailable`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
 
 Printed, an `IoError` is a sentence in lower case, as Go's errors are: `not found`, `permission denied`,

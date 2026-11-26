@@ -1826,7 +1826,7 @@ fn status_fields(info: &std::fs::Metadata, fields: &Value) -> Value {
     });
     let modified = modified.unwrap_or(0).clamp(i128::from(i64::MIN), i128::from(i64::MAX));
     let size = i128::from(info.len()).min(i128::from(i64::MAX));
-    for (slot, value) in cells_of(fields).iter().zip([i128::from(kind_code(&info.file_type())), size, modified]) {
+    for (slot, value) in cells_of(fields).iter().zip([i128::from(kind_code(&info.file_type())), size, modified, crate::sys::mode_of(info)]) {
         *slot.borrow_mut() = Value::Int(IntTy::Long, value);
     }
     ok(Value::Void)
@@ -6168,7 +6168,15 @@ impl<'a, 'e> Interp<'a, 'e> {
             // as `File.readTextAsync` is; a token is looked at before the work.
             Callee::SystemAsync(call) => {
                 let params = match call {
-                    SystemCall::Move | SystemCall::Replace | SystemCall::Copy | SystemCall::Status => 2,
+                    SystemCall::Move
+                    | SystemCall::Replace
+                    | SystemCall::Copy
+                    | SystemCall::Status
+                    | SystemCall::LinkStatus
+                    | SystemCall::CreateLink
+                    | SystemCall::CreateHardLink
+                    | SystemCall::SetPermissions
+                    | SystemCall::MapRead => 2,
                     SystemCall::List => 3,
                     _ => 1,
                 };
@@ -6193,7 +6201,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A writer's async methods do the work of the methods without `Async`; the
             // block that the compiled code writes on a thread of its own is written here.
             Callee::StreamAsync(call) => {
-                let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill | StreamCall::SyncData | StreamCall::Sync) { 0 } else { 1 };
+                let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill | StreamCall::SyncData | StreamCall::Sync | StreamCall::Unlock) { 0 } else { 1 };
                 let token = args.get(given);
                 // The input that can make the program wait is waited for outside the run.
                 if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
@@ -7663,11 +7671,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let not_found = || failed(io_cause(None, Some(crate::sys::NOT_FOUND)));
         // No file has a zero byte in its name: such a path is not found.
-        let paths = match call {
-            SystemCall::Current | SystemCall::TempFolder => 0,
-            SystemCall::Move | SystemCall::Replace | SystemCall::Copy => 2,
-            _ => 1,
-        };
+        let paths = call.paths();
         if call == SystemCall::ColourTerminal {
             return Ok(Value::Bool(self.io.world.borrow().err_colour));
         }
@@ -7750,6 +7754,18 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             _ => {}
         }
+        // What `File.mapRead` gave is taken away (1980).
+        if call == SystemCall::Unmap {
+            let pointer = raw_of(&values[0]);
+            if pointer.addr != 0 {
+                let _ = crate::raw::free(pointer, 1);
+            }
+            return Ok(Value::Void);
+        }
+        // A mode of Unix is from 0 to 0o7777 (1978).
+        if call == SystemCall::SetPermissions && !(0..=0o7777).contains(&number(1)) {
+            return Ok(failed(io_cause(Some(&std::io::ErrorKind::InvalidInput.into()), None)));
+        }
         if call != SystemCall::Variable && (0..paths).any(|at| text(at).contains('\0')) {
             return Ok(not_found());
         }
@@ -7760,6 +7776,51 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::Move => done(rename_new(&text(0), &text(1)).map(|()| Value::Void)),
             SystemCall::Replace => done(std::fs::rename(os(0), os(1)).map(|()| Value::Void)),
             SystemCall::Copy => done(copy_new(&text(0), &text(1)).map(|()| Value::Void)),
+            SystemCall::CreateLink => done(crate::sys::create_link(&text(0), &text(1)).map(|()| Value::Void)),
+            // A folder has no second name: `IsDirectory` on every system, where Linux and macOS say EPERM.
+            SystemCall::CreateHardLink => done(std::fs::hard_link(os(0), os(1)).map(|()| Value::Void).map_err(|error| match std::fs::metadata(os(0)) {
+                Ok(info) if info.is_dir() && error.kind() == std::io::ErrorKind::PermissionDenied => std::io::Error::from_raw_os_error(crate::sys::IS_DIR),
+                _ => error,
+            })),
+            SystemCall::ReadLink => done(crate::sys::read_link(&text(0)).map(|bytes| Value::Str(Rc::new(crate::names::text_of(&bytes))))),
+            SystemCall::SetPermissions => done(crate::sys::set_permissions(&text(0), number(1) as u32).map(|()| Value::Void)),
+            SystemCall::LinkStatus => match std::fs::symlink_metadata(os(0)) {
+                Ok(info) => {
+                    status_fields(&info, &values[1]);
+                    if let Some(slot) = cells_of(&values[1]).first() {
+                        *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(crate::sys::link_kind(&os(0), &info)));
+                    }
+                    ok(Value::Void)
+                }
+                Err(error) => done(Err(error)),
+            },
+            // Read into a block of raw memory, whose items the interpreter checks; compiled code
+            // maps the file (1980).
+            SystemCall::MapRead => {
+                let file = match crate::sys::open_regular(&text(0)) {
+                    Ok(Some(file)) => file,
+                    Ok(None) => return Ok(failed(Value::Enum("IoError".into(), 20, Rc::new(Vec::new())))),
+                    Err(error) => return Ok(done(Err(error))),
+                };
+                let mut bytes = Vec::new();
+                if let Err(error) = (&file).read_to_end(&mut bytes) {
+                    return Ok(done(Err(error)));
+                }
+                if let Some(slot) = cells_of(&values[1]).first() {
+                    *slot.borrow_mut() = Value::Int(IntTy::Long, bytes.len() as i128);
+                }
+                if bytes.is_empty() {
+                    return Ok(ok(Value::Raw(crate::raw::RawPtr::NULL)));
+                }
+                match crate::raw::allocate(bytes.len(), 1, 1) {
+                    Ok(block) => {
+                        // SAFETY: the block was just made with room for the bytes.
+                        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), block.addr as *mut u8, bytes.len()) };
+                        ok(Value::Raw(block))
+                    }
+                    Err(_) => failed(io_cause(Some(&std::io::ErrorKind::OutOfMemory.into()), None)),
+                }
+            }
             SystemCall::CreateDirectory => done(std::fs::create_dir(os(0)).map(|()| Value::Void)),
             SystemCall::RemoveDirectory => done(std::fs::remove_dir(os(0)).map(|()| Value::Void)),
             SystemCall::RemoveAll => done(remove_all(&text(0)).map(|()| Value::Void)),
@@ -7807,6 +7868,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::MakeTempFile => done(make_temp(&text(0), true).map(|file| Value::Str(Rc::new(file)))),
             SystemCall::TempFolder => ok(Value::Str(Rc::new(crate::sys::temp_folder()))),
             SystemCall::Executable
+            | SystemCall::Unmap
             | SystemCall::ReaderStatus
             | SystemCall::Run
             | SystemCall::Start
@@ -8547,6 +8609,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 self.set_length(&writer, length as i64)
             }
+            // The lock of the file (1979); `unlockAsync` of a writer looks at its token first.
+            (call, stream) if call.locks() => {
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                self.lock_stream(call, &stream)
+            }
             (StreamCall::Seek, stream) => {
                 let Value::Enum(_, kind, fields) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a `SeekFrom`") };
                 if self.cancelled(token, frame)? {
@@ -8567,6 +8636,52 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             _ => unreachable!("the checker gives each method its stream"),
         }
+    }
+
+    /// `stream.lock()` and the others (1979): the file of the stream locked through the system,
+    /// as compiled code locks it. The input of the program, a standard stream and the pipe of
+    /// another program are `NotAFile`. A writer writes what its buffer holds before it lets its
+    /// lock go (1985); the lock goes also when that fails, and the error is given.
+    fn lock_stream(&mut self, call: StreamCall, stream: &Value) -> Res<Value> {
+        let kind = match call {
+            StreamCall::Lock => 0,
+            StreamCall::LockShared => 1,
+            StreamCall::TryLock => 2,
+            StreamCall::TryLockShared => 3,
+            _ => 4,
+        };
+        let not_a_file = || failed(Value::Enum("IoError".into(), 20, Rc::new(Vec::new())));
+        let flushed = match stream {
+            Value::Writer(writer) if kind == 4 && matches!(writer.borrow().sink, Sink::File(Some(_))) && !writer.borrow().pipe => Some(self.write_stream(writer, &[], true)?),
+            _ => None,
+        };
+        let locked = match stream {
+            Value::Reader(reader) => {
+                let reader = reader.borrow();
+                match (&reader.file, &reader.net) {
+                    (Some(block), None) if crate::sys::disk_file(&block.file) => crate::sys::lock_file(&block.file, kind),
+                    _ => return Ok(not_a_file()),
+                }
+            }
+            Value::Writer(writer) => {
+                let writer = writer.borrow();
+                match &writer.sink {
+                    Sink::File(Some(file)) if !writer.pipe && crate::sys::disk_file(file) => crate::sys::lock_file(file, kind),
+                    _ => return Ok(not_a_file()),
+                }
+            }
+            _ => unreachable!("the checker makes it a stream"),
+        };
+        if let Some(flushed) = flushed {
+            if matches!(&flushed, Value::Enum(_, 1, _)) {
+                return Ok(flushed);
+            }
+        }
+        Ok(match locked {
+            Ok(got) if kind == 2 || kind == 3 => ok(Value::Bool(got)),
+            Ok(_) => ok(Value::Void),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        })
     }
 
     /// `writer.syncData()` (`data`) and `writer.sync()`: what the buffer holds is written, then

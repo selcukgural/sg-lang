@@ -1,0 +1,11 @@
+// `lockAsync` lends the stream, so it is awaited where it is written.
+async Result<void, IoError> guarded(string path) {
+    var file = try await File.openTextAsync(read path)
+    var waiting = file.lockAsync()
+    try await waiting
+    return Ok()
+}
+
+void main() {
+    _ = guarded("data.txt").wait()
+}

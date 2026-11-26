@@ -1,0 +1,6 @@
+error: `File.createLink` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_file_link_async.sg:3:14
+ 3 |     try File.createLink("target.txt", read path)
+   |              ^^^^^^^^^^
+  hint: `await File.createLinkAsync("target.txt", read path)` does the same work without holding the thread

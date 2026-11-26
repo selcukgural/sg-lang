@@ -1,0 +1,5 @@
+error: `lockAsync` lends the reader, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  --> error_file_lock_unawaited.sg:4:19
+ 4 |     var waiting = file.lockAsync()
+   |                   ^^^^^^^^^^^^^^^^
+  hint: `await file.lockAsync()` runs it as part of this task, where it can borrow
