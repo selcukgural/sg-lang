@@ -1,0 +1,8 @@
+// Two windows whose ends are numbers and that share items: refused when the program is
+// compiled, since the check would stop it every time (choice 2013).
+void main() {
+    var xs = List<int>.repeat(1, 8)
+    var low = ref xs[^4..^1]
+    var high = ref xs[^2..]
+    low[0] = high[0]
+}

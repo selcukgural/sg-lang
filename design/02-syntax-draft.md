@@ -1727,6 +1727,13 @@ void sortAll(ref int[] items) { items.sort() }   // sort and reverse through a r
 window[0..4].copyFrom(block[8..12])              // the items copied over as many: one memmove. Rust:
                                                  // copy_from_slice. Lengths that differ: a panic
 buf[0..n].copyFrom(buf[k..k + n])                // two windows of one place: read first, as memmove does
+var left = ref xs[..k]                           // two ref windows of one place that share no item: Rust's
+var right = ref xs[k..]                          // split_at_mut. Checked when the second is taken: a panic
+merge(ref xs[..mid], ref xs[mid..])              // if they share one. One call too
+swap(ref xs[i], ref xs[j])                       // an item is a window of one: i == j is a panic
+var a = ref xs[0..3]
+var b = ref xs[2..5]                             // error: they share items every time; ends that are numbers
+                                                 // are told apart when the program is compiled
 var at = sorted.binarySearch(42)                 // nint?: the first item equal to 42, found by halving the
                                                  // items, which are in order (not checked); null if none
 var from = sorted.lowerBound(10)                 // nint: the first place whose item is not less than 10

@@ -1,0 +1,141 @@
+// Two borrows of items of one list, array or window at once, when they share no item: Rust's
+// `split_at_mut`, written as two ranges (choices 2011-2015). Where the ends are not numbers,
+// that they share none is checked when the second is taken.
+struct Person {
+    string name
+    int age
+}
+
+struct Grid {
+    List<int> cells
+    int[6] marks
+
+    // Through the fields of `this`.
+    void foldRows(ref this, nint width) {
+        var top = ref this.cells[..width]
+        var rest = ref this.cells[width..]
+        for i in 0..width {
+            top[i] += rest[i]
+        }
+        swap(ref this.marks[0], ref this.marks[^1])
+    }
+}
+
+void swap(ref int a, ref int b) {
+    var kept = a
+    a = b
+    b = kept
+}
+
+void addInto(ref int[] into, read int[] from) {
+    for i in 0..from.length() {
+        into[i] += from[i]
+    }
+}
+
+// The two halves of a window given as `ref`: merge sort's step, in place.
+void sortHalves(ref int[] items) {
+    if items.length() < 2 {
+        return
+    }
+    var mid = items.length() / 2
+    var left = ref items[..mid]
+    var right = ref items[mid..]
+    left.sort()
+    right.sort()
+    if left[left.length() - 1] > right[0] {
+        swap(ref left[left.length() - 1], ref right[0])
+    }
+}
+
+void rename(ref string into, read string from) {
+    into = from.clone()
+}
+
+async int sumLater(ref int[] items, nint split) {
+    var low = ref items[..split]
+    await Task.delay(1)
+    var high = ref items[split..]
+    low[0] += high[0]
+    return low[0]
+}
+
+async void main(List<string> args) {
+    var xs = List<int> { 1, 2, 3, 4, 5, 6 }
+    var k = args.length() + 3
+
+    // Two variables, each holding one side.
+    var low = ref xs[..k]
+    var high = ref xs[k..]
+    low[0] += high[0]
+    high[0] = low[1]
+    print($"{xs[0]} {xs[3]}")
+
+    // One call, `ref` beside `ref` and beside a window only read.
+    addInto(ref xs[..k], xs[k..])
+    addInto(ref xs[k..], ref xs[..k])
+    print($"{xs[0]} {xs[5]}")
+
+    // Two items, and an item beside a range.
+    swap(ref xs[0], ref xs[k])
+    swap(ref xs[k - 1], ref xs[k])
+    var head = ref xs[..1]
+    swap(ref xs[1], ref head[0])
+    print($"{xs[0]} {xs[1]} {xs[2]} {xs[3]}")
+
+    // Ends written as numbers are told apart when the program is compiled, also from the end.
+    var array = int[6] { 6, 5, 4, 3, 2, 1 }
+    addInto(ref array[0..3], array[3..6])
+    swap(ref array[^1], ref array[0])
+    var front = ref array[..^1]
+    var back = ref array[^1..]
+    front[0] += back[0]
+    print($"{array[0]} {array[5]}")
+
+    // An empty window shares no item, wherever it is.
+    var none = ref xs[k..k]
+    var all = ref xs[..]
+    all[0] += (int)none.length()
+
+    // Items of a list of structs, and fields of two of them.
+    var people = List<Person> { Person { name = "Ada", age = 36 }, Person { name = "Linus", age = 21 } }
+    rename(ref people[0].name, read people[1].name)
+    var first = ref people[0].age
+    var second = ref people[1].age
+    first += second
+    print($"{people[0].name} {people[0].age}")
+
+    // A text and a `T?` only read, beside a window written through: kept as a view and as an
+    // option, counted from the address of their item.
+    var names = List<string> { "a", "b", "c", "d" }
+    var last = read names[names.length() - 1]
+    var others = ref names[..names.length() - 1]
+    others[0] = last.clone()
+    var maybe = List<int?> { 1, null, 3 }
+    var third = read maybe[maybe.length() - 1]
+    var firstTwo = ref maybe[..maybe.length() - 1]
+    firstTwo[1] = third ?? 0
+    print($"{names[0]} {maybe[1] ?? -1}")
+
+    // A row beside another of a list of lists: the row that grows is held by a variable.
+    var rows = List<List<int>> { List<int> { 1, 2 }, List<int> { 3 } }
+    var top = ref rows[0]
+    var bottom = ref rows[1]
+    top.addAll(read bottom)
+    print(rows[0].length())
+
+    // Through `this`, in place, in a loop, and across an `await`.
+    var grid = Grid { cells = List<int> { 1, 2, 3, 10, 20, 30 }, marks = int[6] { 1, 0, 0, 0, 0, 9 } }
+    grid.foldRows(3)
+    print($"{grid.cells[0]} {grid.cells[2]} {grid.marks[0]}")
+    var values = List<int> { 9, 3, 7, 1, 8, 2 }
+    sortHalves(ref values[..])
+    print($"{values[0]} {values[2]} {values[3]} {values[5]}")
+    for split in 1..values.length() {
+        var left = ref values[..split]
+        var right = ref values[split..]
+        left[0] += right[0]
+    }
+    print(values[0])
+    print(await sumLater(ref values[..], 2))
+}

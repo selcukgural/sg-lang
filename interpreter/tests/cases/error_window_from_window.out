@@ -1,0 +1,9 @@
+error: `xs` cannot be used here: `inner` holds a `ref` borrow of it and is used again later
+  --> error_window_from_window.sg:8:20
+ 8 |     var high = ref xs[k..]
+   |                    ^^
+  `inner` borrowed it here:
+  --> error_window_from_window.sg:6:15
+ 6 |     var low = ref xs[..k]
+   |               ^^^^^^^^^^^
+  hint: finish with `inner` before this line: a borrow ends at its last use

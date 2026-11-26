@@ -147,6 +147,10 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   After the last use of the variable the place is free again. The same place cannot be lent twice in one call
   when one of the two is `ref`, and what a part of a call lends (the value a method is called on, an argument,
   the value an index or a range looks into) cannot be changed or moved by a later part of it.
+- Two windows or items of one list, array or window, one of them `ref`, go together only when they share no
+  item (`var a = ref xs[..k]` beside `var b = ref xs[k..]`, `swap(ref xs[i], ref xs[j])`): ends that are
+  numbers are told apart at compile time, the others when the second is taken, with a panic that names the
+  items shared and the variable or the part of the call that holds the first (2011-2015).
 - A function that returns a borrow returns one that comes from a borrowed parameter. With one borrowed
   parameter nothing is written; with more, `from a, b` after the parameters says which, and leaving it out is
   an error that shows what to write. Returning a borrow of a local, of a parameter taken by value, or from a

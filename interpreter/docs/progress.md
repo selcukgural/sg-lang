@@ -635,7 +635,14 @@ Slice 193 (2002-2010) gives compiled code the interpreter's panic when every tas
 could end a wait (399), at the same place. It counts the threads of the program that are awake and the waits for
 something outside the tasks (a delay, a socket, another program, a signal, work on a thread of input and output),
 as Go's `checkdead` does; a thread takes itself off only when it goes to sleep, so a task that goes on without a
-wait pays nothing. Next is Rust's `split_at_mut` (194).
+wait pays nothing.
+
+Slice 194 (2011-2015) lets two `ref` windows of one list, array or window go together when they share no item,
+Rust's `split_at_mut` written as two ranges: `var left = ref xs[..k]` beside `var right = ref xs[k..]`, or
+`merge(ref xs[..mid], ref xs[mid..])`. An item is a window of one (`swap(ref xs[i], ref xs[j])`) and a field of an
+item counts as the item. That they share none is checked when the second is taken, a panic if they do; ends
+written as numbers are told apart when the program is compiled, and for `..k` beside `k..` the compiler of C
+leaves the check out. Next are the processes of the system: pipes, `try_wait`, groups, signals.
 
 ## Next
 

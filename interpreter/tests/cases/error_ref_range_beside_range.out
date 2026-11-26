@@ -1,10 +1,9 @@
-error: `xs[1..3]` looks at `xs[0..2]`, which this call is given to change
-  the call may change `xs[0..2]` while `xs[1..3]` is read, and it would be read from what was there
-  --> error_ref_range_beside_range.sg:10:26
- 10 |     change(ref xs[0..2], xs[1..3])
+error: `xs[1..3]` shares items with `xs[0..2]` every time this runs, and a `ref` borrow must be the only one of its items
+  --> error_ref_range_beside_range.sg:11:26
+ 11 |     change(ref xs[0..2], xs[1..3])
     |                          ^^^^^^^^
-  given as `ref` here:
-  --> error_ref_range_beside_range.sg:10:12
- 10 |     change(ref xs[0..2], xs[1..3])
+  the other borrow is here:
+  --> error_ref_range_beside_range.sg:11:12
+ 11 |     change(ref xs[0..2], xs[1..3])
     |            ^^^^^^^^^^^^
-  hint: make it a value of its own before the call (`.clone()`, `.toList()`), and give the call that
+  hint: lend items that do not overlap, as `ref xs[..k]` beside `ref xs[k..]` do

@@ -1,0 +1,10 @@
+// A window taken from another window (`ref low[1..]`) is not told apart from a window of the
+// list beside it: the check knows the windows variables are declared with (choices 2011-2015).
+void main(List<string> args) {
+    var xs = List<int>.repeat(1, 8)
+    var k = args.length() + 4
+    var low = ref xs[..k]
+    var inner = ref low[1..]
+    var high = ref xs[k..]
+    inner[0] = high[0]
+}

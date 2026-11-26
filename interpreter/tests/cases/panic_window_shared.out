@@ -1,0 +1,4 @@
+panic: `rows[j * width + 2..j * width + width + 2]` shares items 6..8 with `a` (`rows[i * width..i * width + width]`), which is still in use
+  --> panic_window_shared.sg:9:13
+ 9 |     var b = ref rows[j * width + 2..j * width + width + 2]
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

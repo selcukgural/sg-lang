@@ -1,0 +1,13 @@
+// Two items of one list lent as `ref` to one call: the same item twice is a panic when the
+// call is made (choice 2014), as Rust's `get_disjoint_mut` gives an error.
+void swap(ref string a, ref string b) {
+    var kept = a.clone()
+    a = b.clone()
+    b = kept
+}
+void main(List<string> args) {
+    var names = List<string> { "a", "b", "c" }
+    var i = args.length() + 1
+    swap(ref names[0], ref names[i])
+    swap(ref names[i], ref names[1])
+}

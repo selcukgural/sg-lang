@@ -2870,6 +2870,18 @@ SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...
     fputc('\n', stderr);
     sg_die(loc);
 }
+/* Two borrows of items of one list, array or window that must not share an item (choices
+   2011-2015): the first item and the end of each, counted in the place. Where the two ends are
+   one value (`xs[..k]` beside `xs[k..]`), the compiler of C sees that nothing is shared and
+   leaves the test out. */
+SG_COLD static _Noreturn void sg_apart_panic(int64_t first, int64_t end, const char* head, const char* tail, const char* loc) {
+    if (end - first == 1) sg_panicf(loc, "%sitem %lld%s", head, (long long)first, tail);
+    sg_panicf(loc, "%sitems %lld..%lld%s", head, (long long)first, (long long)end, tail);
+}
+static inline void sg_apart(int64_t a0, int64_t a1, int64_t b0, int64_t b1, const char* head, const char* tail, const char* loc) {
+    int64_t first = a0 > b0 ? a0 : b0, end = a1 < b1 ? a1 : b1;
+    if (__builtin_expect(first < end, 0)) sg_apart_panic(first, end, head, tail, loc);
+}
 /* A value given to a bit field in a debug build: it must fit the bits (a release build keeps
    the lowest of them, as C does). */
 static inline int64_t sg_bits_s(int64_t v, int width, const char* loc) {
@@ -14205,6 +14217,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         consts: &prog.const_values,
         consts_used: std::collections::BTreeSet::new(),
         sizes: &prog.sizes,
+        windows: &prog.windows,
+        windows_kept: prog.windows.iter().flat_map(|(key, checks)| std::iter::once(*key).chain(checks.iter().map(|check| check.other))).collect(),
+        windowing: HashSet::new(),
+        window_temps: HashMap::new(),
         statics: prog.statics.iter().map(|decl| (decl.name.as_str(), decl)).collect(),
         statics_used: std::collections::BTreeSet::new(),
     };
@@ -15757,6 +15773,13 @@ struct Emitter<'a> {
     consts_used: std::collections::BTreeSet<String>,
     /// The count each `[Name]` in a type stands for (`Program::sizes`).
     sizes: &'a std::collections::BTreeMap<usize, usize>,
+    /// The borrows held apart from others (`Program::windows`), every borrow one is held apart
+    /// from, the borrows being emitted, and the temporary each of those of the statement being
+    /// written is kept in.
+    windows: &'a std::collections::BTreeMap<(usize, usize), Vec<WindowCheck>>,
+    windows_kept: HashSet<(usize, usize)>,
+    windowing: HashSet<(usize, usize)>,
+    window_temps: HashMap<(usize, usize), (String, Ty)>,
     /// The statics of the program, by full name.
     statics: HashMap<&'a str, &'a StaticDecl>,
     /// The statics the code reads: each is defined once, outside the functions.
@@ -23913,6 +23936,69 @@ impl<'a> Emitter<'a> {
         Ok(sequence(&names, code))
     }
 
+    /// A borrow held apart from another of the same place (choices 2011-2015): kept in a
+    /// temporary, where a later part of the call finds it, and compared with each borrow it is
+    /// held apart from, which a variable holds or an earlier part of the call kept.
+    fn window_value(&mut self, expr: &'a Expr, key: (usize, usize)) -> Res<String> {
+        // What the items are counted from: the window, or the address of the item or of its
+        // field. A `read string` and a `read T?` are kept as a view and as an option, not as an
+        // address, so the address is found first and they are made from it, as `view` and the
+        // borrow of an option make them.
+        let (value, kept, counted) = match &expr.kind {
+            ExprKind::Borrow { expr: inner, .. } if inner.is_place() && !inner.ty.is_borrow() && (is_text_view(&expr.ty) || lent_option(&expr.ty).is_some()) => {
+                let address = self.address(inner)?;
+                let (temp, ctype) = (self.temp(), self.ctype(&inner.ty, inner.span)?);
+                self.pre.push(format!("{ctype}* {temp} = {address};"));
+                let value = match lent_option(&expr.ty) {
+                    Some(option) => self.lend(&temp, option, expr.span)?,
+                    None => format!("sg_view({temp})"),
+                };
+                (value, temp, Ty::Ref(Box::new(inner.ty.clone())))
+            }
+            _ => {
+                self.windowing.insert(key);
+                let value = self.value(expr);
+                self.windowing.remove(&key);
+                let value = value?;
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                let temp = self.temp();
+                self.pre.push(format!("{ctype} {temp} = {value};"));
+                (temp.clone(), temp, expr.ty.clone())
+            }
+        };
+        // Kept where the variable it is given to is declared, for the borrows taken beside it later.
+        self.window_temps.insert(key, (kept.clone(), counted.clone()));
+        let Some(checks) = self.windows.get(&key) else { return Ok(value) };
+        let step = window_step(expr).expect("the checker holds apart only borrows of items");
+        let base = self.window(step.base)?;
+        let item = match step.base.ty.strip_borrow() {
+            Ty::List(item) | Ty::Array(item, _) | Ty::Slice(item) => (**item).clone(),
+            _ => unreachable!("a window step is of a list, an array or a window"),
+        };
+        // The first item and the end of a window, of an item, or of the item a field lies in.
+        let region = |ty: &Ty, value: &str| match ty.strip_borrow() {
+            Ty::Slice(_) => format!("(int64_t)({value}.ptr - {base}.ptr), (int64_t)({value}.ptr - {base}.ptr) + {value}.len"),
+            inner if *inner == item => format!("(int64_t)({value} - {base}.ptr), (int64_t)({value} - {base}.ptr) + 1"),
+            _ => {
+                let at = format!("(int64_t)(((const char*){value} - (const char*){base}.ptr) / (int64_t)sizeof(*{base}.ptr))");
+                format!("{at}, {at} + 1")
+            }
+        };
+        let mine = region(&counted, &kept);
+        let loc = self.loc(expr.span);
+        for check in checks {
+            let other = match self.window_temps.get(&check.other) {
+                Some((other, ty)) => region(ty, other),
+                None => return Err(not_yet(expr.span, "a borrow held apart from one that was not kept before it")),
+            };
+            let (head, tail) = (c_string(&check.head), c_string(&check.tail));
+            // The place is a variable and its fields: found again, at no cost, with no name
+            // declared (an async function keeps the names of its statements in its frame).
+            self.pre.push(format!("sg_apart({mine}, {other}, {head}, {tail}, {loc});"));
+        }
+        Ok(value)
+    }
+
     /// The address of a place, for `read x`, `ref x` and the receiver of a method.
     fn address(&mut self, place: &'a Expr) -> Res<String> {
         if let ExprKind::Var(name) = &place.kind {
@@ -23929,6 +24015,9 @@ impl<'a> Emitter<'a> {
     fn view(&mut self, expr: &'a Expr) -> Res<String> {
         match (&expr.kind, &expr.ty) {
             (ExprKind::Str(text), _) => Ok(format!("SG_STR({}, {})", c_string(text), text.len())),
+            (ExprKind::Borrow { .. }, _) if self.windows_kept.contains(&(expr.span.start, expr.span.end)) && !self.windowing.contains(&(expr.span.start, expr.span.end)) => {
+                self.window_value(expr, (expr.span.start, expr.span.end))
+            }
             (ExprKind::Borrow { expr: inner, .. }, _) if is_text(&inner.ty) => self.view(inner),
             (_, ty) if is_text_view(ty) => self.value(expr),
             (_, Ty::Ref(_)) => Ok(format!("sg_view({})", self.value(expr)?)),
@@ -23997,6 +24086,12 @@ impl<'a> Emitter<'a> {
     /// The value of an expression as C writes it. A use that the checker marked as a move
     /// takes the value out of its place and leaves the place empty.
     fn value(&mut self, expr: &'a Expr) -> Res<String> {
+        if !self.windows_kept.is_empty() && matches!(expr.kind, ExprKind::Borrow { .. } | ExprKind::Slice { .. }) {
+            let key = (expr.span.start, expr.span.end);
+            if self.windows_kept.contains(&key) && !self.windowing.contains(&key) {
+                return self.window_value(expr, key);
+            }
+        }
         if matches!(expr.ty, Ty::Array(..) | Ty::Struct(_) | Ty::Enum(_) | Ty::Nullable(_) | Ty::Result(..)) {
             self.on_stack(&expr.ty);
         }
@@ -24728,10 +24823,11 @@ impl<'a> Emitter<'a> {
                 if from.is_none() && to.is_none() {
                     return Ok(whole);
                 }
-                // `xs[a..^n]` (1921): the window is found once, and its length read there.
+                // `xs[a..^n]` (1921): the window is found once, and its length read there. Its
+                // type is written, so that an async function can keep it in its frame.
                 if from.iter().chain(to).any(|end| from_end(end).is_some()) {
-                    let temp = self.temp();
-                    self.pre.push(format!("__auto_type {temp} = {whole};"));
+                    let (temp, ctype) = (self.temp(), self.ctype(&slice, expr.span)?);
+                    self.pre.push(format!("{ctype} {temp} = {whole};"));
                     whole = temp;
                 }
                 let length = format!("{whole}.len");

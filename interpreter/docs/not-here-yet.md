@@ -3,8 +3,12 @@
 - **Of default values of parameters (1620-1628)**: named arguments (`connect("a", retries: 5)`), so a call
   can leave out a parameter that is not last; a default found when the program runs (Kotlin and C++ run
   any expression at each call); a default carried by a `Func` value.
-- **Two `ref` windows of one place at once (1610)**: a call is lent one range of a list or an array as `ref`,
-  and nothing else of it; Rust's `split_at_mut`, which gives two that do not overlap, has no partner yet.
+- **Of two windows of one place (2011-2015)**: the check knows a variable declared with its window and given
+  no other, and the parts of one call. A window taken from a window (`var inner = ref low[1..]`), a `read`
+  variable given another window, a window kept in a struct or a list, and an item that grows through its own
+  method beside another item (`rows[i].addAll(read rows[j])`; `var row = ref rows[i]` first is checked) are
+  refused beside a window of the same place, as before. The items of a list of lists are counted in the outer
+  list (`grid[i][j]` beside `grid[i][k]` is one item, `grid[i]`). Two windows given to two threads at once.
 
 - **Of packages (1552, 1555-1583)**: a package in a folder of a repository (Go's `sub/v1.0.0` tags), an
   address that leads to another through `?go-get=1`, versions before a release, branches and commits, a

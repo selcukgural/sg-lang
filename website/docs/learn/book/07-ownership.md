@@ -244,6 +244,32 @@ error: `balance` is lent twice in one call, and a `ref` borrow must be the only 
 The same goes for variables: while `var a = ref count` is still used, `count` cannot be read, changed or lent
 again, even by `print`.
 
+Two parts of one list are two places, as long as they share no item. Merge sort's step, a buffer filled in one
+half from the other, rows of a matrix added to one another: each lends two windows of one list at once.
+
+```sg
+void addInto(ref int[] into, read int[] from) {
+    for i in 0..from.length() {
+        into[i] += from[i]
+    }
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3, 10, 20, 30 }
+    var half = xs.length() / 2
+    addInto(ref xs[..half], xs[half..])
+    var left = ref xs[..half]
+    var right = ref xs[half..]
+    left[0] += right[0]
+    print(xs[0])
+}
+```
+
+The two windows are checked when the second is taken: if they share an item, the program stops with a panic, as
+it does for an index out of range. Where the ends are numbers (`ref xs[0..3]` beside `ref xs[2..5]`) the check is
+made when the program is compiled. An item is a window of one, so `swap(ref xs[i], ref xs[j])` stops the program
+when `i` and `j` are the same item. Rust writes the same with `split_at_mut` and `get_disjoint_mut`.
+
 ## `.clone()`
 
 When you need a second value of your own, ask for it: `.clone()` makes a new copy that owns its own memory.

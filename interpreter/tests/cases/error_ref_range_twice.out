@@ -1,9 +1,9 @@
-error: `xs[2..4]` is lent twice in one call, and a `ref` borrow must be the only one
-  --> error_ref_range_twice.sg:8:24
- 8 |     both(ref xs[0..1], ref xs[2..4])
-   |                        ^^^^^^^^^^^^
+error: `xs[1..4]` shares items with `xs[0..2]` every time this runs, and a `ref` borrow must be the only one of its items
+  --> error_ref_range_twice.sg:10:24
+ 10 |     both(ref xs[0..2], ref xs[1..4])
+    |                        ^^^^^^^^^^^^
   the other borrow is here:
-  --> error_ref_range_twice.sg:8:10
- 8 |     both(ref xs[0..1], ref xs[2..4])
-   |          ^^^^^^^^^^^^
-  hint: copy what is needed into a variable before the call
+  --> error_ref_range_twice.sg:10:10
+ 10 |     both(ref xs[0..2], ref xs[1..4])
+    |          ^^^^^^^^^^^^
+  hint: lend items that do not overlap, as `ref xs[..k]` beside `ref xs[k..]` do

@@ -1,0 +1,9 @@
+error: `xs[^2..]` shares items with `xs[^4..^1]` every time this runs, and a `ref` borrow must be the only one of its items
+  --> error_window_always_shared.sg:6:16
+ 6 |     var high = ref xs[^2..]
+   |                ^^^^^^^^^^^^
+  `low` borrowed it here, and is used again later:
+  --> error_window_always_shared.sg:5:15
+ 5 |     var low = ref xs[^4..^1]
+   |               ^^^^^^^^^^^^^^
+  hint: lend items that do not overlap, as `ref xs[..k]` beside `ref xs[k..]` do

@@ -237,8 +237,14 @@ It prints:
 A slice is a window on the items of a list, an array or another slice. `read xs` and `ref xs` give one where a
 slice is expected, and so does a range: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` to write
 through. An end counted from the end is written `^n`: `xs[..^1]` is every item but the last, `xs[^3..]` the last
-three. A function that takes `read T[]` takes a list and an array alike. A range lent as `ref` lends the whole
-list or array, as in Rust: `f(ref xs[0..2], xs[2..4])` is an error, however far apart the two ranges are.
+three. A function that takes `read T[]` takes a list and an array alike.
+
+Two windows of one place go together when they share no item, one of them written through or both, as Rust's
+`split_at_mut` gives them: `var left = ref xs[..k]` beside `var right = ref xs[k..]`, or `merge(ref xs[..mid],
+ref xs[mid..])`. An item is a window of one, so `swap(ref xs[i], ref xs[j])` works too. That the two share no item
+is checked when the second is taken, and the program stops with a panic if they do, as with an index out of range;
+where the ends are numbers it is checked when the program is compiled. The variable that holds the first is the
+one declared with it: a window taken from that window is not told apart from the list beside it.
 
 | Signature | What it does |
 |---|---|

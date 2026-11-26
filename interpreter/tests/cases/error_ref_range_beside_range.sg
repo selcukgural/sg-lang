@@ -1,5 +1,6 @@
-// A range lent as `ref` beside another range of the same list (choice 1610): the call would
-// write over the text the other one reads.
+// A range lent as `ref` beside another range of the same list that shares items with it
+// (choices 1610, 2013): the call would write over the text the other one reads. Ranges that
+// share none go together (choice 2011).
 void change(ref string[] into, read string[] from) {
     var kept = read from[0]
     into[1] = "x".repeat(40)

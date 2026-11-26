@@ -1,0 +1,11 @@
+// A window taken beside one a variable still uses, sharing an item with it: checked when it is
+// taken (choice 2012). Rust: `split_at_mut` cannot make it; `get_disjoint_mut` gives an error.
+void main(List<string> args) {
+    var rows = List<int>.repeat(0, 12)
+    var width = 4
+    var i = args.length() + 1
+    var j = i + 0
+    var a = ref rows[i * width..i * width + width]
+    var b = ref rows[j * width + 2..j * width + width + 2]
+    a[0] = b[0]
+}

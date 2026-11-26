@@ -875,6 +875,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     RAW.with(|found| found.borrow_mut().clear());
     CFUNCS.with(|found| found.borrow_mut().clear());
     PATTERNS.with(|found| found.borrow_mut().clear());
+    WINDOWS.with(|found| found.borrow_mut().clear());
     let mut names = Names { files: prog.files.clone(), ..Names::default() };
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
@@ -1822,6 +1823,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         prog.sizes.insert(at, count);
     }
+    prog.windows = WINDOWS.with(|found| std::mem::take(&mut *found.borrow_mut()));
     // A static whose value was found here needs no function to find it.
     let found: HashSet<String> = prog.statics.iter().filter(|decl| decl.value.is_some()).map(|decl| decl.init.clone()).collect();
     prog.funcs.retain(|func| !found.contains(&func.name));
@@ -3261,6 +3263,21 @@ thread_local! {
     /// Each pattern written in the program and given to `Regex.compile` or `Regex.of`, and
     /// where: checked once every body is (choices 1463, 1469).
     static PATTERNS: std::cell::RefCell<std::collections::BTreeMap<usize, (Span, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// The borrows of items held apart when the program runs (choices 2011-2015), for
+    /// `Program::windows`.
+    static WINDOWS: std::cell::RefCell<std::collections::BTreeMap<(usize, usize), Vec<WindowCheck>>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// The borrow written at `new` must not share an item with the one written at `other`, which
+/// `holder` holds or which is an earlier part of the same call: checked when it is taken.
+fn hold_apart(new: Span, other: Span, holder: Option<String>, head: String, tail: String) {
+    WINDOWS.with(|found| {
+        let mut found = found.borrow_mut();
+        let checks = found.entry((new.start, new.end)).or_default();
+        if !checks.iter().any(|check| check.other == (other.start, other.end)) {
+            checks.push(WindowCheck { other: (other.start, other.end), holder, head, tail });
+        }
+    });
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
@@ -4194,6 +4211,29 @@ struct Borrows {
     /// Every `clear` of a local collection that let go of what its items borrowed (1733): the
     /// variable, how many touches came before it, and where.
     released: Vec<(usize, usize, Point)>,
+    /// Every borrow of items of a list, an array or a window the checker came to (`ref xs[..k]`,
+    /// `ref xs[i]`), for one taken beside another of the same place (choices 2011-2015).
+    windows: Vec<Window>,
+    /// The variables declared with such a borrow (`var a = ref xs[..k]`), and where it is written.
+    window_holders: HashMap<usize, Span>,
+    /// The variables given a new value after they were declared.
+    reassigned: HashSet<usize>,
+}
+
+/// A borrow of items of a list, an array or a window (choices 2011-2015).
+struct Window {
+    /// Where the borrow is written.
+    key: Span,
+    /// The touches of the place it made.
+    touches: Vec<Span>,
+    /// The place the items are counted in: the variable, and the fields that lead to it.
+    root: usize,
+    path: String,
+    /// The place as it is written, and where.
+    base: String,
+    at: usize,
+    /// The first item and the end, as far as they are known.
+    items: (Bound, Bound),
 }
 
 struct Var {
@@ -5812,6 +5852,22 @@ impl<'a> Checker<'a> {
         self.borrows.clashes.extend(found);
     }
 
+    /// A borrow of items of a list (`ref xs[k..]`) beside one a variable holds (`var a = ref
+    /// xs[..k]`), declared with it and never given another (choices 2011-2015): held apart, or
+    /// `None` when it is not such a pair.
+    fn window_clash(&self, clash: &Clash) -> Option<Res<()>> {
+        if !matches!(clash.access, Access::Read | Access::Write) || self.borrows.reassigned.contains(&clash.holder) {
+            return None;
+        }
+        let key = *self.borrows.window_holders.get(&clash.holder)?;
+        if key != clash.loan.span {
+            return None;
+        }
+        let held = self.borrows.windows.iter().find(|window| window.key == key)?;
+        let taken = self.borrows.windows.iter().find(|window| window.key != key && window.touches.contains(&clash.span) && window.root == held.root && window.path == held.path)?;
+        self.held_apart(taken, held, Some(&clash.holder_name))
+    }
+
     /// Called when the whole function has been read: a touch that did not go together with a
     /// borrow is an error if the variable that held the borrow is used afterwards.
     fn borrow_conflicts(&self) -> Res<()> {
@@ -5842,6 +5898,11 @@ impl<'a> Checker<'a> {
             };
             let used_later = self.borrows.uses.iter().find(|(var, at)| *var == clash.holder && (after(at) || next_round(at)) && !cleared_before(at));
             let Some((_, later)) = used_later else { continue };
+            // Two borrows of items of one list held apart (choices 2011-2015).
+            if let Some(apart) = self.window_clash(clash) {
+                apart?;
+                continue;
+            }
             let text = &self.src[clash.span.start..clash.span.end];
             let holder = &clash.holder_name;
             if clash.access == Access::Gone && clash.closed {
@@ -5962,17 +6023,19 @@ impl<'a> Checker<'a> {
                 self.not_locked(arg, Access::Write)?;
             }
         }
-        let places: Vec<(&Expr, bool)> = recv
+        // Each place with whether it is lent as `ref`, and the borrow written, if one is.
+        let places: Vec<(&Expr, bool, Option<&Expr>)> = recv
+            .map(|(recv, mutable)| (recv, mutable, None))
             .into_iter()
             .chain(args.iter().enumerate().filter_map(|(at, arg)| match &arg.kind {
-                _ if given(at, arg) => Some((arg, true)),
-                ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable)),
+                _ if given(at, arg) => Some((arg, true, None)),
+                ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable, Some(arg))),
                 // `ref xs[a..b]`, kept as the range alone: its items are lent to be changed.
-                ExprKind::Slice { .. } if matches!(arg.ty, Ty::Ref(_)) => Some((arg, true)),
+                ExprKind::Slice { .. } if matches!(arg.ty, Ty::Ref(_)) => Some((arg, true, Some(arg))),
                 // The items whose address C is given may be written by it.
-                ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+                ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true, None)),
                 ExprKind::RawCast { expr, .. } => match &expr.kind {
-                    ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+                    ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true, None)),
                     _ => None,
                 },
                 _ => None,
@@ -5981,18 +6044,40 @@ impl<'a> Checker<'a> {
         // An argument that looks at a place another one lends as `ref` without being written
         // as a borrow (`Hex.encodeInto(ref s, s.asBytes())`, `grow(ref s, s[1..])`): the call
         // may change the place while it reads the view (choice 1592).
-        let changed: Vec<(usize, String, &Expr)> =
-            places.iter().filter(|(_, mutable)| *mutable).filter_map(|(place, _)| lent_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place)))).collect();
+        let changed: Vec<(usize, String, &Expr, Option<&Expr>)> = places
+            .iter()
+            .filter(|(_, mutable, _)| *mutable)
+            .filter_map(|(place, _, borrow)| lent_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place, *borrow))))
+            .collect();
         if !changed.is_empty() {
             let lent_itself = |arg: &Expr| match &arg.kind {
                 ExprKind::Borrow { .. } | ExprKind::Method { callee: Callee::Pointer, .. } => true,
                 ExprKind::RawCast { expr, .. } => matches!(expr.kind, ExprKind::Method { callee: Callee::Pointer, .. }),
-                _ => places.iter().any(|(place, _)| std::ptr::eq(*place, arg)),
+                _ => places.iter().any(|(place, _, _)| std::ptr::eq(*place, arg)),
             };
             for arg in args.iter().filter(|arg| !lent_itself(arg)) {
                 for loan in self.part_loans(arg, false) {
                     let overlaps = |path: &str| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
-                    let Some((_, _, place)) = changed.iter().find(|(root, path, _)| *root == loan.root && overlaps(path)) else { continue };
+                    // A range only looked at beside a `ref` one of the same place (choice 2015):
+                    // `merge(ref xs[..k], xs[k..])`.
+                    let apart = |borrow: &Option<&Expr>| {
+                        let (Some(window), Some(other)) = ((*borrow).and_then(|borrow| self.taken(borrow)), self.taken(arg)) else { return None };
+                        match window.key.start < other.key.start {
+                            true => self.held_apart(&other, &window, None),
+                            false => self.held_apart(&window, &other, None),
+                        }
+                    };
+                    let mut found = None;
+                    for (_, _, place, borrow) in changed.iter().filter(|(root, path, _, _)| *root == loan.root && overlaps(path)) {
+                        match apart(borrow) {
+                            Some(apart) => apart?,
+                            None => {
+                                found = Some(*place);
+                                break;
+                            }
+                        }
+                    }
+                    let Some(place) = found else { continue };
                     let (text, into) = (self.src[arg.span.start..arg.span.end].trim(), range_named(&self.src[place.span.start..place.span.end]));
                     return Err(Diag::error(arg.span, format!("`{text}` looks at `{into}`, which this call is given to change"))
                         .related(place.span, "given as `ref` here")
@@ -6005,16 +6090,29 @@ impl<'a> Checker<'a> {
     }
 
     /// The places lent to one call: a `ref` borrow must be the only one of its place.
-    fn lent_places(&mut self, places: Vec<(&Expr, bool)>) -> Res<()> {
-        let mut lent: Vec<(usize, String, bool, Span)> = Vec::new();
-        for (place, mutable) in places {
+    fn lent_places(&mut self, places: Vec<(&Expr, bool, Option<&Expr>)>) -> Res<()> {
+        let mut lent: Vec<(usize, String, bool, Span, Option<Window>)> = Vec::new();
+        for (place, mutable, borrow) in places {
             let Some((name, path)) = lent_path(place) else { continue };
             let Some((root, declared)) = self.find(name).map(|var| (var.id, var.declared.clone())) else { continue };
-            let clash = lent.iter().find(|(other, other_path, other_mutable, _)| {
+            let window = borrow.and_then(|borrow| self.taken(borrow));
+            let mut clash = None;
+            for (other, other_path, other_mutable, first, other_window) in &lent {
                 let overlaps = path.is_empty() || other_path.is_empty() || within(&path, other_path) || within(other_path, &path);
-                *other == root && overlaps && (mutable || *other_mutable)
-            });
-            if let Some((_, _, _, first)) = clash {
+                if !(*other == root && overlaps && (mutable || *other_mutable)) {
+                    continue;
+                }
+                // Two borrows of items of one place (choices 2011-2015).
+                if let (Some(window), Some(other_window)) = (&window, other_window) {
+                    if let Some(apart) = self.held_apart(window, other_window, None) {
+                        apart?;
+                        continue;
+                    }
+                }
+                clash = Some(first);
+                break;
+            }
+            if let Some(first) = clash {
                 let text = range_named(&self.src[place.span.start..place.span.end]);
                 // A `shared checked` value lent to change and to read stops the program when it
                 // runs, as `opening.rs` says of one lent through two owners (choice 1401).
@@ -6025,7 +6123,7 @@ impl<'a> Checker<'a> {
                 };
                 return Err(diag.related(*first, "the other borrow is here").hint("copy what is needed into a variable before the call"));
             }
-            lent.push((root, path, mutable, place.span));
+            lent.push((root, path, mutable, place.span, window));
         }
         Ok(())
     }
@@ -6407,7 +6505,12 @@ impl<'a> Checker<'a> {
                 self.kept_unnamed(&loans, init, &format!("`{name}`"))?;
                 let sender_of = self.sender_of(init);
                 let unsent = (matches!(ty, Ty::Channel(_)) && matches!(init.kind, ExprKind::Collection { .. })).then_some(*name_span);
+                let window = ty.is_borrow() && window_step(init).is_some();
                 self.declare_local(name, ty, *name_span)?;
+                if window {
+                    let id = self.find(name).expect("just declared").id;
+                    self.borrows.window_holders.insert(id, init.span);
+                }
                 self.find(name).expect("just declared").loans = loans;
                 self.find(name).expect("just declared").sender_of = sender_of;
                 self.find(name).expect("just declared").unsent = unsent;
@@ -6447,6 +6550,12 @@ impl<'a> Checker<'a> {
                 // so a borrow that the right side reads last ends before the write (`b = Box { n
                 // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
                 let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
+                // A `read` variable given another borrow; one that is `ref` is written through.
+                if let ExprKind::Var(name) = &target.kind {
+                    if let Some(id) = self.var_named(name).filter(|var| !matches!(var.declared, Ty::Ref(_))).map(|var| var.id) {
+                        self.borrows.reassigned.insert(id);
+                    }
+                }
                 if let Some(name) = self.static_root(target) {
                     return Err(Checker::static_changed(&name, target.span));
                 }
@@ -8446,10 +8555,63 @@ impl<'a> Checker<'a> {
         let ty = self.expr_untyped(expr, expected)?;
         unchecked_index(expr);
         expr.ty = ty.clone();
+        if let Some(mut window) = self.taken(expr) {
+            // The touches of the place itself, not of what the index or the ends read.
+            let at = window.at;
+            window.touches = self.borrows.touched[mark..].iter().filter(|touch| touch.0 == window.root && touch.1 == window.path && touch.3.start == at).map(|touch| touch.3).collect();
+            self.borrows.windows.push(window);
+        }
         if self.borrows.touched[mark..].iter().any(|touch| touch.2 != Access::Read) {
             self.lent_to_the_end(expr, mark)?;
         }
         Ok(ty)
+    }
+
+    /// The items of a list, an array or a window a borrow takes (choices 2011-2015), with no
+    /// touches yet.
+    fn taken(&self, borrow: &Expr) -> Option<Window> {
+        let step = window_step(borrow)?;
+        let (name, path) = path_of(step.base)?;
+        let root = self.var_named(name)?.id;
+        let base = self.src[step.base.span.start..step.base.span.end].to_string();
+        Some(Window { key: borrow.span, touches: Vec::new(), root, path, base, at: step.base.span.start, items: (step.from, step.to) })
+    }
+
+    /// A borrow as a message names it: `xs[0..2]` for `ref xs[0..2]`, `xs[i]` for `read xs[i]`.
+    fn borrowed_named(&self, at: Span) -> &str {
+        let text = self.src[at.start..at.end].trim();
+        ["ref", "read"].iter().find_map(|word| text.strip_prefix(word).filter(|rest| rest.starts_with(char::is_whitespace))).map_or(text, str::trim_start)
+    }
+
+    /// Two borrows of items of one place, one of them `ref` (choices 2011-2015): `new` is taken
+    /// after `other`, which `holder` holds or which is an earlier part of the same call. They go
+    /// together when they share no item: known now, or checked when `new` is taken. `None`
+    /// when they are not of one place.
+    fn held_apart(&self, new: &Window, other: &Window, holder: Option<&str>) -> Option<Res<()>> {
+        if new.root != other.root || new.path != other.path || new.key == other.key {
+            return None;
+        }
+        let (named, other_named) = (self.borrowed_named(new.key), self.borrowed_named(other.key));
+        Some(match items_overlap(new.items, other.items) {
+            Some(false) => Ok(()),
+            Some(true) => {
+                let base = &other.base;
+                let diag = Diag::error(new.key, format!("`{named}` shares items with `{other_named}` every time this runs, and a `ref` borrow must be the only one of its items"));
+                let diag = match holder {
+                    Some(holder) => diag.related(other.key, format!("`{holder}` borrowed it here, and is used again later")),
+                    None => diag.related(other.key, "the other borrow is here"),
+                };
+                Err(diag.hint(format!("lend items that do not overlap, as `ref {base}[..k]` beside `ref {base}[k..]` do")))
+            }
+            None => {
+                let tail = match holder {
+                    Some(holder) => format!(" with `{holder}` (`{other_named}`), which is still in use"),
+                    None => format!(" with `{other_named}`, lent to this call too"),
+                };
+                hold_apart(new.key, other.key, holder.map(str::to_string), format!("`{named}` shares "), tail);
+                Ok(())
+            }
+        })
     }
 
     /// What a part of a call lends it: the receiver a method looks at, a borrow given as an
@@ -8519,6 +8681,15 @@ impl<'a> Checker<'a> {
                 }
                 let overlaps = |loan: &Loan| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
                 let Some(loan) = loans.iter().find(|loan| loan.root == *root && overlaps(loan)) else { continue };
+                // A later borrow of items of the place an earlier part lends items of (choices
+                // 2011-2015): `f(ref xs[..k], ref xs[k..])`.
+                let later = self.borrows.windows.iter().find(|window| window.touches.contains(span) && window.root == *root && window.path == *path);
+                if let (Some(later), Some(earlier)) = (later, self.taken(part)) {
+                    if let Some(apart) = self.held_apart(later, &earlier, None) {
+                        apart?;
+                        continue;
+                    }
+                }
                 let text = self.src[span.start..span.end].trim();
                 let earlier = self.src[part.span.start..part.span.end].trim();
                 let given = match (*receiver, what) {

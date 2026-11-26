@@ -1,0 +1,4 @@
+panic: `names[1]` shares item 1 with `names[i]`, lent to this call too
+  --> panic_window_shared_in_call.sg:12:24
+ 12 |     swap(ref names[i], ref names[1])
+    |                        ^^^^^^^^^^^^

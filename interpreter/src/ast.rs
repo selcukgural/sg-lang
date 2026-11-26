@@ -69,6 +69,156 @@ pub struct Program {
     /// The size and the alignment of each struct and enum, at most what C gives them. Filled in
     /// by the checker.
     pub value_layouts: std::collections::HashMap<String, (u64, u64)>,
+    /// Borrows of items of a list, an array or a window taken beside another borrow of the same
+    /// place that may share an item with them (choices 2011-2015): under where each is written,
+    /// the borrows it is held apart from, checked when it is taken. Filled in by the checker.
+    pub windows: std::collections::BTreeMap<(usize, usize), Vec<WindowCheck>>,
+}
+
+/// A borrow that must not share an item with another, checked when the program runs: two `ref`
+/// windows of one list (`ref xs[..k]` beside `ref xs[k..]`), or a `ref` and a `read` one, or
+/// two items (`ref xs[i]` beside `ref xs[j]`).
+#[derive(Clone, Debug)]
+pub struct WindowCheck {
+    /// Where the other borrow is written: the variable `holder` was given it, or it is an
+    /// earlier part of the same call.
+    pub other: (usize, usize),
+    /// The variable that holds the other borrow, if one does.
+    pub holder: Option<String>,
+    /// The message of the panic around the items shared: "`xs[k..]` shares " and " with `a`
+    /// (`xs[..m]`), which is still in use".
+    pub head: String,
+    pub tail: String,
+}
+
+/// A borrow of items of a list, an array or a window: `ref xs[a..b]`, `ref xs[i]`,
+/// `ref xs[i].name`. `base` is the place the items are counted in, a variable or its fields
+/// (`xs`, `this.buf`), and `step` the index or the range of it.
+pub struct WindowStep<'e> {
+    pub base: &'e Expr,
+    pub step: &'e Expr,
+    /// The first item and the end, when they are known before the program runs.
+    pub from: Bound,
+    pub to: Bound,
+}
+
+/// An end of the items a borrow takes, as far as it is known before the program runs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Bound {
+    /// That many items from the start.
+    Start(i128),
+    /// That many items before the end (`^n`).
+    End(i128),
+    Unknown,
+}
+
+impl Bound {
+    /// Whether `self <= other` for every length; `None` when it depends on the length or on
+    /// what runs.
+    fn at_most(self, other: Bound) -> Option<bool> {
+        match (self, other) {
+            (Bound::Start(a), Bound::Start(b)) => Some(a <= b),
+            (Bound::End(a), Bound::End(b)) => Some(a >= b),
+            (Bound::Start(0), _) | (_, Bound::End(0)) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Whether `self < other` for every length.
+    fn below(self, other: Bound) -> Option<bool> {
+        match (self, other) {
+            (Bound::Start(a), Bound::Start(b)) => Some(a < b),
+            (Bound::End(a), Bound::End(b)) => Some(a > b),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the items `a` and `b` take (first, end) have one in common: `Some(false)` when they
+/// never do, `Some(true)` when they do every time (choice 2013), `None` when it is known only
+/// when the program runs.
+pub fn items_overlap(a: (Bound, Bound), b: (Bound, Bound)) -> Option<bool> {
+    let apart = |a: (Bound, Bound), b: (Bound, Bound)| a.1.at_most(b.0) == Some(true);
+    let empty = |a: (Bound, Bound)| a.1.at_most(a.0) == Some(true);
+    if apart(a, b) || apart(b, a) || empty(a) || empty(b) {
+        return Some(false);
+    }
+    let all = [a.0.below(b.1), b.0.below(a.1), a.0.below(a.1), b.0.below(b.1)];
+    all.iter().all(|known| *known == Some(true)).then_some(true)
+}
+
+/// `n` of an index or a range end written `^n`, read as `End - n` (1921).
+fn counted_from_end(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Sub, end, count) if matches!(end.kind, ExprKind::End) => Some(count),
+        _ => None,
+    }
+}
+
+/// A number written as it is.
+fn written_int(expr: &Expr) -> Option<i128> {
+    match &expr.kind {
+        ExprKind::Int(value, _) => Some(*value),
+        ExprKind::Widen(_, inner) => written_int(inner),
+        _ => None,
+    }
+}
+
+/// An end as far as it is known: `3`, `^1`, or what runs.
+fn bound_of(end: &Expr) -> Bound {
+    match counted_from_end(end) {
+        Some(count) => written_int(count).map_or(Bound::Unknown, Bound::End),
+        None => written_int(end).map_or(Bound::Unknown, Bound::Start),
+    }
+}
+
+/// The items of a list, an array or a window that a borrow takes (choices 2011-2015): `borrow`
+/// is a `ref` or `read` borrow (`ref xs[i]`, `read xs[i].name`) or a range lent as one
+/// (`ref xs[a..b]`). The place it is counted in is a variable or its fields: not an item of
+/// another list (`grid[i][j]`), and not a field reached through a pointer of the item.
+/// Known once the checker has set the types and the kinds of the indexes.
+pub fn window_step(borrow: &Expr) -> Option<WindowStep<'_>> {
+    let place = match &borrow.kind {
+        ExprKind::Borrow { expr, .. } => &**expr,
+        ExprKind::Slice { .. } if borrow.ty.is_borrow() => borrow,
+        _ => return None,
+    };
+    let items = |base: &Expr| matches!(base.ty.strip_borrow(), Ty::List(_) | Ty::Array(..) | Ty::Slice(_));
+    let (base, step, from, to) = match &place.kind {
+        ExprKind::Slice { recv, from, to } if items(recv) => {
+            (&**recv, place, from.as_deref().map_or(Bound::Start(0), bound_of), to.as_deref().map_or(Bound::End(0), bound_of))
+        }
+        _ => {
+            // The fields of a value kept in the item, then the item.
+            let mut at = place;
+            while let ExprKind::Field { recv, .. } = &at.kind {
+                if !matches!(recv.ty, Ty::Struct(_)) {
+                    return None;
+                }
+                at = recv;
+            }
+            let ExprKind::Index { recv, index, kind: IndexKind::List | IndexKind::Array, unchecked: false } = &at.kind else { return None };
+            if !items(recv) {
+                return None;
+            }
+            let (from, to) = match bound_of(index) {
+                Bound::Start(n) => (Bound::Start(n), Bound::Start(n + 1)),
+                Bound::End(n) => (Bound::End(n), Bound::End(n - 1)),
+                Bound::Unknown => (Bound::Unknown, Bound::Unknown),
+            };
+            (&**recv, at, from, to)
+        }
+    };
+    // The place itself: a variable and the fields of values kept in it.
+    let mut root = base;
+    loop {
+        match &root.kind {
+            ExprKind::Var(_) => break,
+            ExprKind::Field { recv, .. } => root = recv,
+            _ => return None,
+        }
+    }
+    Some(WindowStep { base, step, from, to })
 }
 
 /// `const int BlockSize = 4096`: a value known when the program is compiled.

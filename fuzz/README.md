@@ -86,7 +86,8 @@ program, and the same waits ended by the clock of a token (choice 2009).
 With `--borrow` first (`BORROW=1` for `run.sh`), the programs borrow (stage 3, choice 1593,
 `src/borrow.rs`): `read` and `ref` borrows of texts and lists kept in variables, in struct fields, in
 lists and arrays of structs and in `Disposable` values; given to functions as they are and lent again,
-and a range of a list lent as `ref` beside a range that may be of the same list (1610);
+and a range of a list lent as `ref` beside a range that may be of the same list (1610), with ends that
+are numbers or found when the program runs, in one call or in two variables (2011-2015);
 taken out of what a call returns and beside a call that changes what they borrow in the parts of one
 value; and the texts and lists they borrow from changed, replaced and moved, in `if`, `match`, `for`
 over a range, a list or a `shared` list, and `while` whose condition changes a list, with `break` and

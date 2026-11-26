@@ -2532,6 +2532,9 @@ fn fits(pattern: &Pattern, held: &Cell, borrowed: bool, binds: &mut Vec<(String,
 /// Variables of one function call.
 struct Frame {
     scopes: Vec<Scope>,
+    /// The items each borrow held apart from another took (choices 2011-2015), by where it is
+    /// written: the first and the end.
+    windows: Vec<((usize, usize), (i128, i128))>,
 }
 
 /// The names of one block, in the order they were declared. They end in the reverse order
@@ -2706,8 +2709,9 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     let consts = Consts::given(prog);
+    let windows = Windows::of(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts, windows: &windows, capture: std::ptr::null(), captured: None };
         // A fault of the interpreter itself still ends the tasks that wait, so that the scope
         // does not wait for their threads forever; then it goes on as the fault it is.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_main(&mut interp)));
@@ -2770,8 +2774,9 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     let consts = Consts::given(prog);
+    let windows = Windows::of(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts, windows: &windows, capture: std::ptr::null(), captured: None };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_each_test(&mut interp, prog, sources)));
         interp.end_fibers();
         result.unwrap_or_else(|crash| std::panic::resume_unwind(crash))
@@ -2787,7 +2792,7 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
         interp.io.test_err.borrow_mut().clear();
         open_streams();
         let first = LIVE.with(|live| live.borrow().next);
-        let mut frame = Frame { scopes: vec![Scope::default()] };
+        let mut frame = Frame { scopes: vec![Scope::default()], windows: Vec::new() };
         let ended = match interp.block(&test.body, &mut frame) {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
@@ -2934,6 +2939,26 @@ struct Interp<'a, 'e> {
     atomics: u64,
     /// The values of the consts.
     consts: &'a Consts<'a>,
+    /// The borrows held apart from others (see `Program::windows`).
+    windows: &'a Windows<'a>,
+    /// The index or the range whose items the borrow being taken takes, and those items once it
+    /// is reached.
+    capture: *const Expr,
+    captured: Option<(i128, i128)>,
+}
+
+/// What `Interp::windows` reads: the borrows held apart from others, and every borrow one is
+/// held apart from (choices 2011-2015).
+struct Windows<'a> {
+    checks: &'a BTreeMap<(usize, usize), Vec<WindowCheck>>,
+    kept: std::collections::HashSet<(usize, usize)>,
+}
+
+impl<'a> Windows<'a> {
+    fn of(prog: &'a Program) -> Windows<'a> {
+        let kept = prog.windows.iter().flat_map(|(key, checks)| std::iter::once(*key).chain(checks.iter().map(|check| check.other))).collect();
+        Windows { checks: &prog.windows, kept }
+    }
 }
 
 /// The values of the consts, each in a cell of its own, made the first time it is read. When
@@ -3077,8 +3102,9 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
+    let windows = Windows::of(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts, windows: &windows, capture: std::ptr::null(), captured: None };
         let mut found = BTreeMap::new();
         for decl in decls {
             let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
@@ -3214,7 +3240,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         .into());
                 }
                 self.consts.finding.borrow_mut().push(name.to_string());
-                let found = self.expr(init, &mut Frame { scopes: vec![Scope::default()] });
+                let found = self.expr(init, &mut Frame { scopes: vec![Scope::default()], windows: Vec::new() });
                 self.consts.finding.borrow_mut().pop();
                 owned(found?)
             }
@@ -4460,6 +4486,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             locking: 0,
             atomics: 0,
             consts: self.consts,
+            windows: self.windows,
+            capture: std::ptr::null(),
+            captured: None,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -4551,7 +4580,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 .note(format!("last called: `{}`", func.name))
                 .into());
         }
-        let mut frame = Frame { scopes: vec![Scope::default()] };
+        let mut frame = Frame { scopes: vec![Scope::default()], windows: Vec::new() };
         if let Some(this) = this {
             frame.declare("this", this);
         }
@@ -5017,6 +5046,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                     None => strip(self.expr(index, frame)?),
                 };
+                if std::ptr::eq(expr, self.capture) {
+                    if let Value::Int(_, at) = at {
+                        self.captured = Some((at, at + 1));
+                    }
+                }
                 let out_of_range = |at: i128, length: usize| {
                     Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")))
                 };
@@ -5068,6 +5102,40 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     fn expr_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        if !self.windows.kept.is_empty() && matches!(expr.kind, ExprKind::Borrow { .. } | ExprKind::Slice { .. }) && self.windows.kept.contains(&(expr.span.start, expr.span.end)) {
+            return self.window_value(expr, frame);
+        }
+        self.plain_value(expr, frame)
+    }
+
+    /// A borrow held apart from another of the same place (choices 2011-2015): the items it
+    /// takes are kept, and it panics if it shares one with a borrow still in use.
+    fn window_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let step = window_step(expr).expect("the checker holds apart only borrows of items");
+        let outer = (std::mem::replace(&mut self.capture, step.step), self.captured.take());
+        let value = self.plain_value(expr, frame);
+        let items = self.captured.take();
+        (self.capture, self.captured) = outer;
+        let value = value?;
+        let Some((from, to)) = items else { return Ok(value) };
+        let key = (expr.span.start, expr.span.end);
+        frame.windows.retain(|(each, _)| *each != key);
+        frame.windows.push((key, (from, to)));
+        for check in self.windows.checks.get(&key).into_iter().flatten() {
+            let (_, (other_from, other_to)) = frame.windows.iter().find(|(each, _)| *each == check.other).expect("the checker holds a borrow apart only from one taken before it");
+            let (first, end) = (from.max(*other_from), to.min(*other_to));
+            if first < end {
+                let shared = match end - first {
+                    1 => format!("item {first}"),
+                    _ => format!("items {first}..{end}"),
+                };
+                return Err(Diag::panic(expr.span, format!("{}{shared}{}", check.head, check.tail)).into());
+            }
+        }
+        Ok(value)
+    }
+
+    fn plain_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(Value::Int(*ty, *value)),
             ExprKind::Float(text, ty) => Ok(Value::Float(*ty, float_literal(text, *ty))),
@@ -5527,6 +5595,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             if from > to {
                 return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
+            }
+            if std::ptr::eq(expr, self.capture) {
+                self.captured = Some((from, to));
             }
             if let Value::Bytes(text, start, _) = holder {
                 return Ok(Value::Bytes(text, start + from as usize, start + to as usize));

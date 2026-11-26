@@ -519,8 +519,31 @@ impl Borrow {
             },
             Kind::List | Kind::RefList => {
                 let given = if kind == Kind::List { format!("ref {name}") } else { name.clone() };
-                match self.rng.below(8) {
+                match self.rng.below(10) {
                     0 => Node::line(format!("refill({given})")),
+                    // Windows whose ends are found when the program runs, of the same list or of
+                    // another (choices 2011-2015): in one call, or held by two variables. The
+                    // check stops the program where they share an item; without it, `spill`
+                    // would read a text it has freed.
+                    7 | 8 => {
+                        let (other, other_kind) = self.kind_in_scope(&[Kind::List, Kind::RefList, Kind::Holder])?;
+                        let from = if other_kind == Kind::Holder { format!("{other}.items") } else { other };
+                        let (into, taken) = match self.rng.below(3) {
+                            0 => (format!("{name}[..{name}.length() / 2]"), format!("{from}[{from}.length() / 2..]")),
+                            1 => (format!("{name}[{name}.length() - 1..]"), format!("{from}[..1]")),
+                            _ => (format!("{name}[..1]"), format!("{from}[{from}.length() - 1..]")),
+                        };
+                        match self.rng.chance(50) {
+                            true => Node::line(format!("spill(ref {into}, {taken})")),
+                            false => {
+                                let (low, high) = (self.name("w"), self.name("w"));
+                                Node::block(
+                                    "if true {".to_string(),
+                                    vec![Node::line(format!("var {low} = ref {into}")), Node::line(format!("var {high} = ref {taken}")), Node::line(format!("spill({low}, {high})"))],
+                                )
+                            }
+                        }
+                    }
                     // A range lent to be changed beside a range that may be of the same list
                     // (choice 1610).
                     6 => {
