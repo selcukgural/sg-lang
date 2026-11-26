@@ -1,6 +1,6 @@
 // Two tasks that each wait for the other to send first: every task waits, and nothing is left
-// that could end a wait. The interpreter sees it exactly; compiled code waits for ever there
-// until the count of waiting tasks comes with the hardening.
+// that could end a wait. The interpreter sees it exactly; compiled code counts the threads that
+// sleep (slice 193) and gives the same panic, at the wait of the task started last.
 void ping(Channel<int> inbox, Sender<int> out) {
     var x = inbox.receive() ?? 0
     _ = out.send(x + 1)

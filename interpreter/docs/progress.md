@@ -629,7 +629,13 @@ Slice 192 (1987-2001) adds `select`, which waits on several channels at once and
 on, a random one of those ready: `jobs.receive() as job => ...`, `results.send(r) => ...`, and `ended`, which runs
 once every channel has ended, since an arm whose channel has ended is never chosen. It gives a value as a `match`
 does; a token adds `cancelled`; async code writes `await select`. A variable sent keeps its value in the arms that
-do not send it. Next is the count of waiting tasks in compiled code (193), then Rust's `split_at_mut` (194).
+do not send it.
+
+Slice 193 (2002-2010) gives compiled code the interpreter's panic when every task waits and nothing is left that
+could end a wait (399), at the same place. It counts the threads of the program that are awake and the waits for
+something outside the tasks (a delay, a socket, another program, a signal, work on a thread of input and output),
+as Go's `checkdead` does; a thread takes itself off only when it goes to sleep, so a task that goes on without a
+wait pays nothing. Next is Rust's `split_at_mut` (194).
 
 ## Next
 

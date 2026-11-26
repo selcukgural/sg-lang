@@ -1,0 +1,5 @@
+handed on
+panic: every task waits, and nothing is left that could end a wait
+  --> panic_ring_deadlock.sg:7:24
+ 7 |         var n = (await inbox.receiveAsync()) ?? -1
+   |                        ^^^^^^^^^^^^^^^^^^^^

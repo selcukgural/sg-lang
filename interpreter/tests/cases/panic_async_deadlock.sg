@@ -1,0 +1,14 @@
+// The async task waits for an item that `main` sends only after it has awaited the task: every
+// task waits, and nothing is left that could end a wait. In compiled code the threads of the pool
+// fall asleep with nothing to run, and the last one to sleep sees the count reach nothing.
+async int take(Channel<int> inbox) {
+    return (await inbox.receiveAsync()) ?? -1
+}
+
+async void main() {
+    var jobs = Channel<int>(4)
+    var tx = jobs.sender()
+    var t = take(jobs)
+    print(await t)
+    _ = await tx.sendAsync(1)
+}

@@ -1,0 +1,4 @@
+panic: every task waits, and nothing is left that could end a wait
+  --> panic_wait_deadlock.sg:5:12
+ 5 |     return inbox.receive() ?? -1
+   |            ^^^^^^^^^^^^^^^

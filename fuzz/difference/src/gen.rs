@@ -285,10 +285,65 @@ impl Gen {
     /// the arms ready together runs, which is random in compiled code: every item of two
     /// channels summed until both have ended; a value from the one arm that can go on; an arm
     /// that sends into the one channel with room; a token cancelled while nothing can go on.
+    /// And waits that nothing else could end (slice 193, choice 2009): a receive, a send into a
+    /// full channel or a `select` whose channels keep a sender, which end the program with the
+    /// panic of a deadlock at the same place interpreted and compiled, rarely, since it ends the
+    /// program; and the same waits ended by the clock of a token, which must not panic.
     fn select_stmt(&mut self) -> Vec<Node> {
         self.cost += 8 * self.times;
         let mut nodes = Vec::new();
-        match self.rng.below(4) {
+        let kind = match self.rng.below(16) {
+            0 => 4,
+            1..=2 => 5,
+            n => n % 4,
+        };
+        match kind {
+            4 => {
+                let (chan, tx) = (self.name("c"), self.name("k"));
+                nodes.push(Node::line(format!("var {chan} = Channel<int>(1)")));
+                nodes.push(Node::line(format!("var {tx} = {chan}.sender()")));
+                match self.rng.below(3) {
+                    0 => nodes.push(Node::line(format!("print({chan}.receive() ?? 0)"))),
+                    1 => {
+                        let first = self.number(INT);
+                        let second = self.number(INT);
+                        nodes.push(Node::line(format!("print({tx}.send({first}))")));
+                        nodes.push(Node::line(format!("print({tx}.send({second}))")));
+                    }
+                    _ => {
+                        let (x, got) = (self.name("x"), self.name("v"));
+                        let mut arms = vec![Node::line(format!("{chan}.receive() as {x} => {x}")), Node::line("ended => -1".to_string())];
+                        self.shuffle(&mut arms);
+                        nodes.push(Node::block(format!("int {got} = select {{"), arms));
+                        nodes.push(Node::line(format!("print({got})")));
+                    }
+                }
+                nodes.push(Node::line(format!("_ = {tx}")));
+            }
+            5 => {
+                let (chan, tx, source, got) = (self.name("c"), self.name("k"), self.name("q"), self.name("v"));
+                let ms = 1 + self.rng.below(4);
+                nodes.push(Node::line(format!("var {chan} = Channel<int>(1)")));
+                nodes.push(Node::line(format!("var {tx} = {chan}.sender()")));
+                nodes.push(Node::line(format!("var {source} = CancellationSource.after({ms})")));
+                if self.rng.below(2) == 0 {
+                    nodes.push(Node::block(
+                        format!("match {chan}.receive(read {source}.token()) {{"),
+                        vec![Node::line("Ok(value) => print(value ?? 0)".to_string()), Node::line("Error(_) => print(-2)".to_string())],
+                    ));
+                } else {
+                    let x = self.name("x");
+                    let mut arms = vec![
+                        Node::line(format!("{chan}.receive() as {x} => {x}")),
+                        Node::line("ended => -1".to_string()),
+                        Node::line("cancelled => -2".to_string()),
+                    ];
+                    self.shuffle(&mut arms);
+                    nodes.push(Node::block(format!("int {got} = select (read {source}.token()) {{"), arms));
+                    nodes.push(Node::line(format!("print({got})")));
+                }
+                nodes.push(Node::line(format!("_ = {tx}")));
+            }
             0 => {
                 let (a, b, sum) = (self.name("c"), self.name("c"), self.name("s"));
                 let mut arms = Vec::new();

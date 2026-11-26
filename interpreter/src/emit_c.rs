@@ -1903,6 +1903,10 @@ typedef struct sg_task {
     /* An exit with an error let the task go (choice 1691): every wait in it that can say so
        ends with `Cancelled`, now and from then on. Set once, never cleared. */
     int cut;
+    /* A task on a thread of its own: when it was started among them (see `sg_me_t`). */
+    int64_t order;
+    /* An async task: where it waits now, written by itself as it begins to wait (`sg_job_at`). */
+    const char* wait_at;
 } sg_task;
 static _Thread_local sg_task* sg_task_now = NULL;
 static void sg_panic_start(void) {
@@ -1953,6 +1957,122 @@ SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     if (!sg_called(loc)) fprintf(stderr, "  hint: %s\n", hint);
     SG_PANIC_END();
 }
+#if SG_THREADS
+/* The count of what could end a wait (slice 193, as Go's `checkdead`): the threads of the program
+   that are awake, and the waits for something outside the tasks (a delay on the clock, a socket
+   or another program on the loop of the network, work on a thread of input and output). A thread
+   of the program takes one off when it sleeps until a task tells it, and whoever tells it puts
+   one back for it first; a wait for something outside holds one until it has woken what waits.
+   The thread that takes the last one sees every task wait with nothing left that could end a
+   wait: the panic the interpreter gives. Only `main`, the threads of tasks and those of the pool
+   are counted (`sg_me.mine`); one is held for good where the program is a library, since the
+   program that loaded it may still send. The tasks of the pool are not counted, only its threads,
+   so a task that goes on without a wait, or waits and is woken, never touches the count. */
+static int64_t sg_awake = 1;
+/* The threads that are counted, each with the place of its last wait (`at`): `main` (order -1), the threads
+   of the pool (0; the place of the last wait of a task each ran) and the threads of tasks, in
+   the order they were started. The panic shows the wait of the task started last, then a thread
+   of the pool, then `main`: the place the interpreter shows, which runs `main` until it waits
+   and a task until it waits, one after another, so that the task started last waits last. Every
+   counted thread sleeps when the panic comes, and no thread starts or ends: the list is still. */
+typedef struct sg_me_t { struct sg_me_t* prev; struct sg_me_t* next; const char* at; int64_t order; const char* const* also; bool mine; } sg_me_t;
+static sg_me_t sg_mes = { &sg_mes, &sg_mes, NULL, 0, NULL, false };
+static sg_mtx sg_mes_lock = SG_MTX_INIT;
+static int64_t sg_mes_started __attribute__((unused)) = 0;
+static _Thread_local sg_me_t sg_me;
+__attribute__((unused)) static void sg_me_join(int64_t order) {
+    sg_me.at = NULL;
+    sg_me.order = order;
+    sg_me.also = NULL;
+    sg_mtx_lock(&sg_mes_lock);
+    sg_me.next = &sg_mes;
+    sg_me.prev = sg_mes.prev;
+    sg_mes.prev->next = &sg_me;
+    sg_mes.prev = &sg_me;
+    sg_mtx_unlock(&sg_mes_lock);
+    sg_me.mine = true;
+}
+__attribute__((unused)) static void sg_me_leave(void) {
+    sg_mtx_lock(&sg_mes_lock);
+    sg_me.prev->next = sg_me.next;
+    sg_me.next->prev = sg_me.prev;
+    sg_mtx_unlock(&sg_mes_lock);
+}
+SG_COLD static _Noreturn void sg_deadlock(const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: every task waits, and nothing is left that could end a wait\n", stderr);
+    const sg_me_t* best = NULL;
+    sg_mtx_lock(&sg_mes_lock);
+    const char* found = NULL;
+    for (const sg_me_t* m = sg_mes.next; m != &sg_mes; m = m->next) {
+        /* A thread of the pool: where the last task it ran began to wait. */
+        const char* at = m->also && *m->also ? *m->also : m->at;
+        if (at && (!best || m->order > best->order)) {
+            best = m;
+            found = at;
+        }
+    }
+    sg_mtx_unlock(&sg_mes_lock);
+    if (found) loc = found;
+    if (loc) fputs(loc, stderr);
+    SG_PANIC_END();
+}
+static inline void sg_live_up(void) { __atomic_add_fetch(&sg_awake, 1, __ATOMIC_SEQ_CST); }
+static inline void sg_live_down(const char* loc) {
+    if (__atomic_sub_fetch(&sg_awake, 1, __ATOMIC_SEQ_CST) == 0) sg_deadlock(loc);
+}
+/* The async task `job` begins to wait at `loc`: the place is kept in it, without a look at the
+   thread (a variable of a thread costs a call on macOS), and the thread of the pool that ran it
+   takes it when the task stops (`sg_pool_run`). */
+static inline void sg_job_at(struct sg_task* job, const char* loc) {
+    if (loc) job->wait_at = loc;
+}
+/* A thread is to sleep at `loc` until a task tells it, under the lock its teller takes: whether
+   it was counted, which the teller reads there. A wait with no place of its own keeps the place
+   of the thread's last wait: `main` that waits for an async `main` keeps where that task waited
+   while it ran on this thread. */
+static inline bool sg_live_sleep(const char* loc) {
+    /* One look at the thread's variables: on macOS each costs a call. */
+    sg_me_t* me = &sg_me;
+    if (!me->mine) return false;
+    if (loc) me->at = loc;
+    sg_live_down(me->at);
+    return true;
+}
+/* The thread of the pool that is to sleep: its place is that of the last wait of a task it ran. */
+static inline void sg_live_idle(void) { sg_live_down(sg_me.also && *sg_me.also ? *sg_me.also : sg_me.at); }
+/* Under the same lock: the teller of a sleeper that was counted puts one back for it. */
+static inline void sg_live_tell(bool* counted) {
+    if (*counted) {
+        *counted = false;
+        sg_live_up();
+    }
+}
+/* The threads asleep on a condition that is broadcast, under its lock: the count of a broadcast
+   (`told`), which a sleeper waits to see change, so that a thread woken by the system alone sleeps
+   on without being counted twice; and how many of them were counted. */
+typedef struct { uint64_t told; int64_t counted; } sg_sleepers;
+__attribute__((unused)) static void sg_sleepers_wait(sg_sleepers* s, sg_cnd* c, sg_mtx* m, const char* loc) {
+    uint64_t told = s->told;
+    if (sg_live_sleep(loc)) s->counted++;
+    do sg_cnd_wait(c, m); while (s->told == told);
+}
+__attribute__((unused)) static void sg_sleepers_tell(sg_sleepers* s, sg_cnd* c) {
+    s->told++;
+    if (s->counted) {
+        __atomic_add_fetch(&sg_awake, s->counted, __ATOMIC_SEQ_CST);
+        s->counted = 0;
+    }
+    sg_cnd_broadcast(c);
+}
+/* A wait for something outside the tasks holds one while it waits; the one that ends it lets go
+   of it after it has woken what waits. */
+static inline void sg_outside_hold(void) { sg_live_up(); }
+static inline void sg_outside_end(void) { sg_live_down(NULL); }
+#define SG_LIVE_MAIN() (SG_LIBRARY ? (void)0 : sg_me_join(-1))
+#else
+#define SG_LIVE_MAIN() ((void)0)
+#endif
 /* `fetchAdd` and `fetchSub` that overflow: the value is written by then, and the panic ends the
    program. */
 SG_COLD static _Noreturn void sg_overflow_atomic(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
@@ -4586,6 +4706,7 @@ SG_COLD static _Noreturn void sg_static_circle(const char* name, const char* oth
 #if SG_THREADS
 static sg_mtx sg_once_lock = SG_MTX_INIT;
 static sg_cnd sg_once_told = SG_CND_INIT;
+static sg_sleepers sg_once_sleepers = { 0, 0 };
 static _Thread_local sg_once_who sg_once_me;
 static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) {
     sg_mtx_lock(&sg_once_lock);
@@ -4597,7 +4718,7 @@ static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) 
             if (at->waits->by == &sg_once_me) { sg_mtx_unlock(&sg_once_lock); sg_static_circle(o->name, at->waits->name, loc); }
         }
         sg_once_me.waits = o;
-        sg_cnd_wait(&sg_once_told, &sg_once_lock);
+        sg_sleepers_wait(&sg_once_sleepers, &sg_once_told, &sg_once_lock, loc);
         sg_once_me.waits = NULL;
     }
     if (__atomic_load_n(&o->state, __ATOMIC_RELAXED) == 2) { sg_mtx_unlock(&sg_once_lock); return; }
@@ -4608,7 +4729,7 @@ static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) 
     sg_mtx_lock(&sg_once_lock);
     o->by = NULL;
     __atomic_store_n(&o->state, 2, __ATOMIC_RELEASE);
-    sg_cnd_broadcast(&sg_once_told);
+    sg_sleepers_tell(&sg_once_sleepers, &sg_once_told);
     sg_mtx_unlock(&sg_once_lock);
 }
 #elif SG_FREESTANDING
@@ -4694,7 +4815,7 @@ static inline sg_mutex* sg_mutex_of(void* p) { return (sg_mutex*)sg_rc_of(p) - 1
    to run again. The lowest bit of `waiters` is a lock of the list alone, held only inside these
    functions and never while code of the program runs, so that an owner that lets go can wake
    the waiters, also while its own task holds the value in a `lock` block. */
-typedef struct { sg_mtx m; sg_cnd c; bool woken; } sg_when;
+typedef struct { sg_mtx m; sg_cnd c; bool woken; bool counted; } sg_when;
 typedef struct sg_when_link { struct sg_when_link* next; sg_when* thread; sg_task* job; } sg_when_link;
 static inline sg_when_link* sg_when_hold(sg_mutex* mx) {
     for (;;) {
@@ -4714,6 +4835,7 @@ static void sg_when_wake(sg_when_link* l) {
         } else {
             sg_mtx_lock(&l->thread->m);
             l->thread->woken = true;
+            sg_live_tell(&l->thread->counted);
             sg_cnd_signal(&l->thread->c);
             sg_mtx_unlock(&l->thread->m);
         }
@@ -4965,15 +5087,19 @@ static void sg_when_off(sg_when_link* links, void** values, int count) {
 }
 /* `lock ... when` on a thread: the locks are let go and the thread sleeps until a waker tells it,
    then takes them again. */
-static void sg_when_sleep(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc) {
+static void sg_when_sleep(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc, const char* at) {
     sg_when w;
     sg_mtx_init(&w.m);
     sg_cnd_init(&w.c);
     w.woken = false;
+    w.counted = false;
     sg_when_on(links, values, count, &w, counted, what, hint, loc);
     for (int i = 0; i < count; i++) sg_mtx_unlock(&sg_mutex_of(values[i])->m);
     sg_mtx_lock(&w.m);
-    while (!w.woken) sg_cnd_wait(&w.c, &w.m);
+    if (!w.woken) {
+        w.counted = sg_live_sleep(at);
+        while (!w.woken) sg_cnd_wait(&w.c, &w.m);
+    }
     sg_mtx_unlock(&w.m);
     sg_when_take(values, count);
     sg_when_off(links, values, count);
@@ -4982,9 +5108,10 @@ static void sg_when_sleep(sg_when_link* links, void** values, int count, bool co
 }
 /* `await lock ... when` in an async task: the locks are let go and the machine returns to wait;
    woken, it takes them again where it stopped (`sg_when_off` after). */
-static void sg_when_wait(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc) {
+static void sg_when_wait(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc, const char* at) {
     sg_when_on(links, values, count, NULL, counted, what, hint, loc);
     for (int i = 0; i < count; i++) sg_mtx_unlock(&sg_mutex_of(values[i])->m);
+    sg_job_at(links[0].job, at);
 }
 #endif
 #endif
@@ -5133,7 +5260,7 @@ SG_COLD static _Noreturn void sg_refused(int code, const char* what, const char*
 }
 
 /* A thread asleep until a task ends. */
-typedef struct { sg_mtx m; sg_cnd c; bool ended; } sg_parked;
+typedef struct { sg_mtx m; sg_cnd c; bool ended; bool counted; } sg_parked;
 /* The group of a list of tasks (`List<Task<R>>`): each task in the list tells it when it ends,
    and the group keeps them in the order they ended until `Task.whenAny` takes one out, or
    `Task.whenAll` all of them. Whoever waits there is woken: an async task (`job`), or threads
@@ -5146,6 +5273,7 @@ typedef struct sg_group {
     sg_task* last;
     int64_t ended;
     sg_task* job;
+    sg_sleepers sleepers;
 } sg_group;
 #define SG_GROUP 2
 #define SG_TGROUP 3
@@ -5157,7 +5285,7 @@ static void sg_group_told(sg_group* g, sg_task* t) {
     g->last = t;
     g->ended++;
     if (g->job) sg_wake(g->job);
-    sg_cnd_broadcast(&g->c);
+    sg_sleepers_tell(&g->sleepers, &g->c);
     sg_mtx_unlock(&g->m);
 }
 /* The task has ended: whoever waits for it goes on. The task may be freed once `SG_ENDED` is
@@ -5181,6 +5309,7 @@ static void sg_task_ended(sg_task* t) {
         sg_parked* p = (sg_parked*)((uintptr_t)w - 1);
         sg_mtx_lock(&p->m);
         p->ended = true;
+        sg_live_tell(&p->counted);
         sg_cnd_signal(&p->c);
         sg_mtx_unlock(&p->m);
     } else {
@@ -5198,16 +5327,20 @@ static inline void* sg_ended_settle(sg_task* t, void* w) {
     return w;
 }
 /* Code that is not async waits for an async task or a delay: its thread sleeps until it ends. */
-static void sg_park(sg_task* t) {
+static void sg_park(sg_task* t, const char* loc) {
     if (sg_ended_settle(t, __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE)) == SG_ENDED) return;
     sg_parked p;
     sg_mtx_init(&p.m);
     sg_cnd_init(&p.c);
     p.ended = false;
+    p.counted = false;
     void* none = NULL;
     if (__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)&p + 1), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         sg_mtx_lock(&p.m);
-        while (!p.ended) sg_cnd_wait(&p.c, &p.m);
+        if (!p.ended) {
+            p.counted = sg_live_sleep(loc);
+            while (!p.ended) sg_cnd_wait(&p.c, &p.m);
+        }
         sg_mtx_unlock(&p.m);
     } else {
         (void)sg_ended_settle(t, none);
@@ -5217,7 +5350,7 @@ static void sg_park(sg_task* t) {
 }
 /* `await t`: whether the task has ended. If not, the async task running now is woken when it
    does; it is the only one that can wait for it, since a task is waited for once. */
-static bool sg_ready(sg_task* t) {
+static bool sg_ready(sg_task* t, const char* loc) {
     /* A task let go by an exit with an error lets go the task it waits for (1691). */
     if (sg_job_cut()) sg_task_cut(t);
     void* w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
@@ -5231,18 +5364,24 @@ static bool sg_ready(sg_task* t) {
             w = none;
         }
     }
-    return sg_ended_settle(t, w) == SG_ENDED;
+    if (sg_ended_settle(t, w) == SG_ENDED) return true;
+    sg_job_at(sg_job_now, loc);
+    return false;
 }
 
 static SG_THREAD_MAIN(sg_task_main, p) {
     sg_task* task = p;
     sg_task_now = task;
+    sg_me_join(task->order);
     task->run(task);
     if (sg_scratch.cap > 0) free(sg_scratch.ptr);
 #if SG_COUNT
     if (sg_scratch_kept) SG_KEPT(-1);
 #endif
+    sg_me_leave();
     sg_task_ended(task);
+    /* After whoever waits for it was told, and counted awake. */
+    sg_live_down(NULL);
     return SG_THREAD_END;
 }
 static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name, const char* at) {
@@ -5253,6 +5392,8 @@ static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name
     task->cut = 0;
     task->holds_in = false;
     task->waiter = NULL;
+    task->order = __atomic_add_fetch(&sg_mes_started, 1, __ATOMIC_RELAXED);
+    sg_live_up();
     int code = sg_thread_start(&task->thread, sg_task_main, task, false);
     if (code != 0) sg_refused(code, "this task", at);
 }
@@ -5264,9 +5405,11 @@ static inline void sg_task_free(void* t) {
     if (((sg_task*)t)->aligned) sg_aligned_free(t);
     else free(t);
 }
-static inline void sg_task_join(sg_task* task) {
-    if (task->kind != SG_THREAD) sg_park(task);
-    else sg_thread_join(task->thread);
+/* A thread of a task is waited for as the others are, so that the count sees it (`sg_awake`),
+   and then joined, which is quick. */
+static inline void sg_task_join(sg_task* task, const char* loc) {
+    sg_park(task, loc);
+    if (task->kind == SG_THREAD) sg_thread_join(task->thread);
 }
 
 /* `tasks.add(task)`: the task tells the group of the list when it ends, or now, if it has. */
@@ -5280,6 +5423,7 @@ static void sg_group_add(sg_group** slot, sg_task* t) {
         g->first = g->last = NULL;
         g->ended = 0;
         g->job = NULL;
+        g->sleepers = (sg_sleepers){ 0, 0 };
         *slot = g;
     }
     void* none = NULL;
@@ -5306,35 +5450,37 @@ static sg_task* sg_group_pop(sg_group* g) {
 }
 /* `await Task.whenAll(tasks)`: whether all `n` tasks of the list have ended; if not, the async
    task running now is woken when one does. */
-static bool sg_group_all(sg_group* g, int64_t n) {
+static bool sg_group_all(sg_group* g, int64_t n, const char* loc) {
     if (n == 0) return true;
     sg_mtx_lock(&g->m);
     bool all = g->ended == n;
     g->job = all ? NULL : sg_job_now;
     sg_mtx_unlock(&g->m);
+    if (!all) sg_job_at(sg_job_now, loc);
     return all;
 }
 /* `await Task.whenAny(ref tasks)`: the first task to end, taken out of the group, or NULL; then
    the async task running now is woken when one ends. */
-static sg_task* sg_group_any(sg_group* g) {
+static sg_task* sg_group_any(sg_group* g, const char* loc) {
     sg_mtx_lock(&g->m);
     sg_task* t = sg_group_pop(g);
     g->job = t ? NULL : sg_job_now;
     sg_mtx_unlock(&g->m);
+    if (!t) sg_job_at(sg_job_now, loc);
     return t;
 }
 /* The same for code that is not async, and for the drop of a list that still holds tasks (on a
    way out with an error): the thread sleeps. */
-static void sg_group_park_all(sg_group* g, int64_t n) {
+static void sg_group_park_all(sg_group* g, int64_t n, const char* loc) {
     if (n == 0) return;
     sg_mtx_lock(&g->m);
-    while (g->ended < n) sg_cnd_wait(&g->c, &g->m);
+    while (g->ended < n) sg_sleepers_wait(&g->sleepers, &g->c, &g->m, loc);
     sg_mtx_unlock(&g->m);
 }
-static sg_task* sg_group_park_any(sg_group* g) {
+static sg_task* sg_group_park_any(sg_group* g, const char* loc) {
     sg_mtx_lock(&g->m);
     sg_task* t;
-    while (!(t = sg_group_pop(g))) sg_cnd_wait(&g->c, &g->m);
+    while (!(t = sg_group_pop(g))) sg_sleepers_wait(&g->sleepers, &g->c, &g->m, loc);
     sg_mtx_unlock(&g->m);
     return t;
 }
@@ -5396,6 +5542,8 @@ typedef struct sg_worker {
     uint32_t rounds;
     uint32_t watched;
     int64_t sockets;
+    /* Where the last task this thread ran began to wait (see `sg_me_t`); this thread's alone. */
+    const char* wait_at;
 } sg_worker;
 static sg_mtx sg_pool_lock = SG_MTX_INIT;
 /* The queue the threads share, and its length, read without the lock. */
@@ -5410,6 +5558,16 @@ static sg_worker* sg_pool_asleep = NULL;
    in one word, so that both are seen at once. */
 static uint64_t sg_pool_state = 0;
 #define SG_SEARCHING ((uint64_t)1 << 32)
+/* A thread of the pool asleep in a round of its loop of the network (`sg_pool_park`) is counted
+   awake (`sg_awake`) once the loop answers, before it wakes the tasks that waited for a socket,
+   since a wait lets go of what it holds as it wakes its task, which goes on this thread's ring. */
+static _Thread_local bool sg_drive_up = false;
+static inline void sg_drive_woke(bool wait, unsigned long n) {
+    if (wait && n > 0 && !sg_drive_up) {
+        sg_drive_up = true;
+        sg_live_up();
+    }
+}
 /* The loops of the network, once a program opens them: one round of the loop of thread `i`
    (waiting or not), and the call that wakes the thread waiting in it. */
 static void (*sg_pool_poll)(int i, bool wait) = NULL;
@@ -5419,7 +5577,7 @@ static void (*sg_pool_kick)(int i) = NULL;
 static _Thread_local sg_worker* sg_worker_now = NULL;
 static _Thread_local bool sg_lifo_on = true;
 static _Thread_local bool sg_driving_now = false;
-static void sg_job_run(sg_task* job);
+static const char* sg_job_run(sg_task* job);
 static SG_THREAD_MAIN(sg_worker_main, self);
 static void sg_watch_wake(void);
 static inline void sg_pool_pause(void) {
@@ -5573,6 +5731,7 @@ static void sg_pool_notify(const char* at) {
     }
     sg_worker* w = sg_pool_asleep;
     __atomic_add_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
+    sg_live_up();
     if (w) {
         sg_pool_asleep = w->next_asleep;
         __atomic_store_n(&w->asleep, false, __ATOMIC_SEQ_CST);
@@ -5587,6 +5746,7 @@ static void sg_pool_notify(const char* at) {
     if (i >= most) {
         __atomic_sub_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
         sg_mtx_unlock(&sg_pool_lock);
+        sg_live_down(NULL);
         return;
     }
     sg_pool_start(i, at);
@@ -5656,6 +5816,9 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
     sg_pool_asleep = w;
     sg_mtx_unlock(&sg_pool_lock);
     if (searching && before >> 32 == 1 && sg_pool_any_work()) sg_pool_notify(NULL);
+    /* Counted asleep only after that look: a task put while this thread searched woke nobody,
+       and the thread that put it may be asleep by now. */
+    sg_live_idle();
     sg_mtx_lock(&sg_pool_lock);
     for (;;) {
         if (w->notified) {
@@ -5672,9 +5835,16 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
             /* The clock's thread may be in a short round of this loop (it read the thread awake
                before it slept): it is soon done. */
             while (!sg_pool_round(w, true)) sg_pool_pause();
+            bool up = sg_drive_up;
+            sg_drive_up = false;
             sg_mtx_lock(&sg_pool_lock);
             w->driving = false;
-            if (w->notified || !sg_worker_has(w)) continue;
+            if (w->notified || !sg_worker_has(w)) {
+                /* Counted by whoever told it, or asleep again: the count the answer of the loop
+                   gave is let go. */
+                if (up) sg_live_idle();
+                continue;
+            }
             /* The loop woke tasks for this thread: it is awake again, not searching. */
             for (sg_worker** p = &sg_pool_asleep; *p; p = &(*p)->next_asleep) {
                 if (*p == w) {
@@ -5684,6 +5854,7 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
             }
             __atomic_store_n(&w->asleep, false, __ATOMIC_SEQ_CST);
             __atomic_add_fetch(&sg_pool_state, 1, __ATOMIC_SEQ_CST);
+            if (!up) sg_live_up();
             sg_mtx_unlock(&sg_pool_lock);
             sg_watch_wake();
             if (sg_ring_len(w) > SG_SHARE_AT) sg_pool_notify(NULL);
@@ -5706,7 +5877,8 @@ static sg_task* sg_pool_next(sg_worker* w, uint32_t tick) {
 static void sg_pool_run(sg_worker* w, sg_task* job) {
     for (int polls = 0;;) {
         __atomic_store_n(&job->state, SG_RUNNING, __ATOMIC_SEQ_CST);
-        sg_job_run(job);
+        const char* waits = sg_job_run(job);
+        if (waits) w->wait_at = waits;
         job = __atomic_load_n(&w->slot, __ATOMIC_ACQUIRE) ? __atomic_exchange_n(&w->slot, NULL, __ATOMIC_ACQ_REL) : NULL;
         if (!job) break;
         if (++polls == SG_LIFO_MOST) sg_lifo_on = false;
@@ -5717,6 +5889,8 @@ static void sg_pool_run(sg_worker* w, sg_task* job) {
 static SG_THREAD_MAIN(sg_worker_main, self) {
     sg_worker* w = self;
     sg_worker_now = w;
+    sg_me_join(0);
+    sg_me.also = &w->wait_at;
     bool searching = true;
     int skip = 0;
     for (uint32_t tick = 1;; tick++) {
@@ -5800,6 +5974,7 @@ static void sg_pool_drive(void (*poll)(int i, bool wait), void (*kick)(int i), c
     for (sg_worker* w = sg_pool_asleep; w; w = w->next_asleep) sg_cnd_signal(&w->wake);
     while (sg_pool_threads < sg_pool_most) {
         __atomic_add_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
+        sg_live_up();
         sg_pool_start(sg_pool_threads, at);
     }
     sg_mtx_unlock(&sg_pool_lock);
@@ -5857,8 +6032,9 @@ static void sg_wake(sg_task* job) {
         }
     }
 }
-/* Runs the machine of an async task until it ends or has to wait. */
-static void sg_job_run(sg_task* job) {
+/* Runs the machine of an async task until it ends or has to wait: where it waits (NULL once it
+   ended, or for a wait with no place), read while the task is still this thread's. */
+static const char* sg_job_run(sg_task* job) {
     sg_task* outer_job = sg_job_now;
     sg_task* outer_task = sg_task_now;
     for (;;) {
@@ -5873,10 +6049,11 @@ static void sg_job_run(sg_task* job) {
 #endif
             __atomic_store_n(&job->state, SG_FINISHED, __ATOMIC_SEQ_CST);
             sg_task_ended(job);
-            return;
+            return NULL;
         }
+        const char* at = job->wait_at;
         int running = SG_RUNNING;
-        if (__atomic_compare_exchange_n(&job->state, &running, SG_IDLE, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
+        if (__atomic_compare_exchange_n(&job->state, &running, SG_IDLE, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return at;
         __atomic_store_n(&job->state, SG_RUNNING, __ATOMIC_SEQ_CST);
     }
 }
@@ -5892,8 +6069,10 @@ static void sg_job_start(sg_task* job, bool (*poll)(sg_task*), const char* name,
     job->waiter = NULL;
     job->closing = NULL;
     job->next = NULL;
+    job->wait_at = NULL;
     job->state = SG_RUNNING;
-    sg_job_run(job);
+    const char* waits = sg_job_run(job);
+    if (waits) sg_me.at = waits;
 }
 
 /* A delay, in the frame of the async function that awaits it, in a task of its own
@@ -6002,7 +6181,10 @@ static void sg_heap_down(int64_t i) {
     }
     sg_heap_set(i, d);
 }
-static void sg_heap_remove(sg_delay* d) {
+/* A delay on the clock holds one of the count of what could end a wait (`sg_awake`). The clock
+   takes the first off (`sg_heap_take`), ends it and only then lets go of its count; any other
+   thread that takes one off is counted itself, or is the clock ending another delay. */
+static void sg_heap_take(sg_delay* d) {
     int64_t i = d->at;
     d->at = -1;
     sg_heap_len--;
@@ -6011,6 +6193,10 @@ static void sg_heap_remove(sg_delay* d) {
     sg_heap_set(i, moved);
     sg_heap_up(i);
     sg_heap_down(moved->at);
+}
+static void sg_heap_remove(sg_delay* d) {
+    sg_heap_take(d);
+    sg_outside_end();
 }
 /* The clock's lock is held, and the lock of the delay's token when it has one (`sg_cancel`). The
    delay may be freed by `over`. A task that awaits the delay sees it over and then takes the
@@ -6129,8 +6315,9 @@ static SG_THREAD_MAIN(sg_clock_main, unused) {
         }
         sg_delay* first = sg_heap[0];
         if (first->due <= now) {
-            sg_heap_remove(first);
+            sg_heap_take(first);
             sg_delay_end(first, SG_OVER);
+            sg_outside_end();
         } else {
             int64_t until = first->due;
             if (sg_watch_at >= 0 && sg_watch_at < until) until = sg_watch_at;
@@ -6172,6 +6359,7 @@ static void sg_clock_put_at(sg_delay* d, int64_t due, const char* loc) {
     if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap, _Alignof(__typeof__(*sg_heap)));
     sg_heap_set(sg_heap_len, d);
     sg_heap_len++;
+    sg_outside_hold();
     sg_heap_up(sg_heap_len - 1);
     if (d->at == 0) sg_clock_poke();
 }
@@ -6480,6 +6668,9 @@ typedef struct sg_tgroup {
     int64_t until;
     sg_task* job;
     int sleepers;
+    sg_sleepers asleep;
+    /* Where it was made: the place of a wait in its drop. */
+    const char* at;
 } sg_tgroup;
 SG_COLD static _Noreturn void sg_tgroup_limit_wrong(int32_t limit, const char* loc) {
     SG_PANIC_START();
@@ -6494,6 +6685,7 @@ static sg_tgroup* sg_tgroup_new(bool limited, int32_t limit, const char* loc) {
     sg_mtx_init(&g->m);
     sg_cnd_init(&g->c);
     g->limit = limited ? limit : 0;
+    g->at = loc;
     return g;
 }
 static void sg_tgroup_told(sg_tgroup* g, sg_task* t) {
@@ -6507,7 +6699,7 @@ static void sg_tgroup_told(sg_tgroup* g, sg_task* t) {
         g->job = NULL;
         sg_wake(job);
     }
-    if (g->sleepers) sg_cnd_broadcast(&g->c);
+    if (g->sleepers) sg_sleepers_tell(&g->asleep, &g->c);
     /* Freed under the lock: once the count is down, a `whenAll` may go on and the program end,
        and a task freed after the lock would still be taken when its blocks are counted. */
     sg_task_free(t);
@@ -6567,7 +6759,7 @@ static void sg_tgroup_cancel(sg_delay* d) {
     __atomic_store_n(&w->cut, 1, __ATOMIC_RELEASE);
     if (w->thread) {
         sg_mtx_lock(&w->g->m);
-        sg_cnd_broadcast(&w->g->c);
+        sg_sleepers_tell(&w->g->asleep, &w->g->c);
         sg_mtx_unlock(&w->g->m);
     } else {
         SG_WAKE_PAUSE();
@@ -6661,13 +6853,13 @@ static bool sg_tgroup_ready(sg_tgroup_wait* w) {
         __atomic_store_n(&w->cut, 1, __ATOMIC_RELEASE);
     }
 }
-static inline void sg_tgroup_start(sg_tgroup_wait* w, sg_tgroup* g, bool all, bool told, sg_cancel* token) {
+static inline void sg_tgroup_start(sg_tgroup_wait* w, sg_tgroup* g, bool all, bool told, sg_cancel* token, const char* loc) {
     sg_tgroup_wait_init(w, g, all, told, token, false);
-    (void)sg_tgroup_ready(w);
+    if (!sg_tgroup_ready(w)) sg_job_at(w->d.job, loc);
 }
 /* The same for code that is not async (`group.whenAll().wait()`): the thread sleeps. Gives
    SG_OVER or SG_CANCELLED. */
-static int sg_tgroup_block(sg_tgroup* g, bool all, bool told, sg_cancel* token) {
+static int sg_tgroup_block(sg_tgroup* g, bool all, bool told, sg_cancel* token, const char* loc) {
     sg_tgroup_wait w;
     sg_tgroup_wait_init(&w, g, all, told, token, true);
     if (told && sg_tgroup_link(&w)) w.cut = 1;
@@ -6687,7 +6879,7 @@ static int sg_tgroup_block(sg_tgroup* g, bool all, bool told, sg_cancel* token) 
             break;
         }
         g->sleepers++;
-        sg_cnd_wait(&g->c, &g->m);
+        sg_sleepers_wait(&g->asleep, &g->c, &g->m, loc);
         g->sleepers--;
     }
     sg_mtx_unlock(&g->m);
@@ -6709,7 +6901,7 @@ static void sg_drop_tgroup(sg_tgroup** p) {
     sg_tgroup_cut_held(g);
     while (g->count > 0) {
         g->sleepers++;
-        sg_cnd_wait(&g->c, &g->m);
+        sg_sleepers_wait(&g->asleep, &g->c, &g->m, g->at);
         g->sleepers--;
     }
     sg_mtx_unlock(&g->m);
@@ -6763,7 +6955,7 @@ typedef struct sg_chan {
     unsigned char* items;
 } sg_chan;
 /* A thread asleep until it is woken. */
-typedef struct { sg_mtx m; sg_cnd c; bool woken; } sg_chan_sleeper;
+typedef struct { sg_mtx m; sg_cnd c; bool woken; bool counted; } sg_chan_sleeper;
 /* One that waits on a channel: a thread (`thread`) or the async task of `d.job`. `d` is what a
    token's cancel ends, on the list of the token while `d.token` is set. `item` is what is sent,
    or where what is received goes; `gave` says how it went: 1 the item went in or came out, 0
@@ -6792,6 +6984,8 @@ struct sg_chan_wait {
     int cut;
     int state;
     int gave;
+    /* Where an async task waits: the place of the panic when every task waits (`sg_awake`). */
+    const char* loc;
 };
 SG_COLD static _Noreturn void sg_chan_huge(int64_t cap, size_t size, const char* loc) {
     sg_panicf(loc, "a channel with room for %lld items of %llu bytes does not fit in memory", (long long)cap, (unsigned long long)size);
@@ -6847,6 +7041,7 @@ static void sg_chan_wake(sg_chan* c, bool sends, bool all) {
         if (w->thread) {
             sg_mtx_lock(&w->thread->m);
             w->thread->woken = true;
+            sg_live_tell(&w->thread->counted);
             sg_cnd_signal(&w->thread->c);
             sg_mtx_unlock(&w->thread->m);
         } else {
@@ -6921,6 +7116,7 @@ static void sg_chan_cut(sg_delay* d) {
     if (w->thread) {
         sg_mtx_lock(&w->thread->m);
         w->thread->woken = true;
+        sg_live_tell(&w->thread->counted);
         sg_cnd_signal(&w->thread->c);
         sg_mtx_unlock(&w->thread->m);
     } else {
@@ -6986,7 +7182,7 @@ static void sg_chan_done(sg_chan_wait* w) {
 /* `send` and `receive` on a thread: 1 or 0 as `gave` says, -1 when the token is cancelled
    first. A channel that lets the wait go on is not left for a cancel. A sent item the channel
    does not take is dropped. */
-static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token) {
+static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token, const char* loc) {
     sg_chan_sleeper s;
     sg_chan_wait w;
     sg_chan_wait_init(&w, c, sends, item, token, &s);
@@ -7001,6 +7197,7 @@ static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token) {
         if (!slept) {
             sg_mtx_init(&s.m);
             sg_cnd_init(&s.c);
+            s.counted = false;
             slept = true;
         }
         s.woken = false;
@@ -7011,7 +7208,10 @@ static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token) {
         }
         sg_mtx_unlock(&c->m);
         sg_mtx_lock(&s.m);
-        while (!s.woken) sg_cnd_wait(&s.c, &s.m);
+        if (!s.woken) {
+            s.counted = sg_live_sleep(loc);
+            while (!s.woken) sg_cnd_wait(&s.c, &s.m);
+        }
         sg_mtx_unlock(&s.m);
         sg_mtx_lock(&c->m);
         if (w.listed) sg_chan_unlist(c, &w);
@@ -7024,8 +7224,8 @@ static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token) {
     }
     return result;
 }
-static inline int sg_chan_send(sg_chan* c, void* item, sg_cancel* token) { return sg_chan_block(c, true, item, token); }
-static inline int sg_chan_receive(sg_chan* c, void* out, sg_cancel* token) { return sg_chan_block(c, false, out, token); }
+static inline int sg_chan_send(sg_chan* c, void* item, sg_cancel* token, const char* loc) { return sg_chan_block(c, true, item, token, loc); }
+static inline int sg_chan_receive(sg_chan* c, void* out, sg_cancel* token, const char* loc) { return sg_chan_block(c, false, out, token, loc); }
 /* `await sender.sendAsync(item)`, `await channel.receiveAsync()`, in the frame of the async
    function: the work is looked at where it starts and each time the task is woken
    (`sg_chan_ready`), until it is done (SG_OVER, with `gave`) or cancelled (SG_CANCELLED). */
@@ -7045,11 +7245,13 @@ static bool sg_chan_ready(sg_chan_wait* w) {
     }
     sg_mtx_unlock(&c->m);
     if (done) sg_chan_done(w);
+    else sg_job_at(w->d.job, w->loc);
     return done;
 }
-static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* item, bool told, sg_cancel* token) {
+static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* item, bool told, sg_cancel* token, const char* loc) {
     sg_chan_wait_init(w, c, sends, item, token, NULL);
     w->told = told;
+    w->loc = loc;
     (void)sg_chan_ready(w);
 }
 "#;
@@ -7073,6 +7275,8 @@ typedef struct {
     /* The wait of the arm chosen; -1: every channel has ended; -2: the token was cancelled. */
     int chosen;
     int state;
+    /* Where it waits: the place of the panic when every task waits (`sg_awake`). */
+    const char* loc;
 } sg_sel;
 enum { SG_SEL_ENDED = -1, SG_SEL_CANCELLED = -2, SG_SEL_WAIT = -3 };
 static _Thread_local uint64_t sg_sel_seed = 0;
@@ -7096,7 +7300,8 @@ static inline void sg_sel_arm(sg_chan_wait* w, sg_chan* c, bool sends, void* ite
     w->item = item;
     w->state = SG_WAITING;
 }
-static inline void sg_sel_start(sg_sel* s, sg_chan_wait* waits, int* order, int n, bool told, sg_cancel* token) {
+static inline void sg_sel_start(sg_sel* s, sg_chan_wait* waits, int* order, int n, bool told, sg_cancel* token, const char* loc) {
+    s->loc = loc;
     s->waits = waits;
     s->order = order;
     s->n = n;
@@ -7188,6 +7393,7 @@ static int sg_sel_round(sg_sel* s) {
                 sg_mtx_init(&s->sleeper->m);
                 sg_cnd_init(&s->sleeper->c);
                 s->sleeper->woken = false;
+                s->sleeper->counted = false;
                 for (int j = 0; j < n; j++) s->waits[j].thread = s->sleeper;
                 s->slept = true;
             }
@@ -7226,7 +7432,10 @@ static int sg_select(sg_sel* s) {
         r = sg_sel_round(s);
         if (r != SG_SEL_WAIT) break;
         sg_mtx_lock(&z.m);
-        while (!z.woken) sg_cnd_wait(&z.c, &z.m);
+        if (!z.woken) {
+            z.counted = sg_live_sleep(s->loc);
+            while (!z.woken) sg_cnd_wait(&z.c, &z.m);
+        }
         z.woken = false;
         sg_mtx_unlock(&z.m);
     }
@@ -7242,7 +7451,10 @@ static int sg_select(sg_sel* s) {
 static bool sg_sel_ready(sg_sel* s) {
     if (s->state != SG_WAITING) return true;
     int r = sg_sel_round(s);
-    if (r == SG_SEL_WAIT) return false;
+    if (r == SG_SEL_WAIT) {
+        sg_job_at(s->waits[0].d.job, s->loc);
+        return false;
+    }
     s->chosen = r;
     s->state = SG_OVER;
     sg_chan_done(&s->waits[0]);
@@ -8430,7 +8642,7 @@ static void sg_sig_tell(sg_sig_listener* l) {
     if (job) {
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(&x->w);
     }
 }
 /* A cancel, under the clock's lock: the task goes on, and the signal that comes later stays. */
@@ -8441,7 +8653,7 @@ static void sg_sig_cut(sg_delay* d) {
     __atomic_store_n(&x->w.settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(&x->w);
 }
 static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
     x->l = (sg_sig_listener*)(intptr_t)id;
@@ -8460,6 +8672,7 @@ static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
             if (token) sg_wait_link(&x->w, token);
             x->l->waiter = x;
             x->state = SG_WAITING;
+            sg_wait_hold(&x->w);
         }
         sg_mtx_unlock(&sg_clock_lock);
     }
@@ -8733,7 +8946,7 @@ static void sg_wait_ready(sg_wait* w) {
     __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(w);
 }
 /* Under the lock of its slot: socket `fd` is ready (`bits`: 1 it can be read, 2 written), which
    goes into its slot, and the tasks that wait for it there are taken out, onto `woken`. */
@@ -8793,7 +9006,7 @@ static void sg_proc_ready(sg_wait* w) {
         if (mine) {
             SG_WAKE_PAUSE();
             sg_wake(job);
-            __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+            sg_wait_end(w);
         }
         return;
     }
@@ -8801,7 +9014,7 @@ static void sg_proc_ready(sg_wait* w) {
     __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(w);
 }
 #endif
 #if defined(_WIN32)
@@ -8845,6 +9058,7 @@ static void sg_loop_round(int i, bool wait) {
         if (GetLastError() != WAIT_TIMEOUT) abort();
         n = 0;
     }
+    sg_drive_woke(wait, n);
     for (ULONG i = 0; i < n; i++) {
         if (events[i].lpOverlapped) sg_afd_done((sg_afd_poll*)events[i].lpOverlapped);
     }
@@ -8989,6 +9203,7 @@ static void sg_loop_round(int i, bool wait) {
         if (errno == EINTR) return;
         abort();
     }
+    sg_drive_woke(wait, (unsigned long)n);
     for (int k = 0; k < n; k++) {
 #if defined(__linux__)
         uint64_t tag = events[k].data.u64;
@@ -9024,7 +9239,7 @@ static void sg_loop_round(int i, bool wait) {
         __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
         w = next;
     }
 }
@@ -9119,7 +9334,7 @@ static void sg_wait_cut(sg_delay* d) {
         __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
     }
 }
 /* The task running now waits for socket `fd` to be ready (`write`: to take bytes), after a call
@@ -9158,6 +9373,7 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
             w->after = s->waits[bit - 1];
             s->waits[bit - 1] = w;
             w->listed = true;
+            sg_wait_hold(w);
             if (token) sg_wait_link_listed(w, token);
         }
     }
@@ -9598,7 +9814,7 @@ static VOID CALLBACK sg_proc_ended(PVOID p, BOOLEAN timed_out) {
     if (job) {
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
     }
     UnregisterWait(wait);
     CloseHandle(a->process);
@@ -9613,7 +9829,7 @@ static void sg_proc_cut(sg_delay* d) {
     __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(w);
 }
 /* The task running now waits for the end of the program with handle `child`. A wait the system
    refuses is over at once: the program is then waited for where it is taken away. */
@@ -9639,10 +9855,12 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t child, sg_cancel* token, c
     }
     if (token) sg_wait_link(&x->w, token);
     a->waiter = &x->w;
+    sg_wait_hold(&x->w);
     /* Under the clock's lock, which the call back takes first: it sees the wait it lets go of. */
     if (!RegisterWaitForSingleObject(&a->wait, a->process, sg_proc_ended, a, INFINITE, WT_EXECUTEONLYONCE)) {
         a->waiter = NULL;
         sg_wait_unlink(&x->w);
+        sg_wait_unhold(&x->w);
         sg_mtx_unlock(&sg_clock_lock);
         CloseHandle(a->process);
         (free)(a);
@@ -9736,12 +9954,18 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
             code = -1;
         } else {
             sg_wait_link(&x->w, token);
+            sg_wait_hold(&x->w);
             code = sg_proc_arm(&x->w);
-            if (code) sg_wait_unlink(&x->w);
+            if (code) {
+                sg_wait_unlink(&x->w);
+                sg_wait_unhold(&x->w);
+            }
         }
         sg_mtx_unlock(&sg_clock_lock);
     } else {
+        sg_wait_hold(&x->w);
         code = sg_proc_arm(&x->w);
+        if (code) sg_wait_unhold(&x->w);
     }
     /* macOS gives ESRCH for a program that has ended and was not waited for: its end has come. */
     x->state = code < 0 ? SG_CANCELLED : code ? SG_OVER : SG_WAITING;
@@ -13201,6 +13425,9 @@ static SG_THREAD_MAIN(sg_io_main, unused) {
             sg_wake(job);
             __atomic_store_n(&io->done, 1, __ATOMIC_RELEASE);
         }
+        /* The work held one of the count of what could end a wait (`sg_awake`) since it was
+           handed over; whoever waits for it is woken now. */
+        sg_outside_end();
         sg_mtx_lock(&sg_io_lock);
     }
     sg_io_threads--;
@@ -13215,6 +13442,7 @@ static void sg_io_put(sg_io* io, void (*work)(sg_io*), sg_task* job, const char*
     io->work = work;
     io->next = NULL;
     io->done = 0;
+    sg_outside_hold();
     sg_mtx_lock(&sg_io_lock);
     if (!sg_io_started) {
         sg_cnd_init_timed(&sg_io_wait);
@@ -13263,7 +13491,27 @@ typedef struct sg_wait {
        of the wait before is seen there (the sanitizer does not see it through the system). */
     int posted;
     struct sg_wait* cut;
+    /* Holds one of the count of what could end a wait (`sg_awake`) while a socket, another
+       program or a signal is waited for: taken where the wait goes on the loop or the list that
+       ends it, let go by whoever ends it, after it woke the task (`sg_wait_end`). */
+    bool held;
 } sg_wait;
+/* Whoever ended the wait lets the task go on: `settled` 1 is its last touch of the wait, and a
+   count the wait held is let go after it, the task woken by then. */
+static inline void sg_wait_end(sg_wait* w) {
+    /* Atomic: the loop may see the wait through the system alone (see `posted`). */
+    bool held = __atomic_load_n(&w->held, __ATOMIC_RELAXED);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    if (held) sg_outside_end();
+}
+static inline void sg_wait_hold(sg_wait* w) {
+    __atomic_store_n(&w->held, true, __ATOMIC_RELAXED);
+    sg_outside_hold();
+}
+static inline void sg_wait_unhold(sg_wait* w) {
+    __atomic_store_n(&w->held, false, __ATOMIC_RELAXED);
+    sg_outside_end();
+}
 /* The task running now was let go by an exit with an error, and its wait is not over: it ends
    as a cancel of a token would end it, under the clock's lock (1692). Its own task does it, so the
    wait is not touched by another thread while it may be used again. A wait the loop or a thread
@@ -13312,6 +13560,7 @@ static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
     w->listed = false;
     w->after = NULL;
     w->told_by = NULL;
+    w->held = false;
 }
 /* The token's lock is held: the wait is put on the list of its token. */
 static void sg_wait_link_listed(sg_wait* w, sg_cancel* token) {
@@ -13374,7 +13623,7 @@ static void sg_far_main(sg_io* io) {
     if (w && keep) {
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
         return;
     }
     if (!w && f->lost) f->lost(f);
@@ -13382,7 +13631,7 @@ static void sg_far_main(sg_io* io) {
     if (w) {
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
     }
 }
 /* A cancel, under the clock's lock: the work is left to its thread, and the task goes on. */
@@ -13393,7 +13642,7 @@ static void sg_far_cut(sg_delay* d) {
     __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(w);
 }
 /* The task running now waits for `f`, which then starts: SG_WAITING, or SG_CANCELLED when the
    token is cancelled (the work does not start, and is freed). */
@@ -13525,7 +13774,7 @@ static void sg_lap_fill_main(sg_io* io) {
     if (job) {
         SG_WAKE_PAUSE();
         sg_wake(job);
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wait_end(w);
     }
 }
 /* A cancel, under the clock's lock: the task goes on, and the call of the thread is cancelled. */
@@ -13539,7 +13788,7 @@ static void sg_lap_cut(sg_delay* d) {
     __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     SG_WAKE_PAUSE();
     sg_wake(job);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wait_end(w);
 }
 /* The block of the reader cannot answer the read: SG_WAITING when the task waits for the thread
    that fills it, SG_CANCELLED, SG_OVER at the end, or -1 when the block is full and the read is
@@ -14143,7 +14392,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let main = prog.funcs.iter().find(|func| func.name == "main");
     let start = match main {
         _ if tests => format!(
-            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nstatic int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n{MAIN_ON_STACK}",
+            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nstatic int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    SG_LIVE_MAIN();\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n{MAIN_ON_STACK}",
             prog.tests.len()
         ),
         // A library starts when it is loaded: C's constructor, which every compiler the
@@ -16079,7 +16328,7 @@ impl<'a> Emitter<'a> {
         );
         let _ = writeln!(
             self.glue,
-            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (from < v->len) sg_cut_tasks((void* const*)v->ptr + from, v->len - from); if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); v->group = NULL; }}"
+            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (from < v->len) sg_cut_tasks((void* const*)v->ptr + from, v->len - from); if (v->group) sg_group_park_all(v->group, v->len, NULL); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); v->group = NULL; }}"
         );
         let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
         let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
@@ -16090,14 +16339,14 @@ impl<'a> Emitter<'a> {
         self.sigs.insert(format!("sg_add_{name}"), vec![item.clone()]);
         // What the tasks gave, as a list in the order of theirs.
         let (gives, keep, back) = match &**result {
-            Ty::Void => ("void".to_string(), format!("sg_wait_{task}(v->ptr[i]);"), String::new()),
+            Ty::Void => ("void".to_string(), format!("sg_wait_{task}(v->ptr[i], NULL);"), String::new()),
             result => {
                 let values = Ty::List(Box::new(result.clone()));
                 let values_c = self.ctype(&values, span)?;
                 let values_name = mangle(&values).expect("a list has a C name");
                 (
                     values_c.clone(),
-                    format!("sg_add_{values_name}(&out, sg_wait_{task}(v->ptr[i]));"),
+                    format!("sg_add_{values_name}(&out, sg_wait_{task}(v->ptr[i], NULL));"),
                     format!("{values_c} out = {{ 0 }}; if (v->len) out.ptr = sg_reserve(NULL, &out.cap, v->len, sizeof(*out.ptr), _Alignof(__typeof__(*out.ptr))); "),
                 )
             }
@@ -16111,7 +16360,7 @@ impl<'a> Emitter<'a> {
         let ret = if **result == Ty::Void { "" } else { "return " };
         let _ = writeln!(
             self.glue,
-            "static {gives_one} sg_any_{name}({list}* v, sg_task* t) {{ int64_t i = 0; while (&v->ptr[i]->head != t) i++; {held} one = v->ptr[i]; memmove(&v->ptr[i], &v->ptr[i + 1], (size_t)(v->len - i - 1) * sizeof({held})); v->len--; {ret}sg_wait_{task}(one); }}"
+            "static {gives_one} sg_any_{name}({list}* v, sg_task* t) {{ int64_t i = 0; while (&v->ptr[i]->head != t) i++; {held} one = v->ptr[i]; memmove(&v->ptr[i], &v->ptr[i + 1], (size_t)(v->len - i - 1) * sizeof({held})); v->len--; {ret}sg_wait_{task}(one, NULL); }}"
         );
         Ok(())
     }
@@ -16409,11 +16658,11 @@ impl<'a> Emitter<'a> {
                 };
                 let _ = writeln!(self.late_types, "struct {task} {{ sg_task head;{field} }};");
                 let back = if take.is_empty() { "" } else { " return v;" };
-                let _ = writeln!(self.glue_protos, "static inline {task}* sg_move_{name}({task}** v);\nstatic void sg_drop_{name}({task}** v);\nstatic inline {gives} sg_wait_{name}({task}* t);");
+                let _ = writeln!(self.glue_protos, "static inline {task}* sg_move_{name}({task}** v);\nstatic void sg_drop_{name}({task}** v);\nstatic inline {gives} sg_wait_{name}({task}* t, const char* loc);");
                 let _ = writeln!(self.glue, "static inline {task}* sg_move_{name}({task}** v) {{ {task}* out = *v; *v = NULL; return out; }}");
                 // Dropped only on a way out with an error: the task is let go first (1691).
-                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_cut(&t->head); sg_task_join(&t->head); {drop_result}sg_task_free(t); }}");
-                let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}sg_task_free(t);{back} }}");
+                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_cut(&t->head); sg_task_join(&t->head, NULL); {drop_result}sg_task_free(t); }}");
+                let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t, const char* loc) {{ sg_task_join(&t->head, loc); {take}sg_task_free(t);{back} }}");
             }
             // A function value is the address of a function: one pointer. So is a pointer to a
             // function of C, whose types are C's.
@@ -18135,15 +18384,15 @@ impl<'a> Emitter<'a> {
             true => format!("(*{})", self.value(&args[usize::from(sends)])?),
             false => "NULL".to_string(),
         };
-        let (slot, gave) = (self.temp(), self.temp());
+        let (slot, gave, loc) = (self.temp(), self.temp(), self.loc(expr.span));
         let start = match sent {
             // The end of the channel is found before the value is computed.
             Some(value) => {
                 let end = format!("{}*", self.ctype(&chan_end(&recv.ty), recv.span)?);
                 let address = self.receiver_first(&end, address, after);
-                format!("{end} {slot}c = {address}; {held} {slot} = {value}; int {gave} = sg_chan_send(*{slot}c, &{slot}, {token});")
+                format!("{end} {slot}c = {address}; {held} {slot} = {value}; int {gave} = sg_chan_send(*{slot}c, &{slot}, {token}, {loc});")
             }
-            None => format!("{held} {slot}; int {gave} = sg_chan_receive({chan}, &{slot}, {token});"),
+            None => format!("{held} {slot}; int {gave} = sg_chan_receive({chan}, &{slot}, {token}, {loc});"),
         };
         let gives = self.chan_gives(call, told, &item, &gave, &slot, expr.span)?;
         Ok(format!("({{ {start} {gives}; }})"))
@@ -18321,12 +18570,12 @@ impl<'a> Emitter<'a> {
         // system keeps them (a text of capacity 0 owns nothing); a word that is not UTF-8 is
         // made text in a block of its own (`sg_name_escape`, choice 1950).
         let (head, call) = match main.params.is_empty() {
-            true => ("static int sg_main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    sg_start(NULL, NULL);\n".to_string(), "f_main()".to_string()),
+            true => ("static int sg_main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    sg_start(NULL, NULL);\n    SG_LIVE_MAIN();\n".to_string(), "f_main()".to_string()),
             false => {
                 let list = self.ctype(&Ty::List(Box::new(Ty::Str)), main.name_span)?;
                 (
                     format!(
-                        "static int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
+                        "static int sg_main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    SG_LIVE_MAIN();\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
                          if (!args.ptr) abort();\n    \
                          for (int i = 1; i < argc; i++) {{\n        int64_t n = (int64_t)strlen(argv[i]);\n        \
                          int64_t m; uint8_t* escaped = sg_name_escape((const uint8_t*)argv[i], n, &m);\n        \
@@ -18345,7 +18594,7 @@ impl<'a> Emitter<'a> {
                 let site = format!("&sg_site_{}", self.sites.len() - 1);
                 let args = call.strip_prefix("f_main(").expect("a call of `main`").trim_end_matches(')');
                 let args = if args.is_empty() { String::new() } else { format!(", {args}") };
-                format!("sg_wait_{}(a_start_main({site}{args}))", mangle(&task).expect("a task has a C name"))
+                format!("sg_wait_{}(a_start_main({site}{args}), NULL)", mangle(&task).expect("a task has a C name"))
             }
             false => call,
         };
@@ -18815,7 +19064,7 @@ impl<'a> Emitter<'a> {
     /// the values ends (`sg_when_sleep` on a thread). An async function returns to wait instead,
     /// and comes back to its `SG_RESUME` mark before the locks are taken (`sg_when_wait`).
     #[allow(clippy::too_many_arguments)]
-    fn lock_when(&mut self, when: &'a Expr, items: &[LockItem], reads: Vec<(Local, String)>, (links, values, count): (&str, &str, usize), awaited: bool, depth: usize, out: &mut String) -> Res<()> {
+    fn lock_when(&mut self, when: &'a Expr, at: Span, items: &[LockItem], reads: Vec<(Local, String)>, (links, values, count): (&str, &str, usize), awaited: bool, depth: usize, out: &mut String) -> Res<()> {
         let pad = "    ".repeat(depth);
         let inner = format!("{pad}    ");
         let text = |span: Span| self.sources.text[span.start..span.end].to_string();
@@ -18837,7 +19086,9 @@ impl<'a> Emitter<'a> {
         for line in decls {
             let _ = writeln!(out, "{inner}{line}");
         }
-        let args = format!("{links}, {values}, {count}, {counted}, {}, {}, {loc}", c_string(&what), c_string(&hint));
+        // The place of the wait, as the interpreter shows it, is the statement.
+        let waits_at = self.loc(at);
+        let args = format!("{links}, {values}, {count}, {counted}, {}, {}, {loc}, {waits_at}", c_string(&what), c_string(&hint));
         let (wait, again) = match awaited {
             true => (format!("{{ sg_when_wait({args}); return false; }}"), "if"),
             false => (format!("sg_when_sleep({args});"), "while"),
@@ -18931,7 +19182,7 @@ impl<'a> Emitter<'a> {
                     None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
                         let task = &local.cname;
                         lines.push(format!(
-                            "if ({task}) {{ sg_task_cut(&{task}->head); }} SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) {{ return false; }} {}",
+                            "if ({task}) {{ sg_task_cut(&{task}->head); }} SG_RESUME(0); if ({task} && !sg_ready(&{task}->head, NULL)) {{ return false; }} {}",
                             self.drop_of(&local.ty, task)
                         ));
                     }
@@ -18947,7 +19198,7 @@ impl<'a> Emitter<'a> {
                     None if !local.gone && is_task_list(&local.ty) && self.awaits.is_some() => {
                         let list = &local.cname;
                         lines.push(format!(
-                            "sg_cut_tasks((void* const*){list}.ptr, {list}.len); SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) {{ return false; }} {}",
+                            "sg_cut_tasks((void* const*){list}.ptr, {list}.len); SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len, NULL)) {{ return false; }} {}",
                             self.drop_of(&local.ty, list)
                         ));
                     }
@@ -19126,7 +19377,12 @@ impl<'a> Emitter<'a> {
                     if when.is_some() {
                         reads.push(self.borrowed_name(&item.name, Ty::Read(Box::new(held.clone())), &format!("(*{temp})"), item.name_span)?);
                     }
-                    names.push(self.borrowed_name(&item.name, Ty::Ref(Box::new(held)), &format!("(*{temp})"), item.name_span)?);
+                    let (local, mut line) = self.borrowed_name(&item.name, Ty::Ref(Box::new(held)), &format!("(*{temp})"), item.name_span)?;
+                    // With `when` the name is used by the condition, and the block may not use it.
+                    if when.is_some() {
+                        line.push_str(&format!(" (void){};", local.cname));
+                    }
+                    names.push((local, line));
                     pointers.push(temp);
                 }
                 for second in 1..items.len() {
@@ -19170,7 +19426,7 @@ impl<'a> Emitter<'a> {
                 self.scopes.push(vec![Local { name: "lock".to_string(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(give.clone()) }]);
                 let _ = writeln!(out, "{pad}{{");
                 if let (Some(when), Some((links, values, count))) = (when, waits) {
-                    self.lock_when(when, items, reads, (&links, &values, count), *awaited, depth + 1, out)?;
+                    self.lock_when(when, stmt.span, items, reads, (&links, &values, count), *awaited, depth + 1, out)?;
                 }
                 self.block_with(body, depth + 1, out, names)?;
                 self.scopes.pop();
@@ -19557,7 +19813,8 @@ impl<'a> Emitter<'a> {
                 if owns {
                     self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: Ty::Channel(Box::new(item.clone())), gone: false, drop: Some(format!("sg_chan_less({it}, false);")) }]);
                 }
-                let _ = writeln!(out, "{inner}while (sg_chan_receive({it}, &{at}, NULL) == 1) {{");
+                let loc = self.loc(iter.span);
+                let _ = writeln!(out, "{inner}while (sg_chan_receive({it}, &{at}, NULL, {loc}) == 1) {{");
                 self.temps += 1;
                 let cname = format!("v_{}_{}", local_cname(var), self.temps);
                 let line = format!("{held} {cname} = {at};{}", unnamed(var, &cname));
@@ -20524,7 +20781,10 @@ impl<'a> Emitter<'a> {
             wait += 1;
         }
         let kept = self.hold();
-        let _ = writeln!(out, "{inner}sg_sel_start(&{sel}, {sel}w, {sel}o, {count}, {told}, {token});");
+        // The place of a wait is the word, as the interpreter shows it.
+        let word = Span::new(expr.span.start, expr.span.start + if *awaited { "await select".len() } else { "select".len() });
+        let loc = self.loc(word);
+        let _ = writeln!(out, "{inner}sg_sel_start(&{sel}, {sel}w, {sel}o, {count}, {told}, {token}, {loc});");
         let chosen = format!("{sel}r");
         match awaited {
             true => {
@@ -22447,9 +22707,13 @@ impl<'a> Emitter<'a> {
                 match sends {
                     true => {
                         let value = self.value_as(&args[0], &item)?;
-                        self.pre.push(format!("{held} {slot} = {value}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, true, &{slot}, {told}, {token});"));
+                        let loc = self.loc(inner.span);
+                        self.pre.push(format!("{held} {slot} = {value}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, true, &{slot}, {told}, {token}, {loc});"));
                     }
-                    false => self.pre.push(format!("{held} {slot}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, false, &{slot}, {told}, {token});")),
+                    false => {
+                        let loc = self.loc(inner.span);
+                        self.pre.push(format!("{held} {slot}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, false, &{slot}, {told}, {token}, {loc});"));
+                    }
                 }
                 self.resume_point(expr.span);
                 self.pre.push(format!("if (!sg_chan_ready(&{wait})) return false;"));
@@ -22482,7 +22746,8 @@ impl<'a> Emitter<'a> {
                     true => format!("(*{})", self.value(&args[0])?),
                     false => "NULL".to_string(),
                 };
-                self.pre.push(format!("sg_tgroup* {wait}g = {value}; sg_tgroup_wait {wait}; sg_tgroup_start(&{wait}, {wait}g, {all}, {told}, {token});"));
+                let loc = self.loc(inner.span);
+                self.pre.push(format!("sg_tgroup* {wait}g = {value}; sg_tgroup_wait {wait}; sg_tgroup_start(&{wait}, {wait}g, {all}, {told}, {token}, {loc});"));
                 self.resume_point(expr.span);
                 self.pre.push(format!("if (!sg_tgroup_ready(&{wait})) return false;"));
                 if all {
@@ -22506,7 +22771,8 @@ impl<'a> Emitter<'a> {
                 self.resume_point(expr.span);
                 // A task let go lets the tasks it waits for go (1691).
                 self.pre.push(format!("if (sg_job_cut()) {{ sg_cut_tasks((void* const*){list}.ptr, {list}.len); }}"));
-                self.pre.push(format!("if (!sg_group_all({list}.group, {list}.len)) return false;"));
+                let loc = self.loc(inner.span);
+                self.pre.push(format!("if (!sg_group_all({list}.group, {list}.len, {loc})) return false;"));
                 result(self, format!("sg_all_{name}(&{list})"))
             }
             // `await Task.whenAny(ref tasks)`: the first task the group says has ended is taken
@@ -22518,7 +22784,7 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("{ctype} {list} = {value}; if ({list}->len == 0) sg_when_any_empty({loc}); sg_task* {task} = NULL;"));
                 self.resume_point(expr.span);
                 self.pre.push(format!("if (sg_job_cut()) {{ sg_cut_tasks((void* const*){list}->ptr, {list}->len); }}"));
-                self.pre.push(format!("if (!({task} = sg_group_any({list}->group))) return false;"));
+                self.pre.push(format!("if (!({task} = sg_group_any({list}->group, {loc}))) return false;"));
                 result(self, format!("sg_any_{name}({list}, {task})"))
             }
             _ => {
@@ -22526,8 +22792,9 @@ impl<'a> Emitter<'a> {
                 let (ctype, task) = (self.ctype(&inner.ty, inner.span)?, self.temp());
                 self.pre.push(format!("{ctype} {task} = {value};"));
                 self.resume_point(expr.span);
-                self.pre.push(format!("if (!sg_ready(&{task}->head)) return false;"));
-                result(self, format!("sg_wait_{}({task})", mangle(&inner.ty).expect("a task has a C name")))
+                let loc = self.loc(expr.span);
+                self.pre.push(format!("if (!sg_ready(&{task}->head, {loc})) return false;"));
+                result(self, format!("sg_wait_{}({task}, NULL)", mangle(&inner.ty).expect("a task has a C name")))
             }
         }
     }
@@ -24739,7 +25006,8 @@ impl<'a> Emitter<'a> {
                         false => "NULL".to_string(),
                     };
                     let free = if all { format!(" sg_tgroup_free({temp});") } else { String::new() };
-                    self.pre.push(format!("sg_tgroup* {temp} = {value}; int {temp}s = sg_tgroup_block({temp}, {all}, {told}, {token});{free}"));
+                    let loc = self.loc(recv.span);
+                    self.pre.push(format!("sg_tgroup* {temp} = {value}; int {temp}s = sg_tgroup_block({temp}, {all}, {told}, {token}, {loc});{free}"));
                     match told {
                         true => {
                             let ctype = self.ctype(&expr.ty, expr.span)?;
@@ -24758,17 +25026,19 @@ impl<'a> Emitter<'a> {
                     let value = self.first(&given[0], head)?;
                     let (ctype, list) = (self.ctype(&given[0].ty, given[0].span)?, self.temp());
                     if *when == Callee::WhenAll {
-                        self.pre.push(format!("{ctype} {list} = {value}; sg_group_park_all({list}.group, {list}.len);"));
+                        let loc = self.loc(recv.span);
+                        self.pre.push(format!("{ctype} {list} = {value}; sg_group_park_all({list}.group, {list}.len, {loc});"));
                         return Ok(format!("sg_all_{name}(&{list})"));
                     }
                     let loc = self.loc(recv.span);
                     self.pre.push(format!("{ctype} {list} = {value}; if ({list}->len == 0) sg_when_any_empty({loc});"));
-                    Ok(format!("sg_any_{name}({list}, sg_group_park_any({list}->group))"))
+                    Ok(format!("sg_any_{name}({list}, sg_group_park_any({list}->group, {loc}))"))
                 }
                 Callee::WhenAll | Callee::WhenAny => unreachable!("the checker has them awaited or waited for where they are written"),
                 Callee::Wait => {
                     let task = self.first(recv, head)?;
-                    Ok(format!("sg_wait_{}({task})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))
+                    let loc = self.loc(expr.span);
+                    Ok(format!("sg_wait_{}({task}, {loc})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))
                 }
                 Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
                     let site = self.site(c_string(name), expr.span);

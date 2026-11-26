@@ -771,11 +771,6 @@ fn compiled() {
         if name == "panic_stack_overflow.sg" {
             return done;
         }
-        // Tasks that wait on channels for each other: the interpreter stops with a panic, and
-        // compiled code waits for ever until the count of waiting tasks comes with the hardening.
-        if name == "panic_channel_deadlock.sg" || name == "panic_select_deadlock.sg" {
-            return done;
-        }
         // The interpreter checks every read and write of raw memory against the blocks of
         // `Memory.allocate`; compiled code checks nothing there (it is written inside `unsafe`),
         // and leaves it to the sanitizers.

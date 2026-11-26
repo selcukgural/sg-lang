@@ -1,0 +1,14 @@
+// `main` keeps the sender of a channel and waits for the task that receives from it: every
+// task waits, and nothing is left that could end a wait. Compiled code counts the threads that
+// sleep (slice 193) and gives the interpreter's panic, at the wait of the task started last.
+int take(Channel<int> inbox) {
+    return inbox.receive() ?? -1
+}
+
+void main() {
+    var jobs = Channel<int>(4)
+    var tx = jobs.sender()
+    var t = Task.run(take, jobs)
+    print(t.wait())
+    _ = tx.send(1)
+}

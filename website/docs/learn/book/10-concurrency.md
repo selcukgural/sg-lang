@@ -419,6 +419,36 @@ A `select` gives a value as a `match` does, and `break` in an arm leaves the loo
 `select (read token) { ... cancelled => ... }` gives up once the token is cancelled; in an async function it is
 `await select`.
 
+### When tasks wait for each other
+
+Tasks that send each other messages can wait for each other, which no compiler can see. Once every task waits and
+nothing is left that could end a wait (no delay, no socket, no other program, no input or output on its way), the
+program stops with a panic that says where, compiled or interpreted, where Rust and C# would hang for ever. Here
+`main` keeps the sender and waits for the task first:
+
+```sg panic
+int take(Channel<int> inbox) {
+    return inbox.receive() ?? -1
+}
+
+void main() {
+    var jobs = Channel<int>(4)
+    var tx = jobs.sender()
+    var t = Task.run(take, jobs)
+    print(t.wait())
+    _ = tx.send(1)
+}
+```
+
+```text
+panic: every task waits, and nothing is left that could end a wait
+```
+
+The place shown is the wait of the task started last. Compiled code finds it by counting the threads that are
+awake and the waits for what is outside the tasks; a thread takes itself off that count only when it goes to
+sleep, so a task that goes on without waiting pays nothing for it. Tasks that wait for each other while other
+tasks still run are not seen, as in Go.
+
 ## Async functions
 
 A task started with `Task.run` has a thread of its own. An `async` function is lighter: a call gives a

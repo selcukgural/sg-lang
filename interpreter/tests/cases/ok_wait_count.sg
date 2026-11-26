@@ -1,0 +1,78 @@
+// Waits that something outside the tasks ends. Compiled code counts what could end a wait
+// (slice 193): here every task but one waits for another task, and that one waits for a delay
+// or for the clock of a token, which holds the count up until it ends; no part may stop with
+// the panic of a deadlock.
+void later(Sender<int> tx, int ms, int value) {
+    var pause = Task.delay(ms)
+    pause.wait()
+    _ = tx.send(value)
+}
+
+async void laterAsync(Sender<int> tx, int ms, int value) {
+    await Task.delay(ms)
+    _ = await tx.sendAsync(value)
+}
+
+struct Gate {
+    bool open
+}
+
+void opens(shared locked Gate gate, int ms) {
+    var pause = Task.delay(ms)
+    pause.wait()
+    lock gate as g {
+        g.open = true
+    }
+}
+
+void main() {
+    // A thread of its own waits for a delay kept as a task; `main` waits on the channel.
+    var a = Channel<int>(1)
+    var first = Task.run(later, a.sender(), 30, 1)
+    print(a.receive() ?? -1)
+    first.wait()
+
+    // An async task awaits a delay, and the threads of the pool sleep meanwhile.
+    var b = Channel<int>(1)
+    var second = laterAsync(b.sender(), 30, 2)
+    print(b.receive() ?? -1)
+    second.wait()
+
+    // Nothing will send: the clock of the token ends the wait.
+    var c = Channel<int>(1)
+    var keepC = c.sender()
+    var source = CancellationSource.after(30)
+    match c.receive(read source.token()) {
+        Ok(value) => print($"got {value ?? -1}")
+        Error(_) => print("the clock cancelled the receive")
+    }
+    _ = keepC
+
+    // A `select` whose token `cancelAfter` cancels.
+    var d = Channel<int>(1)
+    var keepD = d.sender()
+    var late = CancellationSource()
+    late.cancelAfter(30)
+    var chosen = select (read late.token()) {
+        d.receive() as n => n
+        ended => -1
+        cancelled => -2
+    }
+    print(chosen)
+    _ = keepD
+
+    // `lock ... when` that a task opens after a delay.
+    var gate = new shared locked Gate { open = false }
+    var opener = Task.run(opens, share gate, 30)
+    lock gate as g when g.open {
+        print("the gate opened")
+    }
+    opener.wait()
+
+    // `whenAll` of a group whose task awaits a delay.
+    var e = Channel<int>(1)
+    var group = TaskGroup()
+    group.add(laterAsync(e.sender(), 30, 5))
+    group.whenAll().wait()
+    print(e.receive() ?? -1)
+}

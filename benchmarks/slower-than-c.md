@@ -260,6 +260,15 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## Tasks, async and signals
 
+- **The count of waiting tasks, where a consumer of a `select` sleeps often** (choices 2002-2010, slice 193,
+  macOS, against SG before the slice, the median of fifteen runs): two producers on threads and a consumer that
+  takes their items with a `select` over two channels of 64 take 4 per cent longer (1,011 ms against 971 ms for
+  10 million items), a ping-pong of two async tasks 2 per cent; the servers of the lane on Linux, and the other
+  programs measured, are within the noise. Each sleep takes the thread off a count shared by every thread, under
+  the sleeper's lock, which the producer that wakes it takes too. A candidate: a count of the threads of the
+  pool folded into the word the pool keeps (`sg_pool_state`), and a way to take a thread off outside its lock
+  without a panic that is wrong; neither is in sight yet.
+
 - **A read given a token** (`trials/server`, `--idle-limit`, the 158th slice, choices 1720 and 1724): every wait
   of the network given a token goes on the token's list and off it under the clock's one lock, which every
   thread shares, so the store with a limit on each request gets 3.2% fewer answers with 50 connections and 3.9%

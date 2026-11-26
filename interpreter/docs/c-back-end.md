@@ -156,6 +156,15 @@ out of the block (`return`, `break`, `continue`, and the `return` inside `try` a
 finds nothing to do; a text constant has no capacity and is never allocated or freed. There is no garbage
 collector, and a count of owners only where the program asks for several (`shared`).
 
+When every task waits: compiled code counts what could end a wait (`sg_awake`, the 193rd slice, 2002-2010), as
+Go's `checkdead` does: the threads of the program that are awake (`main`, the thread of each task of `Task.run`,
+the threads of the pool) and every wait for something outside the tasks (a delay on the clock, a socket, another
+program or a signal on the loop of the network, work on a thread of input and output). A thread takes itself off
+only as it goes to sleep until another task tells it, and whoever tells it puts it back first; the tasks of the
+pool are not counted, only its threads. The thread that takes the last one off gives the interpreter's panic
+(399), at the wait of the task started last; a call of C, a call of the system and the threads of a program that
+loaded a library are never counted down, so they never end in it.
+
 A debug build (`sg build file.sg`) checks integer overflow and is not optimised; a release build
 (`sg build file.sg --release`) wraps on overflow and is optimised. The interpreter and `sg test` behave like a
 debug build; a cast that does not fit follows the same rule. An index or a range outside a text, division by

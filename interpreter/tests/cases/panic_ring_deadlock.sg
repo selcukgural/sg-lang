@@ -1,0 +1,34 @@
+// Ten thousand async tasks in a ring hand a number on, each one less, until it reaches nothing;
+// the task that gets nothing keeps it, and every task waits for an item no one will send. In
+// compiled code the tasks run on the threads of the pool, which fall asleep one by one with
+// nothing to run: the last one to sleep sees the count reach nothing (slice 193).
+async void hop(Channel<int> inbox, Sender<int> next) {
+    while true {
+        var n = (await inbox.receiveAsync()) ?? -1
+        if n > 0 {
+            _ = await next.sendAsync(n - 1)
+        }
+    }
+}
+
+void main() {
+    var count = 10000
+    var rings = List<Channel<int>>()
+    for _ in 0..count {
+        rings.add(Channel<int>(1))
+    }
+    // Every sender is made before a task starts: a task runs at once until it waits, and a
+    // channel with no sender left gives `null`.
+    var first = rings[0].sender()
+    var senders = List<Sender<int>>()
+    for i in 0..count {
+        senders.add(rings[(i + 1) % count].sender())
+    }
+    var tasks = List<Task<void>>()
+    for i in 0..count {
+        tasks.add(hop(rings[i].clone(), senders[i].clone()))
+    }
+    _ = first.send(3 * count + 7)
+    print("handed on")
+    Task.whenAll(tasks).wait()
+}

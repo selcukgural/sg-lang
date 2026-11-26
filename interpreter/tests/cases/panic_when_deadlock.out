@@ -1,0 +1,4 @@
+panic: every task waits, and nothing is left that could end a wait
+  --> panic_when_deadlock.sg:8:5
+ 8 |     lock gate as g when g.open {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

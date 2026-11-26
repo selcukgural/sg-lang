@@ -1,0 +1,4 @@
+panic: every task waits, and nothing is left that could end a wait
+  --> panic_async_deadlock.sg:12:11
+ 12 |     print(await t)
+    |           ^^^^^^^

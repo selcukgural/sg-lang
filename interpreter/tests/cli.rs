@@ -3356,3 +3356,56 @@ fn the_trial_of_giftool() {
         assert!(again.stdout == compiled.stdout, "{words:?}: written again, it changed");
     }
 }
+
+/// Compiled code counts what could end a wait, and panics when nothing is left (slice 193). A
+/// wait that only something outside the program ends holds the count up, and the program goes
+/// on when it comes, late: the input, read on a thread or the async way while a task waits on
+/// a channel; a client of a server whose every task waits; a call of C that sleeps (Unix).
+#[test]
+fn waits_from_outside_are_counted() {
+    use std::io::{BufRead, Write};
+    let dir = work("waits_from_outside_are_counted");
+    let relay = "void relay(Channel<string> inbox) {\n    print($\"relayed: {inbox.receive() ?? \"nothing\"}\")\n}\n";
+    let relay_async = "async void relayAsync(Channel<string> inbox) {\n    print($\"relayed: {(await inbox.receiveAsync()) ?? \"nothing\"}\")\n}\n";
+    write(&dir, "input.sg", &format!("{relay}\nvoid main() {{\n    var lines = Channel<string>(1)\n    var tx = lines.sender()\n    var t = Task.run(relay, lines)\n    var line = \"\"\n    _ = Stdin.readLine(ref line) ?? false\n    _ = tx.send(line)\n    t.wait()\n}}\n"));
+    write(&dir, "input_async.sg", &format!("{relay_async}\nasync Result<void, IoError> main() {{\n    var lines = Channel<string>(1)\n    var tx = lines.sender()\n    var t = relayAsync(lines)\n    var line = \"\"\n    _ = try await Stdin.readLineAsync(ref line)\n    _ = await tx.sendAsync(line)\n    await t\n    return Ok()\n}}\n"));
+    write(&dir, "client.sg", "async Result<void, IoError> served(TcpListener listener, Sender<string> tx) {\n    _ = try await listener.acceptAsync()\n    _ = await tx.sendAsync(\"a client came\")\n    return Ok()\n}\n\nasync Result<void, IoError> main() {\n    var listener = try TcpListener.bind(\"127.0.0.1:0\")\n    print($\"port {listener.port()}\")\n    _ = Stdout.flush()\n    var lines = Channel<string>(1)\n    var t = served(listener, lines.sender())\n    print((await lines.receiveAsync()) ?? \"nothing\")\n    try await t\n    return Ok()\n}\n");
+    let mut stems = vec!["input", "input_async", "client"];
+    if cfg!(unix) {
+        write(&dir, "sleepy.sg", &format!("extern {{\n    int usleep(uint microseconds)\n}}\n\n{relay}\nvoid main() {{\n    var lines = Channel<string>(1)\n    var tx = lines.sender()\n    var t = Task.run(relay, lines)\n    _ = unsafe usleep(300000)\n    _ = tx.send(\"after the call of C\")\n    t.wait()\n}}\n"));
+        stems.push("sleepy");
+    }
+    let late = std::time::Duration::from_millis(300);
+    for stem in stems {
+        let built = sg(&dir, &["build", &format!("{stem}.sg")]);
+        assert_eq!(built.status.code(), Some(0), "{stem}: {}", text(&built.stderr));
+        let mut child = Command::new(program(&dir, stem)).current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut said = String::new();
+        if stem == "client" {
+            stdout.read_line(&mut said).unwrap();
+            let port: u16 = said.trim().strip_prefix("port ").and_then(|port| port.parse().ok()).unwrap_or_else(|| panic!("{stem}: {said}"));
+            std::thread::sleep(late);
+            let _conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut rest = String::new();
+            std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
+            said.push_str(&rest);
+        } else {
+            std::thread::sleep(late);
+            stdin.write_all(b"a late line\n").unwrap();
+            drop(stdin);
+            std::io::Read::read_to_string(&mut stdout, &mut said).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let errors = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{stem}: {said}{errors}");
+        assert!(errors.is_empty(), "{stem}: {errors}");
+        let want = match stem {
+            "client" => "a client came\n",
+            "sleepy" => "relayed: after the call of C\n",
+            _ => "relayed: a late line\n",
+        };
+        assert!(said.ends_with(want), "{stem}: {said}");
+    }
+}
