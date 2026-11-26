@@ -738,6 +738,58 @@ fn a_started_program_gets_no_other_descriptor() {
     }
 }
 
+/// The flags of C after `--` (choices 1935-1939): given to every build after sg's own; some said
+/// on every build with a warning; what sg owns refused, 2, before anything is compiled; one the C
+/// compiler does not take named. They change nothing of what SG checks: a debug build with `-O3`
+/// still stops on an overflow, and a release build with `-O0` still wraps.
+#[test]
+fn builds_with_flags_of_c() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_with_flags_of_c");
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "calc.sg", LIBRARY);
+    write(&dir, "checked.sg", "void main() {\n    print(\"main\")\n}\n\ntest \"adds\" {\n    assert(1 + 1 == 2)\n}\n");
+    write(&dir, "wraps.sg", "void main() {\n    byte level = 250\n    for _ in 0..10 {\n        level += 1\n    }\n    print(level)\n}\n");
+    for words in [
+        &["build", "hello.sg", "-o", "fast", "--", "-O3", "-g"][..],
+        &["build", "checked.sg", "--test", "-o", "tests", "--", "-O1"],
+        &["build", "calc.sg", "--library", "--", "-O3"],
+        &["build", "calc.sg", "--shared", "--", "-O1"],
+    ] {
+        let (code, _, err) = ran(&sg(&dir, words));
+        assert_eq!((code, err.as_str()), (0, ""), "{words:?}");
+    }
+    assert_eq!(ran(&Command::new(program(&dir, "fast")).stdin(Stdio::null()).finished()).1, "hello\n");
+    assert_eq!(ran(&Command::new(program(&dir, "tests")).stdin(Stdio::null()).finished()).0, 0);
+    // Said on every build, one line each, and built.
+    for _ in 0..2 {
+        let (code, _, err) = ran(&sg(&dir, &["build", "hello.sg", "-o", "warned", "--", "-ffast-math", "-DSG_THREAD_STACK=((size_t)8<<20)"]));
+        assert_eq!(code, 0, "{err}");
+        let said: Vec<&str> = err.lines().filter(|line| line.starts_with("warning: -")).collect();
+        assert_eq!(said.len(), 2, "{err}");
+        assert!(said[0].starts_with("warning: -ffast-math: fractional results may differ from the interpreter's and between machines"), "{err}");
+        assert!(said[1].starts_with("warning: -DSG_THREAD_STACK=((size_t)8<<20): it changes a setting of SG's runtime"), "{err}");
+    }
+    // Refused before anything is compiled.
+    for flag in ["-o", "-c", "-std=c99", "-shared", "-m32", "-funsigned-char", "--target=x86_64-linux-gnu"] {
+        let (code, out, err) = ran(&sg(&dir, &["build", "hello.sg", "-o", "refused", "--", flag, "x"]));
+        assert_eq!((code, out.as_str()), (2, ""), "{flag}: {err}");
+        assert!(err.starts_with(&format!("error: {flag} in the C flags: ")), "{flag}: {err}");
+        assert!(!program(&dir, "refused").exists(), "{flag}");
+    }
+    let (code, _, err) = ran(&sg(&dir, &["build", "hello.sg", "-o", "unknown", "--", "-fno-such-flag-of-c"]));
+    assert_eq!(code, 1, "{err}");
+    assert!(err.ends_with("error: the C compiler did not build the program with the C flags given after `--`: -fno-such-flag-of-c\n"), "{err}");
+    // SG's checks are the build's, not the C compiler's (1939).
+    assert_eq!(ran(&sg(&dir, &["build", "wraps.sg", "-o", "checked", "--", "-O3"])).0, 0);
+    let (code, _, err) = ran(&Command::new(program(&dir, "checked")).stdin(Stdio::null()).finished());
+    assert!(code != 0 && err.starts_with("panic: overflow: 255 + 1 does not fit in byte"), "{code} {err}");
+    assert_eq!(ran(&sg(&dir, &["build", "wraps.sg", "--release", "-o", "wrapped", "--", "-O0"])).0, 0);
+    assert_eq!(ran(&Command::new(program(&dir, "wrapped")).stdin(Stdio::null()).finished()), (0, "4\n".to_string(), String::new()));
+}
+
 /// Command lines that are not one of the usages: 2, with the usage, and nothing built.
 #[test]
 fn refuses_what_is_not_a_usage() {
@@ -748,7 +800,8 @@ fn refuses_what_is_not_a_usage() {
         &["build", "hello.sg", "--test", "--library"],
         &["build", "hello.sg", "--shared", "--freestanding"],
         &["build", "hello.sg", "--target", "riscv32-unknown-none-elf"],
-        &["build", "hello.sg", "--", "-Os"],
+        // `emit-c` compiles nothing (1935).
+        &["emit-c", "hello.sg", "--", "-O3"],
         &["build", "hello.sg", "--relase"],
         &["build", "hello.sg", "other.sg"],
         // A third program, and a flag twice (1326).

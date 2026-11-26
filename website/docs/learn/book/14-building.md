@@ -77,7 +77,7 @@ It prints:
 255
 ```
 
-There is no flag for another optimisation level. Deep recursion ends in a panic in both, `stack overflow`,
+Another optimisation level is a flag of C (below). Deep recursion ends in a panic in both, `stack overflow`,
 when the stack of 1 GB is full. The interpreter looks at what is left before each call and names the call;
 compiled code, which would pay for a look on every call, runs on to the guard page of its stack, as C does,
 and says so there. A call takes the interpreter about 2.5 KB of its stack, so it goes about 380,000 calls
@@ -96,6 +96,27 @@ cc -std=c11 -O3 -ffp-contract=off main.c -o main -lm -pthread
 `-ffp-contract=off` keeps the C compiler from fusing a multiply and an add, so fractional results stay the same
 as the interpreter's; `-lm` and `-pthread` bring C's math functions and threads. When the program names a
 library in an `extern` block, the first line of the C says what to link (`/* sg-link: -lz */`).
+
+`sg build` takes flags of C too, after `--`, on every kind of build; they come after sg's own, so the last
+written wins:
+
+```bash
+sg build main.sg --release -- -O3 -march=native -flto
+sg build main.sg -- -g -fsanitize=address
+```
+
+A flag that changes a promise of SG is still given, with a warning on every build: one that changes fractional
+results (`-ffast-math`, `-Ofast`), one that takes a guard away (`-fno-stack-clash-protection`, an executable stack),
+and a setting of SG's runtime (`-DSG_...`):
+
+```text
+warning: -ffast-math: fractional results may differ from the interpreter's and between machines
+```
+
+What sg decides itself is refused before anything is compiled: the output and what is made (`-o`, `-c`,
+`-shared`), the standard of C (`-std=`), the machine (`--target`), and what changes the size of C's types
+(`-m32`, `-funsigned-char`, `-fshort-enums`). A flag of C turns off no check: a debug build with `-O3` still stops
+on an overflow, and only `--release` leaves the checks out.
 
 Tests are compiled too: `sg test main.sg --compiled` builds and runs them, each in a process of its own, and
 `sg build main.sg --test -o tests` keeps the program that runs them.

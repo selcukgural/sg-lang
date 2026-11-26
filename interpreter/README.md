@@ -15,6 +15,7 @@ cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
 cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps
+cargo run -- build examples/primes.sg --release -- -O3 -march=native  # flags of C after `--`
 cargo run -- build examples/bare --freestanding # an object for a machine without an operating system
 examples/kernel/run.sh                          # a RISC-V kernel booted in QEMU (Clang, LLD and QEMU)
 python3 bench/run.py                            # compiled SG against C written by hand

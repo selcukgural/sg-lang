@@ -30,6 +30,94 @@ pub fn compiler() -> Result<String, String> {
     Ok("cc".to_string())
 }
 
+/// What `sg build` makes of a flag of C given after `--` (choice 1937): most go on as they are,
+/// unknown ones too; some go on with a warning, said on every build; some are refused, because sg
+/// owns what they change.
+#[derive(Debug, PartialEq)]
+pub enum Judged {
+    /// The warnings, one line each, without `warning: `.
+    Given(Vec<String>),
+    /// The error, without `error: `.
+    Refused(String),
+}
+
+/// The flags of C after `--` judged together, so that a flag and the word after it (`-D SG_X`,
+/// `-z execstack`, `-Xlinker execstack`) are seen as one.
+pub fn judge_flags(flags: &[String]) -> Judged {
+    const FRACTIONS: &[&str] = &[
+        "-ffast-math",
+        "-Ofast",
+        "-ffp-contract=fast",
+        "-ffp-contract=on",
+        "-ffp-contract=fast-honor-pragmas",
+        "-funsafe-math-optimizations",
+        "-ffinite-math-only",
+        "-fno-signed-zeros",
+        "-freciprocal-math",
+        "-fassociative-math",
+        "-mfpmath=387",
+    ];
+    const LAYOUT: &[&str] = &["-m16", "-m32", "-mx32", "-fshort-enums", "-fshort-wchar", "-funsigned-char", "-fsigned-char"];
+    let mut warnings = Vec::new();
+    let mut words = flags.iter().map(String::as_str).peekable();
+    while let Some(flag) = words.next() {
+        let refused = match flag {
+            "-o" => Some("the output is sg's to name: write -o before `--`".to_string()),
+            _ if flag.starts_with("-o") => Some("the output is sg's to name: write -o before `--`".to_string()),
+            "-c" => Some("what is made is sg's to say: a program, --test, --library, --shared or --freestanding".to_string()),
+            "-S" | "-E" => Some("`sg emit-c` prints the C".to_string()),
+            _ if flag == "-x" || flag.starts_with("-x") => Some("the input is the C that sg writes".to_string()),
+            _ if flag.starts_with("-std=") => Some("the C that sg writes is C11".to_string()),
+            "-shared" => Some("a shared library is built with --shared".to_string()),
+            "-static" | "-static-pie" => Some("a program links the system's C library when it starts; a static program is not built yet".to_string()),
+            "--target" | "-target" => Some("the machine is named with --target before `--`, with --freestanding".to_string()),
+            _ if flag.starts_with("--target=") => Some("the machine is named with --target before `--`, with --freestanding".to_string()),
+            _ if LAYOUT.contains(&flag) || flag == "-fpack-struct" || flag.starts_with("-fpack-struct=") => {
+                Some("it changes the size or the layout of C's types, which the C that sg writes, and the libraries it calls, are written for".to_string())
+            }
+            _ => None,
+        };
+        if let Some(why) = refused {
+            return Judged::Refused(format!("{flag} in the C flags: {why}"));
+        }
+        if FRACTIONS.contains(&flag) {
+            warnings.push(format!("{flag}: fractional results may differ from the interpreter's and between machines"));
+        } else if flag == "-fno-stack-clash-protection" {
+            warnings.push(format!("{flag}: a function with a large frame may start below its stack, in the memory of another thread"));
+        }
+        // What the linker is told: after `-Wl,` split at the commas, or the word after `-z` or
+        // `-Xlinker`.
+        let linker: Vec<&str> = match flag {
+            "-z" | "-Xlinker" => words.peek().map(|word| vec![*word]).unwrap_or_default(),
+            _ if flag.starts_with("-Wl,") => flag["-Wl,".len()..].split(',').collect(),
+            _ if flag.starts_with("-z") => vec![&flag[2..]],
+            _ => Vec::new(),
+        };
+        let shown = match flag {
+            "-z" | "-Xlinker" => format!("{flag} {}", words.peek().copied().unwrap_or_default()),
+            _ => flag.to_string(),
+        };
+        for word in linker {
+            match word.trim_start_matches("-z") {
+                "execstack" => warnings.push(format!("{shown}: the stack becomes executable, which takes away a guard against code written into it")),
+                "norelro" => warnings.push(format!("{shown}: the tables of the linker stay writable, which takes away a guard against their being overwritten")),
+                _ => {}
+            }
+        }
+        // A setting of SG's runtime, as `-DSG_THREAD_STACK=...`.
+        let name = match flag {
+            "-D" | "-U" => words.peek().copied(),
+            _ if flag.starts_with("-D") || flag.starts_with("-U") => Some(&flag[2..]),
+            _ => None,
+        };
+        if name.is_some_and(|name| name.starts_with("SG_")) {
+            let shown = if flag.len() == 2 { format!("{flag} {}", name.unwrap_or_default()) } else { flag.to_string() };
+            warnings.push(format!("{shown}: it changes a setting of SG's runtime, which is not a promise and may change from one version to the next"));
+        }
+    }
+    Judged::Given(warnings)
+}
+
 /// The C compiler as a message names it: `cc`, or on Windows `clang` whatever folder it is in.
 pub fn shown(compiler: &str) -> String {
     Path::new(compiler).file_stem().map_or_else(|| compiler.to_string(), |stem| stem.to_string_lossy().into_owned())
@@ -134,4 +222,49 @@ pub fn program_file(out: &str) -> String {
         return format!("{out}.exe");
     }
     out.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{judge_flags, Judged};
+
+    fn judged(flags: &[&str]) -> Judged {
+        judge_flags(&flags.iter().map(|flag| flag.to_string()).collect::<Vec<_>>())
+    }
+
+    /// Choice 1937: the three kinds of flags of C after `--`.
+    #[test]
+    fn flags_of_c_are_given_warned_or_refused() {
+        // Given quietly, the unknown ones too.
+        for flags in [&["-O3", "-march=native", "-flto", "-g", "-s", "-fsanitize=address", "-fno-omit-frame-pointer", "-DFAST", "-Iinclude", "-lz", "-Wl,--as-needed", "-mabi=lp64d", "-fno-such-flag"][..], &["-D", "NAME"], &["-z", "now"]] {
+            assert_eq!(judged(flags), Judged::Given(Vec::new()), "{flags:?}");
+        }
+        // Given, with a warning each.
+        for (flags, said) in [
+            (&["-ffast-math"][..], "-ffast-math: fractional results"),
+            (&["-Ofast"], "-Ofast: fractional"),
+            (&["-ffp-contract=fast"], "-ffp-contract=fast: fractional"),
+            (&["-mfpmath=387"], "-mfpmath=387: fractional"),
+            (&["-fno-stack-clash-protection"], "-fno-stack-clash-protection: a function with a large frame"),
+            (&["-Wl,-z,execstack"], "-Wl,-z,execstack: the stack becomes executable"),
+            (&["-Wl,-znorelro"], "-Wl,-znorelro: the tables of the linker stay writable"),
+            (&["-z", "execstack"], "-z execstack: the stack becomes executable"),
+            (&["-Xlinker", "norelro"], "-Xlinker norelro: the tables"),
+            (&["-DSG_THREAD_STACK=1"], "-DSG_THREAD_STACK=1: it changes a setting of SG's runtime"),
+            (&["-D", "SG_COUNT=0"], "-D SG_COUNT=0: it changes a setting"),
+            (&["-USG_SYNC"], "-USG_SYNC: it changes a setting"),
+        ] {
+            match judged(flags) {
+                Judged::Given(warnings) => assert!(warnings.len() == 1 && warnings[0].starts_with(said), "{flags:?}: {warnings:?}"),
+                refused => panic!("{flags:?}: {refused:?}"),
+            }
+        }
+        // Refused: what sg owns, and the layout of C's types.
+        for flag in ["-o", "-ofile", "-c", "-S", "-E", "-x", "-xc", "-std=c99", "-shared", "-static", "-static-pie", "--target", "-target", "--target=x86_64-linux-gnu", "-m32", "-mx32", "-fshort-enums", "-fpack-struct", "-fpack-struct=1", "-fshort-wchar", "-funsigned-char", "-fsigned-char"] {
+            match judged(&["-O2", flag]) {
+                Judged::Refused(why) => assert!(why.starts_with(&format!("{flag} in the C flags: ")), "{why}"),
+                given => panic!("{flag}: {given:?}"),
+            }
+        }
+    }
 }

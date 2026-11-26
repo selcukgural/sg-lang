@@ -599,6 +599,10 @@ aside: musl's `malloc` made a program that allocates much 1.5 to 10 times slower
 HTTP server a quarter slower; the work is on a branch of its own. Of it, 1932 is built: with musl or a glibc
 before 2.34 a started program gets no descriptor but 0, 1 and 2.
 
+Slice 187 (1935-1941) gives every build flags of C after `--`, after sg's own: most quietly, those that change
+fractional results, take a guard away or touch SG's runtime with a warning on every build, and those sg owns or
+that change the layout of C refused. No flag turns off a check of SG.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

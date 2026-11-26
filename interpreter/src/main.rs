@@ -81,8 +81,9 @@ enum Made {
     Freestanding,
 }
 
-/// How a program without an operating system is compiled: for the machine `target` names
-/// (Clang's `--target`), with `flags` given on to the C compiler as they are.
+/// How the C is compiled: a program without an operating system for the machine `target` names
+/// (Clang's `--target`); every build with `flags`, the ones after `--`, given to the C compiler
+/// after sg's own, so that the last one written wins (choices 1935 and 1936).
 #[derive(Default)]
 struct Machine {
     target: Option<String>,
@@ -185,7 +186,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             if let Some(target) = &machine.target {
                 cc.arg(format!("--target={target}"));
             }
-            cc.args(&machine.flags).arg("-o").arg(&out).arg(&c_file);
+            cc.arg("-o").arg(&out).arg(&c_file);
         }
         // What goes to the linker with a name in it is given whole with `-Xlinker`: after
         // `-Wl,` a comma in a name would be read as the start of another option (choice 1339).
@@ -208,6 +209,8 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             }
         }
     }
+    // The flags after `--` last, whatever was made.
+    cc.args(&machine.flags);
     let status = cc.status();
     let status = match (made, status) {
         // The static library is the object alone, in an archive made new.
@@ -279,6 +282,10 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         Ok(_) if machine.target.is_some() => {
             let target = machine.target.as_deref().unwrap_or_default();
             tell!("error: `{compiler}` did not build the program for `{target}`; if it does not know that machine (Apple's Clang knows only its own), `CC` names a Clang that does");
+            ExitCode::FAILURE
+        }
+        Ok(_) if !machine.flags.is_empty() => {
+            tell!("error: the C compiler did not build the program with the C flags given after `--`: {}", machine.flags.join(" "));
             ExitCode::FAILURE
         }
         Ok(_) => {
@@ -417,7 +424,7 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
         tell!("{USAGE}");
         ExitCode::from(2)
@@ -475,6 +482,7 @@ fn main() -> ExitCode {
             // after it (choices 1326 and 1327).
             let (mut path, mut out, mut release, mut made, mut wrong) = (None, None, false, Made::Program, false);
             let mut machine = Machine::default();
+            let mut c_flags = false;
             let mut rest = ours.iter();
             while let Some(arg) = rest.next() {
                 let kind = match arg.as_str() {
@@ -500,6 +508,7 @@ fn main() -> ExitCode {
                         wrong |= machine.target.is_none();
                     }
                     "--" => {
+                        c_flags = true;
                         machine.flags = rest.by_ref().cloned().collect();
                     }
                     _ if kind.is_some() => {
@@ -512,12 +521,27 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            // A target and flags of C are for a machine without an operating system; `emit-c`
-            // writes to the output, so `-o` is not its (1328).
-            let stray = made != Made::Freestanding && (machine.target.is_some() || !machine.flags.is_empty());
-            let Some(path) = path.filter(|_| !wrong && !stray && !(command == "emit-c" && out.is_some())) else {
+            // A target is for a machine without an operating system (1940); `emit-c` writes to
+            // the output, so `-o` is not its (1328), and compiles nothing, so neither are flags of
+            // C (1935).
+            let stray = made != Made::Freestanding && machine.target.is_some();
+            let Some(path) = path.filter(|_| !wrong && !stray && !(command == "emit-c" && (out.is_some() || c_flags))) else {
                 return usage();
             };
+            // The flags of C: what sg owns is refused before anything is compiled; what may change
+            // fractional results, takes away a guard, or touches SG's runtime is said on every
+            // build (1937, 1938).
+            match sg::cc::judge_flags(&machine.flags) {
+                sg::cc::Judged::Refused(why) => {
+                    tell!("error: {why}");
+                    return ExitCode::from(2);
+                }
+                sg::cc::Judged::Given(warnings) => {
+                    for warning in warnings {
+                        tell!("warning: {warning}");
+                    }
+                }
+            }
             let name = library_name(path);
             let stem = match made {
                 Made::Static if cfg!(windows) => Some(format!("{name}.lib")),
