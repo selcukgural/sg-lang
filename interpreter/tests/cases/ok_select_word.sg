@@ -1,0 +1,21 @@
+// `select` is a word only where a `select` starts: anywhere else it is a name (1998).
+int select(int x) {
+    return x * 2
+}
+
+void twice() {
+    print(select(3))
+    if select(2) > 3 {
+        print("a call in a condition")
+    }
+}
+
+void main() {
+    var select = 4
+    print(select)
+    print(select + 1)
+    if select > 3 {
+        print("a name in a condition")
+    }
+    twice()
+}

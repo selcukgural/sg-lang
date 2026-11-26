@@ -76,8 +76,10 @@ compiler without them stops it at once instead of making every program a finding
 What it writes (stages 1 and 2 of choice 1365): the integer types, `bool`, arithmetic, the bit
 operators, conversions, comparisons, `if`, `?:`, `match`, `for` and `while`, functions, recursion, arrays,
 consts (made of operators and casts, masked so that none overflows, since a const calls no function),
-`print` with a format, `Copyable` structs, enums and `match` on them, `T?` (with `??` and with `x is not null ? x : n`), lists, text, and
-functions that give a `Result`.
+`print` with a format, `Copyable` structs, enums and `match` on them, `T?` (with `??` and with `x is not null ? x : n`), lists, text,
+functions that give a `Result`, and `select` (choice 1987), written so that what is printed does not hang on which of the arms ready
+together runs, which is random in compiled code: two channels summed until both have ended, a value from the one arm that can go on,
+an arm that sends, and a token cancelled while nothing can go on, the arms in any order.
 
 With `--borrow` first (`BORROW=1` for `run.sh`), the programs borrow (stage 3, choice 1593,
 `src/borrow.rs`): `read` and `ref` borrows of texts and lists kept in variables, in struct fields, in

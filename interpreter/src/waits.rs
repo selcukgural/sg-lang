@@ -481,6 +481,7 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Accept), .. } => Some((*name_span, format!("`{name}` on a listener"))),
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Receive | NetCall::Send | NetCall::SendPieces), .. } => Some((*name_span, format!("`{name}` on a connection"))),
         ExprKind::Method { name, name_span, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), .. } => Some((*name_span, format!("`{name}` on a channel"))),
+        ExprKind::Select { awaited: false, .. } => Some((Span::new(expr.span.start, expr.span.start + "select".len()), "`select`".to_string())),
         _ => None,
     }
 }
@@ -614,6 +615,10 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
         }
         ExprKind::Method { callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), name_span, .. } => {
             scan.itself.get_or_insert((*name_span, How::Channel));
+        }
+        // The calls of a `select` that is not awaited are those of a channel, seen above.
+        ExprKind::Select { awaited: true, .. } => {
+            scan.itself.get_or_insert((expr.span, How::Await));
         }
         ExprKind::Await(inner) => {
             scan.itself.get_or_insert((expr.span, How::Await));
@@ -813,6 +818,11 @@ pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock
             walk_block(&arm.body, each, lock);
         }
     }
+    if let ExprKind::Select { arms, .. } = &expr.kind {
+        for arm in arms {
+            walk_block(&arm.body, each, lock);
+        }
+    }
     children(expr, &mut |child| walk_expr(child, each, lock));
 }
 
@@ -880,6 +890,9 @@ fn arms_in<'a>(expr: &'a Expr, arms: &mut Vec<&'a Block>) {
     if let ExprKind::Match { arms: found, .. } = &expr.kind {
         arms.extend(found.iter().map(|arm| &arm.body));
     }
+    if let ExprKind::Select { arms: found, .. } = &expr.kind {
+        arms.extend(found.iter().map(|arm| &arm.body));
+    }
     children(expr, &mut |child| arms_in(child, arms));
 }
 
@@ -904,6 +917,14 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                         .note(NO_WAIT)
                         .hint("await the task before the block or after it"),
                 ),
+                ExprKind::Select { awaited, .. } => {
+                    let word = if *awaited { "await select" } else { "select" };
+                    Some(
+                        Diag::error(Span::new(expr.span.start, expr.span.start + word.len()), format!("`{word}` waits on channels, and a `lock` block does not wait"))
+                            .note(NO_WAIT)
+                            .hint("wait on the channels before the block or after it"),
+                    )
+                }
                 ExprKind::Method { name, name_span, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), .. } => Some(
                     Diag::error(*name_span, format!("`{name}` waits on a channel, and a `lock` block does not wait"))
                         .note(NO_WAIT)

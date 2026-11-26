@@ -1,0 +1,12 @@
+void main() {
+    var jobs = Channel<int>(1)
+    var tx = jobs.sender()
+    var count = new shared locked 0
+    lock count as c {
+        select {
+            jobs.receive() as job => c += job
+            ended => c = -1
+        }
+    }
+    _ = tx
+}

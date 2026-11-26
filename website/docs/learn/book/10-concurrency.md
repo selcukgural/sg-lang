@@ -374,6 +374,51 @@ two
 the channel has ended
 ```
 
+### Waiting on several channels
+
+`select` waits on several channels at once and runs the arm of the first that can go on; when several can, a
+random one, so no channel waits for ever behind another. An arm that receives names its item; an arm that sends
+is chosen only once its item went in. An arm whose channel has ended is never chosen, and once every channel has
+ended, the arm `ended` runs, so a loop over two channels ends without a word more:
+
+```sg
+void count(Sender<int> out, int from, int to) {
+    for i in from..to {
+        _ = out.send(i)
+    }
+}
+
+void main() {
+    var small = Channel<int>(4)
+    var large = Channel<int>(4)
+    var a = Task.run(count, small.sender(), 1, 11)
+    var b = Task.run(count, large.sender(), 100, 111)
+    var total = 0
+    var items = 0
+    while true {
+        select {
+            small.receive() as n => total += n
+            large.receive() as n => total += n
+            ended => break
+        }
+        items += 1
+    }
+    a.wait()
+    b.wait()
+    print($"{items} items, {total} in all")
+}
+```
+
+It prints:
+
+```text
+21 items, 1210 in all
+```
+
+A `select` gives a value as a `match` does, and `break` in an arm leaves the loop around it. With a token,
+`select (read token) { ... cancelled => ... }` gives up once the token is cancelled; in an async function it is
+`await select`.
+
 ## Async functions
 
 A task started with `Task.run` has a thread of its own. An `async` function is lighter: a call gives a

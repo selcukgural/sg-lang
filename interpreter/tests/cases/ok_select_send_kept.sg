@@ -1,0 +1,29 @@
+// An item sent from a local variable goes into the channel only when its arm is chosen: in the
+// other arms the variable still holds it (1999). An item made in the arm itself ends when its
+// arm is not chosen.
+void main() {
+    var out = Channel<string>(1)
+    var toOut = out.sender()
+    _ = toOut.send("fills the room")
+    var other = Channel<int>(1)
+    var toOther = other.sender()
+    _ = toOther.send(5)
+    var item = "kept".clone()
+    select {
+        toOut.send(item) => print("sent")
+        other.receive() as n => print($"not sent: {item}, got {n}")
+        ended => print("ended")
+    }
+    // The arm that sends may have run, so the variable is given a value before it is read.
+    item = "given again".clone()
+    print(item)
+
+    // Now the arm that sends is the only one ready: the item goes, and is received.
+    _ = out.receive()
+    var second = "second".clone()
+    select {
+        toOut.send(second) => print("sent second")
+        ended => print("ended")
+    }
+    print(out.receive() ?? "none")
+}

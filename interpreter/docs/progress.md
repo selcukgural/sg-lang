@@ -625,6 +625,12 @@ waits on the clock so that a cancel ends it), and a file put in memory to be rea
 File.mapRead(path)`, a `MappedFile`. Each has an async form; `lock` is a word that is the name of a method after a
 dot.
 
+Slice 192 (1987-2001) adds `select`, which waits on several channels at once and runs the arm of one that can go
+on, a random one of those ready: `jobs.receive() as job => ...`, `results.send(r) => ...`, and `ended`, which runs
+once every channel has ended, since an arm whose channel has ended is never chosen. It gives a value as a `match`
+does; a token adds `cancelled`; async code writes `await select`. A variable sent keeps its value in the arms that
+do not send it. Next is the count of waiting tasks in compiled code (193), then Rust's `split_at_mut` (194).
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

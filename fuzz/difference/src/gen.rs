@@ -8,7 +8,8 @@
 //!
 //! Stage 1: the integer types, `bool`, arithmetic, the bit operators, conversions, comparisons,
 //! `if`, `match`, `for` and `while`, functions, recursion, arrays (also indexed from the end,
-//! `a[^n]`), consts, `print` and `$"..."` with a format.
+//! `a[^n]`), consts, `print` and `$"..."` with a format; and `select` over channels, filled on
+//! the thread of the program, whose output is the same whichever arm ready runs.
 //!
 //! The program is a tree of `Node`s, each a statement or a block, so that the reducer can take
 //! any of them away (choice 1366).
@@ -213,11 +214,16 @@ pub struct Gen {
     indexing: u32,
     /// How many calls the expression being written is an argument of: past two, no call.
     calling: u32,
+    /// The integer types of the channels a `select` filled through a function that sends two
+    /// items and ends (`giveInt`), written after `main`.
+    givers: Vec<usize>,
+    /// The lines a statement wrote before itself (a `select` and the channels it needs).
+    pending: Vec<Node>,
 }
 
 impl Gen {
     pub fn new(seed: u64) -> Gen {
-        Gen { rng: Rng::new(seed), scopes: Vec::new(), funcs: Vec::new(), consts: Vec::new(), names: 0, loops: Vec::new(), times: 1, cost: 0, in_const: false, structs: Vec::new(), enums: Vec::new(), in_result: false, indexing: 0, calling: 0 }
+        Gen { rng: Rng::new(seed), scopes: Vec::new(), funcs: Vec::new(), consts: Vec::new(), names: 0, loops: Vec::new(), times: 1, cost: 0, in_const: false, structs: Vec::new(), enums: Vec::new(), in_result: false, indexing: 0, calling: 0, givers: Vec::new(), pending: Vec::new() }
     }
 
     fn name(&mut self, prefix: &str) -> String {
@@ -256,7 +262,118 @@ impl Gen {
         }
         body.extend(self.close_scope());
         nodes.push(Node::block("void main() {".to_string(), body));
+        for ty in std::mem::take(&mut self.givers) {
+            let name = INTS[ty].name;
+            nodes.push(Node::block(
+                format!("void {}(List<{name}> items, Sender<{name}> tx) {{", giver(ty)),
+                vec![Node::block("for item in items {".to_string(), vec![Node::line("_ = tx.send(item)".to_string())])],
+            ));
+        }
         nodes
+    }
+
+    /// The name of the function that sends items of the type into a channel and ends, which
+    /// ends the channel once nothing else sends.
+    fn giver_of(&mut self, ty: usize) -> String {
+        if !self.givers.contains(&ty) {
+            self.givers.push(ty);
+        }
+        giver(ty)
+    }
+
+    /// `select` (choices 1987-2001), written so that what is printed does not hang on which of
+    /// the arms ready together runs, which is random in compiled code: every item of two
+    /// channels summed until both have ended; a value from the one arm that can go on; an arm
+    /// that sends into the one channel with room; a token cancelled while nothing can go on.
+    fn select_stmt(&mut self) -> Vec<Node> {
+        self.cost += 8 * self.times;
+        let mut nodes = Vec::new();
+        match self.rng.below(4) {
+            0 => {
+                let (a, b, sum) = (self.name("c"), self.name("c"), self.name("s"));
+                let mut arms = Vec::new();
+                for chan in [&a, &b] {
+                    // No more items than room: they are sent on this thread before any is received.
+                    let room = 1 + self.rng.below(3);
+                    let items: Vec<String> = (0..self.rng.below(room + 1)).map(|_| self.number(INT)).collect();
+                    let give = self.giver_of(INT);
+                    nodes.push(Node::line(format!("var {chan} = Channel<int>({room})")));
+                    nodes.push(Node::line(format!("{give}(List<int> {{ {} }}, {chan}.sender())", items.join(", "))));
+                    let x = self.name("x");
+                    arms.push(Node::line(format!("{chan}.receive() as {x} => {sum} += {x}")));
+                }
+                arms.push(Node::line("ended => break".to_string()));
+                self.shuffle(&mut arms);
+                nodes.push(Node::line(format!("long {sum} = 0")));
+                nodes.push(Node::block("while true {".to_string(), vec![Node::block("select {".to_string(), arms)]));
+                nodes.push(Node::line(format!("print({sum})")));
+            }
+            1 => {
+                let ty = self.int_ty();
+                let name = INTS[ty].name;
+                let (full, quiet, keep, value) = (self.name("c"), self.name("c"), self.name("k"), self.name("v"));
+                let items: Vec<String> = (0..1 + self.rng.below(2)).map(|_| self.number(ty)).collect();
+                let give = self.giver_of(ty);
+                nodes.push(Node::line(format!("var {full} = Channel<{name}>(2)")));
+                nodes.push(Node::line(format!("{give}(List<{name}> {{ {} }}, {full}.sender())", items.join(", "))));
+                nodes.push(Node::line(format!("var {quiet} = Channel<{name}>(1)")));
+                nodes.push(Node::line(format!("var {keep} = {quiet}.sender()")));
+                let (x, y) = (self.name("x"), self.name("x"));
+                let other = self.number(ty);
+                let ended = self.number(ty);
+                let mut arms = vec![
+                    Node::line(format!("{quiet}.receive() as {y} => {y}")),
+                    Node::line(format!("{full}.receive() as {x} => {x} ^ {other}")),
+                    Node::line(format!("ended => {ended}")),
+                ];
+                self.shuffle(&mut arms);
+                nodes.push(Node::block(format!("{name} {value} = select {{"), arms));
+                nodes.push(Node::line(format!("print({value})")));
+                nodes.push(Node::line(format!("_ = {keep}")));
+            }
+            2 => {
+                let ty = self.int_ty();
+                let name = INTS[ty].name;
+                let (chan, tx, item, sent) = (self.name("c"), self.name("k"), self.name("i"), self.name("v"));
+                let value = self.int_expr(ty, 2);
+                let value = self.typed(value, ty);
+                nodes.push(Node::line(format!("var {chan} = Channel<{name}>(1)")));
+                nodes.push(Node::line(format!("var {tx} = {chan}.sender()")));
+                nodes.push(Node::line(format!("{name} {item} = {value}")));
+                let mut arms = vec![Node::line(format!("{tx}.send({item}) => 1")), Node::line("ended => 2".to_string())];
+                self.shuffle(&mut arms);
+                nodes.push(Node::block(format!("var {sent} = select {{"), arms));
+                nodes.push(Node::line(format!("print({sent})")));
+                nodes.push(Node::line(format!("print({chan}.receive() ?? 0)")));
+                nodes.push(Node::line(format!("print({item})")));
+                nodes.push(Node::line(format!("_ = {tx}")));
+            }
+            _ => {
+                let (chan, tx, source, got) = (self.name("c"), self.name("k"), self.name("q"), self.name("v"));
+                nodes.push(Node::line(format!("var {chan} = Channel<int>(1)")));
+                nodes.push(Node::line(format!("var {tx} = {chan}.sender()")));
+                nodes.push(Node::line(format!("var {source} = CancellationSource()")));
+                nodes.push(Node::line(format!("{source}.cancel()")));
+                let x = self.name("x");
+                let mut arms = vec![
+                    Node::line(format!("{chan}.receive() as {x} => {x}")),
+                    Node::line("ended => -1".to_string()),
+                    Node::line("cancelled => -2".to_string()),
+                ];
+                self.shuffle(&mut arms);
+                nodes.push(Node::block(format!("int {got} = select (read {source}.token()) {{"), arms));
+                nodes.push(Node::line(format!("print({got})")));
+                nodes.push(Node::line(format!("_ = {tx}")));
+            }
+        }
+        nodes
+    }
+
+    fn shuffle(&mut self, nodes: &mut [Node]) {
+        for i in (1..nodes.len()).rev() {
+            let j = self.rng.below(i as u64 + 1) as usize;
+            nodes.swap(i, j);
+        }
     }
 
     fn constant(&mut self) -> Node {
@@ -335,6 +452,7 @@ impl Gen {
         let mut nodes = Vec::new();
         for _ in 0..count {
             if let Some(node) = self.statement(depth) {
+                nodes.append(&mut self.pending);
                 nodes.push(node);
             }
         }
@@ -940,7 +1058,14 @@ impl Gen {
 
     fn statement_more(&mut self, depth: usize) -> Option<Node> {
         let nested = depth < 3;
-        Some(match self.rng.below(16) {
+        Some(match self.rng.below(17) {
+            // `select`: its lines but the last wait in `pending`.
+            15 => {
+                let mut lines = self.select_stmt();
+                let last = lines.pop().expect("a select writes lines");
+                self.pending = lines;
+                last
+            }
             0 if !self.structs.is_empty() => {
                 let k = self.rng.below(self.structs.len() as u64) as usize;
                 let value = self.struct_value(k);
@@ -1197,4 +1322,9 @@ impl Gen {
             }
         })
     }
+}
+
+/// The function that sends a list of items of the integer type `ty` into a channel and ends.
+fn giver(ty: usize) -> String {
+    format!("give{}", INTS[ty].title)
 }

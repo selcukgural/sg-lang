@@ -1,0 +1,5 @@
+error: an arm of a `select` takes no token: the `select` takes one for all of its arms
+  --> error_select_arm_token.sg:7:22
+ 7 |         jobs.receive(read source.token()) as job => print(job)
+   |                      ^^^^^^^^^^^^^^^^^^^
+  hint: `select (read token) { ... cancelled => ... }`

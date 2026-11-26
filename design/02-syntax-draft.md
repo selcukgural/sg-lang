@@ -314,6 +314,30 @@ var item = await jobs.receiveAsync()             // in an async function; `await
 A send or a receive waits, so it is not written in a `lock` block. The rows ["Channels"](directions/async.md#channels) of [the decisions by topic](rules/README.md) have
 the rest.
 
+`select` waits on several channels at once and runs the arm of one that can go on, a random one of those ready
+together. An arm whose channel has ended is never chosen, and `ended` runs once all have, so a loop over several
+channels ends by itself, which Go's channel that is always ready once closed does not:
+
+```
+while true {
+    select {
+        jobs.receive() as job => work(job)       // job: int, not int?
+        urgent.receive() as u => handle(u)
+        ended => break                           // `break` leaves the loop, not the select
+    }
+}
+
+var next = select {                              // a value, as a `match` gives
+    jobs.receive() as job => job
+    results.send(last) => -1                     // chosen once `last` went in; elsewhere `last` is still ours
+    ended => 0
+}
+var got = select (read token) { ... cancelled => ... }  // gives up on a cancel; no `default` arm
+await select { ... }                             // in an async function
+```
+
+The row ["Waiting on several channels"](rules/concurrency.md#waiting-on-several-channels) has the rest.
+
 ### Generics and interfaces
 
 > **Deferred on 12 November 2026.** Generics of your own, `where` and your own `interface` are not in the first

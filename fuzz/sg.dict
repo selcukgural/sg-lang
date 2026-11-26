@@ -265,3 +265,6 @@
 "}\x0a"
 "void main() {\x0a"
 "\x22\x22\x22"
+"select"
+"ended"
+"cancelled"

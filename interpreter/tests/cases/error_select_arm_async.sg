@@ -1,0 +1,13 @@
+async void take(Channel<int> jobs) {
+    await select {
+        jobs.receiveAsync() as job => print(job)
+        ended => print("ended")
+    }
+}
+
+void main() {
+    var jobs = Channel<int>(1)
+    var tx = jobs.sender()
+    _ = tx.send(1)
+    take(jobs.clone()).wait()
+}

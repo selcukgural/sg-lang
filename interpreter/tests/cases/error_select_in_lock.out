@@ -1,0 +1,6 @@
+error: `select` waits on channels, and a `lock` block does not wait
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_select_in_lock.sg:6:9
+ 6 |         select {
+   |         ^^^^^^
+  hint: wait on the channels before the block or after it

@@ -1,0 +1,133 @@
+// `await select` in async code: the task waits on several channels and its thread runs other
+// tasks meanwhile. Senders that await, a sender on a thread of its own that blocks, a select
+// that sends, a token that gives up, and a task let go by an exit with an error.
+async void produce(Sender<int> tx, int from, int count) {
+    for i in from..from + count {
+        if !await tx.sendAsync(i) {
+            return
+        }
+    }
+}
+
+void blocking(Sender<string> tx) {
+    for i in 0..50 {
+        _ = tx.send($"line {i}".toString())
+    }
+}
+
+// Both channels until both have ended.
+async long merge(Channel<int> numbers, Channel<string> texts) {
+    long sum = 0
+    var count = 0
+    while true {
+        var more = await select {
+            numbers.receive() as n => {
+                sum += n
+                true
+            }
+            texts.receive() as text => {
+                sum += (long)text.length()
+                true
+            }
+            ended => false
+        }
+        if !more {
+            break
+        }
+        count += 1
+    }
+    print($"merged {count} items")
+    return sum
+}
+
+// Sends each number into whichever of two channels has room first.
+async int spread(Sender<int> a, Sender<int> b, int count) {
+    var sent = 0
+    for i in 0..count {
+        var item = i
+        await select {
+            a.send(item) => sent += 1
+            b.send(item) => sent += 1
+            ended => return sent
+        }
+    }
+    return sent
+}
+
+async long drain(Channel<int> jobs) {
+    long sum = 0
+    while true {
+        var job = await jobs.receiveAsync()
+        if job is null {
+            return sum
+        }
+        sum += job
+    }
+    return sum
+}
+
+async Result<int, IoError> failing() {
+    await Task.delay(10)
+    return Error(IoError.Other(5))
+}
+
+// Waits on a channel that never ends: an exit with an error lets it go, with its token.
+async Result<int, Cancelled> stuck(Channel<int> never) {
+    var source = CancellationSource()
+    var token = source.token()
+    return await select (read token) {
+        never.receive() as n => Ok(n)
+        ended => Ok(-1)
+        cancelled => Error(Cancelled { })
+    }
+}
+
+async Result<void, IoError> letGo(Channel<int> never) {
+    var waiting = stuck(never)
+    _ = try await failing()
+    _ = await waiting
+    return Ok()
+}
+
+async void main() {
+    // Producers that await, a producer that blocks on a thread, one task that takes from both.
+    var numbers = Channel<int>(1)
+    var texts = Channel<string>(1)
+    var tasks = List<Task<void>>()
+    tasks.add(produce(numbers.sender(), 0, 200))
+    tasks.add(produce(numbers.sender(), 10000, 200))
+    var thread = Task.run(blocking, texts.sender())
+    var total = await merge(numbers, texts)
+    await Task.whenAll(tasks)
+    await thread
+    print(total)
+
+    // A select that sends, against two tasks that receive.
+    var a = Channel<int>(1)
+    var b = Channel<int>(1)
+    var toA = a.sender()
+    var toB = b.sender()
+    var ta = drain(a.clone())
+    var tb = drain(b.clone())
+    var sent = await spread(toA, toB, 300)
+    print($"sent {sent}, received {await ta + await tb}")
+
+    // A token that gives up while nothing comes.
+    var silent = Channel<int>(1)
+    var keep = silent.sender()
+    var limit = CancellationSource.after(20)
+    var answer = await select (read limit.token()) {
+        silent.receive() as n => n
+        ended => -1
+        cancelled => -2
+    }
+    print($"gave up: {answer == -2}")
+    _ = await keep.sendAsync(1)
+
+    // A task waiting in a select is let go by an exit with an error.
+    var never = Channel<int>(1)
+    var holder = never.sender()
+    var result = await letGo(never.clone())
+    print($"let go: {result is Error(_)}")
+    _ = await holder.sendAsync(2)
+}

@@ -1,0 +1,5 @@
+error: the item an arm of a `select` receives is given a name
+  --> error_select_receive_unnamed.sg:6:9
+ 6 |         jobs.receive() => print("one")
+   |         ^^^^^^^^^^^^^^
+  hint: `jobs.receive() as item => ...`, or `jobs.receive() as _ => ...` to drop it

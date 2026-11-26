@@ -1439,6 +1439,11 @@ pub enum ExprKind {
     /// `match e { ... }`. `borrowed`: the names in the arms borrow from the value instead of
     /// taking what it holds (set by the checker).
     Match { subject: Box<Expr>, arms: Vec<Arm>, borrowed: bool },
+    /// `select { jobs.receive() as job => ...  out.send(r) => ...  ended => ... }`: waits on
+    /// several channels at once and runs the arm of the first that lets it go on, a random one
+    /// of those ready together (1987-2001). `token`: `select (read token) { ... }`, with a
+    /// `cancelled` arm. `awaited`: written `await select`, in an async function.
+    Select { arms: Vec<SelectArm>, token: Option<Box<Expr>>, awaited: bool },
 
     /// Built by the checker from `Shape.Circle(2)`, `Shape.Empty`, `Ok(1)` and `Error(e)`: the
     /// enum (`Result` for the last two), the variant's position and what it carries. `Ok` is
@@ -1546,6 +1551,48 @@ pub struct Arm {
     pub body: Block,
     pub value: Option<Expr>,
     pub span: Span,
+}
+
+/// One arm of a `select`. The body is as a `match` arm's.
+#[derive(Clone)]
+pub struct SelectArm {
+    pub op: SelectOp,
+    pub body: Block,
+    pub value: Option<Expr>,
+    pub span: Span,
+}
+
+/// What an arm of a `select` waits for.
+#[derive(Clone)]
+pub enum SelectOp {
+    /// `channel.receive() as name`: `call` is the method call as written (a `Method` whose
+    /// callee the checker makes `Chan(Receive, false)`); `name` takes the item, `_` drops it.
+    Receive { call: Expr, name: String, name_span: Span },
+    /// `sender.send(item)`: the item goes in only when this arm is chosen. `kept`: the item is
+    /// a local variable, which keeps its value when another arm is chosen (set by the checker,
+    /// 1999); any other item is computed when the `select` starts.
+    Send { call: Expr, kept: bool },
+    /// `ended`: every channel of the `select` has ended.
+    Ended,
+    /// `cancelled`: the token of the `select` was cancelled first.
+    Cancelled,
+}
+
+impl SelectOp {
+    /// The call of a channel arm.
+    pub fn call(&self) -> Option<&Expr> {
+        match self {
+            SelectOp::Receive { call, .. } | SelectOp::Send { call, .. } => Some(call),
+            SelectOp::Ended | SelectOp::Cancelled => None,
+        }
+    }
+
+    pub fn call_mut(&mut self) -> Option<&mut Expr> {
+        match self {
+            SelectOp::Receive { call, .. } | SelectOp::Send { call, .. } => Some(call),
+            SelectOp::Ended | SelectOp::Cancelled => None,
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -1,0 +1,6 @@
+error: an arm of a `select` is written `receive`, also in an async function
+  `await select` awaits the whole `select`
+  --> error_select_arm_async.sg:3:14
+ 3 |         jobs.receiveAsync() as job => print(job)
+   |              ^^^^^^^^^^^^
+  hint: `jobs.receive()`

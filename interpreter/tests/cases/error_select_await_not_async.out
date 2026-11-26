@@ -1,0 +1,5 @@
+error: `await select` is written in an async function
+  --> error_select_await_not_async.sg:5:5
+ 5 |     await select {
+   |     ^^^^^^^^^^^^
+  hint: here `select` waits without `await`: its thread sleeps until an arm can go on

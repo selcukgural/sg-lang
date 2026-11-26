@@ -1,0 +1,10 @@
+void main() {
+    var out = Channel<string>(1)
+    var tx = out.sender()
+    var item = "one".clone()
+    select {
+        tx.send(item) => print("sent")
+        ended => print("ended")
+    }
+    print(item)
+}

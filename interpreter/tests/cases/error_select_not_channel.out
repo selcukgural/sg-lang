@@ -1,0 +1,6 @@
+error: an arm of a `select` receives from a channel or sends into one
+  a task is waited for with `Task.whenAny`, and a time limit is a token: `select (read token) { ... cancelled => ... }`
+  --> error_select_not_channel.sg:7:9
+ 7 |         next() as n => print(n)
+   |         ^^^^^^
+  hint: `jobs.receive() as job => ...`, `results.send(value) => ...`, `ended => ...`

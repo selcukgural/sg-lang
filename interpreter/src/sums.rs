@@ -201,6 +201,27 @@ impl<'a> Scan<'a> {
                     self.expr(inner);
                 }
             }
+            // A `select` waits on channels: it is a call as far as a sum is concerned.
+            ExprKind::Select { arms, token, .. } => {
+                self.calls = true;
+                if let Some(token) = token {
+                    self.expr(token);
+                }
+                for arm in arms {
+                    if let Some(call) = arm.op.call() {
+                        self.expr(call);
+                    }
+                }
+                for arm in arms {
+                    if let crate::ast::SelectOp::Receive { name, .. } = &arm.op {
+                        self.bound.insert(name);
+                    }
+                    self.block(&arm.body);
+                    if let Some(value) = &arm.value {
+                        self.expr(value);
+                    }
+                }
+            }
             ExprKind::Match { subject, arms, .. } => {
                 self.expr(subject);
                 for arm in arms {
@@ -319,6 +340,11 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
                 arm.guard.iter().for_each(&mut *each);
                 arm.value.iter().for_each(&mut *each);
             }
+        }
+        ExprKind::Select { arms, token, .. } => {
+            token.iter().for_each(|token| each(token));
+            arms.iter().filter_map(|arm| arm.op.call()).for_each(&mut *each);
+            arms.iter().filter_map(|arm| arm.value.as_ref()).for_each(&mut *each);
         }
     }
 }

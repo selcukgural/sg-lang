@@ -487,6 +487,25 @@ impl Opener<'_> {
                 };
                 self.subject(inner, used, Why::Condition)?;
             }
+            // The calls of a `select` are made where it starts; its arms are as a `match`'s.
+            ExprKind::Select { arms, token, .. } => {
+                if let Some(token) = token {
+                    self.expr(token, Use::Value)?;
+                }
+                for arm in arms.iter_mut() {
+                    if let Some(call) = arm.op.call_mut() {
+                        self.expr(call, Use::Value)?;
+                    }
+                }
+                let why = self.why;
+                for arm in arms {
+                    self.block(&mut arm.body)?;
+                    self.why = why;
+                    if let Some(value) = &mut arm.value {
+                        self.expr(value, Use::Value)?;
+                    }
+                }
+            }
             ExprKind::Match { subject, arms, borrowed } => {
                 call = Some(self.borrowed.len());
                 let used = if *borrowed { Use::Lend } else { Use::Hold };

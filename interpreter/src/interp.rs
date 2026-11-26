@@ -144,7 +144,36 @@ pub struct Chan {
     receivers: std::cell::Cell<usize>,
 }
 
+impl ChanWait {
+    /// Whether the fiber can go on: for a `select`, an arm can, or every channel of it has
+    /// ended.
+    fn ready(&self) -> bool {
+        match self.select.is_empty() {
+            true => self.chan.ready(self.sends),
+            false => self.select.iter().any(|(chan, sends)| chan.can(*sends)) || self.select.iter().all(|(chan, sends)| chan.ended(*sends)),
+        }
+    }
+}
+
 impl Chan {
+    /// Whether an arm of a `select` can go on: an item to receive, or room for one with an
+    /// end that receives.
+    fn can(&self, sends: bool) -> bool {
+        match sends {
+            true => self.receivers.get() > 0 && self.items.borrow().len() < self.room,
+            false => !self.items.borrow().is_empty(),
+        }
+    }
+
+    /// Whether an arm of a `select` is never chosen again: no end receives what it would
+    /// send, or nothing is left and no end sends.
+    fn ended(&self, sends: bool) -> bool {
+        match sends {
+            true => self.receivers.get() == 0,
+            false => self.senders.get() == 0 && self.items.borrow().is_empty(),
+        }
+    }
+
     /// Whether a fiber that waits to send (`sends`) or to receive can go on: there is room, or
     /// an item, or no end of the other kind is left.
     fn ready(&self, sends: bool) -> bool {
@@ -187,11 +216,16 @@ impl Drop for Chan {
     }
 }
 
-/// A fiber that waits on a channel, to send (`sends`) or to receive.
+/// An arm of a `select` as it starts: the channel, whether it sends, the item computed then.
+type SelectArmAt = (Rc<Chan>, bool, Option<Value>);
+
+/// A fiber that waits on a channel, to send (`sends`) or to receive; or, in a `select`, on
+/// each of `select` (and then `chan` is the first of them).
 struct ChanWait {
     fiber: usize,
     chan: Rc<Chan>,
     sends: bool,
+    select: Vec<(Rc<Chan>, bool)>,
     /// Given a token, so it can say it was cancelled: a task let go by an exit with an error
     /// ends it (choice 1692).
     told: bool,
@@ -306,6 +340,9 @@ struct State {
     lock_waits: Vec<LockWait>,
     /// The fibers that wait on a channel, in the order they began.
     chan_waits: Vec<ChanWait>,
+    /// What chooses among the arms of a `select` that are ready together: the same numbers on
+    /// every run, so a run goes the same way every time (1988).
+    select_seed: u64,
     /// The fibers that wait in `group.whenRoom(read token)` or `group.whenAll(read token)`:
     /// a cancel, or the task being let go, makes them look again.
     group_waits: BTreeSet<usize>,
@@ -365,6 +402,7 @@ impl Sched {
             lazy: Vec::new(),
             lock_waits: Vec::new(),
             chan_waits: Vec::new(),
+            select_seed: 0x9E37_79B9_7F4A_7C15,
             group_waits: BTreeSet::new(),
             cut_fibers: BTreeSet::new(),
             awaiting: HashMap::new(),
@@ -446,8 +484,8 @@ impl Sched {
         }
         // A fiber that waits on a channel goes on once the channel lets it: what the fiber
         // that had the turn did there is seen here, when the turn changes hands.
-        if state.chan_waits.iter().any(|wait| wait.chan.ready(wait.sends)) {
-            let (woken, waiting): (Vec<ChanWait>, Vec<ChanWait>) = std::mem::take(&mut state.chan_waits).into_iter().partition(|wait| wait.chan.ready(wait.sends));
+        if state.chan_waits.iter().any(ChanWait::ready) {
+            let (woken, waiting): (Vec<ChanWait>, Vec<ChanWait>) = std::mem::take(&mut state.chan_waits).into_iter().partition(ChanWait::ready);
             state.chan_waits = waiting;
             state.ready.extend(woken.iter().map(|wait| wait.fiber));
         }
@@ -3858,7 +3896,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         if let Some(source) = source {
             source.borrow_mut().waits.push(self.me);
         }
-        self.io.sched.lock().chan_waits.push(ChanWait { fiber: self.me, chan: chan.clone(), sends, told });
+        self.io.sched.lock().chan_waits.push(ChanWait { fiber: self.me, chan: chan.clone(), sends, select: Vec::new(), told });
         let waited = self.io.sched.block(self.me, at);
         if let Some(source) = source {
             source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
@@ -5138,6 +5176,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Unbox(..) => self.unbox_value(expr, frame),
             ExprKind::IsVariant { .. } => self.is_variant_value(expr, frame),
             ExprKind::Match { .. } => self.match_value(expr, frame),
+            ExprKind::Select { .. } => self.select_value(expr, frame),
             // The names of an `is` in the condition last until the arm is done.
             ExprKind::Cond { cond, then, els } => {
                 let depth = frame.scopes.len();
@@ -5716,6 +5755,145 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             unreachable!("the checker requires an arm for every variant")
         }
+    }
+
+    /// `select { ... }`: the token and the ends of the channels are computed in the order they
+    /// are written, and each item sent that is not a local variable; then the fiber waits until
+    /// an arm can go on (a random one of those that can, from the seed of the run), every
+    /// channel has ended, or the token is cancelled, in that order (1987-2001).
+    #[inline(never)]
+    fn select_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let ExprKind::Select { arms, token, awaited } = &expr.kind else { unreachable!() };
+        let word = Span::new(expr.span.start, expr.span.start + if *awaited { "await select".len() } else { "select".len() });
+        let source = match token {
+            Some(token) => self.token(token, frame)?,
+            None => None,
+        };
+        let told = token.is_some();
+        // For each arm: the channel, whether it sends, the item computed when it starts.
+        let mut ops: Vec<Option<SelectArmAt>> = Vec::new();
+        for arm in arms {
+            let Some(call) = arm.op.call() else {
+                ops.push(None);
+                continue;
+            };
+            let ExprKind::Method { recv, args, .. } = &call.kind else { unreachable!("the checker makes it a method of a channel") };
+            let Value::Chan(end) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls these on an end of a channel") };
+            let item = match &arm.op {
+                SelectOp::Send { kept: false, .. } => Some(strip(self.expr(&args[0], frame)?)),
+                _ => None,
+            };
+            ops.push(Some((end.chan.clone(), matches!(arm.op, SelectOp::Send { .. }), item)));
+        }
+        let channels: Vec<(Rc<Chan>, bool)> = ops.iter().flatten().map(|(chan, sends, _)| (chan.clone(), *sends)).collect();
+        let chosen = loop {
+            let ready: Vec<usize> = (0..arms.len()).filter(|at| ops[*at].as_ref().is_some_and(|(chan, sends, _)| chan.can(*sends))).collect();
+            if !ready.is_empty() {
+                let pick = {
+                    let mut state = self.io.sched.lock();
+                    let mut x = state.select_seed;
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    state.select_seed = x;
+                    ready[(x % ready.len() as u64) as usize]
+                };
+                break pick;
+            }
+            if channels.iter().all(|(chan, sends)| chan.ended(*sends)) {
+                break arms.iter().position(|arm| matches!(arm.op, SelectOp::Ended)).expect("the checker requires an `ended` arm");
+            }
+            if self.select_wait(&channels, source.as_ref(), told, word)? {
+                break arms.iter().position(|arm| matches!(arm.op, SelectOp::Cancelled)).expect("the checker requires a `cancelled` arm with a token");
+            }
+        };
+        // The arm chosen does its work; the items of the others end here.
+        let depth = frame.scopes.len();
+        frame.scopes.push(Scope::default());
+        let mut dropped = false;
+        for (at, op) in ops.iter_mut().enumerate() {
+            let Some((chan, _, item)) = op else { continue };
+            if at != chosen {
+                if let Some(item) = item.take() {
+                    drop(item);
+                    dropped = true;
+                }
+                continue;
+            }
+            match &arms[at].op {
+                SelectOp::Receive { name, .. } => {
+                    let item = chan.items.borrow_mut().pop_front().expect("an arm chosen has an item");
+                    match name.as_str() {
+                        "_" => {
+                            drop(item);
+                            dropped = true;
+                        }
+                        _ => frame.declare(name, item),
+                    }
+                }
+                SelectOp::Send { call, .. } => {
+                    let item = match item.take() {
+                        Some(item) => item,
+                        None => {
+                            let ExprKind::Method { args, .. } = &call.kind else { unreachable!("a method of a channel") };
+                            strip(self.expr(&args[0], frame)?)
+                        }
+                    };
+                    chan.items.borrow_mut().push_back(item);
+                }
+                SelectOp::Ended | SelectOp::Cancelled => unreachable!("an arm with a channel"),
+            }
+        }
+        if dropped {
+            self.disposals()?;
+        }
+        let arm = &arms[chosen];
+        for stmt in &arm.body {
+            match self.stmt(stmt, frame)? {
+                Flow::Next => {}
+                Flow::Break(label) => return Err(Unwind::Break(label)),
+                Flow::Continue(label) => return Err(Unwind::Continue(label)),
+                Flow::Return(value) => return Err(Unwind::Return(value)),
+            }
+        }
+        let result = match &arm.value {
+            Some(value) => self.expr(value, frame)?,
+            None => Value::Void,
+        };
+        frame.scopes.truncate(depth);
+        Ok(result)
+    }
+
+    /// This fiber waits until an arm of a `select` can go on, every channel of it has ended,
+    /// or the token is cancelled: gives whether the token cut the wait short.
+    fn select_wait(&mut self, channels: &[(Rc<Chan>, bool)], source: Option<&Rc<RefCell<Cancel>>>, told: bool, at: Span) -> Res<bool> {
+        let cancelled = |this: &Self, source: Option<&Rc<RefCell<Cancel>>>| source.is_some_and(|source| source.borrow().cancelled) || (told && this.cut_now());
+        if cancelled(self, source) {
+            return Ok(true);
+        }
+        self.start_lazy()?;
+        let wait = ChanWait { fiber: self.me, chan: channels[0].0.clone(), sends: channels[0].1, select: channels.to_vec(), told };
+        if wait.ready() {
+            return Ok(false);
+        }
+        if cancelled(self, source) {
+            return Ok(true);
+        }
+        if let Some(source) = source {
+            source.borrow_mut().waits.push(self.me);
+        }
+        self.io.sched.lock().chan_waits.push(wait);
+        let waited = self.io.sched.block(self.me, at);
+        if let Some(source) = source {
+            source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
+        }
+        let cut = {
+            let mut state = self.io.sched.lock();
+            state.chan_waits.retain(|wait| wait.fiber != self.me);
+            state.cut.remove(&self.me)
+        };
+        waited?;
+        Ok(cut)
     }
 
     #[inline(never)]

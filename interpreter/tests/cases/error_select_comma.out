@@ -1,0 +1,5 @@
+error: arms are separated by line ends, not commas
+  --> error_select_comma.sg:6:44
+ 6 |         jobs.receive() as job => print(job),
+   |                                            ^
+  hint: write each arm on its own line

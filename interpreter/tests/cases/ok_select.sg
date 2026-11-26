@@ -1,0 +1,189 @@
+// `select` waits on several channels at once and runs the arm of one that can go on, a random
+// one of those ready together; an arm whose channel has ended is never chosen, and `ended`
+// runs once all have. What is printed does not depend on the choice: sums, counts, and arms
+// that are the only ones ready.
+struct Note : Disposable {
+    string text
+
+    void dispose(ref this) {
+        print($"dropped {this.text}")
+    }
+}
+
+void produce(Sender<int> tx, int from, int count) {
+    for i in from..from + count {
+        if !tx.send(i) {
+            return
+        }
+    }
+}
+
+void words(Sender<string> tx) {
+    _ = tx.send("one")
+    _ = tx.send("three")
+    _ = tx.send("five")
+}
+
+void fillOne(Sender<string> tx, string text) {
+    if text.length() > 0 {
+        _ = tx.send(text)
+    }
+}
+
+// Takes from both until both have ended: every item once.
+long merge(Channel<int> numbers, Channel<string> texts) {
+    long sum = 0
+    var count = 0
+    while true {
+        select {
+            numbers.receive() as n => sum += n
+            texts.receive() as text => sum += (long)text.length() * 1000
+            ended => break
+        }
+        count += 1
+    }
+    print($"merged {count} items")
+    return sum
+}
+
+// A worker that stops when told, whatever is left in its jobs.
+int work(Channel<int> jobs, Channel<bool> stop, Sender<int> results) {
+    var done = 0
+    while true {
+        var go = select {
+            jobs.receive() as job => {
+                _ = results.send(job * 2)
+                done += 1
+                true
+            }
+            stop.receive() as _ => false
+            ended => false
+        }
+        if !go {
+            return done
+        }
+    }
+    return done
+}
+
+// The value of a `select` given back as it is.
+string first(Channel<string> a, Channel<string> b) {
+    return select {
+        a.receive() as text => $"a: {text}".toString()
+        b.receive() as text => $"b: {text}".toString()
+        ended => "nothing"
+    }
+}
+
+void main() {
+    // Two producers on threads, merged on this one.
+    var numbers = Channel<int>(4)
+    var texts = Channel<string>(2)
+    var p1 = Task.run(produce, numbers.sender(), 0, 300)
+    var p2 = Task.run(produce, numbers.sender(), 1000, 300)
+    var p3 = Task.run(words, texts.sender())
+    print(merge(numbers, texts))
+    p1.wait()
+    p2.wait()
+    p3.wait()
+
+    // Several arms ready at once, for many rounds: each is chosen often.
+    var left = Channel<int>(1)
+    var right = Channel<int>(1)
+    var toLeft = left.sender()
+    var toRight = right.sender()
+    var lefts = 0
+    var rights = 0
+    for _ in 0..2000 {
+        _ = toLeft.send(1)
+        _ = toRight.send(2)
+        var got = select {
+            left.receive() as n => n
+            right.receive() as n => n
+            ended => 0
+        }
+        if got == 1 {
+            lefts += 1
+            _ = right.receive()
+        } else {
+            rights += 1
+            _ = left.receive()
+        }
+    }
+    print($"both chosen: {lefts > 200 && rights > 200}, {lefts + rights} rounds")
+
+    // Sending: into whichever of two has room, until both are full.
+    var even = Channel<int>(3)
+    var odd = Channel<int>(2)
+    var toEven = even.sender()
+    var toOdd = odd.sender()
+    var sent = 0
+    var full = false
+    while !full {
+        var token = CancellationSource()
+        token.cancel()
+        select (read token.token()) {
+            toEven.send(sent) => sent += 1
+            toOdd.send(sent) => sent += 1
+            ended => full = true
+            cancelled => full = true
+        }
+    }
+    print($"sent {sent} before both were full")
+
+    // A worker told to stop.
+    var jobs = Channel<int>(8)
+    var stop = Channel<bool>(1)
+    var results = Channel<int>(100)
+    var toJobs = jobs.sender()
+    var toStop = stop.sender()
+    var worker = Task.run(work, jobs.clone(), stop.clone(), results.sender())
+    for i in 1..6 {
+        _ = toJobs.send(i)
+    }
+    // Every job is taken before `stop` is sent: the results say so.
+    long total = 0
+    for _ in 0..5 {
+        total += results.receive() ?? 0
+    }
+    _ = toStop.send(true)
+    print($"worker did {worker.wait()} jobs, results {total}")
+
+    // An item made for an arm that is not chosen ends there; one received under `_` too.
+    var notes = Channel<Note>(1)
+    var toNotes = notes.sender()
+    _ = toNotes.send(Note { text = "fills the room" })
+    var ready = Channel<int>(1)
+    var toReady = ready.sender()
+    _ = toReady.send(7)
+    var which = select {
+        toNotes.send(Note { text = "never sent" }) => 1
+        ready.receive() as n => n
+        ended => 0
+    }
+    print($"chosen {which}")
+    select {
+        notes.receive() as _ => print("taken")
+        ended => print("ended")
+    }
+
+    // Every channel ended: the `ended` arm, and an empty channel, both kinds.
+    var gone = Channel<string>(1)
+    var other = Channel<string>(1)
+    fillOne(gone.sender(), "last")
+    fillOne(other.sender(), "")
+    print(first(gone.clone(), other.clone()))
+    print(first(gone.clone(), other.clone()))
+
+    // A token cancelled while nothing comes: the `cancelled` arm.
+    var silent = Channel<int>(1)
+    var keep = silent.sender()
+    var limit = CancellationSource.after(20)
+    var answer = select (read limit.token()) {
+        silent.receive() as n => $"got {n}".toString()
+        ended => "ended"
+        cancelled => "cancelled after the time"
+    }
+    print(answer)
+    _ = keep.send(1)
+}

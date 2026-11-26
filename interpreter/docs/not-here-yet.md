@@ -48,9 +48,13 @@
   the rules is a candidate if a program that converts many moments asks for it. On Windows the exact zone of
   a run cannot be set from outside, so only `ok_time_offset`, which checks the zone of the machine against
   itself, runs there (1310).
+- **Of `select` (192)**: in compiled code, tasks that wait in a `select` for each other wait for ever, where the
+  interpreter stops with a panic: the count of waiting tasks is the 193rd slice. An arm that waits on what is not
+  a channel (a task, a socket, a delay: `Task.whenAny` and a token do those today); a condition on an arm; an
+  item sent out of a field kept in it when its arm is not chosen (1999: it is computed and dropped).
 - **Of the hundred-and-thirteenth slice**: in compiled code, tasks that wait on channels for each other wait
-  for ever, where the interpreter stops with a panic (1286): the count of waiting tasks comes with the hardening.
-  Waiting on several channels at once (Go's `select`), a `for` that awaits (`for await job in jobs`, with
+  for ever, where the interpreter stops with a panic (1286): the count of waiting tasks comes in the 193rd slice.
+  A `for` that awaits (`for await job in jobs`, with
   `linesAsync`), a channel of a `StreamWriter` (1293), and a `Sender` this function did not make by name followed
   by the rule of 1285 (1294).
 - **Of the hundred-and-twelfth slice**: a time limit and a cancellation of `lock ... when` (`cnd_timedwait`; 1264);

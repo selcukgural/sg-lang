@@ -1,0 +1,5 @@
+error: `select` waits, and an async function awaits what waits: its task waits, and its thread goes on
+  --> error_select_not_awaited.sg:2:5
+ 2 |     select {
+   |     ^^^^^^
+  hint: write `await select { ... }`

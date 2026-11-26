@@ -1,0 +1,5 @@
+error: a `select` waits on channels, and this one has no arm that receives or sends
+  --> error_select_no_channel.sg:2:5
+ 2 |     select {
+   |     ^^^^^^
+  hint: `select { jobs.receive() as job => ...  ended => ... }`

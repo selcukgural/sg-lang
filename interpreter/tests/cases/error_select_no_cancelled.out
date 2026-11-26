@@ -1,0 +1,5 @@
+error: this `select` is given a token, and has no `cancelled` arm, which runs once the token is cancelled first
+  --> error_select_no_cancelled.sg:6:5
+ 6 |     select (read source.token()) {
+   |     ^^^^^^
+  hint: add `cancelled => ...`

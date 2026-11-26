@@ -1696,6 +1696,107 @@ impl<'a> Parser<'a> {
         Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Match { subject: Box::new(subject), arms, borrowed: false }, span })
     }
 
+    /// Whether the word `select` at `at` tokens from here starts a `select`: `{` follows it,
+    /// or a token in brackets and then `{`. Where `{` would start the block of an `if`, a
+    /// `while`, a `for` or a `match`, the word is a name.
+    fn at_select(&self, at: usize) -> bool {
+        if !self.struct_literals {
+            return false;
+        }
+        match self.peek_at(at + 1) {
+            Tok::LBrace => true,
+            Tok::LParen => {
+                let mut depth = 0usize;
+                let mut n = at + 1;
+                loop {
+                    match self.peek_at(n) {
+                        Tok::LParen => depth += 1,
+                        Tok::RParen => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return *self.peek_at(n + 1) == Tok::LBrace;
+                            }
+                        }
+                        Tok::Eof => return false,
+                        _ => {}
+                    }
+                    n += 1;
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// `select [(token)] { arm => body ... }`, from the word `select` (`start` is where the
+    /// expression starts, at `await` when it is written). An arm is `ended`, `cancelled`, a
+    /// call with `as name` (a receive) or a call without it (a send); the checker sees that
+    /// each call is the one it should be.
+    fn select_expr(&mut self, start: Span) -> Res<Expr> {
+        self.bump();
+        let token = match *self.peek() == Tok::LParen {
+            true => {
+                self.bump();
+                let token = self.bracketed(|p| p.expr())?;
+                self.expect(Tok::RParen, "`)`")?;
+                Some(Box::new(token))
+            }
+            false => None,
+        };
+        self.open_brace()?;
+        let outer = std::mem::replace(&mut self.struct_literals, true);
+        let mut arms = Vec::new();
+        self.skip_newlines();
+        while *self.peek() != Tok::RBrace {
+            if *self.peek() == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let arm_start = self.span();
+            let op = match self.peek() {
+                Tok::Ident(word) if (word == "ended" || word == "cancelled") && *self.peek_at(1) == Tok::FatArrow => {
+                    let ended = word == "ended";
+                    self.bump();
+                    if ended { SelectOp::Ended } else { SelectOp::Cancelled }
+                }
+                _ => {
+                    let call = self.expr()?;
+                    match self.at_word("as") {
+                        true => {
+                            self.bump();
+                            let (name, name_span) = self.ident("a name for the item received, or `_`")?;
+                            SelectOp::Receive { call, name, name_span }
+                        }
+                        false => SelectOp::Send { call, kept: false },
+                    }
+                }
+            };
+            if matches!(self.peek(), Tok::Ident(word) if word == "when") {
+                return Err(Diag::error(self.span(), "an arm of a `select` has no condition")
+                    .note("an arm whose channel has ended is never chosen, so none needs to be turned off by hand"));
+            }
+            self.expect(Tok::FatArrow, "`=>`")?;
+            let (body, value) = match self.peek() {
+                Tok::LBrace => self.arm_block()?,
+                _ => match self.stmt_or_tail(Tail::Always)? {
+                    Ok(stmt) => (vec![stmt], None),
+                    Err(value) => (Vec::new(), Some(value)),
+                },
+            };
+            arms.push(SelectArm { op, body, value, span: Span::new(arm_start.start, self.prev_end()) });
+            if *self.peek() == Tok::Comma {
+                return Err(Diag::error(self.span(), "arms are separated by line ends, not commas")
+                    .hint("write each arm on its own line"));
+            }
+            if *self.peek() != Tok::RBrace {
+                self.expect(Tok::Newline, "end of line")?;
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        self.struct_literals = outer;
+        let span = Span::new(start.start, self.prev_end());
+        Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Select { arms, token, awaited: false }, span })
+    }
+
     /// The block of a `match` arm: statements, and the last line may be the value.
     fn arm_block(&mut self) -> Res<(Block, Option<Expr>)> {
         self.open_brace()?;
@@ -2131,6 +2232,15 @@ impl<'a> Parser<'a> {
                 let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::WeakOf, operand))
             }
+            // `await select { ... }`: the select waits as part of the task.
+            Tok::Ident(word) if word == "await" && matches!(self.peek_at(1), Tok::Ident(next) if next == "select") && self.at_select(1) => {
+                self.bump();
+                let mut select = self.select_expr(start)?;
+                if let ExprKind::Select { awaited, .. } = &mut select.kind {
+                    *awaited = true;
+                }
+                Ok(select)
+            }
             Tok::Ident(word) if word == "await" => {
                 self.bump();
                 let operand = self.nest(|parser| parser.unary())?;
@@ -2443,6 +2553,9 @@ impl<'a> Parser<'a> {
                 ExprKind::Interp(self.interp_parts(parts)?)
             }
             Tok::Match => return self.match_expr(),
+            // `select { ... }`, `select (read token) { ... }`: a word only where it starts one
+            // (1998); `var select = db.prepare(...)` is a name.
+            Tok::Ident(ref word) if word == "select" && self.at_select(0) => return self.select_expr(start),
             Tok::LParen => {
                 self.bump();
                 let inner = self.bracketed(|p| p.expr())?;
@@ -2659,7 +2772,7 @@ const SHIFT: usize = 7;
 /// of one, and `unsafe` in front of any of them.
 fn is_statement(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => true,
+        ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Select { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => true,
         ExprKind::Unsafe(inner) => is_statement(inner),
         _ => false,
     }

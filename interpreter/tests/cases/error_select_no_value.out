@@ -1,0 +1,4 @@
+error: this call does not return a value, and one is needed here
+  --> error_select_no_value.sg:7:18
+ 7 |         ended => print("ended")
+   |                  ^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: `job` is never used
+  --> error_select_name_unused.sg:6:27
+ 6 |         jobs.receive() as job => print("one")
+   |                           ^^^
+  hint: write `_` in its place

@@ -773,7 +773,7 @@ fn compiled() {
         }
         // Tasks that wait on channels for each other: the interpreter stops with a panic, and
         // compiled code waits for ever until the count of waiting tasks comes with the hardening.
-        if name == "panic_channel_deadlock.sg" {
+        if name == "panic_channel_deadlock.sg" || name == "panic_select_deadlock.sg" {
             return done;
         }
         // The interpreter checks every read and write of raw memory against the blocks of
@@ -1247,7 +1247,7 @@ fn compiled_small_pools() {
     let work = root.join("target").join("compiled-pools");
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
-    let stems = ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async", "ok_channel_async"];
+    let stems = ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async", "ok_channel_async", "ok_select_async"];
     // (the program, the most threads of the pool, the pauses, the address sanitizer in place of the thread one)
     let mut builds = Vec::new();
     for stem in stems {

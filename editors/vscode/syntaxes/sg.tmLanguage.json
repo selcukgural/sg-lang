@@ -156,7 +156,7 @@
       "patterns": [
         {
           "name": "keyword.control.sg",
-          "match": "(?<!\\.)\\b(?:if|else|while|for|in|return|break|continue|match|try|await|lock|when|with|is|not|or|as|unsafe)\\b"
+          "match": "(?<!\\.)\\b(?:if|else|while|for|in|return|break|continue|match|try|await|lock|when|with|is|not|or|as|unsafe|select(?=\\s*[({])|ended(?=\\s*=>)|cancelled(?=\\s*=>))\\b"
         },
         {
           "name": "storage.type.sg",

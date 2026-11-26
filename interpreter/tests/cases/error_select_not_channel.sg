@@ -1,0 +1,10 @@
+int next() {
+    return 1
+}
+
+void main() {
+    select {
+        next() as n => print(n)
+        ended => print("ended")
+    }
+}

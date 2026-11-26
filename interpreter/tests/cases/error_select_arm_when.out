@@ -1,0 +1,5 @@
+error: an arm of a `select` has no condition
+  an arm whose channel has ended is never chosen, so none needs to be turned off by hand
+  --> error_select_arm_when.sg:6:31
+ 6 |         jobs.receive() as job when job > 0 => print(job)
+   |                               ^^^^

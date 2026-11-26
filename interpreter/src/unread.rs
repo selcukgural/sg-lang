@@ -367,6 +367,27 @@ impl<'p> Pass<'p> {
                 self.expr(inner);
                 self.pattern(pattern, None);
             }
+            ExprKind::Select { arms, token, .. } => {
+                if let Some(token) = token {
+                    self.expr(token);
+                }
+                for arm in arms {
+                    if let Some(call) = arm.op.call() {
+                        self.expr(call);
+                    }
+                }
+                for arm in arms {
+                    if let SelectOp::Receive { name, name_span, .. } = &arm.op {
+                        if name != "_" {
+                            self.declared(*name_span, Kind::Pattern(None));
+                        }
+                    }
+                    self.block(&arm.body);
+                    if let Some(value) = &arm.value {
+                        self.expr(value);
+                    }
+                }
+            }
             ExprKind::Match { subject, arms, .. } => {
                 self.expr(subject);
                 for arm in arms {

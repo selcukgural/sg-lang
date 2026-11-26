@@ -1,0 +1,6 @@
+error: an arm of a `select` that sends has no name: it is chosen only when the item went in
+  an arm whose channel has no receiver left is never chosen
+  --> error_select_send_named.sg:5:9
+ 5 |         tx.send(1) as sent => print(sent)
+   |         ^^^^^^^^^^
+  hint: `tx.send(1) => ...`

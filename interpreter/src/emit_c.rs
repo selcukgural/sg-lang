@@ -586,7 +586,7 @@ const C_LIBRARY: &[&str] = &[
 /// The runtime's C, every part of it, as `c_names_taken` reads it.
 const RUNTIME_PARTS: &[&str] = &[
     FREESTANDING_PRELUDE, FREESTANDING_RUNTIME, FREESTANDING_DIVISION, RUNTIME, RAW_RUNTIME, CLOCK_RUNTIME, FFI_RUNTIME, TABLE,
-    STATIC_RUNTIME, TEST_SUPPORT, SHARED_RUNTIME, TASK_RUNTIME, CHAN_RUNTIME, NET_RUNTIME, UDP_RUNTIME, SIGNALS_RUNTIME,
+    STATIC_RUNTIME, TEST_SUPPORT, SHARED_RUNTIME, TASK_RUNTIME, CHAN_RUNTIME, SELECT_RUNTIME, NET_RUNTIME, UDP_RUNTIME, SIGNALS_RUNTIME,
     UDP_ASYNC_RUNTIME, NET_ASYNC_RUNTIME, PROCESS_PIPES_RUNTIME, PROCESS_ASYNC_RUNTIME, PROCESS_RUNTIME, FILES_RUNTIME, IO_RUNTIME,
     ASYNC_IO_RUNTIME, TEST_RUNNER, LEAKS,
 ];
@@ -6785,6 +6785,10 @@ struct sg_chan_wait {
     /* Put on the token's list once; `d.token` is read only under the clock's lock, since a
        cancel takes it off there. */
     bool linked;
+    /* Of a `select` (`SELECT_RUNTIME`): put in the list of its channel in this round, and
+       taken out of it by a waker. */
+    bool parked;
+    bool woke;
     int cut;
     int state;
     int gave;
@@ -6938,25 +6942,27 @@ static void sg_chan_wait_init(sg_chan_wait* w, sg_chan* c, bool sends, void* ite
 }
 /* The mutex is held, and the channel cannot let the wait go on: true when the token is
    cancelled, otherwise the wait is on the token's list (once) and in the channel's. */
+/* The wait goes on the list of its token, once: true when the token is cancelled already. */
+static bool sg_chan_link(sg_chan_wait* w) {
+    w->linked = true;
+    sg_mtx_lock(&sg_clock_lock);
+    bool cancelled = w->token->cancelled;
+    if (!cancelled) {
+        sg_mtx_lock(&w->token->lock);
+        w->d.token = w->token;
+        w->d.prev = NULL;
+        w->d.next = w->token->first;
+        if (w->token->first) w->token->first->prev = &w->d;
+        w->token->first = &w->d;
+        sg_mtx_unlock(&w->token->lock);
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    return cancelled;
+}
 static bool sg_chan_park(sg_chan* c, sg_chan_wait* w) {
     if (__atomic_load_n(&w->cut, __ATOMIC_ACQUIRE)) return true;
     if (w->told && !w->thread && sg_job_cut()) return true;
-    if (w->token && !w->linked) {
-        w->linked = true;
-        sg_mtx_lock(&sg_clock_lock);
-        bool cancelled = w->token->cancelled;
-        if (!cancelled) {
-            sg_mtx_lock(&w->token->lock);
-            w->d.token = w->token;
-            w->d.prev = NULL;
-            w->d.next = w->token->first;
-            if (w->token->first) w->token->first->prev = &w->d;
-            w->token->first = &w->d;
-            sg_mtx_unlock(&w->token->lock);
-        }
-        sg_mtx_unlock(&sg_clock_lock);
-        if (cancelled) return true;
-    }
+    if (w->token && !w->linked && sg_chan_link(w)) return true;
     sg_chan_list(c, w);
     return false;
 }
@@ -7045,6 +7051,206 @@ static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* 
     sg_chan_wait_init(w, c, sends, item, token, NULL);
     w->told = told;
     (void)sg_chan_ready(w);
+}
+"#;
+
+/// `select` in compiled code (1994): one waiter on several channels. Each arm with a channel
+/// has a wait of its own (in the order the arms are written), all of one thread or one async
+/// task; only the first carries the token. A round takes every wait out of the list it is in,
+/// tries the arms in a random order (1988), and, when none can go on, puts each back in the
+/// list of its channel, trying it once more under its mutex as it does. One mutex is held at a
+/// time. A wait that a waker took out while another arm was chosen passes the wake on, so the
+/// item or the room that woke it does not wait for a waiter that is not woken. After
+/// `CHAN_RUNTIME`.
+const SELECT_RUNTIME: &str = r#"
+typedef struct {
+    sg_chan_wait* waits;
+    int* order;
+    int n;
+    /* On a thread: its sleeper, made when a wait first goes in a list. */
+    sg_chan_sleeper* sleeper;
+    bool slept;
+    /* The wait of the arm chosen; -1: every channel has ended; -2: the token was cancelled. */
+    int chosen;
+    int state;
+} sg_sel;
+enum { SG_SEL_ENDED = -1, SG_SEL_CANCELLED = -2, SG_SEL_WAIT = -3 };
+static _Thread_local uint64_t sg_sel_seed = 0;
+static inline uint64_t sg_sel_next(void) {
+    uint64_t x = sg_sel_seed;
+    if (x == 0) x = ((uint64_t)(uintptr_t)&sg_sel_seed * 0x9E3779B97F4A7C15ull) | 1;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    sg_sel_seed = x;
+    return x;
+}
+/* The wait of an arm: its channel, whether it sends, and the item sent or the room for the
+   item received. */
+static inline void sg_sel_arm(sg_chan_wait* w, sg_chan* c, bool sends, void* item) {
+    memset(w, 0, sizeof *w);
+    w->d.over = sg_chan_cut;
+    w->d.at = -1;
+    w->chan = c;
+    w->sends = sends;
+    w->item = item;
+    w->state = SG_WAITING;
+}
+static inline void sg_sel_start(sg_sel* s, sg_chan_wait* waits, int* order, int n, bool told, sg_cancel* token) {
+    s->waits = waits;
+    s->order = order;
+    s->n = n;
+    s->chosen = SG_SEL_WAIT;
+    s->state = SG_WAITING;
+    s->sleeper = NULL;
+    s->slept = false;
+    waits[0].token = token;
+    waits[0].told = told;
+}
+/* The mutex is held: 1 the arm's work is done, 0 it cannot go on now, -1 it never will. */
+static int sg_sel_try(sg_chan* c, sg_chan_wait* w) {
+    if (w->sends) {
+        if (c->receivers == 0) return -1;
+        if (c->len == c->cap) return 0;
+        memcpy(sg_chan_slot(c, c->len), w->item, c->size);
+        c->len++;
+        sg_chan_wake(c, false, false);
+        return 1;
+    }
+    if (c->len > 0) {
+        memcpy(w->item, sg_chan_slot(c, 0), c->size);
+        c->head = (c->head + 1) % c->cap;
+        c->len--;
+        sg_chan_wake(c, true, false);
+        return 1;
+    }
+    return c->senders == 0 ? -1 : 0;
+}
+/* Every wait leaves the list it is in; one a waker took out first is marked. */
+static void sg_sel_unpark(sg_sel* s) {
+    for (int i = 0; i < s->n; i++) {
+        sg_chan_wait* w = &s->waits[i];
+        if (!w->parked) continue;
+        sg_mtx_lock(&w->chan->m);
+        if (w->listed) sg_chan_unlist(w->chan, w);
+        else w->woke = true;
+        sg_mtx_unlock(&w->chan->m);
+        w->parked = false;
+    }
+}
+/* The select is over with arm `chosen` (or none): a wake another arm got goes to the next that
+   waits on its channel. */
+static void sg_sel_pass(sg_sel* s, int chosen) {
+    for (int i = 0; i < s->n; i++) {
+        sg_chan_wait* w = &s->waits[i];
+        if (!w->woke) continue;
+        w->woke = false;
+        if (i == chosen) continue;
+        sg_mtx_lock(&w->chan->m);
+        sg_chan_wake(w->chan, w->sends, false);
+        sg_mtx_unlock(&w->chan->m);
+    }
+}
+/* Whether the token of the select is cancelled, or its task let go (1692); the first wait goes
+   on the token's list once. */
+static bool sg_sel_cut(sg_chan_wait* w) {
+    if (__atomic_load_n(&w->cut, __ATOMIC_ACQUIRE)) return true;
+    if (w->told && !w->thread && sg_job_cut()) return true;
+    return w->token && !w->linked && sg_chan_link(w);
+}
+/* One round: the arms in a random order, each taken out of the list it was put in the round
+   before, tried, and, when it cannot go on, put back, all under one lock of its channel. The arm whose work is done, -1 when
+   every channel has ended, -2 when the token is cancelled (looked at once no arm could go on),
+   otherwise -3 with every wait in its list. */
+static int sg_sel_round(sg_sel* s) {
+    int n = s->n;
+    for (int i = 0; i < n; i++) s->order[i] = i;
+    for (int i = n - 1; i > 0; i--) {
+        int j = (int)(sg_sel_next() % (uint64_t)(i + 1));
+        int t = s->order[i];
+        s->order[i] = s->order[j];
+        s->order[j] = t;
+    }
+    int ended = 0;
+    for (int k = 0; k < n; k++) {
+        int i = s->order[k];
+        sg_chan_wait* w = &s->waits[i];
+        sg_mtx_lock(&w->chan->m);
+        /* Out of the list of the round before, under the same lock as the try. */
+        if (w->parked) {
+            if (w->listed) sg_chan_unlist(w->chan, w);
+            else w->woke = true;
+            w->parked = false;
+        }
+        int r = sg_sel_try(w->chan, w);
+        if (r == 0) {
+            if (s->sleeper && !s->slept) {
+                sg_mtx_init(&s->sleeper->m);
+                sg_cnd_init(&s->sleeper->c);
+                s->sleeper->woken = false;
+                for (int j = 0; j < n; j++) s->waits[j].thread = s->sleeper;
+                s->slept = true;
+            }
+            sg_chan_list(w->chan, w);
+            w->parked = true;
+        }
+        sg_mtx_unlock(&w->chan->m);
+        if (r == 1) {
+            sg_sel_unpark(s);
+            sg_sel_pass(s, i);
+            return i;
+        }
+        ended += r < 0;
+    }
+    if (ended == n) {
+        sg_sel_pass(s, SG_SEL_ENDED);
+        return SG_SEL_ENDED;
+    }
+    if (sg_sel_cut(&s->waits[0])) {
+        sg_sel_unpark(s);
+        sg_sel_pass(s, SG_SEL_CANCELLED);
+        return SG_SEL_CANCELLED;
+    }
+    for (int i = 0; i < n; i++) s->waits[i].woke = false;
+    return SG_SEL_WAIT;
+}
+/* `select` on a thread: the arm chosen, -1 or -2. The thread's sleeper is told it was not woken
+   before a round puts the waits in their lists, under its own lock, since a cancel may wake it
+   at any time. */
+static int sg_select(sg_sel* s) {
+    sg_chan_sleeper z;
+    s->sleeper = &z;
+    s->slept = false;
+    int r;
+    for (;;) {
+        r = sg_sel_round(s);
+        if (r != SG_SEL_WAIT) break;
+        sg_mtx_lock(&z.m);
+        while (!z.woken) sg_cnd_wait(&z.c, &z.m);
+        z.woken = false;
+        sg_mtx_unlock(&z.m);
+    }
+    sg_chan_done(&s->waits[0]);
+    if (s->slept) {
+        sg_mtx_destroy(&z.m);
+        sg_cnd_destroy(&z.c);
+    }
+    return r;
+}
+/* `await select` in the frame of an async function: looked at where it starts and each time
+   the task is woken, until an arm is chosen (`chosen`). */
+static bool sg_sel_ready(sg_sel* s) {
+    if (s->state != SG_WAITING) return true;
+    int r = sg_sel_round(s);
+    if (r == SG_SEL_WAIT) return false;
+    s->chosen = r;
+    s->state = SG_OVER;
+    sg_chan_done(&s->waits[0]);
+    return true;
+}
+static inline void sg_sel_begin(sg_sel* s) {
+    for (int i = 0; i < s->n; i++) s->waits[i].d.job = sg_job_now;
+    (void)sg_sel_ready(s);
 }
 "#;
 
@@ -14054,6 +14260,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("chan") {
         out.push_str(CHAN_RUNTIME);
     }
+    if emitter.made.contains("select") {
+        out.push_str(SELECT_RUNTIME);
+    }
     if emitter.made.contains("statics") {
         out.push_str(STATIC_RUNTIME);
     }
@@ -14988,7 +15197,7 @@ fn may_leave_or_wait(expr: &Expr) -> bool {
 
 /// Whether the expression holds an `await`.
 fn holds_await(expr: &Expr) -> bool {
-    let mut found = matches!(expr.kind, ExprKind::Await(_));
+    let mut found = matches!(expr.kind, ExprKind::Await(_) | ExprKind::Select { awaited: true, .. });
     sums::children(expr, &mut |inner| found |= holds_await(inner));
     found
 }
@@ -15024,7 +15233,7 @@ fn from_end(expr: &Expr) -> Option<&Expr> {
 fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
-        ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
+        ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } | ExprKind::Select { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } | ExprKind::End => false,
@@ -19646,6 +19855,7 @@ impl<'a> Emitter<'a> {
                 self.post.clear();
             }
             ExprKind::Match { .. } => self.match_stmt(expr, &Dest::Unused, depth, out)?,
+            ExprKind::Select { .. } => self.select_stmt(expr, &Dest::Unused, depth, out)?,
             _ => self.unused(expr, &pad, out)?,
         }
         Ok(())
@@ -20243,9 +20453,163 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// `select { ... }` as statements (1987-2001): the token, then the end of each channel
+    /// and each item sent that is not a local variable, in the order written; then one wait on
+    /// them all (`SELECT_RUNTIME`), on this thread, or in the frame of an async function for
+    /// `await select`; then the arm chosen, as an arm of a `match`. The items of the arms not
+    /// chosen are dropped; a local variable sent keeps its value unless its arm is chosen.
+    fn select_stmt(&mut self, expr: &'a Expr, dest: &Dest, depth: usize, out: &mut String) -> Res<()> {
+        let ExprKind::Select { arms, token, awaited } = &expr.kind else {
+            unreachable!("only called for a `select`");
+        };
+        self.made.insert("select".to_string());
+        let (pad, inner) = ("    ".repeat(depth), "    ".repeat(depth + 1));
+        let sel = self.temp();
+        let count = arms.iter().filter(|arm| arm.op.call().is_some()).count();
+        let _ = writeln!(out, "{pad}{{");
+        let _ = writeln!(out, "{inner}sg_chan_wait {sel}w[{count}];");
+        let _ = writeln!(out, "{inner}int {sel}o[{count}];");
+        let _ = writeln!(out, "{inner}sg_sel {sel};");
+        let token = match token {
+            Some(token) => {
+                let value = self.value(token)?;
+                self.flush_pre(&inner, out);
+                let temp = self.temp();
+                let _ = writeln!(out, "{inner}sg_cancel* {temp} = (*{value});");
+                temp
+            }
+            None => "NULL".to_string(),
+        };
+        let told = token != "NULL";
+        let mut setup: Vec<String> = Vec::new();
+        // For each arm: the wait it is, the slot of its item, the type of the item.
+        let mut slots: Vec<Option<(usize, String, Ty)>> = Vec::new();
+        let mut wait = 0;
+        for arm in arms {
+            let Some(call) = arm.op.call() else {
+                slots.push(None);
+                continue;
+            };
+            let ExprKind::Method { recv, args, .. } = &call.kind else { unreachable!("the checker makes it a method of a channel") };
+            let (Ty::Channel(item) | Ty::Sender(item)) = chan_end(&recv.ty) else { unreachable!("an end of a channel") };
+            let held = self.ctype(&item, call.span)?;
+            let chan = self.temp();
+            let address = self.list_address(recv)?;
+            self.flush_pre(&inner, out);
+            setup.push(format!("sg_chan* {chan} = (*{address});"));
+            let slot = format!("{sel}i{wait}");
+            let (sends, at) = match &arm.op {
+                SelectOp::Receive { .. } => {
+                    setup.push(format!("{held} {slot};"));
+                    (false, format!("&{slot}"))
+                }
+                // A local variable sent is sent from where it lies.
+                SelectOp::Send { kept: true, .. } => (true, format!("&{}", self.lvalue(&args[0])?)),
+                SelectOp::Send { .. } => {
+                    for line in setup.drain(..) {
+                        let _ = writeln!(out, "{inner}{line}");
+                    }
+                    let value = self.value_as(&args[0], &item)?;
+                    self.flush_pre(&inner, out);
+                    setup.push(format!("{held} {slot} = {value};"));
+                    (true, format!("&{slot}"))
+                }
+                SelectOp::Ended | SelectOp::Cancelled => unreachable!("an arm with a channel"),
+            };
+            setup.push(format!("sg_sel_arm(&{sel}w[{wait}], {chan}, {sends}, {at});"));
+            slots.push(Some((wait, slot, (*item).clone())));
+            for line in setup.drain(..) {
+                let _ = writeln!(out, "{inner}{line}");
+            }
+            wait += 1;
+        }
+        let kept = self.hold();
+        let _ = writeln!(out, "{inner}sg_sel_start(&{sel}, {sel}w, {sel}o, {count}, {told}, {token});");
+        let chosen = format!("{sel}r");
+        match awaited {
+            true => {
+                let _ = writeln!(out, "{inner}sg_sel_begin(&{sel});");
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_sel_ready(&{sel})) return false;"));
+                self.flush_pre(&inner, out);
+                let _ = writeln!(out, "{inner}int {chosen} = {sel}.chosen;");
+            }
+            false => {
+                let _ = writeln!(out, "{inner}int {chosen} = sg_select(&{sel});");
+            }
+        }
+        // The items computed for the arms that send and were not chosen end here.
+        for (wait, slot, item) in slots.iter().zip(arms).filter_map(|(slot, arm)| matches!(arm.op, SelectOp::Send { kept: false, .. }).then_some(slot.as_ref()).flatten()) {
+            if self.droppable(item) {
+                let _ = writeln!(out, "{inner}if ({chosen} != {wait}) {{ {} }}", self.drop_of(item, slot));
+            }
+        }
+        for (position, arm) in arms.iter().enumerate() {
+            let test = match (&arm.op, &slots[position]) {
+                (SelectOp::Ended, _) => "SG_SEL_ENDED".to_string(),
+                (SelectOp::Cancelled, _) => "SG_SEL_CANCELLED".to_string(),
+                (_, Some((wait, ..))) => wait.to_string(),
+                _ => unreachable!("an arm with a channel has its wait"),
+            };
+            let _ = match position {
+                0 => writeln!(out, "{inner}if ({chosen} == {test}) {{"),
+                _ if position + 1 == arms.len() => writeln!(out, "{inner}}} else {{"),
+                _ => writeln!(out, "{inner}}} else if ({chosen} == {test}) {{"),
+            };
+            let body = depth + 2;
+            let body_pad = "    ".repeat(body);
+            let before = self.gone();
+            self.scopes.push(Vec::new());
+            match (&arm.op, &slots[position]) {
+                (SelectOp::Receive { name, .. }, Some((_, slot, item))) if name != "_" => {
+                    let item_c = self.ctype(item, arm.span)?;
+                    let cname = self.declare(name, item.clone());
+                    let _ = writeln!(out, "{body_pad}{item_c} {cname} = {slot};");
+                }
+                (SelectOp::Receive { .. }, Some((_, slot, item))) => {
+                    if self.droppable(item) {
+                        let _ = writeln!(out, "{body_pad}{}", self.drop_of(item, slot));
+                    }
+                }
+                // The channel has the item: the variable it was sent from is emptied.
+                (SelectOp::Send { call, kept: true }, _) => {
+                    let ExprKind::Method { args, .. } = &call.kind else { unreachable!("a method of a channel") };
+                    self.maybe += 1;
+                    let taken = self.value(&args[0]);
+                    self.maybe -= 1;
+                    let taken = taken?;
+                    self.flush_pre(&body_pad, out);
+                    let _ = writeln!(out, "{body_pad}(void){taken};");
+                    self.flush_post(&body_pad, out);
+                }
+                _ => {}
+            }
+            self.stmts(&arm.body, body, out)?;
+            if let Some(value) = &arm.value {
+                self.arm_value(value, dest, body, out)?;
+            }
+            let leaves = match &arm.value {
+                Some(_) => matches!(dest, Dest::Return),
+                None => ends_by_leaving(&arm.body),
+            };
+            if !leaves {
+                for line in self.drops(self.scopes.len() - 1) {
+                    let _ = writeln!(out, "{body_pad}{line}");
+                }
+            }
+            self.scopes.pop();
+            self.gone_only_if(&before);
+        }
+        let _ = writeln!(out, "{inner}}}");
+        self.release(kept, &inner, out);
+        let _ = writeln!(out, "{pad}}}");
+        Ok(())
+    }
+
     /// A `match` or a `?:` as statements, its value sent where `dest` says.
     fn branch_stmt(&mut self, expr: &'a Expr, dest: &Dest, depth: usize, out: &mut String) -> Res<()> {
         match &expr.kind {
+            ExprKind::Select { .. } => self.select_stmt(expr, dest, depth, out),
             ExprKind::Cond { .. } => self.cond_stmt(expr, dest, depth, out),
             _ => self.match_stmt(expr, dest, depth, out),
         }
@@ -20791,7 +21155,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Try { .. } | ExprKind::Return(_) => Effect::Acts,
             // Other tasks run while it waits.
             ExprKind::Await(_) => Effect::Changes,
-            ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
+            ExprKind::Match { .. } | ExprKind::Select { .. } | ExprKind::Collection { .. } => Effect::Changes,
             // Its arms are expressions, so it does what its parts do; that it is written before
             // the statement is settled by `in_order`, as for any part with lines before it.
             ExprKind::Cond { cond, then, els } => of(cond).max(of(then)).max(of(els)),
@@ -23713,7 +24077,7 @@ impl<'a> Emitter<'a> {
             // A `match` inside a larger expression: it is written before the statement, as the
             // statements it is, and gives its value through a name. The parts of the statement
             // that come before it are computed before it too (see `in_order`).
-            ExprKind::Match { .. } | ExprKind::Cond { .. } if !matches!(expr.ty, Ty::Void | Ty::Never) && self.ctype(&expr.ty, expr.span).is_ok() => {
+            ExprKind::Match { .. } | ExprKind::Cond { .. } | ExprKind::Select { .. } if !matches!(expr.ty, Ty::Void | Ty::Never) && self.ctype(&expr.ty, expr.span).is_ok() => {
                 let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
                 let (pre, post) = (std::mem::take(&mut self.pre), std::mem::take(&mut self.post));
                 // What the statement keeps so far is freed on every way out of an arm.
@@ -23742,7 +24106,7 @@ impl<'a> Emitter<'a> {
                 self.pre.push(text.trim_end().to_string());
                 Ok(temp)
             }
-            ExprKind::Match { .. } | ExprKind::Cond { .. } => {
+            ExprKind::Match { .. } | ExprKind::Cond { .. } | ExprKind::Select { .. } => {
                 let (what, start) = branch_words(expr);
                 Err(not_yet(expr.span, &format!("{what} inside a larger expression")).hint(format!("give the value a name first: `var x = {start}`")))
             }
@@ -25678,13 +26042,14 @@ fn links(expr: &Expr, op: BinOp) -> Vec<&Expr> {
 /// A chain of `&&` or `||` in which an `is` names values.
 /// A `match` or a `?:`: written as statements, giving its value to a place.
 fn branches(expr: &Expr) -> bool {
-    matches!(expr.kind, ExprKind::Match { .. } | ExprKind::Cond { .. })
+    matches!(expr.kind, ExprKind::Match { .. } | ExprKind::Cond { .. } | ExprKind::Select { .. })
 }
 
 /// How a message names a `match` or a `?:`, and how a line with one starts.
 fn branch_words(expr: &Expr) -> (&'static str, &'static str) {
     match expr.kind {
         ExprKind::Cond { .. } => ("a `?:`", "c ? a : b"),
+        ExprKind::Select { .. } => ("a `select`", "select ..."),
         _ => ("a `match`", "match ..."),
     }
 }

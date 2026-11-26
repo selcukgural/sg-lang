@@ -1,0 +1,5 @@
+error: a `cancelled` arm runs once the token of the `select` is cancelled, and this `select` is given none
+  --> error_select_cancelled_without_token.sg:8:9
+ 8 |         cancelled => print("cancelled")
+   |         ^^^^^^^^^
+  hint: `select (read token) { ... }`, or leave the arm out

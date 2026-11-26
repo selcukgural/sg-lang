@@ -1,0 +1,6 @@
+error: this `select` has no `ended` arm, which runs once every channel of it has ended
+  an arm whose channel has ended is never chosen: a receive with no sender left and nothing in it, a send with no receiver left
+  --> error_select_no_ended.sg:5:5
+ 5 |     select {
+   |     ^^^^^^
+  hint: add `ended => ...`, for example `ended => break` in a loop

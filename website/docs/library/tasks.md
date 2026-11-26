@@ -360,6 +360,46 @@ It prints:
 35
 ```
 
+### `select`
+
+| Written | What it does |
+|---|---|
+| `select { arms }` | Waits until an arm can go on and runs it; of several, a random one. It gives a value as a `match` does |
+| `channel.receive() as item => ...` | Chosen when an item is there; `item` is a `T`, `as _` drops it |
+| `sender.send(item) => ...` | Chosen when the item went in; a local variable sent keeps its value if another arm is chosen |
+| `ended => ...` | Every channel of the `select` has ended: no sender left and nothing in it, or no receiver left. Required |
+| `select (read token) { ... cancelled => ... }` | Gives up once the token is cancelled; `cancelled` is then required |
+| `await select { ... }` | The same in an async function |
+
+An arm whose channel has ended is never chosen, so a loop over several channels ends at `ended` once all have.
+There is no `default` arm: a time limit is a token, `CancellationSource.after(ms)`.
+
+```sg
+void slow(Sender<string> out) {
+    Task.delay(200).wait()
+    _ = out.send("late".clone())
+}
+
+void main() {
+    var answers = Channel<string>(1)
+    var giver = Task.run(slow, answers.sender())
+    var limit = CancellationSource.after(20)
+    var got = select (read limit.token()) {
+        answers.receive() as text => text
+        ended => "no answer"
+        cancelled => "gave up after 20 ms"
+    }
+    print(got)
+    giver.wait()
+}
+```
+
+It prints:
+
+```text
+gave up after 20 ms
+```
+
 ## `shared locked T`
 
 A value that several tasks own and change. What it holds follows the thread rule, and it is reached only inside

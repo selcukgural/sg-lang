@@ -1,0 +1,10 @@
+void main() {
+    var jobs = Channel<int>(1)
+    var tx = jobs.sender()
+    var source = CancellationSource.after(10)
+    _ = tx.send(1)
+    select {
+        jobs.receive(read source.token()) as job => print(job)
+        ended => print("ended")
+    }
+}

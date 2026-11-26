@@ -5554,6 +5554,8 @@ impl<'a> Checker<'a> {
             ExprKind::With { base, fields } => union(&mut std::iter::once(&**base).chain(fields.iter().map(|field| &field.value))),
             // What a `match` gives borrows from what its arms give; the names of an arm are gone
             // by now, and what they lent comes from what the `match` looks at.
+            // What a `select` gives borrows from what its arms give; an item received is owned.
+            ExprKind::Select { arms, .. } => union(&mut arms.iter().filter_map(|arm| arm.value.as_ref())),
             ExprKind::Match { subject, arms, .. } => {
                 let mut loans = union(&mut arms.iter().filter_map(|arm| arm.value.as_ref()));
                 if expr.ty.is_borrow() || self.holds(&expr.ty) {
@@ -7257,6 +7259,9 @@ impl<'a> Checker<'a> {
         match &mut expr.kind {
             ExprKind::Match { subject, arms, borrowed } => {
                 self.match_expr(subject, arms, borrowed, None, true)?;
+            }
+            ExprKind::Select { arms, token, awaited } => {
+                self.select_expr(arms, token.as_deref_mut(), *awaited, span, None, true)?;
             }
             ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => {
                 let ty = self.expr(expr, None)?;
@@ -9447,6 +9452,7 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Bool)
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
+            ExprKind::Select { arms, token, awaited } => self.select_expr(arms, token.as_deref_mut(), *awaited, expr.span, expected, false),
             ExprKind::Cond { cond, then, els } => self.cond_expr(cond, then, els, expected),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
             ExprKind::Const(full) => Ok(self.consts.use_type(full)),
@@ -10442,6 +10448,194 @@ impl<'a> Checker<'a> {
             (true, _) => Ty::Void,
             (false, _) => result.unwrap_or(Ty::Never),
         })
+    }
+
+    /// `select { ... }`: the calls of the arms are computed first, in the order they are
+    /// written, each a `receive` or a `send` of a channel without a token; then the arms are
+    /// checked as the arms of a `match` (1987-2001). An item sent that is a local variable
+    /// stays where it is in the arms that do not send it (1999).
+    fn select_expr(&mut self, arms: &mut [SelectArm], token: Option<&mut Expr>, awaited: bool, span: Span, expected: Option<&Ty>, unused: bool) -> Res<Ty> {
+        let word = Span::new(span.start, span.start + if awaited { "await select".len() } else { "select".len() });
+        if awaited && !self.is_async {
+            return Err(Diag::error(word, "`await select` is written in an async function")
+                .hint("here `select` waits without `await`: its thread sleeps until an arm can go on"));
+        }
+        if !awaited && self.is_async {
+            return Err(Diag::error(word, "`select` waits, and an async function awaits what waits: its task waits, and its thread goes on")
+                .hint("write `await select { ... }`"));
+        }
+        let told = token.is_some();
+        if let Some(token) = token {
+            self.token_arg(token)?;
+        }
+        // What the arms are: one `ended`, one `cancelled` with a token, at least one channel.
+        let mut ended: Option<Span> = None;
+        let mut cancelled: Option<Span> = None;
+        for arm in arms.iter() {
+            let seen = match arm.op {
+                SelectOp::Ended => &mut ended,
+                SelectOp::Cancelled => &mut cancelled,
+                _ => continue,
+            };
+            let what = if matches!(arm.op, SelectOp::Ended) { "ended" } else { "cancelled" };
+            if let Some(first) = seen {
+                return Err(Diag::error(Span::new(arm.span.start, arm.span.start + what.len()), format!("`{what}` is written once in a `select`")).related(*first, "the first one"));
+            }
+            *seen = Some(Span::new(arm.span.start, arm.span.start + what.len()));
+        }
+        if !arms.iter().any(|arm| arm.op.call().is_some()) {
+            return Err(Diag::error(word, "a `select` waits on channels, and this one has no arm that receives or sends")
+                .hint("`select { jobs.receive() as job => ...  ended => ... }`"));
+        }
+        if ended.is_none() {
+            return Err(Diag::error(word, "this `select` has no `ended` arm, which runs once every channel of it has ended")
+                .note("an arm whose channel has ended is never chosen: a receive with no sender left and nothing in it, a send with no receiver left")
+                .hint("add `ended => ...`, for example `ended => break` in a loop"));
+        }
+        match (told, cancelled) {
+            (true, None) => {
+                return Err(Diag::error(word, "this `select` is given a token, and has no `cancelled` arm, which runs once the token is cancelled first")
+                    .hint("add `cancelled => ...`"));
+            }
+            (false, Some(at)) => {
+                return Err(Diag::error(at, "a `cancelled` arm runs once the token of the `select` is cancelled, and this `select` is given none")
+                    .hint("`select (read token) { ... }`, or leave the arm out"));
+            }
+            _ => {}
+        }
+        // The calls of the arms, in the order they are written. Each item sent that is a local
+        // variable is put back as it was before its call, for the arms that do not send it.
+        let mut restore: Vec<Option<(usize, usize, Moved)>> = Vec::new();
+        for arm in arms.iter_mut() {
+            let receives = matches!(arm.op, SelectOp::Receive { .. });
+            let local = match &arm.op {
+                SelectOp::Send { call: Expr { kind: ExprKind::Method { args, .. }, .. }, .. } => match args.first().map(|arg| &arg.kind) {
+                    Some(ExprKind::Var(name)) => self.scopes.iter().enumerate().rev().find_map(|(at, scope)| scope.vars.iter().rposition(|var| var.name == *name).map(|index| (at, index))),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let before = local.map(|(scope, index)| self.scopes[scope].vars[index].moved.clone());
+            let Some(call) = arm.op.call_mut() else {
+                restore.push(None);
+                continue;
+            };
+            self.select_call(call, receives, awaited)?;
+            restore.push(match (local, before) {
+                (Some((scope, index)), Some(moved)) => Some((scope, index, moved)),
+                _ => None,
+            });
+            if let SelectOp::Send { kept, .. } = &mut arm.op {
+                *kept = local.is_some();
+            }
+        }
+        // The arms, as the arms of a `match`.
+        let node = self.node();
+        let before = self.moves();
+        let mut after: Option<Moves> = None;
+        let mut result: Option<Ty> = expected.cloned();
+        for (arm_index, arm) in arms.iter_mut().enumerate() {
+            self.set_moves(&before);
+            for (other, kept) in restore.iter().enumerate() {
+                if let (Some((scope, index, moved)), false) = (kept, other == arm_index) {
+                    self.scopes[*scope].vars[*index].moved = moved.clone();
+                }
+            }
+            self.scopes.push(Scope::default());
+            self.borrows.branches.push((node, arm_index));
+            let binds = match &arm.op {
+                SelectOp::Receive { call, name, name_span } if name != "_" => {
+                    let Ty::Nullable(item) = &call.ty else { unreachable!("a receive gives a `T?`") };
+                    vec![(name.clone(), (**item).clone(), *name_span)]
+                }
+                _ => Vec::new(),
+            };
+            self.declare_binds(binds)?;
+            for stmt in arm.body.iter_mut() {
+                self.stmt(stmt)?;
+            }
+            let leaves = select_arm_leaves(arm, self.loops > 0);
+            match &mut arm.value {
+                Some(value) if unused => self.unused(value)?,
+                Some(value) => match &result {
+                    Some(ty) => {
+                        let ty = ty.clone();
+                        self.typed(value, &ty)?;
+                    }
+                    None => match self.expr(value, None)? {
+                        Ty::Never => {}
+                        Ty::Null => {
+                            return Err(Diag::error(value.span, "the type of this `select` cannot be found from `null` alone")
+                                .hint("write the type where the result goes, for example `int? x = select ...`"));
+                        }
+                        ty => result = Some(ty),
+                    },
+                },
+                None if unused || leaves => {}
+                None => {
+                    return Err(Diag::error(arm.span, "this arm gives no value, and the `select` is used as one")
+                        .hint("the last line of the block is the value of the arm"));
+                }
+            }
+            self.pop_scope(!leaves)?;
+            self.borrows.branches.pop();
+            if !leaves {
+                if let Some(other) = &after {
+                    self.merge_moves(other);
+                }
+                after = Some(self.moves());
+            }
+        }
+        if let Some(after) = &after {
+            self.set_moves(after);
+        }
+        Ok(match (unused, after) {
+            (_, None) => Ty::Never,
+            (true, _) => Ty::Void,
+            (false, _) => result.unwrap_or(Ty::Never),
+        })
+    }
+
+    /// The call of an arm of a `select`: `channel.receive()` where a name follows (`receives`),
+    /// `sender.send(item)` where none does, without a token, which the `select` takes.
+    fn select_call(&mut self, call: &mut Expr, receives: bool, awaited: bool) -> Res<()> {
+        let text = self.src[call.span.start..call.span.end].to_string();
+        let not_channel = |span: Span| {
+            Diag::error(span, "an arm of a `select` receives from a channel or sends into one")
+                .hint("`jobs.receive() as job => ...`, `results.send(value) => ...`, `ended => ...`")
+                .note("a task is waited for with `Task.whenAny`, and a time limit is a token: `select (read token) { ... cancelled => ... }`")
+        };
+        if !matches!(&call.kind, ExprKind::Method { name, .. } if matches!(name.as_str(), "receive" | "send" | "receiveAsync" | "sendAsync")) {
+            return Err(not_channel(call.span));
+        }
+        if let ExprKind::Method { name, name_span, .. } = &call.kind {
+            if let Some(base) = name.strip_suffix("Async") {
+                return Err(Diag::error(*name_span, format!("an arm of a `select` is written `{base}`, also in an async function"))
+                    .note("`await select` awaits the whole `select`")
+                    .hint(format!("`{}`", text.replacen(name.as_str(), base, 1))));
+            }
+        }
+        self.expr(call, None)?;
+        let ExprKind::Method { callee, name, args, .. } = &mut call.kind else { unreachable!("tested above") };
+        // In `await select` the calls are the task's, and do not hold its thread.
+        if let (Callee::Chan(found, false), true) = (&*callee, awaited) {
+            *callee = Callee::ChanAsync(*found, false);
+        }
+        match callee {
+            Callee::Chan(_, true) => {
+                let token = args.last().map_or(call.span, |token| token.span);
+                Err(Diag::error(token, "an arm of a `select` takes no token: the `select` takes one for all of its arms")
+                    .hint("`select (read token) { ... cancelled => ... }`"))
+            }
+            Callee::Chan(ChanCall::Receive, false) | Callee::ChanAsync(ChanCall::Receive, false) if receives => Ok(()),
+            Callee::Chan(ChanCall::Send, false) | Callee::ChanAsync(ChanCall::Send, false) if !receives => Ok(()),
+            Callee::Chan(ChanCall::Receive, false) | Callee::ChanAsync(ChanCall::Receive, false) => Err(Diag::error(call.span, "the item an arm of a `select` receives is given a name")
+                .hint(format!("`{text} as item => ...`, or `{text} as _ => ...` to drop it"))),
+            Callee::Chan(ChanCall::Send, false) | Callee::ChanAsync(ChanCall::Send, false) => Err(Diag::error(call.span, "an arm of a `select` that sends has no name: it is chosen only when the item went in")
+                .note("an arm whose channel has no receiver left is never chosen")
+                .hint(format!("`{text} => ...`"))),
+            _ => Err(not_channel(call.span).note(format!("`{name}` here is not a method of a channel"))),
+        }
     }
 
     /// `c ? a : b`, checked as `if c { a } else { b }` is: `a` sees the names of an `is` in `c`
@@ -15318,6 +15512,14 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
                 list.extend(arm.value.iter().map(Part::Expr));
             }
         }
+        ExprKind::Select { arms, token, .. } => {
+            list.extend(token.iter().map(|token| Part::Expr(token)));
+            list.extend(arms.iter().filter_map(|arm| arm.op.call()).map(Part::Expr));
+            for arm in arms {
+                list.push(Part::Block(&arm.body));
+                list.extend(arm.value.iter().map(Part::Expr));
+            }
+        }
         ExprKind::Field { recv: inner, .. }
         | ExprKind::IsVariant { expr: inner, .. }
         | ExprKind::Unbox(inner)
@@ -16112,7 +16314,15 @@ fn never_returns(expr: &Expr, in_loop: bool) -> bool {
     match &expr.kind {
         ExprKind::Call { name, callee: Callee::Plain, .. } => name == "panic" || name == "exit",
         ExprKind::Match { arms, .. } => arms.iter().all(|arm| arm_leaves(arm, in_loop)),
+        ExprKind::Select { arms, .. } => arms.iter().all(|arm| select_arm_leaves(arm, in_loop)),
         _ => false,
+    }
+}
+
+fn select_arm_leaves(arm: &SelectArm, in_loop: bool) -> bool {
+    match &arm.value {
+        Some(value) => never_returns(value, in_loop),
+        None => leaves(&arm.body, in_loop),
     }
 }
 

@@ -1,0 +1,8 @@
+error: `ended` is written once in a `select`
+  --> error_select_two_ended.sg:8:9
+ 8 |         ended => print("again")
+   |         ^^^^^
+  the first one:
+  --> error_select_two_ended.sg:7:9
+ 7 |         ended => print("ended")
+   |         ^^^^^

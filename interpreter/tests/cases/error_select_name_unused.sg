@@ -1,0 +1,9 @@
+void main() {
+    var jobs = Channel<int>(1)
+    var tx = jobs.sender()
+    _ = tx.send(1)
+    select {
+        jobs.receive() as job => print("one")
+        ended => print("ended")
+    }
+}
