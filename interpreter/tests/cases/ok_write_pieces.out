@@ -1,0 +1,11 @@
+small: 11 bytes, as the pieces: true
+past the block: 70002 bytes, as the pieces: true
+large: 177784 bytes, as the pieces: true
+1100 pieces: 106702 bytes, as the pieces: true
+no pieces: 2 bytes, as the pieces: true
+to the output
+small async: 11 bytes, as the pieces: true
+past the block async: 70002 bytes, as the pieces: true
+large async: 177784 bytes, as the pieces: true
+1100 pieces async: 106702 bytes, as the pieces: true
+to the output again

@@ -1,0 +1,135 @@
+// `writePieces` and `writePiecesAsync` (1970): the bytes of every piece, in order, as `writeBytes` of
+// each would write them. Pieces the block has room for are copied into it; more than it holds go out
+// after it (with `writev` on Linux and macOS), so the file is checked byte by byte against the pieces
+// put together. A list of more pieces than one call of the system takes (1,024) goes on in parts, a
+// piece that is empty is nothing, and `Stdout` writes them together.
+void compare(read List<byte> got, read List<byte> expected, read string what) {
+    var same = got.length() == expected.length()
+    if same {
+        for i in 0..got.length() {
+            if got[i] != expected[i] {
+                same = false
+                break
+            }
+        }
+    }
+    print($"{what}: {got.length()} bytes, as the pieces: {same}")
+}
+
+void add(ref List<byte> into, read byte[] piece) {
+    for b in piece {
+        into.add(b)
+    }
+}
+
+Result<void, IoError> write(read string path, read List<read byte[]> pieces, read string what) {
+    var expected = List<byte>()
+    for piece in pieces {
+        add(ref expected, piece)
+    }
+    var w = try File.createText(path)
+    try w.writeBytes("<".asBytes())
+    try w.writePieces(read pieces)
+    try w.writeBytes(">".asBytes())
+    try w.close()
+    var all = List<byte>()
+    all.add(60)
+    add(ref all, expected[..])
+    all.add(62)
+    var got = try File.readBytes(path)
+    compare(read got, read all, what)
+    return Ok()
+}
+
+async Result<void, IoError> writeAsync(read string path, read List<read byte[]> pieces, read string what) {
+    var expected = List<byte>()
+    expected.add(60)
+    for piece in pieces {
+        add(ref expected, piece)
+    }
+    expected.add(62)
+    var w = try await File.createTextAsync(path)
+    try await w.writeBytesAsync("<".asBytes())
+    try await w.writePiecesAsync(read pieces)
+    try await w.writeBytesAsync(">".asBytes())
+    try await w.closeAsync()
+    var got = try await File.readBytesAsync(path)
+    compare(read got, read expected, what)
+    return Ok()
+}
+
+// Each round writes the same pieces: a small list, one past the block, one larger than it, and one of
+// more pieces than a call of the system takes.
+Result<void, IoError> writeAll(string path) {
+    var head = "head:".asBytes()
+    var empty = "".asBytes()
+    var middle = byte[40000](7)
+    var big = byte[100000](9)
+    for i in 0..big.length() {
+        big[i] = (byte)(i % 251)
+    }
+    var small = List<read byte[]>()
+    small.add(head)
+    small.add(empty)
+    small.add("tail".asBytes())
+    try write(read path, read small, "small")
+    var over = List<read byte[]>()
+    over.add(read middle)
+    over.add(middle[..30000])
+    try write(read path, read over, "past the block")
+    var large = List<read byte[]>()
+    large.add(head)
+    large.add(read big)
+    large.add(empty)
+    large.add(big[..77777])
+    try write(read path, read large, "large")
+    var many = List<read byte[]>()
+    for i in 0..1100 {
+        many.add(big[i..i + 97])
+    }
+    try write(read path, read many, "1100 pieces")
+    var none = List<read byte[]>()
+    try write(read path, read none, "no pieces")
+    var line = List<read byte[]>()
+    line.add("to the ".asBytes())
+    line.add("output\n".asBytes())
+    try Stdout.writePieces(read line)
+    return Ok()
+}
+
+async Result<void, IoError> main(List<string> args) {
+    var path = $"{args[0]}/pieces.bin".toString()
+    try await Task.run(writeAll, path.clone())
+    var head = "head:".asBytes()
+    var empty = "".asBytes()
+    var middle = byte[40000](7)
+    var big = byte[100000](9)
+    for i in 0..big.length() {
+        big[i] = (byte)(i % 251)
+    }
+    var small = List<read byte[]>()
+    small.add(head)
+    small.add(empty)
+    small.add("tail".asBytes())
+    try await writeAsync(read path, read small, "small async")
+    var over = List<read byte[]>()
+    over.add(read middle)
+    over.add(middle[..30000])
+    try await writeAsync(read path, read over, "past the block async")
+    var large = List<read byte[]>()
+    large.add(head)
+    large.add(read big)
+    large.add(empty)
+    large.add(big[..77777])
+    try await writeAsync(read path, read large, "large async")
+    var many = List<read byte[]>()
+    for i in 0..1100 {
+        many.add(big[i..i + 97])
+    }
+    try await writeAsync(read path, read many, "1100 pieces async")
+    var line = List<read byte[]>()
+    line.add("to the ".asBytes())
+    line.add("output again\n".asBytes())
+    try await Stdout.writePiecesAsync(read line)
+    return Ok()
+}

@@ -1,0 +1,5 @@
+error: `UnixStream` has no method `remoteAddress`
+  a `UnixStream` is a connection of the machine: neither side has an address of the network, and the side that connected has no path
+  --> error_net_unix_address.sg:3:20
+ 3 |     print(try conn.remoteAddress())
+   |                    ^^^^^^^^^^^^^

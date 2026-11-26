@@ -1,0 +1,128 @@
+// Sockets of the machine at a path (1960-1965): `UnixListener` and `UnixStream`, received from and
+// sent on as a TCP connection is, with a reader, pieces and `closeSending`. The listener's file is
+// taken away where it ends (1962), so the path can be bound again; a file there already is
+// `AddressInUse`, a path longer than the system's address holds is `TooLong`, one with nothing or a
+// zero byte names no file, and a file nobody listens at refuses.
+Result<void, IoError> serve(UnixListener listener) {
+    var conn = try listener.accept()
+    var reader = conn.reader()
+    var line = ""
+    while try reader.readLine(ref line) {
+        var answer = $"got {line}\n".toString()
+        try conn.send(answer.asBytes())
+    }
+    return Ok()
+}
+
+// Whether a file of any kind is at the path; a socket is of kind `Other`.
+string at(read string path) {
+    match File.info(path) {
+        Ok(info) => return $"a file of kind {info.kind}".toString()
+        Error(error) => return $"{error}".toString()
+    }
+}
+
+void tell(read string what, Result<UnixStream, IoError> made) {
+    match made {
+        Ok(_) => print($"{what}: connected")
+        Error(error) => print($"{what}: {error}")
+    }
+}
+
+async Result<void, IoError> echoAsync(UnixListener listener) {
+    var conn = try await listener.acceptAsync()
+    var buffer = byte[64](0)
+    while true {
+        var n = try await conn.receiveAsync(ref buffer)
+        if n == 0 {
+            break
+        }
+        try await conn.sendAsync(buffer[..n])
+    }
+    return Ok()
+}
+
+async Result<void, IoError> talkAsync(read string path) {
+    var conn = try await UnixStream.connectAsync(path)
+    var pieces = List<read byte[]>()
+    pieces.add("async ".asBytes())
+    pieces.add("pieces".asBytes())
+    try await conn.sendPiecesAsync(read pieces)
+    try conn.closeSending()
+    var buffer = byte[64](0)
+    nint got = 0
+    while true {
+        var n = try await conn.receiveAsync(ref buffer[got..])
+        if n == 0 {
+            break
+        }
+        got += n
+    }
+    print($"async: {string.fromUtf8(buffer[..got]) ?? "not text"}")
+    return Ok()
+}
+
+async Result<void, IoError> both(string path) {
+    var listener = try UnixListener.bind(read path)
+    var server = echoAsync(listener)
+    try await talkAsync(read path)
+    try await server
+    return Ok()
+}
+
+// The sockets are in a folder of their own in the temporary folder: a path of a socket is short, and
+// the folder a test runs in may be too deep for one.
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    try run(read folder)
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+
+Result<void, IoError> run(read string folder) {
+    var path = $"{folder}/s.sock".toString()
+    var listener = try UnixListener.bind(read path)
+    print($"at the path: {at(read path)}")
+    match UnixListener.bind(read path) {
+        Ok(_) => print("bound twice")
+        Error(error) => print($"bound again: {error}")
+    }
+    var server = Task.run(serve, listener)
+    var conn = try UnixStream.connect(read path)
+    var pieces = List<read byte[]>()
+    pieces.add("one\n".asBytes())
+    pieces.add("two\n".asBytes())
+    try conn.sendPieces(read pieces)
+    try conn.closeSending()
+    var reader = conn.reader()
+    var line = ""
+    while try reader.readLine(ref line) {
+        print(line)
+    }
+    try server.wait()
+    print($"at the path once the listener is gone: {at(read path)}")
+
+    var again = try UnixListener.bind(read path)
+    print($"bound again once it was gone: {at(read path)}")
+    _ = again
+
+    var long = $"{folder}/{"x".repeat(120)}.sock".toString()
+    match UnixListener.bind(read long) {
+        Ok(_) => print("a long path was bound")
+        Error(error) => print($"a long path: {error}")
+    }
+    tell("a long path", UnixStream.connect(read long))
+    tell("no path", UnixStream.connect(""))
+    tell("a zero byte", UnixStream.connect("a\0b"))
+    var missing = $"{folder}/missing.sock".toString()
+    tell("nothing there", UnixStream.connect(read missing))
+    var plain = $"{folder}/plain.txt".toString()
+    try File.writeText(read plain, "not a socket")
+    tell("a plain file", UnixStream.connect(read plain))
+
+    var other = $"{folder}/a.sock".toString()
+    var task = both(other.clone())
+    try task.wait()
+    print($"at the path of the async listener: {at(read other)}")
+    return Ok()
+}

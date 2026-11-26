@@ -1,0 +1,14 @@
+at the path: a file of kind Other
+bound again: address in use
+got one
+got two
+at the path once the listener is gone: not found
+bound again once it was gone: a file of kind Other
+a long path: too long
+a long path: too long
+no path: not found
+a zero byte: not found
+nothing there: not found
+a plain file: connection refused
+async: async pieces
+at the path of the async listener: not found

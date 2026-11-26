@@ -468,6 +468,10 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Call { callee: Callee::Net(NetCall::Connect), name_span, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), name_span, .. } => {
             Some((*name_span, "`TcpStream.connect`".to_string()))
         }
+        // A connection at a path is made at once, but may still wait for the listener (1960).
+        ExprKind::Call { callee: Callee::Net(NetCall::UnixConnect), name_span, .. } | ExprKind::Method { callee: Callee::Net(NetCall::UnixConnect), name_span, .. } => {
+            Some((*name_span, "`UnixStream.connect`".to_string()))
+        }
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Accept), .. } => Some((*name_span, format!("`{name}` on a listener"))),
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Receive | NetCall::Send | NetCall::SendPieces), .. } => Some((*name_span, format!("`{name}` on a connection"))),
         ExprKind::Method { name, name_span, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), .. } => Some((*name_span, format!("`{name}` on a channel"))),
@@ -486,6 +490,7 @@ fn async_version(expr: &Expr) -> Option<String> {
         }
         ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,
         ExprKind::Call { callee: Callee::Net(NetCall::Connect), args, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), args, .. } => ("TcpStream.connectAsync".to_string(), args),
+        ExprKind::Call { callee: Callee::Net(NetCall::UnixConnect), args, .. } | ExprKind::Method { callee: Callee::Net(NetCall::UnixConnect), args, .. } => ("UnixStream.connectAsync".to_string(), args),
         ExprKind::Method { recv, name, callee: Callee::Net(NetCall::Accept | NetCall::Receive | NetCall::Send | NetCall::SendPieces), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
         ExprKind::Method { recv, name, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
         ExprKind::Method { recv, name, callee: Callee::Stream(_), args, .. } => {

@@ -1,0 +1,5 @@
+Result<void, IoError> main() {
+    var conn = try UnixStream.connect("/tmp/a.sock")
+    print(try conn.remoteAddress())
+    return Ok()
+}

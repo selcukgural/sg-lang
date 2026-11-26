@@ -138,7 +138,7 @@ use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::source::Sources;
 use crate::sums;
-use crate::types::{FloatTy, IntTy, TextIter, Ty};
+use crate::types::{FloatTy, IntTy, Net, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
 
@@ -7088,6 +7088,7 @@ static void sg_wsa_start(void) {
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
@@ -7110,8 +7111,8 @@ typedef union { struct sockaddr sa; struct sockaddr_in v4; struct sockaddr_in6 v
    blocks until an async call first uses it (`nb`), so a call of code that is not async is one
    call of the system; every call still waits with `poll` when the socket is not ready, so the
    two kinds of call can share a socket. Several tasks may hold one listener (`shared`), so its
-   `nb` is atomic. */
-typedef struct { int fd; int nb; } sg_listener;
+   `nb` is atomic. `unix`: a listener at a path, whose connections have no option of TCP. */
+typedef struct { int fd; int nb; int unix; } sg_listener;
 typedef struct sg_socket_s { int fd; bool nb; } sg_socket;
 /* A socket that may be on the loop of the network is closed: the loop lets go of it first (see
    `sg_slot_forget`), once a task has opened the loop. */
@@ -7142,7 +7143,7 @@ static void sg_net_setup(int fd, bool nb) {
 }
 static int sg_net_socket(int family, bool nb) {
     sg_wsa_start();
-    SOCKET s = WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    SOCKET s = WSASocketW(family, SOCK_STREAM, family == AF_UNIX ? 0 : IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
     if (s == INVALID_SOCKET) return -1;
     if (nb) sg_net_nonblock((int)(intptr_t)s);
     return (int)(intptr_t)s;
@@ -7172,6 +7173,13 @@ static int sg_net_socket(int family, bool nb) {
 }
 static inline void sg_net_nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
 #endif
+/* A connection of TCP sends a small piece at once, without waiting for the answer to the one before
+   it (`TCP_NODELAY`, 1966): every one a listener takes or a connect makes, as Go has it. Linux waits
+   40 ms otherwise for a question sent in two pieces; `setNoDelay(false)` asks for Nagle's wait. */
+static inline void sg_net_no_delay(int fd) {
+    int one = 1;
+    setsockopt(SG_SOCK(fd), IPPROTO_TCP, TCP_NODELAY, (const char*)&one, sizeof one);
+}
 /* `host:port`: the host, without the brackets of a v6 address and ended by a zero byte, and the
    port as digits. False when the address is not `host:port`. */
 static bool sg_net_split(sg_str a, char host[256], char port[6]) {
@@ -7200,6 +7208,15 @@ static bool sg_net_split(sg_str a, char host[256], char port[6]) {
     if (n > 0) memcpy(host, h, (size_t)n);
     host[n] = 0;
     return true;
+}
+/* A socket of every v6 address takes v4 too, on every system (1969): Windows would take v6 alone, and
+   Linux and macOS take v4 unless the machine is set otherwise. */
+static inline void sg_net_every_v6(int fd, const sg_sockaddr* at) {
+    if (at->sa.sa_family != AF_INET6) return;
+    static const uint8_t none[16] = { 0 };
+    if (memcmp(&at->v6.sin6_addr, none, 16) != 0) return;
+    int zero = 0;
+    setsockopt(SG_SOCK(fd), IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&zero, sizeof zero);
 }
 /* `TcpListener.bind(address)`: the host is a number, `localhost`, or nothing for every address
    of the machine (v4); it is not looked up, so binding never waits. */
@@ -7236,12 +7253,13 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
 #else
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
 #endif
+    sg_net_every_v6(fd, &at);
     if (bind(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0 || listen(SG_SOCK(fd), SOMAXCONN) != 0) {
         int code = sg_net_error();
         sg_net_close(fd);
         return code;
     }
-    *out = (sg_listener){ fd, 0 };
+    *out = (sg_listener){ fd, 0, 0 };
     return 0;
 }
 static int32_t sg_net_port(const sg_listener* l) {
@@ -7339,7 +7357,11 @@ static int sg_net_accept(const sg_listener* l, sg_socket* out) {
     for (;;) {
         int fd;
         int code = sg_net_accept_now(l->fd, &fd, false);
-        if (!code) { *out = (sg_socket){ fd, false }; return 0; }
+        if (!code) {
+            if (!l->unix) sg_net_no_delay(fd);
+            *out = (sg_socket){ fd, false };
+            return 0;
+        }
         if (sg_net_again(code, true)) continue;
         if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll(l->fd, false))) return code;
@@ -7452,6 +7474,45 @@ static int sg_net_sendv(sg_socket* s, const sg_piece* pieces, int64_t count) {
         if ((code = sg_net_poll(s->fd, true))) return code;
     }
 }
+/* `closeSending` (kind 0), `setNoDelay` (1, `value` 1 or 0) and `setKeepAlive` (2, the idle time in
+   milliseconds, 0 for off) of a connection: 0 or the code of the system. A side closed already, or a
+   connection the other side broke off, has nothing left to close (1965). A keep-alive asks after the
+   idle time rounded up to whole seconds, and again as often; how many asks go unanswered before the
+   connection ends is the system's (1967). */
+static int sg_net_option(int fd, int32_t kind, int64_t value) {
+    if (kind == 0) {
+#if defined(_WIN32)
+        if (shutdown(SG_SOCK(fd), SD_SEND) == 0) return 0;
+        int code = sg_net_error();
+        return code == WSAENOTCONN ? 0 : code;
+#else
+        if (shutdown(fd, SHUT_WR) == 0) return 0;
+        return errno == ENOTCONN ? 0 : sg_os_error();
+#endif
+    }
+    if (kind == 1) {
+        int on = value != 0;
+        return setsockopt(SG_SOCK(fd), IPPROTO_TCP, TCP_NODELAY, (const char*)&on, sizeof on) == 0 ? 0 : sg_net_error();
+    }
+    int64_t seconds = value > 0 ? (value + 999) / 1000 : 0;
+    if (seconds > 0x7fffffff / 1000) seconds = 0x7fffffff / 1000;
+#if defined(_WIN32)
+    struct tcp_keepalive set = { value > 0, (ULONG)(seconds * 1000), (ULONG)(seconds * 1000) };
+    DWORD got = 0;
+    return WSAIoctl(SG_SOCK(fd), SIO_KEEPALIVE_VALS, &set, sizeof set, NULL, 0, &got, NULL, NULL) == 0 ? 0 : sg_net_error();
+#else
+    int on = value > 0, idle = (int)seconds;
+#if defined(TCP_KEEPIDLE)
+    int idle_name = TCP_KEEPIDLE;
+#else
+    int idle_name = TCP_KEEPALIVE;
+#endif
+    if (on && (setsockopt(fd, IPPROTO_TCP, idle_name, &idle, sizeof idle) != 0 || setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &idle, sizeof idle) != 0)) {
+        return sg_os_error();
+    }
+    return setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof on) == 0 ? 0 : sg_os_error();
+#endif
+}
 /* The addresses of `host:port`, looked up by name (`numeric`: only if the host is a number,
    which never waits). */
 static int sg_net_lookup(const char* host, const char* port, bool numeric, sg_addrinfo** list) {
@@ -7484,6 +7545,7 @@ static int sg_net_lookup(const char* host, const char* port, bool numeric, sg_ad
 static int sg_net_try(const sg_addrinfo* a, int* fd, bool nb) {
     *fd = sg_net_socket(a->ai_family, nb);
     if (*fd < 0) return sg_net_error();
+    sg_net_no_delay(*fd);
     if (connect(SG_SOCK(*fd), a->ai_addr, (int)a->ai_addrlen) == 0) return 0;
     int code = sg_net_error();
     if (code == SG_E_PROGRESS || code == SG_E_INTR || code == SG_E_AGAIN) return SG_E_PROGRESS;
@@ -7521,6 +7583,151 @@ static int sg_net_connect(sg_str address, sg_socket* out) {
         if (fd >= 0) sg_net_close(fd);
     }
     sg_freeaddrinfo(list);
+    return code;
+}
+/* A socket of the machine at a path (`UnixListener`, `UnixStream`, 1960-1962): its address holds the
+   bytes of the path and a zero byte, 107 bytes at most (103 on macOS); Windows has it since 10 1803. */
+#if defined(_WIN32)
+typedef struct { ADDRESS_FAMILY sun_family; char sun_path[108]; } sg_sockaddr_un;
+#define SG_NOT_THERE ERROR_FILE_NOT_FOUND
+#else
+#include <sys/un.h>
+#include <sys/stat.h>
+typedef struct sockaddr_un sg_sockaddr_un;
+#define SG_NOT_THERE ENOENT
+#endif
+#define SG_UNIX_MOST ((int64_t)sizeof(((sg_sockaddr_un*)0)->sun_path) - 1)
+/* The address of `path`: 0, `NotFound` for a path with a zero byte or none (no file has one, 1961),
+   or `TooLong`. The path is the bytes it stands for (choice 1950). */
+static int sg_unix_at(sg_str path, sg_sockaddr_un* at, socklen_t* len) {
+    memset(at, 0, sizeof *at);
+    if (path.len <= 0 || memchr(path.ptr, 0, (size_t)path.len)) return SG_NOT_THERE;
+    /* A character of a name's escape is four bytes of the text for one of the path (choice 1950). */
+    if (path.len > 4 * SG_UNIX_MOST) return SG_TOO_LONG;
+#if defined(_WIN32)
+    int64_t n = path.len;
+    if (n > SG_UNIX_MOST) return SG_TOO_LONG;
+    memcpy(at->sun_path, path.ptr, (size_t)n);
+#else
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int64_t n = (int64_t)strlen(name);
+    if (n > SG_UNIX_MOST) { free(name); return SG_TOO_LONG; }
+    memcpy(at->sun_path, name, (size_t)n);
+    free(name);
+#endif
+    at->sun_family = AF_UNIX;
+    *len = (socklen_t)(offsetof(sg_sockaddr_un, sun_path) + (size_t)n + 1);
+    return 0;
+}
+/* A listener at a path: the socket, and its file, which is taken away where the listener ends if it
+   is still the one the bind made (1962): its device and number, or on Windows the time it was made. */
+typedef struct { sg_listener l; void* path; uint64_t a, b; } sg_unix_listener;
+static bool sg_unix_id(const void* path, uint64_t* a, uint64_t* b) {
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW((const wchar_t*)path, GetFileExInfoStandard, &data)) return false;
+    *a = data.ftCreationTime.dwHighDateTime;
+    *b = data.ftCreationTime.dwLowDateTime;
+#else
+    struct stat info;
+    if (lstat((const char*)path, &info) != 0) return false;
+    *a = (uint64_t)info.st_dev;
+    *b = (uint64_t)info.st_ino;
+#endif
+    return true;
+}
+static inline void sg_drop_unix_listener(sg_unix_listener* u) {
+    if (u->l.fd >= 0) sg_net_close(u->l.fd);
+    u->l.fd = -1;
+    if (!u->path) return;
+    uint64_t a, b;
+    if (sg_unix_id(u->path, &a, &b) && a == u->a && b == u->b) {
+#if defined(_WIN32)
+        DeleteFileW((const wchar_t*)u->path);
+#else
+        unlink((const char*)u->path);
+#endif
+    }
+    free(u->path);
+    u->path = NULL;
+}
+static inline sg_unix_listener sg_move_unix_listener(sg_unix_listener* u) {
+    sg_unix_listener out = *u;
+    u->l.fd = -1;
+    u->path = NULL;
+    return out;
+}
+/* `UnixListener.bind(path)`: a file there already is `AddressInUse`, as the system says. */
+static int sg_net_unix_bind(sg_str path, sg_unix_listener* out) {
+    sg_sockaddr_un at;
+    socklen_t len = 0;
+    int code = sg_unix_at(path, &at, &len);
+    if (code) return code;
+    int fd = sg_net_socket(AF_UNIX, false);
+    if (fd < 0) return sg_net_error();
+    if (bind(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0 || listen(SG_SOCK(fd), SOMAXCONN) != 0) {
+        code = sg_net_error();
+        sg_net_close(fd);
+        return code;
+    }
+#if defined(_WIN32)
+    void* name = sg_wide(path, &code);
+#else
+    void* name = sg_path(path, &code);
+#endif
+    *out = (sg_unix_listener){ { fd, 0, 1 }, NULL, 0, 0 };
+    if (name && sg_unix_id(name, &out->a, &out->b)) out->path = name;
+    else free(name);
+    return 0;
+}
+/* A connection to the listener at a path, made at once: nothing is looked up and nothing goes over
+   the network. One that is not ready yet is waited for; a listener with no room left refuses, on
+   Linux too, where its EAGAIN is said as macOS says it (`ConnectionRefused`), and so does a file that
+   is not a socket. `nb`: the socket does not block after it. */
+static int sg_net_unix_dial(sg_str path, int* out, bool nb) {
+    sg_sockaddr_un at;
+    socklen_t len = 0;
+    int code = sg_unix_at(path, &at, &len);
+    if (code) return code;
+#if defined(_WIN32)
+    int fd = sg_net_socket(AF_UNIX, false);
+    if (fd < 0) return sg_net_error();
+    if (connect(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0) {
+        code = sg_net_error();
+        sg_net_close(fd);
+        /* Windows refuses a path where nothing is; Linux and macOS say nothing is there. */
+        if (code == WSAECONNREFUSED) {
+            int c = 0;
+            wchar_t* w = sg_wide(path, &c);
+            if (w && GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND) code = ERROR_FILE_NOT_FOUND;
+            free(w);
+        }
+        return code;
+    }
+    if (nb) sg_net_nonblock(fd);
+#else
+    int fd = sg_net_socket(AF_UNIX, true);
+    if (fd < 0) return sg_os_error();
+    while (connect(fd, (struct sockaddr*)&at, len) != 0) {
+        if (errno == EINTR) continue;
+        /* A file that is not a socket has nobody listening at it: Linux says so, macOS says ENOTSOCK. */
+        code = errno == EAGAIN || errno == ENOTSOCK ? ECONNREFUSED : errno;
+        if (code == EINPROGRESS) code = sg_net_poll(fd, true);
+        if (!code) code = sg_net_made(fd);
+        if (code) { sg_net_close(fd); return code; }
+        break;
+    }
+    if (!nb) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+#endif
+    *out = fd;
+    return 0;
+}
+static int sg_net_unix_connect(sg_str path, sg_socket* out) {
+    int fd = -1;
+    int code = sg_net_unix_dial(path, &fd, false);
+    if (!code) *out = (sg_socket){ fd, false };
     return code;
 }
 /* A datagram socket of `UdpSocket` is a number of the system, as the language's own module keeps
@@ -7660,6 +7867,7 @@ static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port
     setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&one, sizeof one);
     sg_udp_tell(s, SIO_UDP_CONNRESET, FALSE);
     sg_udp_tell(s, SIO_UDP_NETRESET, FALSE);
+    sg_net_every_v6((int)(intptr_t)s, &at);
     if (bind(s, (struct sockaddr*)&at, len) != 0) {
         int code = sg_net_error();
         closesocket(s);
@@ -7688,6 +7896,7 @@ static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port
     if (s >= 0) fcntl(s, F_SETFD, FD_CLOEXEC);
 #endif
     if (s < 0) return sg_os_error();
+    sg_net_every_v6(s, &at);
     if (bind(s, (struct sockaddr*)&at, len) != 0) {
         int code = sg_os_error();
         close(s);
@@ -8803,6 +9012,8 @@ typedef struct sg_net_name {
     sg_addrinfo* next;
     char host[256];
     char port[6];
+    /* `UnixStream.connectAsync(path)`: the path, connected to when the call starts. */
+    sg_str path;
 } sg_net_name;
 /* An async call makes the socket stop blocking, once. */
 static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const char* loc) {
@@ -8810,7 +9021,8 @@ static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const
         sg_net_nonblock(l->fd);
         __atomic_store_n(&l->nb, 1, __ATOMIC_RELEASE);
     }
-    return (sg_net_op){ .kind = SG_ACCEPT, .fd = l->fd, .token = token, .loc = loc, .out = -1 };
+    /* `len`: whether the connections are TCP's, which get `TCP_NODELAY`. */
+    return (sg_net_op){ .kind = SG_ACCEPT, .fd = l->fd, .token = token, .loc = loc, .out = -1, .len = !l->unix };
 }
 static inline void sg_socket_nonblock(sg_socket* s) {
     if (!s->nb) {
@@ -8853,6 +9065,16 @@ static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char*
     op.name = calloc(1, sizeof *op.name);
     if (!op.name) abort();
     if (!sg_net_split(address, op.name->host, op.name->port) || op.name->host[0] == 0) op.code = SG_HOST_NOT_FOUND;
+    return op;
+}
+/* `UnixStream.connectAsync(path)`: the connection is made when the call starts, at once (see
+   `sg_net_unix_dial`); the path is borrowed for the call. */
+static sg_net_op sg_net_unix_connect_op(sg_str path, sg_cancel* token, const char* loc) {
+    sg_net_op op = { .kind = SG_CONNECT, .fd = -1, .token = token, .loc = loc, .out = -1 };
+    op.name = calloc(1, sizeof *op.name);
+    if (!op.name) abort();
+    op.name->path = path;
+    op.name->port[0] = 'u';
     return op;
 }
 static bool sg_net_finish(sg_net_op* op, int code) {
@@ -8924,6 +9146,12 @@ static bool sg_net_go(sg_net_op* op) {
         if (sg_cancelled(op->token) || sg_job_cut()) return sg_net_finish(op, SG_CUT);
         if (op->kind == SG_CONNECT) {
             if (op->code) return sg_net_finish(op, op->code);
+            if (op->name->port[0] == 'u') {
+                int fd = -1;
+                int code = sg_net_unix_dial(op->name->path, &fd, true);
+                if (!code) op->out = fd;
+                return sg_net_finish(op, code);
+            }
             if (sg_net_lookup(op->name->host, op->name->port, true, &op->name->list) == 0) {
                 op->name->next = op->name->list;
                 return sg_net_connect_next(op);
@@ -8947,6 +9175,7 @@ static bool sg_net_go(sg_net_op* op) {
         op->seen = sg_slot_tick(op->fd);
         if (op->kind == SG_ACCEPT) {
             code = sg_net_accept_now(op->fd, &op->out, true);
+            if (!code && op->len) sg_net_no_delay(op->out);
         } else if (op->kind == SG_RECEIVE) {
 #if !defined(_WIN32)
             /* The last receive emptied the connection: the task waits for the loop at once. */
@@ -10470,6 +10699,13 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     wchar_t* name = sg_wide(path, &code);
     if (!name) return code;
     HANDLE h = CreateFileW(name, FILE_READ_ATTRIBUTES, SG_SHARE_ALL, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    /* A point Windows does not follow (`ERROR_CANT_ACCESS_FILE`), as the file of a socket of the
+       machine: the point itself, of the kind `Other`, as a socket is on Linux and macOS. */
+    bool unfollowed = false;
+    if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_CANT_ACCESS_FILE) {
+        h = CreateFileW(name, FILE_READ_ATTRIBUTES, SG_SHARE_ALL, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        unfollowed = h != INVALID_HANDLE_VALUE;
+    }
     if (h == INVALID_HANDLE_VALUE) {
         code = sg_win_refine(name, sg_win_error());
         free(name);
@@ -10477,6 +10713,7 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     }
     free(name);
     code = sg_fs_status_of_handle(h, fields);
+    if (!code && unfollowed) fields[0] = 3;
     CloseHandle(h);
     return code;
 }
@@ -10937,7 +11174,8 @@ static int sg_io_kind(int code) {
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
     case ERROR_HANDLE_DISK_FULL: case ERROR_DISK_FULL: case ERROR_DISK_QUOTA_EXCEEDED: return 3;
     case WSAECONNREFUSED: return 7;
-    case WSAECONNRESET: case WSAECONNABORTED: case WSAENOTCONN: case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: return 8;
+    /* WSAESHUTDOWN: a send after `closeSending`, which is EPIPE on Linux and macOS (1965). */
+    case WSAECONNRESET: case WSAECONNABORTED: case WSAENOTCONN: case WSAESHUTDOWN: case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: return 8;
     case WSAEADDRINUSE: return 9;
     case WSAEADDRNOTAVAIL: return 19;
     case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return 12;
@@ -12216,6 +12454,74 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
     if (code) w->failed = code;
     return code;
 }
+/* A window of bytes, as an item of a `List<read byte[]>` lies in memory: the layout of `iovec`. */
+typedef struct { const uint8_t* ptr; int64_t len; } sg_wpiece;
+#include <stddef.h>
+#if !defined(_WIN32)
+#include <sys/uio.h>
+#endif
+/* The pieces straight into the file, after its block went out: on Linux and macOS with `writev`, up
+   to 1,024 pieces a call (`IOV_MAX`), a piece written in part going on alone; on Windows, and into
+   the pipe of another program, piece by piece. */
+static int sg_write_pieces(sg_writer* w, const sg_wpiece* p, int64_t count) {
+#if !defined(_WIN32)
+    _Static_assert(sizeof(struct iovec) == sizeof(sg_wpiece) && offsetof(struct iovec, iov_base) == offsetof(sg_wpiece, ptr)
+        && offsetof(struct iovec, iov_len) == offsetof(sg_wpiece, len), "a piece is laid out as an iovec");
+    if (!w->pipe) {
+        int64_t at = 0, off = 0;
+        while (at < count) {
+            if (p[at].len == off) { at++; off = 0; continue; }
+            ssize_t put;
+            if (off > 0) {
+                put = write(w->fd, p[at].ptr + off, (size_t)(p[at].len - off));
+            } else {
+                int n = count - at < 1024 ? (int)(count - at) : 1024;
+                put = writev(w->fd, (const struct iovec*)(const void*)(p + at), n);
+            }
+            if (put < 0) {
+                if (errno == EINTR) continue;
+                return sg_os_error();
+            }
+            if (put == 0) return EIO;
+            off += put;
+            while (at < count && off >= p[at].len) { off -= p[at].len; at++; }
+        }
+        return 0;
+    }
+#endif
+    for (int64_t i = 0; i < count; i++) {
+        int code = sg_writer_put(w, p[i].ptr, p[i].len);
+        if (code) return code;
+    }
+    return 0;
+}
+/* `writePieces` (1970): as `writeBytes` of each piece in turn. Pieces that the block has room for are
+   copied into it; others go out after the block, with one call of the system where they can. A
+   standard stream writes them together, as one call of `write` would. */
+static int sg_writer_pieces(sg_writer* w, const sg_wpiece* p, int64_t count) {
+    if (sg_failed(w)) return sg_failed(w);
+    int64_t total = 0;
+    for (int64_t i = 0; i < count; i++) total += p[i].len;
+    if (total == 0) return 0;
+    if (w->std) {
+        sg_string block = SG_LIT("", 0);
+        for (int64_t i = 0; i < count; i++) sg_put(&block, p[i].ptr, p[i].len);
+        return sg_std_put(w, &block);
+    }
+    if (w->buf.len + total < 65536) {
+        for (int64_t i = 0; i < count; i++) sg_put(&w->buf, p[i].ptr, p[i].len);
+        return 0;
+    }
+    int code = sg_writer_out(w);
+    if (code) return code;
+    if (total < 65536) {
+        for (int64_t i = 0; i < count; i++) sg_put(&w->buf, p[i].ptr, p[i].len);
+        return 0;
+    }
+    code = sg_write_pieces(w, p, count);
+    if (code) w->failed = code;
+    return code;
+}
 /* `File.createText` (`how` 1) makes or empties the file; `File.openAppend` (2) makes a missing one
    and writes after what it holds; `File.openWrite` (3) makes a missing one and writes from its
    start over what it holds. */
@@ -12751,10 +13057,12 @@ static int sg_lap_wait(sg_reader* r, sg_wait* w, sg_cancel* token, const char* l
    (a `writeBytesAsync` of 64 KB or more); with `w` NULL, close the writer `held`, moved here
    (`closeAsync`); with `then`, after the block, 1 `syncDataAsync`, 2 `syncAsync`, 3
    `setLengthAsync` to `length`. `r`: the error code, or 0. */
-typedef struct { sg_io io; sg_writer* w; const uint8_t* bytes; int64_t len; sg_writer held; int then; int64_t length; int r; } sg_io_writer;
+typedef struct { sg_io io; sg_writer* w; const uint8_t* bytes; int64_t len; sg_writer held; int then; int64_t length; const sg_wpiece* pieces; int r; } sg_io_writer;
 static void sg_io_run_writer(sg_io* io) {
     sg_io_writer* x = (sg_io_writer*)io;
     if (!x->w) { x->r = sg_writer_close(&x->held); return; }
+    /* `writePiecesAsync` of more than the block has room for: `len` pieces. */
+    if (x->pieces) { x->r = sg_writer_pieces(x->w, x->pieces, x->len); return; }
     int code = x->w->failed ? x->w->failed : sg_writer_out(x->w);
     if (!code && x->len > 0) {
         code = sg_writer_put(x->w, x->bytes, x->len);
@@ -12779,6 +13087,17 @@ static inline int sg_writer_set_length_n(sg_writer* w, int64_t n) {
 }
 static inline sg_io_writer sg_io_writer_out(sg_writer* w, const uint8_t* bytes, int64_t len) { return (sg_io_writer){ .w = w, .bytes = bytes, .len = len }; }
 static inline sg_io_writer sg_io_writer_close(sg_writer held) { return (sg_io_writer){ .w = NULL, .held = held }; }
+static inline sg_io_writer sg_io_writer_pieces(sg_writer* w, const sg_wpiece* pieces, int64_t count) { return (sg_io_writer){ .w = w, .pieces = pieces, .len = count }; }
+/* `writePiecesAsync` in place when the block has room for every piece: -1 when they go on a thread. */
+static int sg_writer_pieces_n(sg_writer* w, const sg_wpiece* p, int64_t count) {
+    if (sg_failed(w)) return sg_failed(w);
+    if (w->std) return sg_writer_pieces(w, p, count);
+    int64_t total = 0;
+    for (int64_t i = 0; i < count; i++) total += p[i].len;
+    if (w->buf.len + total >= 65536) return -1;
+    for (int64_t i = 0; i < count; i++) sg_put(&w->buf, p[i].ptr, p[i].len);
+    return 0;
+}
 /* The async methods of a writer done in place: -1 when the block has to go out on a thread.
    A standard stream is written at once, as `print` writes. */
 static inline int sg_writer_wrote_n(sg_writer* w) {
@@ -14234,8 +14553,10 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Source => "source".to_string(),
         Ty::Token => "token".to_string(),
         Ty::Group => "tgroup".to_string(),
-        Ty::Listener => "listener".to_string(),
-        Ty::Socket => "socket".to_string(),
+        Ty::Listener(Net::Tcp) => "listener".to_string(),
+        Ty::Listener(Net::Unix) => "unix_listener".to_string(),
+        // A connection of either kind is the same socket of the system.
+        Ty::Socket(_) => "socket".to_string(),
         Ty::CString => "cstring".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
@@ -15127,10 +15448,15 @@ impl<'a> Emitter<'a> {
             }
             Ty::TextIter(_) => "sg_iter".to_string(),
             // A listener and a connection are a socket of the system (see `NET_RUNTIME`).
-            Ty::Listener | Ty::Socket => {
+            Ty::Listener(_) | Ty::Socket(_) => {
                 self.made.insert("io".to_string());
                 self.made.insert("net".to_string());
-                if *ty == Ty::Listener { "sg_listener" } else { "sg_socket" }.to_string()
+                match ty {
+                    Ty::Listener(Net::Tcp) => "sg_listener",
+                    Ty::Listener(Net::Unix) => "sg_unix_listener",
+                    _ => "sg_socket",
+                }
+                .to_string()
             }
             // A source and its tokens point at one block (see `TASK_RUNTIME`).
             Ty::Source | Ty::Token => {
@@ -15913,7 +16239,7 @@ impl<'a> Emitter<'a> {
                     _ => Ty::CFunc(params, Box::new(self.written(ret)?)),
                 }
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Group | Ty::Listener | Ty::Socket | Ty::CString)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Group | Ty::Listener(_) | Ty::Socket(_) | Ty::CString)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 // An alias is the type it names; the checker has seen that it ends.
                 Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
@@ -15982,7 +16308,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener(_) | Ty::Socket(_) | Ty::CString => true,
             Ty::Channel(_) | Ty::Sender(_) | Ty::Group => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
@@ -20710,7 +21036,7 @@ impl<'a> Emitter<'a> {
             SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync => {
                 unreachable!("the checker has the async calls of `System` awaited where they are written")
             }
-            SystemCall::UdpBind | SystemCall::UdpConnect | SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::SocketName | SystemCall::StreamName | SystemCall::CloseSocket | SystemCall::Lookup => {
+            SystemCall::UdpBind | SystemCall::UdpConnect | SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::SocketName | SystemCall::StreamName | SystemCall::StreamOption | SystemCall::CloseSocket | SystemCall::Lookup => {
                 self.made.extend(["net".to_string(), "udp".to_string()]);
                 let fd = || Ty::Int(IntTy::Long);
                 let address = || [Ty::Bool, Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Int)];
@@ -20732,8 +21058,13 @@ impl<'a> Emitter<'a> {
                     SystemCall::SocketName => ("sg_system_socket_address", vec![fd(), Ty::Bool, bits()], "return sg_udp_name((int)a0, a1, a2.ptr, a2.len);".to_string()),
                     SystemCall::StreamName => (
                         "sg_system_stream_address",
-                        vec![Ty::Read(Box::new(Ty::Socket)), Ty::Bool, bits()],
+                        vec![Ty::Read(Box::new(Ty::Socket(Net::Tcp))), Ty::Bool, bits()],
                         "return sg_udp_name(a0->fd, a1, a2.ptr, a2.len);".to_string(),
+                    ),
+                    SystemCall::StreamOption => (
+                        "sg_system_stream_option",
+                        vec![Ty::Read(Box::new(Ty::Socket(Net::Tcp))), Ty::Int(IntTy::Int), Ty::Int(IntTy::Long)],
+                        plain("sg_net_option(a0->fd, a1, a2)"),
                     ),
                     SystemCall::CloseSocket => ("sg_system_close_socket", vec![fd()], "sg_net_close((int)a0);".to_string()),
                     _ => (
@@ -21003,10 +21334,10 @@ impl<'a> Emitter<'a> {
                     done(&put)
                 ))
             }
-            StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::WriteBytes => {
+            StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::WriteBytes | StreamCall::WritePieces => {
                 let (fname, params) = self.stream_glue(call, &expr.ty, false, span)?;
                 let mut receiver = self.list_address(recv)?;
-                if call != StreamCall::WriteBytes {
+                if !matches!(call, StreamCall::WriteBytes | StreamCall::WritePieces) {
                     let (temp, loc) = (self.temp(), self.loc(span));
                     receiver = format!("({{ sg_reader* {temp} = {receiver}; SG_IN_HOLD({temp}, false, {loc}); {temp}; }})");
                 }
@@ -21025,7 +21356,7 @@ impl<'a> Emitter<'a> {
         self.io_error(span)?;
         let gives = self.ctype(result, span)?;
         let reader = match call {
-            StreamCall::WriteBytes => Ty::Ref(Box::new(Ty::Writer)),
+            StreamCall::WriteBytes | StreamCall::WritePieces => Ty::Ref(Box::new(Ty::Writer)),
             _ => Ty::Ref(Box::new(Ty::Reader(false))),
         };
         let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
@@ -21052,6 +21383,11 @@ impl<'a> Emitter<'a> {
                 ),
                 StreamCall::WriteBytes => format!(
                     "int code = sg_writer_bytes(a0, a1.ptr, a1.len); if (code) {} {}",
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0 }}"))
+                ),
+                StreamCall::WritePieces => format!(
+                    "int code = sg_writer_pieces(a0, (const sg_wpiece*)a1->ptr, a1->len); if (code) {} {}",
                     failed("sg_io_error(code)"),
                     give(format!("({gives}){{ .tag = 0 }}"))
                 ),
@@ -21097,13 +21433,14 @@ impl<'a> Emitter<'a> {
             StreamCall::ReadBytes => ("sg_reader_bytes_r", vec![reader, bytes(Ty::Ref)]),
             StreamCall::ReadSome => ("sg_reader_some_r", vec![reader, bytes(Ty::Ref)]),
             StreamCall::WriteBytes => ("sg_writer_bytes_r", vec![reader, bytes(Ty::Read)]),
+            StreamCall::WritePieces => ("sg_writer_pieces_r", vec![reader, Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))]),
             StreamCall::ReadLine => ("sg_reader_line_r", vec![reader, Ty::Ref(Box::new(Ty::Str))]),
             StreamCall::ReadLineBytes => ("sg_reader_line_bytes_r", vec![reader, Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))]),
             StreamCall::Fill => ("sg_reader_fill_r", vec![reader, Ty::Int(IntTy::Long)]),
             _ => ("sg_reader_text_r", vec![reader]),
         };
         self.io_glue(fname, &params, &body(false), &gives, span)?;
-        if unheld && call != StreamCall::WriteBytes && self.made.insert(format!("{fname}_n")) {
+        if unheld && !matches!(call, StreamCall::WriteBytes | StreamCall::WritePieces) && self.made.insert(format!("{fname}_n")) {
             let mut written = Vec::new();
             for (index, param) in params.iter().enumerate() {
                 written.push(format!("{} a{index}", self.ctype(param, span)?));
@@ -21490,26 +21827,41 @@ impl<'a> Emitter<'a> {
         let (fname, params, body) = match call {
             NetCall::Bind => ("sg_net_bind_r", vec![text], format!("sg_listener l; int code = sg_net_bind(a0, &l); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ l }} }};")),
             NetCall::Connect => ("sg_net_connect_r", vec![text], format!("sg_socket c; int code = sg_net_connect(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};")),
-            NetCall::Accept => ("sg_net_accept_r", vec![Ty::Read(Box::new(Ty::Listener))], format!("sg_socket c; int code = sg_net_accept(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};")),
+            NetCall::Accept if recv.ty.strip_borrow() == &Ty::Listener(Net::Unix) => (
+                "sg_net_unix_accept_r",
+                vec![Ty::Read(Box::new(Ty::Listener(Net::Unix)))],
+                format!("sg_socket c; int code = sg_net_accept(&a0->l, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};"),
+            ),
+            NetCall::Accept => ("sg_net_accept_r", vec![Ty::Read(Box::new(Ty::Listener(Net::Tcp)))], format!("sg_socket c; int code = sg_net_accept(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};")),
+            NetCall::UnixBind => (
+                "sg_net_unix_bind_r",
+                vec![text],
+                format!("sg_unix_listener l; int code = sg_net_unix_bind(a0, &l); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ l }} }};"),
+            ),
+            NetCall::UnixConnect => (
+                "sg_net_unix_connect_r",
+                vec![text],
+                format!("sg_socket c; int code = sg_net_unix_connect(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};"),
+            ),
             NetCall::Receive => (
                 "sg_net_receive_r",
-                vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Ref)],
+                vec![Ty::Ref(Box::new(Ty::Socket(Net::Tcp))), bytes(Ty::Ref)],
                 format!("int64_t got = 0; int code = sg_net_recv(a0, a1.ptr, a1.len, &got, false); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};"),
             ),
             NetCall::Send => (
                 "sg_net_send_r",
-                vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Read)],
+                vec![Ty::Ref(Box::new(Ty::Socket(Net::Tcp))), bytes(Ty::Read)],
                 format!("int code = sg_net_send(a0, a1.ptr, a1.len); {failed} return ({gives}){{ .tag = 0 }};"),
             ),
             NetCall::SendPieces => (
                 "sg_net_sendv_r",
-                vec![Ty::Ref(Box::new(Ty::Socket)), Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))],
+                vec![Ty::Ref(Box::new(Ty::Socket(Net::Tcp))), Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))],
                 format!("int code = sg_net_sendv(a0, (const sg_piece*)a1->ptr, a1->len); {failed} return ({gives}){{ .tag = 0 }};"),
             ),
             NetCall::Port | NetCall::Reader => unreachable!("given above"),
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
-        if matches!(call, NetCall::Bind | NetCall::Connect) {
+        if matches!(call, NetCall::Bind | NetCall::Connect | NetCall::UnixBind | NetCall::UnixConnect) {
             return self.call(fname.to_string(), None, args, head, &expr.ty);
         }
         // The receiver is not one of the arguments the signature lists.
@@ -21555,7 +21907,7 @@ impl<'a> Emitter<'a> {
             self.made.insert(part.to_string());
         }
         let gives = self.ctype(&expr.ty, span)?;
-        let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::SendPieces | NetCall::Connect));
+        let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::SendPieces | NetCall::Connect | NetCall::UnixConnect));
         let (tmp, loc) = (self.temp(), self.loc(span));
         // Every call of the network in a frame is in one room, `NET_OP`: one waits at a time, and
         // what it gives is taken out at once (`result`), before the next can start.
@@ -21565,6 +21917,7 @@ impl<'a> Emitter<'a> {
             None => "NULL".to_string(),
         };
         let made = match call {
+            NetCall::Accept if recv.ty.strip_borrow() == &Ty::Listener(Net::Unix) => format!("sg_net_accept_op(&({})->l, {token}, {loc})", self.list_address(recv)?),
             NetCall::Accept => format!("sg_net_accept_op({}, {token}, {loc})", self.list_address(recv)?),
             NetCall::Receive | NetCall::Send => {
                 let stream = self.list_address(recv)?;
@@ -21577,20 +21930,21 @@ impl<'a> Emitter<'a> {
                 }
             }
             NetCall::Connect => format!("sg_net_connect_op({}, {token}, {loc})", self.value(&args[0])?),
+            NetCall::UnixConnect => format!("sg_net_unix_connect_op({}, {token}, {loc})", self.value(&args[0])?),
             // The list stays where it is while the task waits: the call borrows it.
             NetCall::SendPieces => {
                 let stream = self.list_address(recv)?;
                 let list = self.value(&args[0])?;
                 format!("sg_net_sendv_op({stream}, (const sg_piece*)({list})->ptr, ({list})->len, {token}, {loc})")
             }
-            NetCall::Bind | NetCall::Port | NetCall::Reader => unreachable!("not async"),
+            NetCall::Bind | NetCall::UnixBind | NetCall::Port | NetCall::Reader => unreachable!("not async"),
         };
         self.pre.push(format!("sg_net_op {op} = {made}; sg_net_go(&{op});"));
         self.resume_point(span);
         self.pre.push(format!("if (!sg_net_more(&{op})) return false;"));
         let failed = format!("({gives}){{ .tag = 1, .u.v1 = {{ {op}.code == SG_CUT ? sg_io_cancelled() : sg_io_error({op}.code) }} }}");
         let ok = match call {
-            NetCall::Accept | NetCall::Connect => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, true }} }} }}"),
+            NetCall::Accept | NetCall::Connect | NetCall::UnixConnect => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, true }} }} }}"),
             NetCall::Receive => format!("({gives}){{ .tag = 0, .u.v0 = {{ {op}.done }} }}"),
             _ => format!("({gives}){{ .tag = 0 }}"),
         };
@@ -21660,6 +22014,26 @@ impl<'a> Emitter<'a> {
                     None => self.pre.push(format!("int {c} = {put};")),
                 }
                 format!("{w}g ? {w}s.ptr : NULL, {w}g ? {w}s.len : 0")
+            }
+            // Pieces the block has room for are copied in place; others go out on a thread with it.
+            StreamCall::WritePieces => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                let list = self.value(&args[0])?;
+                self.pre.push(format!("const sg_wpiece* {w}p = (const sg_wpiece*)({list})->ptr; int64_t {w}k = ({list})->len;"));
+                let put = format!("sg_writer_pieces_n({w}, {w}p, {w}k)");
+                match token(self, 1)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : {put};")),
+                    None => self.pre.push(format!("int {c} = {put};")),
+                }
+                let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
+                awaits.push(span);
+                let mark = awaits.len() - 1;
+                self.pre.push(format!(
+                    "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_pieces({w}, {w}p, {w}k); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
+                     SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) {{ return false; }} {c} = {w}i.r; }}"
+                ));
+                return Ok(self.writer_result(&c, &gives));
             }
             StreamCall::Flush => {
                 let out = self.list_address(recv)?;

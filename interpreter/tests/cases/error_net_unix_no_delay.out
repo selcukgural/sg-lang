@@ -1,0 +1,5 @@
+error: `UnixStream` has no method `setNoDelay`
+  `setNoDelay` is an option of TCP; a `UnixStream` goes out at once and never idles out
+  --> error_net_unix_no_delay.sg:3:14
+ 3 |     try conn.setNoDelay(true)
+   |              ^^^^^^^^^^

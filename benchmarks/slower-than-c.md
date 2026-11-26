@@ -9,6 +9,13 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## The library
 
+- **Large values over a socket of the machine** (the store of RESP on macOS, `redis-benchmark`, 50
+  connections, values of 64 KB, choice 1972, slice 190, one run): over a `UnixStream` SG answers 30,000 SET
+  and 38,000 GET a second where Redis over the same answers 47,000 and 88,000; over TCP the two are even (59,000
+  and 55,000 against 54,000 and 59,000), and with small values SG over a socket of the machine is 0.73 times
+  Redis as over TCP. Not looked into yet: macOS gives a socket of the machine a small buffer (8 KB), so an
+  answer of 64 KB goes out in many pieces, each a wait on the loop; Linux was not measured against Redis.
+
 - **A regular expression where the DFA reads every byte** (`grep` on the address, 1.22 times Zig's PCRE2,
   choices 1535, 1536, 1541, 1803, slices 164, 165, 173 and 174): since the hundred-and-sixty-fifth slice SG
   searches from the inner text (`@example.com `) as Rust's `regex` does and is at Rust's time (0.127 s

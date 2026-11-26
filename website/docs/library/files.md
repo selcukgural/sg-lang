@@ -80,6 +80,7 @@ false
 | `Result<StreamWriter, IoError> File.openWrite(read string path)` | One that writes from the start over what the file holds; a missing file is made |
 | `Result<void, IoError> write(ref this, x)`, `writeLine(ref this, x)` | Writes whatever `print` takes, with or without a line end |
 | `Result<void, IoError> writeBytes(ref this, read byte[] bytes)` | Writes the bytes as they are |
+| `Result<void, IoError> writePieces(ref this, read List<read byte[]> pieces)` | Writes every piece in turn, as `writeBytes` of each would; what the block has no room for goes to the file with one call of the system (`writev`) on Linux and macOS |
 | `Result<void, IoError> flush(ref this)` | Hands what the block holds to the system |
 | `Result<void, IoError> close(this)` | Writes what is left and closes the file |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Writes what it holds, then moves; gives the new place |
@@ -289,7 +290,7 @@ end
 Each call has an async version for an async function: `File.readTextAsync`, `readBytesAsync`,
 `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `openRegularAsync`, `createTextAsync`, `openAppendAsync`;
 on a reader `readLineAsync`, `readLineBytesAsync`, `readTextAsync`, `readBytesAsync`, `readSomeAsync`,
-`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `flushAsync`, `closeAsync`,
+`fillAsync`; on a writer `writeAsync`, `writeLineAsync`, `writeBytesAsync`, `writePiecesAsync`, `flushAsync`, `closeAsync`,
 `syncDataAsync`, `syncAsync`, `setLengthAsync`, `seekAsync`. Each may take a `read CancellationToken` last (not
 `closeAsync`). In an async function the calls without `Async` are an error, since they would hold the thread.
 `buffered` and `consume` do not wait, and neither does a reader's `seek`, which asks the system where the

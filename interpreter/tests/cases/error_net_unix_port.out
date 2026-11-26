@@ -1,0 +1,5 @@
+error: `UnixListener` has no method `port`
+  a `UnixListener` listens at the path it was bound to, which the program has
+  --> error_net_unix_port.sg:3:20
+ 3 |     print(listener.port())
+   |                    ^^^^

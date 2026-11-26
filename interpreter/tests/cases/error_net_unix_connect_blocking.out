@@ -1,0 +1,6 @@
+error: `UnixStream.connect` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_net_unix_connect_blocking.sg:2:31
+ 2 |     var conn = try UnixStream.connect(path)
+   |                               ^^^^^^^
+  hint: `await UnixStream.connectAsync(path)` does the same work without holding the thread

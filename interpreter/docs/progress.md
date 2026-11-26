@@ -613,6 +613,11 @@ character from U+10FF80, which goes back to that byte when the name is given to 
 of a pair alone does the same through WTF-8. `Path.systemBytes` and `Path.fromSystemBytes` give the bytes and
 take them; `VariableError` keeps `Missing` alone.
 
+Slice 190 (1960-1972) adds sockets of the machine, `UnixListener` and `UnixStream`, received from and sent on as
+a TCP connection is, on Windows too, with the listener's file taken away where it ends; `closeSending` on both
+kinds of connection; `setNoDelay` and `setKeepAlive` on a `TcpStream`; `[::]` taking v4 too on every system, a v4
+peer given as v4; and `writePieces`, several pieces written to a file with one `writev`.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

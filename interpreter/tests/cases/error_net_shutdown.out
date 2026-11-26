@@ -1,0 +1,6 @@
+error: `TcpStream` has no method `shutdown`
+  the connection is closed where it ends
+  --> error_net_shutdown.sg:3:14
+ 3 |     try conn.shutdown()
+   |              ^^^^^^^^
+  hint: `closeSending()` closes the side that sends, and the connection still receives

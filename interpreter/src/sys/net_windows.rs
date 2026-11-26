@@ -22,6 +22,8 @@ const SOCK_DGRAM: c_int = 2;
 const IPPROTO_TCP: c_int = 6;
 const IPPROTO_UDP: c_int = 17;
 const SOL_SOCKET: c_int = 0xffff;
+const IPPROTO_IPV6: c_int = 41;
+const IPV6_V6ONLY: c_int = 27;
 /// `~SO_REUSEADDR`.
 const SO_EXCLUSIVEADDRUSE: c_int = !4;
 const WSA_FLAG_OVERLAPPED: u32 = 0x01;
@@ -62,6 +64,10 @@ extern "system" {
     fn setsockopt(s: Socket, level: c_int, name: c_int, value: *const c_char, len: c_int) -> c_int;
     fn bind(s: Socket, name: *const u8, len: c_int) -> c_int;
     fn listen(s: Socket, backlog: c_int) -> c_int;
+    fn accept(s: Socket, address: *mut u8, len: *mut c_int) -> Socket;
+    fn connect(s: Socket, name: *const u8, len: c_int) -> c_int;
+    fn closesocket(s: Socket) -> c_int;
+    fn ioctlsocket(s: Socket, command: i32, value: *mut u32) -> c_int;
     fn WSAIoctl(s: Socket, code: u32, input: *const c_void, in_len: u32, output: *mut c_void, out_len: u32, got: *mut u32, overlapped: *mut c_void, routine: *const c_void) -> c_int;
     fn WSAPoll(fds: *mut PollFd, count: u32, timeout: c_int) -> c_int;
     fn GetAddrInfoW(node: *const u16, service: *const u16, hints: *const AddrInfoW, result: *mut *mut AddrInfoW) -> c_int;
@@ -136,6 +142,12 @@ fn exclusive(at: SocketAddr, kind: c_int, protocol: c_int) -> io::Result<Socket>
     let one: c_int = 1;
     // SAFETY: `one` is a whole `int`, as the option takes.
     unsafe { setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (&one as *const c_int).cast(), 4) };
+    // Every v6 address takes v4 too, as on Linux and macOS, where Windows would take v6 alone (1969).
+    if at.is_ipv6() && at.ip().is_unspecified() {
+        let zero: c_int = 0;
+        // SAFETY: as above.
+        unsafe { setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, (&zero as *const c_int).cast(), 4) };
+    }
     Ok(socket)
 }
 
@@ -206,6 +218,115 @@ fn socket_of(number: i32) -> Socket {
 /// SAFETY: as `FromRawSocket`: the number is that of a socket open now, which the caller owns.
 pub(crate) unsafe fn udp_of(number: i32) -> UdpSocket {
     UdpSocket::from_raw_socket(socket_of(number) as u64)
+}
+
+/// A socket of the machine at a path (`AF_UNIX`, Windows 10 1803 and later): a listener of
+/// `UnixListener`, or what makes a connection of `UnixStream`, which std's `TcpStream` then holds, as
+/// its calls (`recv`, `send`, `shutdown`) are those of any connection. Closed where it ends.
+#[derive(Debug)]
+pub(crate) struct UnixSocket(Socket);
+
+const AF_UNIX: c_int = 1;
+/// `FIONBIO`.
+const NONBLOCKING: i32 = 0x8004_667E_u32 as i32;
+const WSAEWOULDBLOCK: i32 = 10035;
+
+impl UnixSocket {
+    /// A socket of the machine and the address of `path` (`SOCKADDR_UN`: the family and the bytes of
+    /// the path, ended by a zero byte; the path fits, see `net::unix_path`).
+    fn made(path: &str) -> io::Result<(UnixSocket, [u8; 110], c_int)> {
+        start();
+        // SAFETY: plain values; a socket or `INVALID_SOCKET` comes back.
+        let socket = unsafe { WSASocketW(AF_UNIX, SOCK_STREAM, 0, std::ptr::null_mut(), 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT) };
+        if socket == INVALID_SOCKET {
+            return Err(wsa_error());
+        }
+        let mut raw = [0u8; 110];
+        raw[0..2].copy_from_slice(&(AF_UNIX as u16).to_le_bytes());
+        raw[2..2 + path.len()].copy_from_slice(path.as_bytes());
+        Ok((UnixSocket(socket), raw, (2 + path.len() + 1) as c_int))
+    }
+
+    pub(crate) fn bind(path: &str) -> io::Result<UnixSocket> {
+        let (socket, raw, len) = UnixSocket::made(path)?;
+        // SAFETY: `raw` holds an address of `len` bytes.
+        if unsafe { bind(socket.0, raw.as_ptr(), len) } != 0 || unsafe { listen(socket.0, SOMAXCONN) } != 0 {
+            return Err(wsa_error());
+        }
+        Ok(socket)
+    }
+
+    /// A connection to the listener at `path`, which a listener with no room refuses.
+    pub(crate) fn connect(path: &str) -> io::Result<std::net::TcpStream> {
+        let (socket, raw, len) = UnixSocket::made(path)?;
+        // SAFETY: as in `bind`.
+        if unsafe { connect(socket.0, raw.as_ptr(), len) } != 0 {
+            let error = wsa_error();
+            // Windows refuses a path where nothing is; Linux and macOS say nothing is there.
+            return Err(match error.raw_os_error() {
+                Some(WSAECONNREFUSED) if matches!(std::fs::symlink_metadata(crate::names::os_of(path)), Err(e) if e.kind() == io::ErrorKind::NotFound) => io::Error::from_raw_os_error(2),
+                _ => error,
+            });
+        }
+        let number = socket.0;
+        std::mem::forget(socket);
+        // SAFETY: the socket was just made and connected, and is owned by the stream from here.
+        Ok(unsafe { std::net::TcpStream::from_raw_socket(number as u64) })
+    }
+
+    pub(crate) fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        let mut value = u32::from(on);
+        // SAFETY: `value` is a whole `u_long` that lives across the call.
+        match unsafe { ioctlsocket(self.0, NONBLOCKING, &mut value) } {
+            0 => Ok(()),
+            _ => Err(wsa_error()),
+        }
+    }
+
+    /// The next connection, which does not block, or `WouldBlock` when none is there.
+    pub(crate) fn accept(&self) -> io::Result<std::net::TcpStream> {
+        // SAFETY: no address is asked for.
+        let socket = unsafe { accept(self.0, std::ptr::null_mut(), std::ptr::null_mut()) };
+        if socket == INVALID_SOCKET {
+            let error = wsa_error();
+            return Err(match error.raw_os_error() {
+                Some(WSAEWOULDBLOCK) => io::Error::from(io::ErrorKind::WouldBlock),
+                _ => error,
+            });
+        }
+        // SAFETY: as in `connect`.
+        let stream = unsafe { std::net::TcpStream::from_raw_socket(socket as u64) };
+        stream.set_nonblocking(true)?;
+        Ok(stream)
+    }
+
+    pub(crate) fn number(&self) -> i32 {
+        self.0 as i32
+    }
+}
+
+impl Drop for UnixSocket {
+    fn drop(&mut self) {
+        // SAFETY: the socket is this value's, closed once.
+        unsafe { closesocket(self.0) };
+    }
+}
+
+/// `stream.setKeepAlive(idle)` (1967), as on Linux and macOS: the idle time and the time between two
+/// asks are both `ms`, rounded up to whole seconds as there; 0 turns it off (`SIO_KEEPALIVE_VALS`).
+pub(crate) fn keep_alive(stream: &std::net::TcpStream, ms: u32) -> io::Result<()> {
+    /// `_WSAIOW(IOC_VENDOR, 4)`.
+    const SIO_KEEPALIVE_VALS: u32 = 0x9800_0004;
+    let ms = ms.div_ceil(1000).saturating_mul(1000);
+    // `struct tcp_keepalive { onoff, keepalivetime, keepaliveinterval }`, three `ULONG`s.
+    let values: [u32; 3] = [u32::from(ms > 0), ms, ms];
+    let mut got = 0u32;
+    // SAFETY: the input is the 12 bytes of `values`, which live across the call; nothing is written back.
+    let done = unsafe { WSAIoctl(stream.as_raw_socket() as Socket, SIO_KEEPALIVE_VALS, values.as_ptr().cast(), 12, std::ptr::null_mut(), 0, &mut got, std::ptr::null_mut(), std::ptr::null()) };
+    match done {
+        0 => Ok(()),
+        _ => Err(wsa_error()),
+    }
 }
 
 /// As `crate::net::wait`.

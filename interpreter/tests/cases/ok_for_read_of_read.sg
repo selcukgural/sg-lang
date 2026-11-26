@@ -1,0 +1,23 @@
+// `for` with `read` over a list of `read` borrows lends each item as it is, a `read byte[]`, not a
+// `read read byte[]`, whether the list is borrowed or owned.
+nint size(read byte[] piece) {
+    return piece.length()
+}
+
+nint total(read List<read byte[]> pieces) {
+    nint n = 0
+    for piece in pieces {
+        n += size(piece)
+    }
+    return n
+}
+
+void main() {
+    var pieces = List<read byte[]>()
+    pieces.add("abc".asBytes())
+    nint m = 0
+    for piece in read pieces {
+        m += size(piece)
+    }
+    print($"{total(read pieces)} {m}")
+}

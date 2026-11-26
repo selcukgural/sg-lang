@@ -96,7 +96,10 @@ pub enum Value {
     /// `TcpListener`, which does not block. Closed when the last place that holds it lets it
     /// go: a moved value leaves its place empty, so that is where compiled code closes it.
     Listener(Rc<std::net::TcpListener>),
-    /// `TcpStream`, which does not block.
+    /// `UnixListener`, the same at a path, whose file is taken away when it is let go.
+    UnixListener(Rc<crate::net::UnixListening>),
+    /// `TcpStream`, which does not block, and `UnixStream`, held the same way: their calls are
+    /// those of any connection.
     Socket(Rc<std::net::TcpStream>),
     /// `CString`: the bytes of a text and a zero byte after them, where C can read them.
     CStr(Rc<std::ffi::CString>),
@@ -4211,6 +4214,24 @@ impl<'a, 'e> Interp<'a, 'e> {
                     },
                 })
             }
+            NetCall::UnixBind | NetCall::UnixConnect => {
+                let Value::Str(path) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the path text") };
+                if let Some(token) = token {
+                    if self.token(token, frame)?.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                        return Ok(failed(io_cancelled()));
+                    }
+                }
+                let made = match call {
+                    NetCall::UnixBind => crate::net::UnixListening::bind(&path).map(|listener| Value::UnixListener(Rc::new(listener))),
+                    _ => crate::net::unix_connect(&path).map(|stream| Value::Socket(Rc::new(stream))),
+                };
+                Ok(match made {
+                    Ok(value) => ok(value),
+                    Err(Ok(crate::net::UnixPath::NotFound)) => failed(io_cause(None, Some(crate::sys::NOT_FOUND))),
+                    Err(Ok(crate::net::UnixPath::TooLong)) => failed(io_too_long()),
+                    Err(Err(error)) => io_failed(error),
+                })
+            }
             NetCall::Connect => {
                 let Value::Str(address) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the address text") };
                 let address = address.to_string();
@@ -4259,18 +4280,35 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(Value::Int(IntTy::Int, listener.local_addr().map_or(0, |address| address.port()) as i128))
             }
             NetCall::Accept => {
-                let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `accept` on a listener") };
+                let (listener, unix) = match owned(self.expr(recv, frame)?) {
+                    Value::Listener(listener) => (Some(listener), None),
+                    Value::UnixListener(listener) => (None, Some(listener)),
+                    _ => unreachable!("the checker calls `accept` on a listener"),
+                };
                 let source = match token {
                     Some(token) => self.token(token, frame)?,
                     None => None,
                 };
-                let fd = crate::net::fd_of(&*listener);
+                let fd = match (&listener, &unix) {
+                    (Some(listener), _) => crate::net::fd_of(&**listener),
+                    (_, Some(unix)) => unix.fd(),
+                    _ => unreachable!("one of the two"),
+                };
                 if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
                     return Ok(failed(io_cancelled()));
                 }
                 loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
+                    let taken = match (&listener, &unix) {
+                        // A connection of TCP sends a small piece at once (`TCP_NODELAY`, 1966).
+                        (Some(listener), _) => listener.accept().map(|(stream, _)| {
+                            let _ = stream.set_nodelay(true);
+                            stream
+                        }),
+                        (_, Some(unix)) => unix.accept(),
+                        _ => unreachable!("one of the two"),
+                    };
+                    match taken {
+                        Ok(stream) => {
                             return Ok(match stream.set_nonblocking(true) {
                                 Ok(()) => ok(Value::Socket(Rc::new(stream))),
                                 Err(error) => io_failed(error),
@@ -6024,8 +6062,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             // ended.
             Callee::NetAsync(call) => {
                 let given = match call {
-                    NetCall::Connect | NetCall::Receive | NetCall::Send | NetCall::SendPieces => 1,
-                    NetCall::Accept | NetCall::Bind | NetCall::Port | NetCall::Reader => 0,
+                    NetCall::Connect | NetCall::UnixConnect | NetCall::Receive | NetCall::Send | NetCall::SendPieces => 1,
+                    NetCall::Accept | NetCall::Bind | NetCall::UnixBind | NetCall::Port | NetCall::Reader => 0,
                 };
                 let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
                 Ok(self.ended_task(value, expr.span))
@@ -7588,6 +7626,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 | SystemCall::UdpReceiveAsync
                 | SystemCall::SocketName
                 | SystemCall::StreamName
+                | SystemCall::StreamOption
                 | SystemCall::CloseSocket
                 | SystemCall::Lookup
                 | SystemCall::LookupAsync
@@ -7747,6 +7786,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                 ok(Value::Void)
             }
             SystemCall::Status => match std::fs::metadata(os(0)) {
+                // A point of Windows that is not followed (a socket of the machine) is `Other`, as
+                // compiled code says it and as a socket is on Linux and macOS.
+                #[cfg(windows)]
+                Ok(info) if crate::sys::unfollowed(&os(0), &info) => {
+                    status_fields(&info, &values[1]);
+                    if let Some(slot) = cells_of(&values[1]).first() {
+                        *slot.borrow_mut() = Value::Int(IntTy::Long, 3);
+                    }
+                    ok(Value::Void)
+                }
                 Ok(info) => status_fields(&info, &values[1]),
                 Err(error) => done(Err(error)),
             },
@@ -7774,6 +7823,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::UdpReceiveAsync
             | SystemCall::SocketName
             | SystemCall::StreamName
+            | SystemCall::StreamOption
             | SystemCall::CloseSocket
             | SystemCall::Lookup
             | SystemCall::LookupAsync
@@ -8126,6 +8176,23 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(_) => Value::Bool(false),
                 }
             }
+            SystemCall::StreamOption => {
+                let Value::Socket(stream) = &values[0] else { unreachable!("the checker makes it a stream") };
+                let done = match number(1) {
+                    // A side that is closed already, or a connection the other side broke off, has
+                    // nothing left to close (1965).
+                    0 => match stream.shutdown(std::net::Shutdown::Write) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+                        done => done,
+                    },
+                    1 => stream.set_nodelay(number(2) != 0),
+                    _ => crate::sys::keep_alive(stream, u32::try_from(number(2)).unwrap_or(u32::MAX)),
+                };
+                match done {
+                    Ok(()) => ok(Value::Void),
+                    Err(error) => io_failed(error),
+                }
+            }
             SystemCall::CloseSocket => {
                 // SAFETY: as above; the `UdpSocket` of the program is let go of here, once.
                 drop(unsafe { crate::sys::udp_of_fd(fd()) });
@@ -8434,8 +8501,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
                 })
             }
-            (StreamCall::WriteBytes, Value::Writer(writer)) => {
-                let bytes = byte_values(&owned(self.expr(&args[0], frame)?));
+            (StreamCall::WriteBytes | StreamCall::WritePieces, Value::Writer(writer)) => {
+                let given = owned(self.expr(&args[0], frame)?);
+                let bytes = match call {
+                    StreamCall::WriteBytes => byte_values(&given),
+                    // The pieces one after another, as one write: the interpreter's writer copies
+                    // them into its block or writes them as one run.
+                    _ => {
+                        let Value::List(pieces) = &given else { unreachable!("the checker makes it a list") };
+                        pieces.borrow().iter().flat_map(|piece| byte_values(&owned(piece.borrow().clone()))).collect()
+                    }
+                };
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }

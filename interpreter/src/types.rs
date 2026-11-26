@@ -290,6 +290,15 @@ impl TextIter {
     }
 }
 
+/// The kind of a socket that holds a connection: of the network (`TcpListener`, `TcpStream`), or
+/// of the machine, at a path of its file system (`UnixListener`, `UnixStream`, 1960). Both are
+/// received from and sent on the same way.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Net {
+    Tcp,
+    Unix,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Ty {
     Int(IntTy),
@@ -375,11 +384,11 @@ pub enum Ty {
     /// look at one source; `clone` gives one more.
     Token,
     /// `TcpListener`: a socket that takes the connections that come to its address. Closed
-    /// when it ends.
-    Listener,
+    /// when it ends. `UnixListener` takes them at a path, and its file is gone when it ends.
+    Listener(Net),
     /// `TcpStream`: a connection over the network, read and written as bytes, without a buffer.
-    /// Closed when it ends.
-    Socket,
+    /// Closed when it ends. `UnixStream` is one to a path of the machine.
+    Socket(Net),
     /// `CString`: a text with a zero byte after it, for C. Owns its bytes, which are freed when
     /// it ends; it is lent to C as `read CString`.
     CString,
@@ -410,8 +419,10 @@ impl Ty {
             "CancellationSource" => Some(Ty::Source),
             "CancellationToken" => Some(Ty::Token),
             "TaskGroup" => Some(Ty::Group),
-            "TcpListener" => Some(Ty::Listener),
-            "TcpStream" => Some(Ty::Socket),
+            "TcpListener" => Some(Ty::Listener(Net::Tcp)),
+            "TcpStream" => Some(Ty::Socket(Net::Tcp)),
+            "UnixListener" => Some(Ty::Listener(Net::Unix)),
+            "UnixStream" => Some(Ty::Socket(Net::Unix)),
             "CString" => Some(Ty::CString),
             _ => IntTy::from_name(name).map(Ty::Int).or_else(|| FloatTy::from_name(name).map(Ty::Float)),
         }
@@ -426,7 +437,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Group | Ty::Channel(_) | Ty::Sender(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Group | Ty::Channel(_) | Ty::Sender(_) | Ty::Source | Ty::Token | Ty::Listener(_) | Ty::Socket(_) | Ty::CString => false,
         }
     }
 
@@ -487,8 +498,10 @@ impl fmt::Display for Ty {
             Ty::Sender(item) => write!(f, "Sender<{item}>"),
             Ty::Source => f.write_str("CancellationSource"),
             Ty::Token => f.write_str("CancellationToken"),
-            Ty::Listener => f.write_str("TcpListener"),
-            Ty::Socket => f.write_str("TcpStream"),
+            Ty::Listener(Net::Tcp) => f.write_str("TcpListener"),
+            Ty::Socket(Net::Tcp) => f.write_str("TcpStream"),
+            Ty::Listener(Net::Unix) => f.write_str("UnixListener"),
+            Ty::Socket(Net::Unix) => f.write_str("UnixStream"),
             Ty::CString => f.write_str("CString"),
             Ty::Raw(inner) => write!(f, "raw {inner}"),
             Ty::Read(inner) => write!(f, "read {inner}"),

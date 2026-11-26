@@ -1,0 +1,53 @@
+// One side of a connection closed (`closeSending`, 1965): the server reads to the end of what the
+// client sent, then answers on the same connection, which the client still receives from. The
+// options of a connection (`setNoDelay`, `setKeepAlive`, 1966 and 1967) are set and taken off; a
+// keep-alive of no time is `InvalidInput`, and a send after `closeSending` is `ConnectionReset`.
+Result<void, IoError> serve(TcpListener listener) {
+    var conn = try listener.accept()
+    var buffer = byte[16](0)
+    nint total = 0
+    while true {
+        var n = try conn.receive(ref buffer)
+        if n == 0 {
+            break
+        }
+        total += n
+    }
+    try conn.send($"got {total} bytes".toString().asBytes())
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener)
+    var conn = try TcpStream.connect(read address)
+    try conn.setNoDelay(true)
+    try conn.setNoDelay(false)
+    try conn.setKeepAlive(Duration.fromSeconds(30))
+    try conn.setKeepAlive(Duration.fromMilliseconds(1500))
+    try conn.setKeepAlive(null)
+    match conn.setKeepAlive(Duration.fromSeconds(0)) {
+        Ok => print("a keep-alive of no time was taken")
+        Error(error) => print($"no time: {error}")
+    }
+    try conn.send("hello, world".asBytes())
+    try conn.closeSending()
+    try conn.closeSending()
+    match conn.send("more".asBytes()) {
+        Ok => print("a send after closeSending went out")
+        Error(error) => print($"after closeSending: {error}")
+    }
+    var buffer = byte[64](0)
+    nint got = 0
+    while true {
+        var n = try conn.receive(ref buffer[got..])
+        if n == 0 {
+            break
+        }
+        got += n
+    }
+    print(string.fromUtf8(buffer[0..got]) ?? "not text")
+    try server.wait()
+    return Ok()
+}

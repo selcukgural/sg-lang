@@ -1,0 +1,5 @@
+error: `TcpStream` has no method `setNoDelayAsync`
+  --> error_net_no_delay_async.sg:3:20
+ 3 |     try await conn.setNoDelayAsync(true)
+   |                    ^^^^^^^^^^^^^^^
+  hint: `setNoDelay` does not wait: `conn.setNoDelay(...)`, in an async function too

@@ -1,0 +1,8 @@
+async Result<void, IoError> talk(read string path) {
+    var conn = try UnixStream.connect(path)
+    try await conn.sendAsync("hi".asBytes())
+    return Ok()
+}
+
+void main() {
+}

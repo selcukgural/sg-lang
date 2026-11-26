@@ -2482,7 +2482,26 @@ pieces.clear()
 pieces.add(head.asBytes())
 pieces.add(body)
 try conn.sendPieces(read pieces)               // writev: all of them, in order, with no copy
+try conn.closeSending()                        // the other side reads the end; this side still receives
+try conn.setNoDelay(false)                     // TCP_NODELAY is on by default; this asks for Nagle's wait
+try conn.setKeepAlive(Duration.fromSeconds(30))  // null turns it off
+try log.writePieces(read pieces)               // the same pieces into a file, one writev past the block
 ```
+
+`[::]:8080` takes v4 too on every system, and gives a v4 peer as `127.0.0.1:port`.
+
+A socket of the machine listens at a path instead of a port, and is received from and sent on as a TCP
+connection is (Windows has it since 10 1803):
+
+```
+var listener = try UnixListener.bind("/run/app.sock")  // the file goes where the listener ends
+var conn = try listener.accept()                       // a UnixStream: receive, send, reader(), closeSending()
+var client = try UnixStream.connect("/run/app.sock")   // connectAsync in an async function
+```
+
+A path longer than the system's address holds (103 bytes on macOS, 107 on Linux and Windows) is
+`IoError.TooLong`; a file there at the bind is `AddressInUse`; a listener with no room left refuses
+(`ConnectionRefused`) on every system. A `UnixStream` has no address of the network and no option of TCP.
 
 A datagram longer than the buffer, or one too long to send as one message, is `IoError.MessageTooLong`, where
 Rust and Go cut it short without a word. Every method of a `UdpSocket` lends it with `read`, so a `shared` socket

@@ -502,6 +502,172 @@ pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
     std::os::unix::io::FromRawFd::from_raw_fd(fd)
 }
 
+/// A socket of every v6 address that takes v4 too (`IPV6_V6ONLY` off, 1969), bound to `port`: a
+/// listener (`stream`, with `SO_REUSEADDR`, as std binds one) or a datagram socket. Linux and macOS
+/// take v4 there unless the machine is set otherwise, which this does not leave to it.
+pub(crate) fn bind_every_v6(stream: bool, port: u16) -> std::io::Result<RawFd> {
+    use std::ffi::{c_int, c_void};
+    extern "C" {
+        fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+        fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
+        fn bind(fd: c_int, address: *const u8, len: u32) -> c_int;
+        fn listen(fd: c_int, backlog: c_int) -> c_int;
+        fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+        fn close(fd: c_int) -> c_int;
+    }
+    #[cfg(target_os = "linux")]
+    const NAMES: (c_int, c_int, c_int, c_int) = (10, 1, 2, 26); // AF_INET6, SOL_SOCKET, SO_REUSEADDR, IPV6_V6ONLY
+    #[cfg(not(target_os = "linux"))]
+    const NAMES: (c_int, c_int, c_int, c_int) = (30, 0xffff, 4, 27);
+    const IPPROTO_IPV6: c_int = 41;
+    let (family, level, reuse, v6_only) = NAMES;
+    // `struct sockaddr_in6`, 28 bytes, every address and the port; macOS writes its length first.
+    let mut raw = [0u8; 28];
+    if cfg!(target_os = "linux") {
+        raw[0..2].copy_from_slice(&(family as u16).to_ne_bytes());
+    } else {
+        raw[0] = 28;
+        raw[1] = family as u8;
+    }
+    raw[2..4].copy_from_slice(&port.to_be_bytes());
+    // SAFETY: plain values; a socket or -1 comes back.
+    let fd = unsafe { socket(family, if stream { 1 } else { 2 }, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (one, zero): (c_int, c_int) = (1, 0);
+    // SAFETY: the socket is open; each value is a whole `int` that lives across its call, and the
+    // address is the 28 bytes of `raw`.
+    let made = unsafe {
+        fcntl(fd, 2, 1) == 0 // F_SETFD, FD_CLOEXEC: not handed to programs this one starts
+            && (!stream || setsockopt(fd, level, reuse, (&one as *const c_int).cast(), 4) == 0)
+            && setsockopt(fd, IPPROTO_IPV6, v6_only, (&zero as *const c_int).cast(), 4) == 0
+            && bind(fd, raw.as_ptr(), 28) == 0
+            && (!stream || listen(fd, 128) == 0)
+    };
+    if !made {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: the socket was made here and nothing else holds it.
+        unsafe { close(fd) };
+        return Err(error);
+    }
+    Ok(fd)
+}
+
+/// `UnixStream.connect(path)`: a socket of the machine connected to the listener at `path`, which
+/// does not block. A listener with no room left for one more refuses, on Linux too, where a socket
+/// that blocks would wait for room (`EAGAIN` there is `ECONNREFUSED`, as macOS says it), and so does
+/// a file that is not a socket.
+pub(crate) fn unix_connect(path: &std::ffi::OsStr) -> std::io::Result<RawFd> {
+    use std::ffi::{c_int, c_void};
+    use std::os::unix::ffi::OsStrExt;
+    extern "C" {
+        fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+        fn connect(fd: c_int, address: *const u8, len: u32) -> c_int;
+        fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+        fn close(fd: c_int) -> c_int;
+        fn getsockopt(fd: c_int, level: c_int, name: c_int, value: *mut c_void, len: *mut u32) -> c_int;
+    }
+    #[cfg(target_os = "linux")]
+    const NAMES: (c_int, c_int, c_int, c_int, c_int) = (11, 115, 1, 4, 0o4000); // EAGAIN, EINPROGRESS, SOL_SOCKET, SO_ERROR, O_NONBLOCK
+    #[cfg(not(target_os = "linux"))]
+    const NAMES: (c_int, c_int, c_int, c_int, c_int) = (35, 36, 0xffff, 0x1007, 4);
+    let (again, progress, level, so_error, nonblock) = NAMES;
+    let refused = if cfg!(target_os = "linux") { 111 } else { 61 };
+    // ENOTSOCK: a file that is not a socket has nobody listening at it, as Linux says.
+    let not_socket = if cfg!(target_os = "linux") { 88 } else { 38 };
+    // `struct sockaddr_un`: the family (macOS writes the length first) and the path, ended by a zero byte.
+    let bytes = path.as_bytes();
+    let mut raw = [0u8; 110];
+    if cfg!(target_os = "linux") {
+        raw[0..2].copy_from_slice(&1u16.to_ne_bytes());
+    } else {
+        raw[0] = (2 + bytes.len() + 1) as u8;
+        raw[1] = 1;
+    }
+    raw[2..2 + bytes.len()].copy_from_slice(bytes);
+    let len = (2 + bytes.len() + 1) as u32;
+    // SAFETY: plain values; a socket or -1 comes back.
+    let fd = unsafe { socket(1, 1, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fail = |error: std::io::Error| {
+        // SAFETY: the socket was made here and nothing else holds it.
+        unsafe { close(fd) };
+        Err(error)
+    };
+    // SAFETY: the socket is open; F_SETFD FD_CLOEXEC, then F_GETFL and F_SETFL with O_NONBLOCK.
+    let set = unsafe { fcntl(fd, 2, 1) == 0 && fcntl(fd, 4, fcntl(fd, 3) | nonblock) == 0 };
+    if !set {
+        return fail(std::io::Error::last_os_error());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let one: c_int = 1;
+        extern "C" {
+            fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
+        }
+        // SO_NOSIGPIPE: a send after the other side has gone is an error, not a signal.
+        // SAFETY: `one` is a whole `int` that lives across the call.
+        unsafe { setsockopt(fd, level, 0x1022, (&one as *const c_int).cast(), 4) };
+    }
+    loop {
+        // SAFETY: `raw` holds an address of `len` bytes.
+        if unsafe { connect(fd, raw.as_ptr(), len) } == 0 {
+            return Ok(fd);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(code) if code == again || code == not_socket => return fail(std::io::Error::from_raw_os_error(refused)),
+            Some(code) if code == progress => break,
+            _ if error.kind() == std::io::ErrorKind::Interrupted => {}
+            _ => return fail(error),
+        }
+    }
+    // A connect that goes on: done when the socket can be written to, with its error.
+    while !crate::net::wait(&[(fd, true)], None).first().copied().unwrap_or(false) {}
+    let (mut code, mut size): (c_int, u32) = (0, 4);
+    // SAFETY: `code` is a whole `int` and `size` says so.
+    if unsafe { getsockopt(fd, level, so_error, (&mut code as *mut c_int).cast(), &mut size) } != 0 {
+        return fail(std::io::Error::last_os_error());
+    }
+    match code {
+        0 => Ok(fd),
+        code => fail(std::io::Error::from_raw_os_error(code)),
+    }
+}
+
+/// `stream.setKeepAlive(idle)` (1967): the system asks an idle connection whether the other side is
+/// still there after `ms` milliseconds, rounded up to whole seconds, and again as often; 0 turns it
+/// off. How many unanswered asks end the connection is the system's.
+pub(crate) fn keep_alive(stream: &std::net::TcpStream, ms: u32) -> std::io::Result<()> {
+    use std::ffi::{c_int, c_void};
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
+    }
+    #[cfg(target_os = "linux")]
+    const OPTIONS: (c_int, c_int, c_int, c_int) = (1, 9, 4, 5); // SOL_SOCKET, SO_KEEPALIVE, TCP_KEEPIDLE, TCP_KEEPINTVL
+    #[cfg(not(target_os = "linux"))]
+    const OPTIONS: (c_int, c_int, c_int, c_int) = (0xffff, 8, 0x10, 0x101); // TCP_KEEPALIVE, TCP_KEEPINTVL of macOS
+    const IPPROTO_TCP: c_int = 6;
+    let (level, keep, idle, interval) = OPTIONS;
+    let set = |level: c_int, name: c_int, value: c_int| {
+        // SAFETY: the value is a `c_int` that lives across the call, and its length is given.
+        match unsafe { setsockopt(stream.as_raw_fd(), level, name, (&value as *const c_int).cast(), 4) } {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        }
+    };
+    if ms > 0 {
+        let seconds = c_int::try_from(ms.div_ceil(1000)).unwrap_or(c_int::MAX);
+        set(IPPROTO_TCP, idle, seconds)?;
+        set(IPPROTO_TCP, interval, seconds)?;
+    }
+    set(level, keep, c_int::from(ms > 0))
+}
+
 extern "C" {
     fn dlopen(path: *const std::ffi::c_char, flags: std::ffi::c_int) -> *mut std::ffi::c_void;
     fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;

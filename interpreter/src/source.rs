@@ -55,9 +55,9 @@ pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync
 pub const STD_READER_CALLS: &[&str] = &["info"];
 
 /// The methods of the built-in `TcpStream` that the language's own module does the work of
-/// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of
-/// `SocketAddress`.
-pub const STD_STREAM_CALLS: &[&str] = &["remoteAddress", "localAddress"];
+/// (`stream.remoteAddress()` gives a `SocketAddress`, `stream.setNoDelay(true)` is a call of the
+/// system there): a program that names one gets the file of `SocketAddress`.
+pub const STD_STREAM_CALLS: &[&str] = &["remoteAddress", "localAddress", "closeSending", "setNoDelay", "setKeepAlive"];
 
 /// The methods of `char` and `string` that the language's own module does the work of
 /// (`c.category()` gives a `UnicodeCategory`, `text.normalize(form)` takes a `NormalizationForm`):

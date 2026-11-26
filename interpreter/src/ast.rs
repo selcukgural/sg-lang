@@ -821,6 +821,11 @@ pub enum NetCall {
     Accept,
     /// `TcpStream.connect(address)`: a connection to `host:port`, the host looked up by name.
     Connect,
+    /// `UnixListener.bind(path)`: a listener at a path of the machine, whose file it makes and
+    /// takes away when it ends (1960-1962).
+    UnixBind,
+    /// `UnixStream.connect(path)`: a connection to the listener at a path; nothing is looked up.
+    UnixConnect,
     /// `stream.receive(ref buffer)`: what has come, as many bytes as the buffer holds at
     /// most; gives how many, `0` at the end.
     Receive,
@@ -839,10 +844,10 @@ impl NetCall {
     /// The name as it is written after the dot.
     pub fn name(self) -> &'static str {
         match self {
-            NetCall::Bind => "bind",
+            NetCall::Bind | NetCall::UnixBind => "bind",
             NetCall::Port => "port",
             NetCall::Accept => "accept",
-            NetCall::Connect => "connect",
+            NetCall::Connect | NetCall::UnixConnect => "connect",
             NetCall::Receive => "read",
             NetCall::Send => "write",
             NetCall::SendPieces => "writev",
@@ -1019,6 +1024,9 @@ pub enum SystemCall {
     SocketName,
     /// `System.streamAddress(read stream, remote, ref bits)`: the same for a `TcpStream`.
     StreamName,
+    /// `System.streamOption(read stream, kind, value)`: what `closeSending` (kind 0), `setNoDelay`
+    /// (1, the value 1 or 0) and `setKeepAlive` (2, the idle time in milliseconds, 0 for off) set.
+    StreamOption,
     /// `System.closeSocket(fd)`: `close`.
     CloseSocket,
     /// `System.lookup(host, ref bits)`: the addresses of a host name, three numbers each (v6,
@@ -1102,6 +1110,10 @@ pub enum StreamCall {
     WriteLine,
     /// `writer.writeBytes(bytes)`: the bytes as they are.
     WriteBytes,
+    /// `writer.writePieces(read pieces)`: the bytes of every window of a `List<read byte[]>`, in
+    /// order, as `writeBytes` of each would write them (1970); pieces too long for the block go to
+    /// the file with one call of the system (`writev`) on Linux and macOS.
+    WritePieces,
     /// `writer.flush()`: what the buffer holds goes out.
     Flush,
     /// `writer.close()`: the buffer goes out and the file is closed; takes the writer.

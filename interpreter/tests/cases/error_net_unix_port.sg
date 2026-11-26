@@ -1,0 +1,5 @@
+Result<void, IoError> main() {
+    var listener = try UnixListener.bind("/tmp/a.sock")
+    print(listener.port())
+    return Ok()
+}

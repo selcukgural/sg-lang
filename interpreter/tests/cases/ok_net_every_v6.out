@@ -1,0 +1,6 @@
+a v4 peer of [::] is v4: true, the same as its own side: true
+the side of [::] it reached: 127.0.0.1
+a v6 peer stays v6: ::1, the same as its own side: true
+a v4 sender: 127.0.0.1, 4 bytes
+pong
+again, connected to v4: true

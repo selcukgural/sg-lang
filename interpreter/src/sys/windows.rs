@@ -340,6 +340,19 @@ pub(crate) fn udp_fd(socket: std::net::UdpSocket) -> RawFd {
 pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
     super::net::udp_of(fd)
 }
+pub(crate) use super::net::keep_alive;
+
+/// Whether `path` is a point of Windows that is not followed (`ERROR_CANT_ACCESS_FILE`), as the
+/// file of a socket of the machine is: std gives what the folder says of it, a file.
+pub(crate) fn unfollowed(path: &std::ffi::OsStr, info: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    /// `FILE_ATTRIBUTE_REPARSE_POINT`.
+    const REPARSE: u32 = 0x400;
+    if info.file_attributes() & REPARSE == 0 || info.is_dir() {
+        return false;
+    }
+    matches!(std::fs::File::open(path), Err(error) if error.raw_os_error() == Some(1920))
+}
 
 /// Opens the library of wrappers at `path`. It and the DLLs it needs are looked for in the
 /// `folders` (the program's own and those of `-L`) and in `System32`, never in the folder the
@@ -409,8 +422,9 @@ pub(crate) fn io_kind(code: i32) -> usize {
         39 | 112 | 1295 => 3,
         // WSAECONNREFUSED
         10061 => 7,
-        // WSAECONNRESET, WSAECONNABORTED, WSAENOTCONN, ERROR_BROKEN_PIPE, ERROR_NO_DATA
-        10054 | 10053 | 10057 | 109 | 232 => 8,
+        // WSAECONNRESET, WSAECONNABORTED, WSAENOTCONN, WSAESHUTDOWN (a send after `closeSending`,
+        // EPIPE elsewhere), ERROR_BROKEN_PIPE, ERROR_NO_DATA
+        10054 | 10053 | 10057 | 10058 | 109 | 232 => 8,
         // WSAEADDRINUSE
         10048 => 9,
         // WSAEADDRNOTAVAIL

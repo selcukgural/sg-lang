@@ -195,10 +195,12 @@
   line of the input that can make the program wait does (471, 472). Of the network: a stream received from
   by one task and sent to by another (and so `send` through a `shared` stream), the reader of a connection
   kept in a field or given back (it carries a borrow; `StreamReader<from conn>`), a writer of a connection,
-  closing one direction (`shutdown`), the
-  options of a socket (`TCP_NODELAY`), a
-  listener on every v6 address, several pieces written at once to a file (`writev` on a writer) and
-  `sendfile`, and the block of a reader let go while its connection is idle, as Go's pool does (1741).
+  `sendfile`, and the block of a reader let go while its connection is idle, as Go's pool does (1741). One
+  function for a `TcpStream` and a `UnixStream` (there is no interface of the program's own, so a server that
+  listens at a port and at a path writes the code of a connection twice), and so HTTP over a socket of the
+  machine (`HttpConnection.create` takes a `TcpStream`, 1960). Of sockets of the machine: the abstract names of
+  Linux, datagrams, who the other side is (`SO_PEERCRED`), a descriptor sent over one, and `socketpair` (1964).
+  The sizes of a socket's buffers, `SO_LINGER`, `SO_REUSEPORT` and timeouts of a call of the network (1968).
   `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two

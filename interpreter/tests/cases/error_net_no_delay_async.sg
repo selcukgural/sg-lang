@@ -1,0 +1,8 @@
+async Result<void, IoError> talk(read string address) {
+    var conn = try await TcpStream.connectAsync(address)
+    try await conn.setNoDelayAsync(true)
+    return Ok()
+}
+
+void main() {
+}

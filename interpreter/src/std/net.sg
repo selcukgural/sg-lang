@@ -168,7 +168,12 @@ public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
     }
 
     // The address the system gave, from `bits[at]` on: whether it is v6, its high and low bits, its port.
+    // A v4 address in a v6 one (`::ffff:1.2.3.4`), as a socket of every v6 address is given a v4 peer,
+    // is the v4 address it is (1969).
     SocketAddress given(read ulong[] bits, nint at) {
+        if bits[at] == 1 && bits[at + 1] == 0 && bits[at + 2] >> 32 == 0xffff {
+            return SocketAddress { high = 0, low = bits[at + 2] & 0xffffffff, v6 = false, number = (int)bits[at + 3] }
+        }
         return SocketAddress { high = bits[at + 1], low = bits[at + 2], v6 = bits[at] == 1, number = (int)bits[at + 3] }
     }
 
@@ -198,9 +203,58 @@ public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
         return SocketAddress.given(read bits, 0)
     }
 
+    // `stream.closeSending()` of a `TcpStream`: the other side reads the end of what this side sends,
+    // and this side still receives (1965). A side closed already has nothing left to close; a send
+    // after it is `ConnectionReset`, as one after the other side has gone.
+    Result<void, IoError> closeSendingOf(read TcpStream stream) {
+        return System.streamOption(stream, 0, 0)
+    }
+
+    // `stream.closeSending()` of a `UnixStream`, as of a `TcpStream`.
+    Result<void, IoError> unixCloseSendingOf(read UnixStream stream) {
+        return System.unixStreamOption(stream, 0, 0)
+    }
+
+    // `stream.setNoDelay(on)` of a `TcpStream`: with `true`, a small send goes out at once instead of
+    // waiting for the answer to the one before it (`TCP_NODELAY`, 1966), as every connection starts;
+    // `false` asks for Nagle's wait.
+    Result<void, IoError> noDelayOf(read TcpStream stream, bool on) {
+        long value = 0
+        if on {
+            value = 1
+        }
+        return System.streamOption(stream, 1, value)
+    }
+
+    // `stream.setKeepAlive(idle)` of a `TcpStream`: after `idle` without a byte either way, the system
+    // asks whether the other side is still there, and again as often; `null` turns it off (1967). The
+    // time is rounded up to whole seconds, and one of none or less is `InvalidInput`.
+    Result<void, IoError> keepAliveOf(read TcpStream stream, Duration? idle) {
+        long ms = 0
+        if idle is not null {
+            if idle.nanoseconds() <= 0 {
+                return Error(IoError.InvalidInput)
+            }
+            ms = idle.milliseconds()
+            if idle.nanoseconds() % 1000000 != 0 {
+                ms += 1
+            }
+        }
+        return System.streamOption(stream, 2, ms)
+    }
+
     // Whether it is a v6 address, as the calls of the system are given it.
     bool isV6(read this) {
         return this.v6
+    }
+
+    // The address as a v6 socket sends to it: a v4 one in a v6 one (`::ffff:1.2.3.4`), since a socket
+    // of every v6 address gives its v4 peers as v4 (1969).
+    SocketAddress inV6(read this) {
+        if this.v6 {
+            return this
+        }
+        return SocketAddress { high = 0, low = 0xffff00000000 | this.low, v6 = true, number = this.number }
     }
 }
 
@@ -217,6 +271,8 @@ public struct Received : Copyable, Equatable, Formattable {
 public struct UdpSocket : Disposable {
     // The socket of the system.
     long fd
+    // Bound to a v6 address: a v4 one is sent to as `::ffff:1.2.3.4` (1969).
+    bool v6
 
     // A socket at `host:port`, as `TcpListener.bind` takes it: a number, `localhost` (the v4 loopback),
     // or no host (`":5353"`, every v4 address of the machine). Port 0 lets the system choose, and
@@ -239,7 +295,15 @@ public struct UdpSocket : Disposable {
             }
         }
         var fd = try System.udpBind(at.isV6(), at.high, at.low, at.number)
-        return Ok(UdpSocket { fd = fd })
+        return Ok(UdpSocket { fd = fd, v6 = at.isV6() })
+    }
+
+    // Where the socket sends to `to`: a socket of a v6 address sends to a v4 one in a v6 one.
+    SocketAddress target(read this, SocketAddress to) {
+        if this.v6 {
+            return to.inV6()
+        }
+        return to
     }
 
     // The port the socket is bound to.
@@ -266,7 +330,8 @@ public struct UdpSocket : Disposable {
     // The datagram to `to`, whole: one that the system cannot send as one message is `MessageTooLong`,
     // and nothing of it is sent.
     public Result<void, IoError> sendTo(read this, read byte[] bytes, SocketAddress to) {
-        return System.udpSend(this.fd, bytes, true, to.isV6(), to.high, to.low, to.number)
+        var at = this.target(to)
+        return System.udpSend(this.fd, bytes, true, at.isV6(), at.high, at.low, at.number)
     }
 
     // The next datagram, into the buffer, with who sent it. A datagram longer than the buffer is
@@ -282,7 +347,8 @@ public struct UdpSocket : Disposable {
     // a `send` or a `receive` after it may say `ConnectionRefused`. Nothing goes over the network, so
     // it never waits. A second `connect` takes the place of the first.
     public Result<void, IoError> connect(read this, SocketAddress to) {
-        return System.udpConnect(this.fd, to.isV6(), to.high, to.low, to.number)
+        var at = this.target(to)
+        return System.udpConnect(this.fd, at.isV6(), at.high, at.low, at.number)
     }
 
     // `sendTo` the address of `connect`.
@@ -300,7 +366,8 @@ public struct UdpSocket : Disposable {
     // `sendTo` without holding the thread, for an async function. A token cancelled before the call
     // sends nothing.
     public async Result<void, IoError> sendToAsync(read this, read byte[] bytes, SocketAddress to, read CancellationToken token = CancellationToken.None) {
-        return await System.udpSendAsync(this.fd, bytes, true, to.isV6(), to.high, to.low, to.number, read token)
+        var at = this.target(to)
+        return await System.udpSendAsync(this.fd, bytes, true, at.isV6(), at.high, at.low, at.number, read token)
     }
 
     // `receiveFrom` without holding the thread, for an async function. A cancel ends the wait at once;

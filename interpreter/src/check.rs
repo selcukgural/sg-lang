@@ -15,8 +15,8 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
 use crate::exhaust;
-use crate::source::{std_types, STD_MODULE};
-use crate::types::{FloatTy, IntTy, TextIter, Ty};
+use crate::source::{std_types, STD_MODULE, STD_STREAM_CALLS};
+use crate::types::{FloatTy, IntTy, Net, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
 
@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Clonable", "Formattable", "Equatable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -2456,7 +2456,7 @@ fn static_type(decl: &StaticDecl, ty: &Ty, structs: &HashMap<String, StructInfo>
 fn kept_open(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> Option<(Ty, String)> {
     let inner = |ty: &Ty, seen: &mut Vec<String>| kept_open(ty, structs, enums, seen);
     match ty {
-        Ty::Reader(_) | Ty::Writer | Ty::Listener | Ty::Socket => Some((ty.clone(), String::new())),
+        Ty::Reader(_) | Ty::Writer | Ty::Listener(_) | Ty::Socket(_) => Some((ty.clone(), String::new())),
         Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.closable) => Some((ty.clone(), String::new())),
         Ty::Shared(inner_ty, _) | Ty::Weak(inner_ty, _) | Ty::Locked(inner_ty) | Ty::Atomic(inner_ty) => inner(inner_ty, seen),
         Ty::Ptr(item) | Ty::Nullable(item) | Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) => inner(item, seen),
@@ -6931,6 +6931,9 @@ impl<'a> Checker<'a> {
                 }
                 let item = match mode {
                     None => item,
+                    // An item that is a `read` borrow already is lent as it is: a `read` of a
+                    // `read byte[]` reads the same bytes.
+                    Some(Mode::Read) if matches!(item, Ty::Read(_)) => item,
                     Some(Mode::Read) => Ty::Read(Box::new(item)),
                     Some(Mode::Ref) => Ty::Ref(Box::new(item)),
                 };
@@ -12235,7 +12238,7 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(name_span, format!("a `{target}` has no `{name}`: `isTerminal` does not wait"))
                     .hint(format!("`{stream}.isTerminal()`, in an async function too")));
             }
-            (Ty::Writer, "write" | "writeLine" | "writeBytes") => 1,
+            (Ty::Writer, "write" | "writeLine" | "writeBytes" | "writePieces") => 1,
             (Ty::Writer, "flush" | "syncData" | "sync") => 0,
             (Ty::Writer, "setLength") => 1,
             // `closeAsync` takes the writer, and is not cancelled: what the writer holds is
@@ -12270,7 +12273,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let known: &[&str] = match target {
                     Ty::Reader(_) => &["readLineAsync", "readLineBytesAsync", "readTextAsync", "readBytesAsync", "readSomeAsync", "fillAsync"],
-                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync", "syncDataAsync", "syncAsync", "setLengthAsync"],
+                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "writePiecesAsync", "flushAsync", "closeAsync", "seekAsync", "syncDataAsync", "syncAsync", "setLengthAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -12789,7 +12792,7 @@ impl<'a> Checker<'a> {
             "signalNumber" => (SystemCall::SignalNumber, vec![Ty::Int(IntTy::Int)], Ty::Int(IntTy::Int)),
             "reader" => (SystemCall::PipeReader, vec![Ty::Int(IntTy::Long)], Ty::Reader(false)),
             "writer" => (SystemCall::PipeWriter, vec![Ty::Int(IntTy::Long)], Ty::Writer),
-            "udpBind" | "udpConnect" | "udpSend" | "udpSendAsync" | "udpReceive" | "udpReceiveAsync" | "socketAddress" | "streamAddress" | "closeSocket" | "lookup" | "lookupAsync" => {
+            "udpBind" | "udpConnect" | "udpSend" | "udpSendAsync" | "udpReceive" | "udpReceiveAsync" | "socketAddress" | "streamAddress" | "streamOption" | "unixStreamOption" | "closeSocket" | "lookup" | "lookupAsync" => {
                 let fd = || Ty::Int(IntTy::Long);
                 let address = || [Ty::Bool, Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Int)];
                 let bits = || Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Ulong)))));
@@ -12806,7 +12809,10 @@ impl<'a> Checker<'a> {
                     "udpReceive" => (SystemCall::UdpReceive, vec![fd(), buffer(Ty::Ref), bits()], io(Ty::Void)),
                     "udpReceiveAsync" => (SystemCall::UdpReceiveAsync, vec![fd(), buffer(Ty::Ref), bits(), token()], task(Ty::Void)),
                     "socketAddress" => (SystemCall::SocketName, vec![fd(), Ty::Bool, bits()], Ty::Bool),
-                    "streamAddress" => (SystemCall::StreamName, vec![Ty::Read(Box::new(Ty::Socket)), Ty::Bool, bits()], Ty::Bool),
+                    "streamAddress" => (SystemCall::StreamName, vec![Ty::Read(Box::new(Ty::Socket(Net::Tcp))), Ty::Bool, bits()], Ty::Bool),
+                    "streamOption" => (SystemCall::StreamOption, vec![Ty::Read(Box::new(Ty::Socket(Net::Tcp))), Ty::Int(IntTy::Int), Ty::Int(IntTy::Long)], io(Ty::Void)),
+                    // `closeSending` of a `UnixStream` (1965); its other options are TCP's.
+                    "unixStreamOption" => (SystemCall::StreamOption, vec![Ty::Read(Box::new(Ty::Socket(Net::Unix))), Ty::Int(IntTy::Int), Ty::Int(IntTy::Long)], io(Ty::Void)),
                     "closeSocket" => (SystemCall::CloseSocket, vec![fd()], Ty::Void),
                     "lookup" => (SystemCall::Lookup, vec![text(), found()], io(Ty::Void)),
                     _ => (SystemCall::LookupAsync, vec![text(), found(), token()], task(Ty::Void)),
@@ -12865,7 +12871,8 @@ impl<'a> Checker<'a> {
     }
 
     /// `TcpListener.bind(address)`, `TcpStream.connect(address)` and `connectAsync`: the
-    /// functions of the network types. An address is a `read string`, `host:port`.
+    /// functions of the network types. An address is a `read string`, `host:port`. The same of
+    /// `UnixListener` and `UnixStream` take a path of the machine (1960, 1961).
     #[allow(clippy::too_many_arguments)]
     fn net_static(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
         let text = Ty::Read(Box::new(Ty::Str));
@@ -12874,7 +12881,25 @@ impl<'a> Checker<'a> {
             ("TcpListener", "bind") => {
                 self.args(name, args, &[text], span).map_err(|diag| diag.note("an address is `host:port`: `\"127.0.0.1:8080\"`, `\"[::1]:8080\"`, `\":8080\"` for every address of the machine"))?;
                 *callee = Callee::Net(NetCall::Bind);
-                Ok(io(Ty::Listener))
+                Ok(io(Ty::Listener(Net::Tcp)))
+            }
+            ("UnixListener", "bind") => {
+                self.args(name, args, &[text], span).map_err(|diag| diag.note("a `UnixListener` listens at a path of the machine: `\"/run/app.sock\"`"))?;
+                *callee = Callee::Net(NetCall::UnixBind);
+                Ok(io(Ty::Listener(Net::Unix)))
+            }
+            ("UnixListener", "bindAsync") => Err(Diag::error(name_span, "`UnixListener` has no `bindAsync`: binding does not wait")
+                .hint("`UnixListener.bind(path)`, in an async function too")),
+            ("UnixStream", "connect") => {
+                self.args(name, args, &[text], span).map_err(|diag| diag.note("a `UnixStream` connects to the path a `UnixListener` listens at: `\"/run/app.sock\"`"))?;
+                *callee = Callee::Net(NetCall::UnixConnect);
+                Ok(io(Ty::Socket(Net::Unix)))
+            }
+            ("UnixStream", "connectAsync") => {
+                self.async_args(name, args, &[text], span)?;
+                self.awaited_here(&format!("UnixStream.{name}"), awaited, args, span)?;
+                *callee = Callee::NetAsync(NetCall::UnixConnect);
+                Ok(Ty::Task(Box::new(io(Ty::Socket(Net::Unix)))))
             }
             ("TcpListener", "bindAsync") => Err(Diag::error(name_span, "`TcpListener` has no `bindAsync`: binding does not wait")
                 .note("the address is not looked up by name, so `bind` never waits for the network")
@@ -12882,17 +12907,17 @@ impl<'a> Checker<'a> {
             ("TcpStream", "connect") => {
                 self.args(name, args, &[text], span).map_err(|diag| diag.note("an address is `host:port`: `\"example.com:80\"`, `\"127.0.0.1:8080\"`, `\"[::1]:8080\"`"))?;
                 *callee = Callee::Net(NetCall::Connect);
-                Ok(io(Ty::Socket))
+                Ok(io(Ty::Socket(Net::Tcp)))
             }
             ("TcpStream", "connectAsync") => {
                 self.async_args(name, args, &[text], span)?;
                 self.awaited_here(&format!("TcpStream.{name}"), awaited, args, span)?;
                 *callee = Callee::NetAsync(NetCall::Connect);
-                Ok(Ty::Task(Box::new(io(Ty::Socket))))
+                Ok(Ty::Task(Box::new(io(Ty::Socket(Net::Tcp)))))
             }
             _ => {
                 let known: &[&str] = match owner {
-                    "TcpListener" => &["bind"],
+                    "TcpListener" | "UnixListener" => &["bind"],
                     _ => &["connect", "connectAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
@@ -12901,6 +12926,10 @@ impl<'a> Checker<'a> {
                     ("TcpStream", "open" | "create" | "new") => diag.hint("`TcpStream.connect(address)` connects to `host:port`"),
                     ("TcpStream", "bind") => diag.note("a `TcpListener` listens: `TcpListener.bind(address)`"),
                     ("TcpListener", "connect" | "connectAsync") => diag.note(format!("a `TcpStream` connects: `TcpStream.{name}(address)`")),
+                    ("UnixListener", "listen" | "create" | "new" | "open") => diag.hint("`UnixListener.bind(path)` listens at a path"),
+                    ("UnixStream", "open" | "create" | "new") => diag.hint("`UnixStream.connect(path)` connects to a path"),
+                    ("UnixStream", "bind") => diag.note("a `UnixListener` listens: `UnixListener.bind(path)`"),
+                    ("UnixListener", "connect" | "connectAsync") => diag.note(format!("a `UnixStream` connects: `UnixStream.{name}(path)`")),
                     _ => match nearest(name, known.iter().copied()) {
                         Some(close) => diag.hint(format!("`{close}`")),
                         None => diag.note(format!("functions: {}", known.join(", "))),
@@ -12938,38 +12967,60 @@ impl<'a> Checker<'a> {
             None => (name, false),
         };
         let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
-        if (target, base) == (&Ty::Socket, "reader") {
+        if let (Ty::Socket(_), "reader") = (target, base) {
             return self.socket_reader(recv, shared, name, is_async, args, callee, span);
         }
+        // What a listener of either kind gives.
+        let stream = match target {
+            Ty::Listener(net) | Ty::Socket(net) => Ty::Socket(*net),
+            _ => unreachable!("only the network comes here"),
+        };
         let (call, params, ty) = match (target, base) {
-            (Ty::Listener, "accept") => (NetCall::Accept, Vec::new(), io(Ty::Socket)),
-            (Ty::Listener, "port") if !is_async => (NetCall::Port, Vec::new(), Ty::Int(IntTy::Int)),
-            (Ty::Socket, "receive") => (NetCall::Receive, vec![bytes(Ty::Ref)], io(Ty::Int(IntTy::Nint))),
-            (Ty::Socket, "send") => (NetCall::Send, vec![bytes(Ty::Read)], io(Ty::Void)),
-            (Ty::Socket, "sendPieces") => (NetCall::SendPieces, vec![Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))], io(Ty::Void)),
+            (Ty::Listener(_), "accept") => (NetCall::Accept, Vec::new(), io(stream.clone())),
+            (Ty::Listener(Net::Tcp), "port") if !is_async => (NetCall::Port, Vec::new(), Ty::Int(IntTy::Int)),
+            (Ty::Socket(_), "receive") => (NetCall::Receive, vec![bytes(Ty::Ref)], io(Ty::Int(IntTy::Nint))),
+            (Ty::Socket(_), "send") => (NetCall::Send, vec![bytes(Ty::Read)], io(Ty::Void)),
+            (Ty::Socket(_), "sendPieces") => (NetCall::SendPieces, vec![Ty::Read(Box::new(Ty::List(Box::new(bytes(Ty::Read)))))], io(Ty::Void)),
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Listener => &["accept", "acceptAsync", "port"],
-                    _ => &["receive", "receiveAsync", "send", "sendAsync", "sendPieces", "sendPiecesAsync", "reader"],
+                    Ty::Listener(Net::Tcp) => &["accept", "acceptAsync", "port"],
+                    Ty::Listener(Net::Unix) => &["accept", "acceptAsync"],
+                    Ty::Socket(Net::Unix) => &["receive", "receiveAsync", "send", "sendAsync", "sendPieces", "sendPiecesAsync", "reader", "closeSending"],
+                    _ => &["receive", "receiveAsync", "send", "sendAsync", "sendPieces", "sendPiecesAsync", "reader", "closeSending", "setNoDelay", "setKeepAlive", "remoteAddress", "localAddress"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let other = match (target, base) {
-                    (Ty::Socket, "recv" | "readBytes" | "readSome") => Some(if is_async { "receiveAsync" } else { "receive" }),
-                    (Ty::Socket, "write" | "writeBytes" | "writeAll" | "sendAll") => Some(if is_async { "sendAsync" } else { "send" }),
-                    (Ty::Socket, "writev" | "sendVectored" | "writeVectored" | "sendAllPieces") => Some(if is_async { "sendPiecesAsync" } else { "sendPieces" }),
+                    (Ty::Socket(_), "recv" | "readBytes" | "readSome") => Some(if is_async { "receiveAsync" } else { "receive" }),
+                    (Ty::Socket(_), "write" | "writeBytes" | "writeAll" | "sendAll") => Some(if is_async { "sendAsync" } else { "send" }),
+                    (Ty::Socket(_), "writev" | "sendVectored" | "writeVectored" | "sendAllPieces") => Some(if is_async { "sendPiecesAsync" } else { "sendPieces" }),
                     _ => None,
                 };
                 return Err(match (target, base) {
+                    (Ty::Socket(_), "shutdown" | "closeWrite" | "shutdownWrite" | "shutdownSend" | "closeSend") => diag
+                        .note("the connection is closed where it ends")
+                        .hint("`closeSending()` closes the side that sends, and the connection still receives"),
                     (_, "close" | "shutdown" | "dispose") => diag.note(format!("a `{target}` has nothing to lose: it is closed when it ends")),
-                    (Ty::Listener, "receive" | "send") => diag.note("a `TcpListener` takes connections: `listener.accept()` gives a `TcpStream`, which receives and sends"),
-                    (Ty::Socket, "accept") => diag.note("a `TcpListener` takes connections: `TcpListener.bind(address)`, then `listener.accept()`"),
-                    (Ty::Socket, "readLine" | "readLineBytes" | "readText" | "lines") => {
+                    (Ty::Listener(_), "receive" | "send") => diag.note(format!("a `{target}` takes connections: `listener.accept()` gives a `{stream}`, which receives and sends")),
+                    (Ty::Socket(net), "accept") => diag.note(match net {
+                        Net::Tcp => "a `TcpListener` takes connections: `TcpListener.bind(address)`, then `listener.accept()`",
+                        Net::Unix => "a `UnixListener` takes connections: `UnixListener.bind(path)`, then `listener.accept()`",
+                    }),
+                    (Ty::Socket(_), "readLine" | "readLineBytes" | "readText" | "lines") => {
                         let conn = &self.src[recv.span.start..recv.span.end];
-                        diag.note("a `TcpStream` receives bytes; a `StreamReader` reads lines and text")
+                        diag.note(format!("a `{target}` receives bytes; a `StreamReader` reads lines and text"))
                             .hint(format!("`var reader = {conn}.reader()`, then `reader.{name}(...)`"))
                     }
-                    (Ty::Socket, "writeLine") => diag.note("a `TcpStream` sends bytes: `send(text.asBytes())`"),
-                    (Ty::Listener, "port") => diag.hint("`port()` does not wait: `listener.port()`"),
+                    (Ty::Socket(_), "writeLine") => diag.note(format!("a `{target}` sends bytes: `send(text.asBytes())`")),
+                    (Ty::Listener(Net::Unix), "port" | "localAddress" | "path") => diag.note("a `UnixListener` listens at the path it was bound to, which the program has"),
+                    (Ty::Socket(Net::Unix), "remoteAddress" | "localAddress") => {
+                        diag.note("a `UnixStream` is a connection of the machine: neither side has an address of the network, and the side that connected has no path")
+                    }
+                    (Ty::Socket(Net::Unix), "setNoDelay" | "setKeepAlive") => diag.note(format!("`{name}` is an option of TCP; a `UnixStream` goes out at once and never idles out")),
+                    (Ty::Listener(_), "port") => diag.hint("`port()` does not wait: `listener.port()`"),
+                    (Ty::Socket(_), "closeSending" | "setNoDelay" | "setKeepAlive" | "remoteAddress" | "localAddress") if is_async && known.contains(&base) => {
+                        let conn = &self.src[recv.span.start..recv.span.end];
+                        diag.hint(format!("`{base}` does not wait: `{conn}.{base}(...)`, in an async function too"))
+                    }
                     _ => match other.or_else(|| nearest(name, known.iter().copied())) {
                         Some(close) => diag.hint(format!("`{close}`")),
                         None => diag.note(format!("methods: {}", known.join(", "))),
@@ -13032,7 +13083,7 @@ impl<'a> Checker<'a> {
         }
         if !awaited {
             let text = &self.src[span.start..span.end];
-            let what = if *target == Ty::Listener { "listener" } else { "connection" };
+            let what = if matches!(target, Ty::Listener(_)) { "listener" } else { "connection" };
             let diag = Diag::error(span, format!("`{name}` lends the {what}, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
             return Err(match self.is_async {
                 true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
@@ -13043,22 +13094,35 @@ impl<'a> Checker<'a> {
         Ok(Ty::Task(Box::new(ty)))
     }
 
-    /// `stream.remoteAddress()` and `stream.localAddress()`: done by the language's own module,
-    /// which is given the stream through a `read` borrow (`SocketAddress.remoteOf(read stream)`).
-    /// Neither waits, so neither has an async version.
-    fn stream_address(&mut self, recv: &mut Expr, name: &str, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
-        if !args.is_empty() {
-            return Err(Diag::error(span, format!("`{name}` takes no arguments, {} given", args.len())));
-        }
-        self.touch(recv, Access::Read);
+    /// `stream.remoteAddress()`, `stream.localAddress()`, `stream.closeSending()`,
+    /// `stream.setNoDelay(on)` and `stream.setKeepAlive(idle)`: done by the language's own module,
+    /// which is given the stream through a `read` borrow first (`SocketAddress.remoteOf(read
+    /// stream)`). None waits, so none has an async version.
+    fn stream_std(&mut self, recv: &mut Expr, name: &str, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
         let owner = format!("{STD_MODULE}.SocketAddress");
-        let inner = if name == "remoteAddress" { "remoteOf" } else { "localOf" };
+        let unix = recv.ty.strip_borrow() == &Ty::Socket(Net::Unix);
+        let inner = match name {
+            "remoteAddress" => "remoteOf",
+            "localAddress" => "localOf",
+            "closeSending" if unix => "unixCloseSendingOf",
+            "closeSending" => "closeSendingOf",
+            "setNoDelay" => "noDelayOf",
+            _ => "keepAliveOf",
+        };
         let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `{name}` gets the file of `SocketAddress`") };
-        let ret = sig.ret.clone();
+        let (params, ret) = (sig.params[1..].to_vec(), sig.ret.clone());
+        if args.len() != params.len() {
+            return Err(match params.len() {
+                0 => Diag::error(span, format!("`{name}` takes no arguments, {} given", args.len())),
+                count => Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())),
+            });
+        }
+        self.args(name, args, &params, span)?;
+        self.touch(recv, Access::Read);
         let written = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span: recv.span, ty: Ty::Void, moved: false };
         let stream = std::mem::replace(recv, written);
         let (span, ty) = (stream.span, Ty::Read(Box::new(stream.ty.strip_borrow().clone())));
-        args.push(Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(stream) }, span, ty, moved: false });
+        args.insert(0, Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(stream) }, span, ty, moved: false });
         *callee = Callee::Static { owner, name: inner.to_string() };
         Ok(ret)
     }
@@ -13329,7 +13393,7 @@ impl<'a> Checker<'a> {
                 if owner == "CancellationSource" || owner == "CancellationToken" {
                     return self.cancel_static(owner, name, name_span, args, callee, span);
                 }
-                if owner == "TcpListener" || owner == "TcpStream" {
+                if matches!(owner.as_str(), "TcpListener" | "TcpStream" | "UnixListener" | "UnixStream") {
                     return self.net_static(owner, name, name_span, args, callee, span, awaited);
                 }
                 // `CString.from(text)`: the text with a zero byte after it; one inside is an error.
@@ -13783,8 +13847,8 @@ impl<'a> Checker<'a> {
             let target = target.clone();
             return self.chan_method(recv, &target, name, name_span, args, callee, span, awaited);
         }
-        if *target == Ty::Socket && matches!(name, "remoteAddress" | "localAddress") {
-            return self.stream_address(recv, name, args, callee, span);
+        if (*target == Ty::Socket(Net::Tcp) && STD_STREAM_CALLS.contains(&name)) || (*target == Ty::Socket(Net::Unix) && name == "closeSending") {
+            return self.stream_std(recv, name, args, callee, span);
         }
         if *target == Ty::Char && name == "category" {
             return self.char_category(recv, args, callee, span);
@@ -13792,7 +13856,7 @@ impl<'a> Checker<'a> {
         if *target == Ty::Str && matches!(name, "normalize" | "isNormalized") {
             return self.text_normalize(recv, name, args, callee, span);
         }
-        if matches!(target, Ty::Listener | Ty::Socket) {
+        if matches!(target, Ty::Listener(_) | Ty::Socket(_)) {
             let target = target.clone();
             return self.net_method(recv, &target, writable, shared, name, name_span, args, callee, span, awaited);
         }
@@ -14734,6 +14798,7 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "write") => StreamCall::Write,
             (Ty::Writer, "writeLine") => StreamCall::WriteLine,
             (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
+            (Ty::Writer, "writePieces") => StreamCall::WritePieces,
             (Ty::Writer, "flush") => StreamCall::Flush,
             (Ty::Writer, "close") => StreamCall::Close,
             (Ty::Writer, "syncData") => StreamCall::SyncData,
@@ -14744,7 +14809,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let known: &[&str] = match target {
                     Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info", "isTerminal"],
-                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal"],
+                    _ => &["write", "writeLine", "writeBytes", "writePieces", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -14753,7 +14818,7 @@ impl<'a> Checker<'a> {
                 };
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
-                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush" | "syncData" | "sync" | "setLength") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
+                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "writePieces" | "flush" | "syncData" | "sync" | "setLength") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
                     (Ty::Writer, "readLine" | "readLineBytes" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
@@ -14860,6 +14925,16 @@ impl<'a> Checker<'a> {
             }
             StreamCall::WriteBytes => {
                 self.args(shown, args, &[Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
+                result(Ty::Void)
+            }
+            StreamCall::WritePieces => {
+                let piece = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                let writer = &self.src[recv.span.start..recv.span.end];
+                let hint = format!("one run of bytes is written with `writeBytes`: `{writer}.writeBytes(...)`");
+                self.args(shown, args, &[Ty::Read(Box::new(Ty::List(Box::new(piece))))], span).map_err(|diag| match args.first().map(|arg| arg.ty.strip_borrow()) {
+                    Some(Ty::List(item) | Ty::Slice(item)) if **item == Ty::Int(IntTy::Byte) => diag.hint(hint),
+                    _ => diag,
+                })?;
                 result(Ty::Void)
             }
             StreamCall::Write | StreamCall::WriteLine => {

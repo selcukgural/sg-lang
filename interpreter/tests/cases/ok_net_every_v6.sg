@@ -1,0 +1,38 @@
+// A socket of every v6 address (`[::]:port`) takes v4 too, on every system (1969): a v4 peer is
+// given as the v4 address it is, `127.0.0.1:port`, not `[::ffff:127.0.0.1]:port`, and a datagram
+// socket of every v6 address answers a v4 sender at the address it was given. A v6 peer stays v6.
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("[::]:0")
+    var v4 = $"127.0.0.1:{listener.port()}".toString()
+    var client = try TcpStream.connect(read v4)
+    var conn = try listener.accept()
+    var peer = try conn.remoteAddress()
+    print($"a v4 peer of [::] is v4: {!peer.host().contains(":")}, the same as its own side: {peer == client.localAddress()}")
+    var near = conn.localAddress()
+    print($"the side of [::] it reached: {near.host()}")
+    var v6 = $"[::1]:{listener.port()}".toString()
+    var other = try TcpStream.connect(read v6)
+    var second = try listener.accept()
+    var far = try second.remoteAddress()
+    print($"a v6 peer stays v6: {far.host()}, the same as its own side: {far == other.localAddress()}")
+
+    var server = try UdpSocket.bind("[::]:0")
+    var text = $"127.0.0.1:{server.port()}".toString()
+    var to = try SocketAddress.parse(read text)
+    var sender = try UdpSocket.bind("127.0.0.1:0")
+    try sender.sendTo("ping".asBytes(), to)
+    var buffer = byte[16](0)
+    var got = try server.receiveFrom(ref buffer)
+    print($"a v4 sender: {got.from.host()}, {got.count} bytes")
+    try server.sendTo("pong".asBytes(), got.from)
+    var back = try sender.receiveFrom(ref buffer)
+    print(string.fromUtf8(buffer[0..back.count]) ?? "not text")
+    try server.connect(got.from)
+    try server.send("again".asBytes())
+    var n = try sender.receive(ref buffer)
+    var remote = server.remoteAddress()
+    if remote is not null {
+        print($"{string.fromUtf8(buffer[0..n]) ?? "not text"}, connected to v4: {!remote.host().contains(":")}")
+    }
+    return Ok()
+}

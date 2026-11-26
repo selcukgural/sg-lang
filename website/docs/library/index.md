@@ -81,4 +81,5 @@ from each item to its source.
 - [Zip archives](./zip.md): `ZipReader` and `ZipWriter`, archives checked for Zip Slip and bombs before anything
   is read.
 
-The network (`TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`) does not have a page yet.
+The network (`TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, and `UnixListener` and `UnixStream`
+for sockets of the machine) does not have a page yet.

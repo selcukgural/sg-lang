@@ -62,7 +62,11 @@ pub fn bind_address(address: &str) -> Option<SocketAddr> {
 /// `TcpListener.bind(address)`: the listener does not block.
 pub fn bind(at: SocketAddr) -> io::Result<TcpListener> {
     #[cfg(unix)]
-    let listener = TcpListener::bind(at)?;
+    let listener = match at.ip() {
+        // SAFETY: the socket was just made, and is owned by the listener from here, which closes it.
+        IpAddr::V6(ip) if ip.is_unspecified() => unsafe { std::os::unix::io::FromRawFd::from_raw_fd(crate::sys::bind_every_v6(true, at.port())?) },
+        _ => TcpListener::bind(at)?,
+    };
     #[cfg(windows)]
     let listener = crate::sys::net::listener(at)?;
     listener.set_nonblocking(true)?;
@@ -89,12 +93,136 @@ pub fn connect(address: &str) -> Connected {
         match TcpStream::connect(at) {
             Ok(stream) => {
                 stream.set_nonblocking(true).map_err(Some)?;
+                // A small piece goes out at once (`TCP_NODELAY`, 1966), as compiled code sends it.
+                let _ = stream.set_nodelay(true);
                 return Ok(stream);
             }
             Err(error) => last = Some(error),
         }
     }
     Err(last)
+}
+
+/// Why a path is not one a socket of the machine can be at: one with a zero byte, or none, names no
+/// file (`NotFound`, as for a file); one longer than the system's address holds is `TooLong` (1961).
+pub enum UnixPath {
+    NotFound,
+    TooLong,
+}
+
+/// The bytes of a path of a socket of the machine, as its address holds them: at most 103 on macOS
+/// (`sun_path` is 104 bytes, with the zero byte at the end), 107 on Linux and Windows.
+fn unix_path(path: &str) -> Result<std::ffi::OsString, UnixPath> {
+    const MOST: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
+    if path.is_empty() || path.contains('\0') {
+        return Err(UnixPath::NotFound);
+    }
+    let os = crate::names::os_of(path);
+    #[cfg(unix)]
+    let len = std::os::unix::ffi::OsStrExt::as_bytes(os.as_os_str()).len();
+    #[cfg(windows)]
+    let len = path.len();
+    match len > MOST {
+        true => Err(UnixPath::TooLong),
+        false => Ok(os),
+    }
+}
+
+/// What a bind or a connect at a path gives: the socket, or why there is none.
+pub type AtPath<T> = Result<T, Result<UnixPath, io::Error>>;
+
+/// `UnixListener.bind(path)`: a listener at a path of the machine, which does not block. Its file is
+/// taken away where it ends, if it is still the one it made (1962); one there already is
+/// `AddressInUse`, as the system says.
+#[derive(Debug)]
+pub struct UnixListening {
+    #[cfg(unix)]
+    listener: std::os::unix::net::UnixListener,
+    #[cfg(windows)]
+    listener: crate::sys::net::UnixSocket,
+    path: std::ffi::OsString,
+    /// What the file was when the bind made it: its device and number on Linux and macOS, the
+    /// time it was made on Windows.
+    made: Option<(u64, u64)>,
+}
+
+/// What a file is, to tell whether the file at the path is still the socket's.
+fn file_id(path: &std::ffi::OsStr) -> Option<(u64, u64)> {
+    let info = std::fs::symlink_metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((info.dev(), info.ino()))
+    }
+    #[cfg(windows)]
+    {
+        let made = info.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((made.as_secs(), u64::from(made.subsec_nanos())))
+    }
+}
+
+impl UnixListening {
+    pub fn bind(path: &str) -> AtPath<UnixListening> {
+        let os = unix_path(path).map_err(Ok)?;
+        #[cfg(unix)]
+        let listener = std::os::unix::net::UnixListener::bind(&os).map_err(Err)?;
+        #[cfg(windows)]
+        let listener = crate::sys::net::UnixSocket::bind(path).map_err(Err)?;
+        listener.set_nonblocking(true).map_err(Err)?;
+        let made = file_id(&os);
+        Ok(UnixListening { listener, path: os, made })
+    }
+
+    /// The next connection, if one is there: a stream of the machine, held as std's `TcpStream`,
+    /// whose calls (`recv`, `send`, `shutdown`) are those of any connection.
+    pub fn accept(&self) -> io::Result<TcpStream> {
+        #[cfg(unix)]
+        let stream = {
+            let (stream, _) = self.listener.accept()?;
+            // SAFETY: the socket was just taken and is owned by the stream from here.
+            unsafe { std::os::unix::io::FromRawFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(stream)) }
+        };
+        #[cfg(windows)]
+        let stream = self.listener.accept()?;
+        Ok(stream)
+    }
+
+    pub fn fd(&self) -> RawFd {
+        #[cfg(unix)]
+        let fd = self.listener.as_raw_fd();
+        #[cfg(windows)]
+        let fd = self.listener.number();
+        fd
+    }
+}
+
+impl Drop for UnixListening {
+    fn drop(&mut self) {
+        if self.made.is_some() && file_id(&self.path) == self.made {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// `UnixStream.connect(path)`: a connection to the listener at a path, which does not block. Nothing
+/// is looked up and nothing goes over the network, so it is done at once; a listener with no room
+/// left for one more is `ConnectionRefused` on every system, where Linux would wait.
+pub fn unix_connect(path: &str) -> AtPath<TcpStream> {
+    let os = unix_path(path).map_err(Ok)?;
+    #[cfg(unix)]
+    let stream: TcpStream = {
+        let stream = crate::sys::unix_connect(&os).map_err(Err)?;
+        // SAFETY: as in `accept`.
+        unsafe { std::os::unix::io::FromRawFd::from_raw_fd(stream) }
+    };
+    // Winsock takes the path as the bytes of its text; `os` was made only to check it.
+    #[cfg(windows)]
+    let stream = {
+        let _ = os;
+        crate::sys::net::UnixSocket::connect(path).map_err(Err)?
+    };
+    stream.set_nonblocking(true).map_err(Err)?;
+    Ok(stream)
 }
 
 /// An address as the language's own module gives it to the system: whether it is v6, the high and
@@ -120,7 +248,11 @@ pub fn bits_of(at: SocketAddr) -> [u64; 4] {
 /// `System.udpBind`: a datagram socket that does not block.
 pub fn udp_bind(at: SocketAddr) -> io::Result<UdpSocket> {
     #[cfg(unix)]
-    let socket = UdpSocket::bind(at)?;
+    let socket = match at.ip() {
+        // SAFETY: as in `bind`.
+        IpAddr::V6(ip) if ip.is_unspecified() => unsafe { std::os::unix::io::FromRawFd::from_raw_fd(crate::sys::bind_every_v6(false, at.port())?) },
+        _ => UdpSocket::bind(at)?,
+    };
     #[cfg(windows)]
     let socket = crate::sys::net::udp(at)?;
     socket.set_nonblocking(true)?;

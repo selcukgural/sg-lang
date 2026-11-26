@@ -52,7 +52,7 @@ pub fn system_type(ty: &Ty) -> Option<String> {
         Ty::Locked(_) => Some("a `locked` value is taken with a lock of the system".to_string()),
         Ty::Source | Ty::Token => Some("cancellation belongs to the tasks of the system".to_string()),
         Ty::Channel(_) | Ty::Sender(_) => Some("a channel goes between the tasks of the system".to_string()),
-        Ty::Listener | Ty::Socket => Some("a connection of the network is the system's".to_string()),
+        Ty::Listener(_) | Ty::Socket(_) => Some("a connection of the network is the system's".to_string()),
         Ty::Map(..) => Some("a `HashMap` draws the key of its hash from the random bytes of the system".to_string()),
         Ty::Set(_) => Some("a `HashSet` draws the key of its hash from the random bytes of the system".to_string()),
         Ty::Nullable(inner) | Ty::List(inner) | Ty::Ptr(inner) | Ty::Array(inner, _) | Ty::Slice(inner) | Ty::Read(inner) | Ty::Ref(inner) | Ty::Shared(inner, _) | Ty::Weak(inner, _) => {
