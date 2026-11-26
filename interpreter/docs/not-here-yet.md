@@ -9,6 +9,8 @@
   method beside another item (`rows[i].addAll(read rows[j])`; `var row = ref rows[i]` first is checked) are
   refused beside a window of the same place, as before. The items of a list of lists are counted in the outer
   list (`grid[i][j]` beside `grid[i][k]` is one item, `grid[i]`). Two windows given to two threads at once.
+  A window named through a variable that holds the whole place (`ref all[..1]`, with `var all = ref names`)
+  beside a window of the place itself is refused, however far apart (195).
 
 - **Of packages (1552, 1555-1583)**: a package in a folder of a repository (Go's `sub/v1.0.0` tags), an
   address that leads to another through `?go-get=1`, versions before a release, branches and commits, a

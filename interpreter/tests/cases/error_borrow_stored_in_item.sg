@@ -1,0 +1,16 @@
+// A value that borrows, written into an item of a local list: the list borrows what the value
+// borrowed, as it does when the value is added. Changing that place afterwards while the list is
+// still used is an error; the item would look at a text that is gone.
+struct Word<from source> : Copyable {
+    read string text
+    int n
+}
+void main() {
+    var texts = List<string> { "a text long enough to live on the heap".clone() }
+    var others = List<string> { "another text long enough for the heap".clone() }
+    var words = List<Word>()
+    words.add(Word { text = read others[0], n = 0 })
+    words[0] = Word { text = read texts[0], n = 1 }
+    texts = List<string> { "a new list, and the old one freed".clone() }
+    print(words[0].text)
+}

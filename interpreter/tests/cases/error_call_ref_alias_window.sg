@@ -1,0 +1,12 @@
+// A window of `names` taken through `all`, a `ref` borrow of it, beside a window of `names`
+// itself in one call: the two are not told apart, since they are named through two variables.
+void spill(ref string[] into, read string[] from) {
+    var kept = read from[0]
+    into[0] = "a text put by spill, long enough for the heap".clone()
+    print(kept)
+}
+void main() {
+    var names = List<string> { "a text long enough to live on the heap".clone(), "b".clone() }
+    var all = ref names
+    spill(ref all[..1], names[..1])
+}

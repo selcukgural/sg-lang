@@ -151,6 +151,9 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   item (`var a = ref xs[..k]` beside `var b = ref xs[k..]`, `swap(ref xs[i], ref xs[j])`): ends that are
   numbers are told apart at compile time, the others when the second is taken, with a panic that names the
   items shared and the variable or the part of the call that holds the first (2011-2015).
+- A variable declared with a borrow (`var all = ref names`) lends what it borrowed: `f(ref all, read names[0])`
+  lends `names` twice in one call, and the error names the variable. An item of a list whose items carry a
+  borrow, lent or written into, is a borrow of the list (195).
 - A function that returns a borrow returns one that comes from a borrowed parameter. With one borrowed
   parameter nothing is written; with more, `from a, b` after the parameters says which, and leaving it out is
   an error that shows what to write. Returning a borrow of a local, of a parameter taken by value, or from a

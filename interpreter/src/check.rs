@@ -4218,7 +4218,22 @@ struct Borrows {
     window_holders: HashMap<usize, Span>,
     /// The variables given a new value after they were declared.
     reassigned: HashSet<usize>,
+    /// The variables declared with a borrow (`var p = ref xs`): lending one lends what it
+    /// borrowed. Not the names `lock`, `read ... as`, a pattern or a `for` opens.
+    declared_borrows: HashSet<usize>,
 }
+
+/// A place a borrow lent to a call reaches: the variable, the fields below it, and the
+/// variable that holds a window it was reached through, held apart from the others (195).
+type Reach = (usize, String, Option<usize>);
+
+/// A place lent to one call: what it reaches, whether as `ref`, where, its items, and the
+/// name it is written with.
+type Lent = (Vec<Reach>, bool, Span, Option<Window>, String);
+
+/// A place a call is given to change: the variable, the fields, the place as written, the
+/// borrow written, and the window variable it is reached through.
+type Changed<'e> = (usize, String, &'e Expr, Option<&'e Expr>, Option<usize>);
 
 /// A borrow of items of a list, an array or a window (choices 2011-2015).
 struct Window {
@@ -5475,11 +5490,13 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether the place lies behind a field that is itself a borrow (`this.input`, with
-    /// `read string input`): lending it lends what the field borrowed, not the struct.
+    /// `read string input`): lending it lends what the field borrowed, not the struct. A field
+    /// or an item that only carries a borrow (a `Word<from source>` kept in a list) is not one:
+    /// it is kept where it is, and lending it or writing it is a borrow of its owner.
     fn through_borrow(&self, place: &Expr) -> bool {
         match &place.kind {
             ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } => {
-                self.place_ty(place).is_some_and(|ty| self.holds(&ty)) || self.through_borrow(recv)
+                self.place_ty(place).is_some_and(|ty| ty.is_borrow()) || self.through_borrow(recv)
             }
             _ => false,
         }
@@ -6044,10 +6061,15 @@ impl<'a> Checker<'a> {
         // An argument that looks at a place another one lends as `ref` without being written
         // as a borrow (`Hex.encodeInto(ref s, s.asBytes())`, `grow(ref s, s[1..])`): the call
         // may change the place while it reads the view (choice 1592).
-        let changed: Vec<(usize, String, &Expr, Option<&Expr>)> = places
+        // A variable that holds a borrow (`ref p` with `var p = ref xs`) changes what it borrowed.
+        let changed: Vec<Changed> = places
             .iter()
             .filter(|(_, mutable, _)| *mutable)
-            .filter_map(|(place, _, borrow)| lent_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, path, *place, *borrow))))
+            .filter_map(|(place, _, borrow)| lent_path(place).and_then(|(name, path)| self.var_named(name).map(|var| (var.id, name, path, *place, *borrow))))
+            .flat_map(|(root, name, path, place, borrow)| {
+                let aliased = self.aliased(name, &path).into_iter().map(move |(root, path, window)| (root, path, place, None, window));
+                std::iter::once((root, path.clone(), place, borrow, None)).chain(aliased)
+            })
             .collect();
         if !changed.is_empty() {
             let lent_itself = |arg: &Expr| match &arg.kind {
@@ -6068,7 +6090,19 @@ impl<'a> Checker<'a> {
                         }
                     };
                     let mut found = None;
-                    for (_, _, place, borrow) in changed.iter().filter(|(root, path, _, _)| *root == loan.root && overlaps(path)) {
+                    // Two windows held apart reach no item in common (choices 2011-2015).
+                    let loan_window = self.window_of_loan(&loan);
+                    let apart_windows = |window: &Option<usize>| matches!((window, loan_window), (Some(x), Some(y)) if *x != y);
+                    for (_, _, place, borrow, window) in changed.iter().filter(|(root, path, _, _, window)| *root == loan.root && overlaps(path) && !apart_windows(window)) {
+                        // Items of the place beside a window variable lent through as `ref`.
+                        let through = match (window, self.taken(arg)) {
+                            (Some(holder), Some(taken)) if loan_window.is_none() => self.apart_from_holder(&taken, *holder),
+                            _ => None,
+                        };
+                        if let Some(through) = through {
+                            through?;
+                            continue;
+                        }
                         match apart(borrow) {
                             Some(apart) => apart?,
                             None => {
@@ -6090,29 +6124,107 @@ impl<'a> Checker<'a> {
     }
 
     /// The places lent to one call: a `ref` borrow must be the only one of its place.
+    /// The places a variable declared with a borrow (`var p = ref xs`) reaches through it:
+    /// what it borrowed, with `path` below that, and the variable when it holds a window held
+    /// apart from the others (choices 2011-2015). Lending `p` or a part of it lends those.
+    fn aliased(&self, name: &str, path: &str) -> Vec<Reach> {
+        let Some(var) = self.var_named(name).filter(|var| self.borrows.declared_borrows.contains(&var.id)) else { return Vec::new() };
+        let window = self.window_holder(var.id);
+        var.loans
+            .iter()
+            .filter(|loan| !loan.held && loan.root != UNNAMED)
+            .map(|loan| {
+                let below = match (loan.path.is_empty(), path.is_empty()) {
+                    (true, _) => path.to_string(),
+                    (false, true) => loan.path.clone(),
+                    (false, false) => format!("{}.{path}", loan.path),
+                };
+                (loan.root, below, window)
+            })
+            .collect()
+    }
+
+    /// The variable, if it holds a window it was declared with and was given no other: two
+    /// such variables of one place, both in use, were held apart when the second was taken.
+    fn window_holder(&self, id: usize) -> Option<usize> {
+        (self.borrows.window_holders.contains_key(&id) && !self.borrows.reassigned.contains(&id)).then_some(id)
+    }
+
+    /// A borrow of items (`ref xs[1]`) beside a variable that holds a window of the same place
+    /// (`head`, with `var head = ref xs[..1]`), lent to one call through it (`ref head[0]`):
+    /// held apart from the variable's window, which holds every item lent through it.
+    fn apart_from_holder(&self, window: &Window, holder: usize) -> Option<Res<()>> {
+        let key = self.borrows.window_holders.get(&holder)?;
+        let held = self.borrows.windows.iter().find(|each| each.key == *key)?;
+        let name = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.id == holder)?.name.clone();
+        self.held_apart(window, held, Some(&name))
+    }
+
+    /// The window variable a borrow was copied from: the one declared where the loan was taken.
+    fn window_of_loan(&self, loan: &Loan) -> Option<usize> {
+        self.borrows.window_holders.iter().find(|(_, key)| **key == loan.span).and_then(|(id, _)| self.window_holder(*id))
+    }
+
     fn lent_places(&mut self, places: Vec<(&Expr, bool, Option<&Expr>)>) -> Res<()> {
-        let mut lent: Vec<(usize, String, bool, Span, Option<Window>)> = Vec::new();
+        // Each place lent: the places it reaches (its own first, then those a variable that
+        // holds a borrow reaches through it), whether it is `ref`, where, and its items.
+        let mut lent: Vec<Lent> = Vec::new();
         for (place, mutable, borrow) in places {
             let Some((name, path)) = lent_path(place) else { continue };
             let Some((root, declared)) = self.find(name).map(|var| (var.id, var.declared.clone())) else { continue };
+            let reached: Vec<Reach> = std::iter::once((root, path.clone(), None)).chain(self.aliased(name, &path)).collect();
             let window = borrow.and_then(|borrow| self.taken(borrow));
             let mut clash = None;
-            for (other, other_path, other_mutable, first, other_window) in &lent {
-                let overlaps = path.is_empty() || other_path.is_empty() || within(&path, other_path) || within(other_path, &path);
-                if !(*other == root && overlaps && (mutable || *other_mutable)) {
+            for (other_reached, other_mutable, first, other_window, other_name) in &lent {
+                // Two windows held apart reach no item in common (choices 2011-2015).
+                let shared = |(a, a_path, a_window): &Reach, (b, b_path, b_window): &Reach| {
+                    let apart = matches!((a_window, b_window), (Some(x), Some(y)) if x != y);
+                    a == b && !apart && (a_path.is_empty() || b_path.is_empty() || within(a_path, b_path) || within(b_path, a_path))
+                };
+                let direct = shared(&reached[0], &other_reached[0]);
+                if !(mutable || *other_mutable) {
                     continue;
                 }
-                // Two borrows of items of one place (choices 2011-2015).
-                if let (Some(window), Some(other_window)) = (&window, other_window) {
+                let pairs: Vec<(&Reach, &Reach)> =
+                    reached.iter().flat_map(|mine| other_reached.iter().map(move |other| (mine, other))).filter(|(mine, other)| shared(mine, other)).collect();
+                if pairs.is_empty() {
+                    continue;
+                }
+                // Items of the place beside a window variable lent through: held apart from the
+                // variable's window, when each pair is that.
+                let mut all_apart = !direct;
+                for (mine, other) in &pairs {
+                    let found = match (mine.2, other.2, &window, other_window) {
+                        (None, Some(holder), Some(window), _) if std::ptr::eq(*mine, &reached[0]) => self.apart_from_holder(window, holder),
+                        (Some(holder), None, _, Some(other_window)) if std::ptr::eq(*other, &other_reached[0]) => self.apart_from_holder(other_window, holder),
+                        _ => None,
+                    };
+                    match found {
+                        Some(apart) => apart?,
+                        None => all_apart = false,
+                    }
+                }
+                if all_apart {
+                    continue;
+                }
+                // Named in the message when the two meet only through a variable that holds a
+                // borrow of the other's place.
+                let alias = match direct {
+                    true => None,
+                    false if pairs.iter().any(|(mine, _)| !std::ptr::eq(*mine, &reached[0])) => Some(name.to_string()),
+                    false => Some(other_name.clone()),
+                };
+                // Two borrows of items of one place (choices 2011-2015), named as that place.
+                if let (true, Some(window), Some(other_window)) = (direct, &window, other_window) {
                     if let Some(apart) = self.held_apart(window, other_window, None) {
                         apart?;
                         continue;
                     }
                 }
-                clash = Some(first);
+                clash = Some((first, alias));
                 break;
             }
-            if let Some(first) = clash {
+            if let Some((first, alias)) = clash {
                 let text = range_named(&self.src[place.span.start..place.span.end]);
                 // A `shared checked` value lent to change and to read stops the program when it
                 // runs, as `opening.rs` says of one lent through two owners (choice 1401).
@@ -6121,9 +6233,13 @@ impl<'a> Checker<'a> {
                         .note("a `shared checked` value is lent to one that changes it or to any number that read it, not both at once"),
                     _ => Diag::error(place.span, format!("`{text}` is lent twice in one call, and a `ref` borrow must be the only one")),
                 };
+                let diag = match alias {
+                    Some(alias) => diag.note(format!("`{alias}` holds a borrow, and lending it lends what it borrowed")),
+                    None => diag,
+                };
                 return Err(diag.related(*first, "the other borrow is here").hint("copy what is needed into a variable before the call"));
             }
-            lent.push((root, path, mutable, place.span, window));
+            lent.push((reached, mutable, place.span, window, name.to_string()));
         }
         Ok(())
     }
@@ -6505,10 +6621,13 @@ impl<'a> Checker<'a> {
                 self.kept_unnamed(&loans, init, &format!("`{name}`"))?;
                 let sender_of = self.sender_of(init);
                 let unsent = (matches!(ty, Ty::Channel(_)) && matches!(init.kind, ExprKind::Collection { .. })).then_some(*name_span);
-                let window = ty.is_borrow() && window_step(init).is_some();
+                let (borrow, window) = (ty.is_borrow(), ty.is_borrow() && window_step(init).is_some());
                 self.declare_local(name, ty, *name_span)?;
+                let id = self.find(name).expect("just declared").id;
+                if borrow {
+                    self.borrows.declared_borrows.insert(id);
+                }
                 if window {
-                    let id = self.find(name).expect("just declared").id;
                     self.borrows.window_holders.insert(id, init.span);
                 }
                 self.find(name).expect("just declared").loans = loans;
@@ -8686,6 +8805,19 @@ impl<'a> Checker<'a> {
                 let later = self.borrows.windows.iter().find(|window| window.touches.contains(span) && window.root == *root && window.path == *path);
                 if let (Some(later), Some(earlier)) = (later, self.taken(part)) {
                     if let Some(apart) = self.held_apart(later, &earlier, None) {
+                        apart?;
+                        continue;
+                    }
+                }
+                // The same where the earlier part lends them through a variable that holds a
+                // window of the place (`swap(ref head[0], ref xs[i])`): held apart from its window.
+                let lent = match &part.kind {
+                    ExprKind::Borrow { expr, .. } => lent_path(expr),
+                    _ => lent_path(part),
+                };
+                let holder = lent.and_then(|(name, _)| self.var_named(name)).and_then(|var| self.window_holder(var.id)).filter(|holder| self.window_of_loan(loan) == Some(*holder));
+                if let (Some(later), Some(holder)) = (later, holder) {
+                    if let Some(apart) = self.apart_from_holder(later, holder) {
                         apart?;
                         continue;
                     }

@@ -1,0 +1,12 @@
+// An item lent through a variable that holds a window (`ref head[0]`) beside an item of the
+// list itself, in one call: held apart from the variable's window (choices 2011-2015).
+void swap(ref string a, ref string b) {
+    var kept = a.clone()
+    a = b.clone()
+    b = kept
+}
+void main(List<string> args) {
+    var names = List<string> { "a".clone(), "b".clone() }
+    var head = ref names[..1]
+    swap(ref head[0], ref names[args.length()])
+}

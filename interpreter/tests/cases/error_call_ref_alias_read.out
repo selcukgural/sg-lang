@@ -1,0 +1,10 @@
+error: `names[0]` is lent twice in one call, and a `ref` borrow must be the only one
+  `all` holds a borrow, and lending it lends what it borrowed
+  --> error_call_ref_alias_read.sg:10:34
+ 10 |     clearThenPrint(ref all, read names[0])
+    |                                  ^^^^^^^^
+  the other borrow is here:
+  --> error_call_ref_alias_read.sg:10:24
+ 10 |     clearThenPrint(ref all, read names[0])
+    |                        ^^^
+  hint: copy what is needed into a variable before the call

@@ -1,0 +1,4 @@
+panic: `names[args.length()]` shares item 0 with `head` (`names[..1]`), which is still in use
+  --> panic_window_shared_through.sg:11:23
+ 11 |     swap(ref head[0], ref names[args.length()])
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^

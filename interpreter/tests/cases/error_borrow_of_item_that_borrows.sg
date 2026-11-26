@@ -1,0 +1,15 @@
+// An item lent from a list is a borrow of the list, also when the item itself borrows from
+// somewhere else: the list cannot be cleared while the borrow of its item is still used.
+struct Word<from source> : Copyable {
+    read string text
+    int n
+}
+void main() {
+    var texts = List<string> { "a text long enough to live on the heap".clone() }
+    var words = List<Word>()
+    words.add(Word { text = read texts[0], n = 7 })
+    var first = read words[0]
+    words.clear()
+    words.add(Word { text = read texts[0], n = 9 })
+    print(first.n)
+}

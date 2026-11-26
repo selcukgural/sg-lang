@@ -1,0 +1,11 @@
+// `all` is a `ref` borrow of `names`: giving `ref all` and an item of `names` to one call lends
+// the list to be changed and an item of it to be read, which the call could free first.
+void clearThenPrint(ref List<string> items, read string kept) {
+    items.clear()
+    print(kept)
+}
+void main() {
+    var names = List<string> { "a text long enough to live on the heap".clone() }
+    var all = ref names
+    clearThenPrint(ref all, read names[0])
+}

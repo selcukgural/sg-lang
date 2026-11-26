@@ -1,0 +1,10 @@
+error: `names[..1]` looks at `all[..1]`, which this call is given to change
+  the call may change `all[..1]` while `names[..1]` is read, and it would be read from what was there
+  --> error_call_ref_alias_window.sg:11:25
+ 11 |     spill(ref all[..1], names[..1])
+    |                         ^^^^^^^^^^
+  given as `ref` here:
+  --> error_call_ref_alias_window.sg:11:11
+ 11 |     spill(ref all[..1], names[..1])
+    |           ^^^^^^^^^^^^
+  hint: make it a value of its own before the call (`.clone()`, `.toList()`), and give the call that

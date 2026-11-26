@@ -1,0 +1,9 @@
+error: `texts` cannot be changed here: `words` borrows from it and is used again later
+  --> error_borrow_stored_in_item.sg:14:5
+ 14 |     texts = List<string> { "a new list, and the old one freed".clone() }
+    |     ^^^^^
+  `words` borrowed it here:
+  --> error_borrow_stored_in_item.sg:13:30
+ 13 |     words[0] = Word { text = read texts[0], n = 1 }
+    |                              ^^^^^^^^^^^^^
+  hint: finish with `words` before this line: a borrow ends at its last use

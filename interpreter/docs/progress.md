@@ -642,7 +642,12 @@ Rust's `split_at_mut` written as two ranges: `var left = ref xs[..k]` beside `va
 `merge(ref xs[..mid], ref xs[mid..])`. An item is a window of one (`swap(ref xs[i], ref xs[j])`) and a field of an
 item counts as the item. That they share none is checked when the second is taken, a panic if they do; ends
 written as numbers are told apart when the program is compiled, and for `..k` beside `k..` the compiler of C
-leaves the check out. Next are the processes of the system: pipes, `try_wait`, groups, signals.
+leaves the check out.
+
+Slice 195 closes four places where the checker took a program that broke the rules of borrowing, found by the
+generator of slice 194: a value that borrows written into an item of a list, an item lent from a list whose items
+carry a borrow, and a variable declared with a borrow lent to a call beside its place, also as windows. Next are
+the processes of the system: pipes, `try_wait`, groups, signals.
 
 ## Next
 

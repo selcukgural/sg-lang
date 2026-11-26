@@ -1,0 +1,9 @@
+error: `words` cannot be changed here: `first` borrows from it and is used again later
+  --> error_borrow_of_item_that_borrows.sg:12:5
+ 12 |     words.clear()
+    |     ^^^^^
+  `first` borrowed it here:
+  --> error_borrow_of_item_that_borrows.sg:11:17
+ 11 |     var first = read words[0]
+    |                 ^^^^^^^^^^^^^
+  hint: finish with `first` before this line: a borrow ends at its last use

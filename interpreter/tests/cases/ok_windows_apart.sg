@@ -81,6 +81,8 @@ async void main(List<string> args) {
     swap(ref xs[k - 1], ref xs[k])
     var head = ref xs[..1]
     swap(ref xs[1], ref head[0])
+    swap(ref head[0], ref xs[1])
+    swap(ref xs[1], ref head[0])
     print($"{xs[0]} {xs[1]} {xs[2]} {xs[3]}")
 
     // Ends written as numbers are told apart when the program is compiled, also from the end.
