@@ -10,6 +10,7 @@ pub mod diag;
 pub mod emit_c;
 pub mod exhaust;
 pub mod header;
+pub mod help;
 pub mod ffi;
 pub mod freestanding;
 pub mod interp;

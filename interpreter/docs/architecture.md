@@ -33,6 +33,7 @@
 | `src/root.rs`, `src/sys/root_windows.rs` | For the interpreter: `DirectoryRoot`, a path walked part by part from the handle of a folder so that no link and no `..` leads out of it (`openat`, `readlinkat` and one step up checked by the folder's device and number on Linux and macOS; `NtCreateFile` by the handle of each folder on Windows), as `ROOT_RUNTIME` does it for compiled code |
 | `src/lsp.rs` | The language server (`sg lsp`): the messages of the Language Server Protocol on the input and output, the program each open file belongs to, a check 300 ms after the last change on a thread of its own, the first error as a diagnostic and its fix as a quick fix, positions in UTF-16 as the protocol counts them |
 | `src/json.rs` | JSON read and written for the language server, so that `sg` keeps no dependencies |
+| `src/help.rs`, `src/help/` | `sg help`: the pages of the words and a line for every name of the index, made by `website/plain/build.mjs` (never changed by hand), listed by `build.rs` and carried in `sg` |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that the language server (`sg lsp`) uses the same parser

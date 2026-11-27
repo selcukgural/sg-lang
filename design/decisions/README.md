@@ -294,3 +294,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [The sentence and the tagline](2026-11-27.md#the-sentence-and-the-tagline) | Small like C, readable like C#, fast and memory safe like Rust; "Plain to read. Fast to run. Memory safe by design." (replaced by 2080) | 2079 |
 | [The tagline, again](2026-11-27.md#the-tagline-again) | "Small enough to know by heart. Safe and fast by construction."; no other language named | 2080 |
 | [The plain site](2026-11-27.md#the-plain-site) | Plain pages made by one script, a page for each word, manual pages, the wildcat logo; Docusaurus kept | 2081 |
+| [Help in the terminal](2026-11-27.md#help-in-the-terminal) | `sg help <name>` prints the page of a word from `sg` itself, with no network; the packages of the preview install the manual pages | 2082-2083 |

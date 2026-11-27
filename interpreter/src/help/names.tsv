@@ -1,0 +1,136 @@
+# Made by website/plain/build.mjs for `sg help`; change website/words/ and build the site.
+alias	keyword	Keywords	gives a type a second name: alias Scores = List<int>		https://sg-lang.org/reference/#n-alias
+align	keyword	Keywords	align(N) keeps a type at a multiple of N bytes		https://sg-lang.org/reference/#n-align
+as	keyword	Keywords	names a lent value for a block: read mine as account { }		https://sg-lang.org/reference/#n-as
+assert	keyword	Keywords	stops the program, or fails the test, when a condition is false		https://sg-lang.org/reference/#n-assert
+async	keyword	Keywords	a function that runs as a light task and may await		https://sg-lang.org/reference/#n-async
+atomic	keyword	Keywords	a number or a bool that tasks change without a lock, one step at a time	atomic	https://sg-lang.org/reference/atomic
+await	keyword	Keywords	waits for the result of an async call		https://sg-lang.org/reference/#n-await
+break	keyword	Keywords	leaves the loop		https://sg-lang.org/reference/#n-break
+checked	keyword	Keywords	shared checked T: borrows of it are checked while the program runs		https://sg-lang.org/reference/#n-checked
+const	keyword	Keywords	a value fixed when the program is compiled		https://sg-lang.org/reference/#n-const
+continue	keyword	Keywords	goes on with the next turn of the loop		https://sg-lang.org/reference/#n-continue
+else	keyword	Keywords	the block that runs when the condition of if is false		https://sg-lang.org/reference/#n-else
+embed	keyword	Keywords	embed("logo.gif"): the bytes of a file, put into the program		https://sg-lang.org/reference/#n-embed
+enum	keyword	Keywords	a type that is one of several variants, each with its own values		https://sg-lang.org/reference/#n-enum
+export	keyword	Keywords	makes a function that C calls		https://sg-lang.org/reference/#n-export
+extern	keyword	Keywords	declares the functions of a C library		https://sg-lang.org/reference/#n-extern
+for	keyword	Keywords	goes over the items of a collection or a range: for i in 0..n		https://sg-lang.org/reference/#n-for
+if	keyword	Keywords	runs a block when a condition holds		https://sg-lang.org/reference/#n-if
+in	keyword	Keywords	stands between the name and the items in a for		https://sg-lang.org/reference/#n-in
+interface	keyword	Keywords	what a type can do: Clonable, Formattable, Equatable, Comparable		https://sg-lang.org/reference/#n-interface
+is	keyword	Keywords	tests for one variant in a condition; is not turns it round		https://sg-lang.org/reference/#n-is
+lock	keyword	Keywords	a short block that alone touches a locked value		https://sg-lang.org/reference/#n-lock
+locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock		https://sg-lang.org/reference/#n-locked
+match	keyword	Keywords	chooses by the shape of a value; every case must be covered	match	https://sg-lang.org/reference/match
+new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it		https://sg-lang.org/reference/#n-new
+not	keyword	Keywords	is not: the test of is, the other way round		https://sg-lang.org/reference/#n-not
+or	keyword	Keywords	joins patterns in a match		https://sg-lang.org/reference/#n-or
+packed	keyword	Keywords	a struct with no padding between its fields		https://sg-lang.org/reference/#n-packed
+public	keyword	Keywords	shows a name to other modules		https://sg-lang.org/reference/#n-public
+raw	keyword	Keywords	raw T: a pointer of C, which the compiler does not check		https://sg-lang.org/reference/#n-raw
+read	keyword	Keywords	lends a value to be looked at, not changed	read	https://sg-lang.org/reference/read
+readonly	keyword	Keywords	a field given when the value is built and never changed		https://sg-lang.org/reference/#n-readonly
+ref	keyword	Keywords	lends a value to be changed in place; the only borrow of it while it lasts	ref	https://sg-lang.org/reference/ref
+return	keyword	Keywords	ends the function, with its value		https://sg-lang.org/reference/#n-return
+share	keyword	Keywords	makes one more owner of a shared value		https://sg-lang.org/reference/#n-share
+shared	keyword	Keywords	shared T: a value on the heap with several owners, only read	shared	https://sg-lang.org/reference/shared
+static	keyword	Keywords	a value made once, the first time the program uses it		https://sg-lang.org/reference/#n-static
+struct	keyword	Keywords	a type made of named fields, with its methods		https://sg-lang.org/reference/#n-struct
+test	keyword	Keywords	a block of checks that sg test runs		https://sg-lang.org/reference/#n-test
+try	keyword	Keywords	opens a Result: its value, or the error handed to the caller	try	https://sg-lang.org/reference/try
+union	keyword	Keywords	holds one of its fields at a time in the same bytes		https://sg-lang.org/reference/#n-union
+unsafe	keyword	Keywords	a block where what the checker cannot follow is written		https://sg-lang.org/reference/#n-unsafe
+use	keyword	Keywords	brings in a module		https://sg-lang.org/reference/#n-use
+var	keyword	Keywords	declares a variable; its type comes from its value	var	https://sg-lang.org/reference/var
+weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang.org/reference/#n-weak
+when	keyword	Keywords	adds a condition to an arm of a match		https://sg-lang.org/reference/#n-when
+while	keyword	Keywords	repeats a block as long as a condition holds		https://sg-lang.org/reference/#n-while
+with	keyword	Keywords	a copy of a struct with some fields changed		https://sg-lang.org/reference/#n-with
+bool	type	Primitive types	true or false		https://sg-lang.org/reference/#n-bool
+byte	type	Primitive types	an integer of 8 bits, 0 to 255		https://sg-lang.org/reference/#n-byte
+char	type	Primitive types	one character of Unicode		https://sg-lang.org/reference/#n-char
+double	type	Primitive types	a fraction of 64 bits		https://sg-lang.org/reference/#n-double
+float	type	Primitive types	a fraction of 32 bits		https://sg-lang.org/reference/#n-float
+int	type	Primitive types	an integer of 32 bits		https://sg-lang.org/reference/#n-int
+long	type	Primitive types	an integer of 64 bits		https://sg-lang.org/reference/#n-long
+nint	type	Primitive types	an integer as wide as an address: what length() gives		https://sg-lang.org/reference/#n-nint
+nuint	type	Primitive types	nint without a sign		https://sg-lang.org/reference/#n-nuint
+sbyte	type	Primitive types	an integer of 8 bits, -128 to 127		https://sg-lang.org/reference/#n-sbyte
+short	type	Primitive types	an integer of 16 bits		https://sg-lang.org/reference/#n-short
+string	type	Primitive types	text in UTF-8 that owns its memory; read string is a borrow of it	string	https://sg-lang.org/reference/string
+uint	type	Primitive types	an integer of 32 bits without a sign		https://sg-lang.org/reference/#n-uint
+ulong	type	Primitive types	an integer of 64 bits without a sign		https://sg-lang.org/reference/#n-ulong
+ushort	type	Primitive types	an integer of 16 bits without a sign		https://sg-lang.org/reference/#n-ushort
+void	type	Primitive types	the type of a function that gives nothing back		https://sg-lang.org/reference/#n-void
+false	value	Values with a name	the bool that is not true		https://sg-lang.org/reference/#n-false
+null	value	Values with a name	no value; only a type written T? may hold it		https://sg-lang.org/reference/#n-null
+this	value	Values with a name	the value a method was called on		https://sg-lang.org/reference/#n-this
+true	value	Values with a name	the bool that is not false		https://sg-lang.org/reference/#n-true
+$"{x}"	sign	Signs	text with values written into it		https://sg-lang.org/reference/#n--24227b-x-7d22
+a..b	sign	Signs	a range: from a up to, not with, b		https://sg-lang.org/reference/#n-a-2e2e-b
+T?	sign	Signs	a T that may be null		https://sg-lang.org/reference/#n-T-3f
+T[]	sign	Signs	a slice: items that something else owns		https://sg-lang.org/reference/#n-T-5b5d
+T*	sign	Signs	a pointer that owns a value on the heap		https://sg-lang.org/reference/#n-T-2a
+x ?? y	sign	Signs	x, or y when x is null or an error		https://sg-lang.org/reference/#n-x-203f3f20-y
+x?.y	sign	Signs	y of x, or null when x is null		https://sg-lang.org/reference/#n-x-3f2e-y
+xs[^1]	sign	Signs	an index counted from the end		https://sg-lang.org/reference/#n-xs-5b5e-1-5d
+Base64	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#base64
+CancellationSource	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#cancellationsource-and-cancellationtoken
+Channel	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#channelt-and-sendert
+Clock	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#clock
+Command	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#command
+DateError	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#dateerror
+DateTime	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#datetime
+DateTimeOffset	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#datetimeoffset
+DecodeError	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#decodeerror
+Directory	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#directory
+Duration	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#duration
+Environment	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#environment
+ExitStatus	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#exitstatus-and-processerror
+HashMap	library type	Types of the library	a type of the library, in Collections		https://sg-lang.org/library/collections#hashmapk-v
+HashSet	library type	Types of the library	a type of the library, in Collections		https://sg-lang.org/library/collections#hashsett
+Hex	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#hex
+HttpConnection	library type	Types of the library	a type of the library, in HTTP		https://sg-lang.org/library/http#httpconnection
+HttpOptions	library type	Types of the library	a type of the library, in HTTP		https://sg-lang.org/library/http#httpoptions
+HttpRequest	library type	Types of the library	a type of the library, in HTTP		https://sg-lang.org/library/http#httprequest
+Instant	library type	Types of the library	a type of the library, in Time		https://sg-lang.org/library/time#instant
+IoError	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#ioerror
+List	library type	Types of the library	a list of items that grows, kept in one block of memory	list	https://sg-lang.org/reference/list
+Path	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#path
+Percent	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#percent
+Pipeline	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#pipeline
+Process	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#process
+Random	library type	Types of the library	a type of the library, in Random numbers		https://sg-lang.org/library/random#random
+SecureRandom	library type	Types of the library	a type of the library, in Random numbers		https://sg-lang.org/library/random#securerandom
+Signals	library type	Types of the library	a type of the library, in Programs and the system		https://sg-lang.org/library/process#signals
+Stdin	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#stdin-stdout-and-stderr
+StreamReader	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#streamreader
+StreamWriter	library type	Types of the library	a type of the library, in Files and folders		https://sg-lang.org/library/files#streamwriter
+Task	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#taskr
+TaskGroup	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#taskgroup
+Collections	module	Modules of the library	arrays, slices, List, HashMap and HashSet, with all their methods		https://sg-lang.org/library/collections
+Compression	module	Modules of the library	deflate, Zlib and Gzip, both ways, at once or as a stream; zlib's bytes at every level, and a limit on what is opened		https://sg-lang.org/library/compression
+CRC-32 and Adler-32	module	Modules of the library	crc32, the checksum of gzip, PNG and ZIP, and Adler32, the checksum of zlib, at once or piece by piece		https://sg-lang.org/library/checksum
+Files and folders	module	Modules of the library	file, StreamReader and StreamWriter, the standard streams, Directory and watching a folder, Path, FileInfo and IoError		https://sg-lang.org/library/files
+Hex, Base64 and percent	module	Modules of the library	hex, Base64 and the percent-encoding of URLs, bytes written as text and read back, strictly		https://sg-lang.org/library/encoding
+HTTP	module	Modules of the library	httpConnection, the server's side of HTTP/1.1, a request pulled and answered at a time, read where it lies, with the limits a server on the internet needs on from the start		https://sg-lang.org/library/http
+JSON	module	Modules of the library	json, JsonValue and JsonObject, JSON read strictly into values, looked into, built, changed and written back		https://sg-lang.org/library/json
+Log	module	Modules of the library	log and LogLevel, lines of a log written to the standard error, a level that is off costing almost nothing, and a message never read for anything in it		https://sg-lang.org/library/log
+Numbers	module	Modules of the library	the integer and fractional types, their constants, conversions, arithmetic that cannot panic, bits, math and parsing		https://sg-lang.org/library/numbers
+Programs and the system	module	Modules of the library	command, Process, Pipeline and ExitStatus to run other programs, jobs and the terminal, a terminal of its own and a raw one, Environment, and Signals		https://sg-lang.org/library/process
+Random numbers	module	Modules of the library	random, a fast generator that a seed sets, and SecureRandom, the random bytes of the system		https://sg-lang.org/library/random
+Regular expressions	module	Modules of the library	regex, Match and Captures, patterns matched in a time that grows with the text and no more, and a pattern written in the program checked when it is compiled		https://sg-lang.org/library/regex
+SHA-256 and HMAC	module	Modules of the library	sha256, Hmac.sha256 and Bytes.equalInConstantTime, the hash and the keyed tag of the standards		https://sg-lang.org/library/hash
+Tasks	module	Modules of the library	task, TaskGroup, Channel and Sender, shared locked values, atomics and cancellation, with their signatures		https://sg-lang.org/library/tasks
+Text	module	Modules of the library	string, read string and char, with every method they have		https://sg-lang.org/library/string
+The command line	module	Modules of the library	commandLine and Arguments, the flags, options and words a program takes, read the GNU way		https://sg-lang.org/library/command-line
+Time	module	Modules of the library	duration, Instant, DateTime and DateTimeOffset, and the clocks under them		https://sg-lang.org/library/time
+Zip archives	module	Modules of the library	zipReader and ZipWriter, archives read and written as Go reads and writes them, checked for Zip Slip and bombs before anything is read		https://sg-lang.org/library/zip
+sg	command	Commands	runs a program: sg hello.sg, or a folder		https://sg-lang.org/reference/#n-sg
+sg add	command	Commands	adds a package to sg.project; with update, remove and lock		https://sg-lang.org/reference/#n-sg-20-add
+sg build	command	Commands	compiles through C: a program, a library, or an object without an operating system		https://sg-lang.org/reference/#n-sg-20-build
+sg emit-c	command	Commands	prints the C		https://sg-lang.org/reference/#n-sg-20-emit-2d-c
+sg help	command	Commands	the page of a word of SG in the terminal, with no network: sg help read		https://sg-lang.org/reference/#n-sg-20-help
+sg lsp	command	Commands	the language server an editor starts		https://sg-lang.org/reference/#n-sg-20-lsp
+sg test	command	Commands	runs the tests of a file or of every module in a folder		https://sg-lang.org/reference/#n-sg-20-test

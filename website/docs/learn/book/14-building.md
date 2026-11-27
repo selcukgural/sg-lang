@@ -232,3 +232,10 @@ saved. Some hints are fixes applied with one click: a conversion `(int)x`, `.clo
 borrowed, `_ = ` before a value dropped on purpose, and a missing `use`. The extension for VS Code
 (`editors/vscode`) brings colours, brackets, comments and indentation, and starts `sg lsp`; how to install it is
 in [Install](../install.md).
+
+## Help
+
+`sg help read` prints the page of a word in the terminal: its forms, what it means, examples from the simplest
+to the hardest, and what the compiler refuses. It is carried in `sg` itself, so it needs no network, and it is
+the same text as the page on the site and the manual page. `sg help index` lists every name of SG with what it
+is in one line, and `sg help` the words that have a page.

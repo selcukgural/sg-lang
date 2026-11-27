@@ -3481,3 +3481,68 @@ fn waits_from_outside_are_counted() {
         assert!(said.ends_with(want), "{stem}: {said}");
     }
 }
+
+/// `sg help` prints the page of a word from `sg` itself (choice 2082), the line of a name with no page, the index
+/// and the list of the pages; a name it does not know is an error, and so are two names.
+#[test]
+fn help_from_sg_itself() {
+    let dir = work("help_from_sg_itself");
+    let (code, out, err) = ran(&sg(&dir, &["help", "read"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.starts_with("NAME\n     read - lends a value to be looked at, not changed\n\nSYNOPSIS\n"), "{out}");
+    assert!(out.contains("EXAMPLES\n") && out.contains("sg help ref") && !out.contains("(7)"), "{out}");
+    // Any case, and a command without its `sg`.
+    assert_eq!(ran(&sg(&dir, &["help", "list"])).1, ran(&sg(&dir, &["help", "List"])).1);
+    let (code, out, _) = ran(&sg(&dir, &["help", "build"]));
+    assert_eq!(code, 0);
+    assert!(out.starts_with("NAME\n     sg build - ") && out.contains("https://sg-lang.org/reference/#"), "{out}");
+    let (code, out, _) = ran(&sg(&dir, &["help", "x ?? y"]));
+    assert_eq!(code, 0);
+    assert!(out.starts_with("NAME\n     x ?? y - "), "{out}");
+    let (code, out, _) = ran(&sg(&dir, &["help", "index"]));
+    assert_eq!(code, 0);
+    assert!(out.starts_with("KEYWORDS\n     alias ") && out.contains("\nCOMMANDS\n") && out.contains("\n     read "), "{out}");
+    assert!(out.lines().all(|line| line.chars().count() <= 78), "{out}");
+    let (code, out, _) = ran(&sg(&dir, &["help"]));
+    assert_eq!(code, 0);
+    assert!(out.contains("THE WORDS WITH A PAGE\n") && out.contains("\n     read    lends a value"), "{out}");
+    assert_eq!(
+        ran(&sg(&dir, &["help", "li"])),
+        (2, String::new(), "error: SG has no name `li` that `sg help` knows; names that start like it: `List`\n".into())
+    );
+    let (code, _, err) = ran(&sg(&dir, &["help", "nothing-like-it"]));
+    assert_eq!(code, 2);
+    assert!(err.contains("`sg help index` lists every name"), "{err}");
+    let (code, _, err) = ran(&sg(&dir, &["help", "read", "ref"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("usage: sg ") && err.contains("sg help [name | index]"), "{err}");
+}
+
+/// Every page of a word on the site is a page of `sg help`, with the line its Markdown gives it: the files of
+/// `src/help/` were made from the words as they are (`npm run build` in `website/plain` makes them again).
+#[test]
+fn help_has_every_page_of_the_site() {
+    let dir = work("help_has_every_page_of_the_site");
+    let words = Path::new(env!("CARGO_MANIFEST_DIR")).join("../website/words");
+    let mut count = 0;
+    for entry in std::fs::read_dir(&words).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "md") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let field = |key: &str| source.lines().find_map(|l| l.strip_prefix(&format!("{key}: "))).unwrap().trim().to_string();
+        let (name, summary) = (field("name"), field("summary"));
+        let summary = summary.strip_suffix('.').unwrap_or(&summary);
+        let mut chars = summary.chars();
+        let first = chars.next().unwrap();
+        let line = if chars.clone().next().is_some_and(|c| c.is_lowercase() || c == ' ') { format!("{}{}", first.to_lowercase(), chars.as_str()) } else { summary.to_string() };
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let (code, out, err) = ran(&sg(&dir, &["help", stem]));
+        assert_eq!((code, err.as_str()), (0, ""), "{stem}");
+        let head: String = out.lines().skip(1).take_while(|l| !l.is_empty()).map(str::trim).collect::<Vec<_>>().join(" ");
+        assert_eq!(head, format!("{name} - {line}"), "{stem}: src/help/{stem}.txt is older than its page; run `npm run build` in website/plain");
+        count += 1;
+    }
+    assert!(count >= 9, "{count}");
+}

@@ -81,4 +81,5 @@ command | sg test | runs the tests of a file or of every module in a folder
 command | sg build | compiles through C: a program, a library, or an object without an operating system
 command | sg emit-c | prints the C
 command | sg lsp | the language server an editor starts
+command | sg help | the page of a word of SG in the terminal, with no network: sg help read
 command | sg add | adds a package to sg.project; with update, remove and lock

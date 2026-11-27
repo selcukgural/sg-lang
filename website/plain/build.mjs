@@ -570,6 +570,11 @@ function manText(page) {
 }
 const manHtml = (text) => escape(text).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
 const manPlain = (text) => text.replace(/\u0001|\u0002/g, '');
+// What `sg help <word>` prints (choice 2082): the text man shows, without the line at its top and the line
+// with the date at its foot, so that it changes only when the page does.
+// The pages it names are pages of `sg help` too.
+const helpText = (page) =>
+  manPlain(manText(page)).split('\n').slice(2, -2).join('\n').replace(/\n+$/, '').replace(/\bsg-([a-z0-9-]+)\(7\)/g, 'sg help $1') + '\n';
 
 // ---------------------------------------------------------------------------------------------------------
 // Writing the site
@@ -675,7 +680,7 @@ for (const entry of sectionPages.manual.slice(1)) {
   writeFileSync(join(out, `man/man7/${page.manName}.7`), roff);
   const text = manText(page);
   mkdirSync(join(out, 'help'), { recursive: true });
-  writeFileSync(join(out, `help/${page.meta.name.toLowerCase()}.txt`), manPlain(text));
+  writeFileSync(join(out, `help/${page.meta.name.toLowerCase()}.txt`), helpText(page));
   const main = `<p class="trail"><a href="index.html">Manual</a></p>
 <h1>${escape(page.manName)}(7)</h1>
 <p class="note">What <code>man ${escape(page.manName)}</code> shows. The same page on the site: <a href="${link(entry.url, page.url)}"><code>${escape(page.title)}</code></a>. The file: <a href="../man/man7/${escape(page.manName)}.7">${escape(page.manName)}.7</a></p>
@@ -706,10 +711,43 @@ man sg-index             # every name
 man -k sg-               # the pages of SG</code></pre>
 <p>The pages are installed with SG. From a copy of the repository, after <code>npm run build</code> in
 <code>website/plain</code>: <code>man -M "$PWD/build/man" sg-read</code>.</p>
-<p class="note">Planned: <code>sg help read</code> prints the same page from the <code>sg</code> command itself, for
-Windows and for a build from source where nothing installs the pages; the text it would print is in
-<a href="../help/read.txt">help/read.txt</a>.</p>`;
+<h2 id="sg-help">From sg itself</h2>
+<pre class="plain"><code>sg help read             # the page of a word, with no network
+sg help index            # every name, with what it is in one line
+sg help                  # the words with a page</code></pre>
+<p><code>sg</code> carries the same pages in itself, so they work on Windows too, and for a build from source where
+nothing installs the manual pages. What it prints for <code>read</code>: <a href="../help/read.txt">help/read.txt</a>.</p>`;
   write(url, frame({ url, title: 'Manual', description: SECTIONS[3].description, section: 'manual', main, side: sideNav(sectionPages.manual[0]) }));
+}
+
+// What `sg` carries for `sg help` (choice 2082), written into the interpreter's source, where Cargo finds it:
+// the text of each word's page, and a line for every name of the index. A file of a word that has no page any
+// more is taken out.
+{
+  const dir = join(plain, '..', '..', 'interpreter', 'src', 'help');
+  mkdirSync(dir, { recursive: true });
+  const keep = new Set(['names.tsv']);
+  for (const page of wordPages) {
+    const file = `${posix.basename(page.src, '.md')}.txt`;
+    keep.add(file);
+    writeFileSync(join(dir, file), helpText(page));
+  }
+  for (const file of readdirSync(dir)) if (file.endsWith('.txt') && !keep.has(file)) rmSync(join(dir, file));
+  // name, kind, the part of the index it is in, what it is, the file of its page (or nothing), its address: one
+  // name to a line, in the order of the index. No field holds a tab or a line break.
+  const address = (url) => `https://sg-lang.org/${url.replace(/(^|\/)index\.html/, '$1').replace(/\.html/, '')}`;
+  const rows = [];
+  for (const kind of Object.keys(KIND)) {
+    for (const n of names.filter((x) => x.kind === kind).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))) {
+      // A line of the index begins small and has no full stop; the summary of a page is a sentence: as man's
+      // NAME line, the sentence is made a line too.
+      const summary = n.summary.replace(/\.$/, '').replace(/^[A-Z](?=[a-z ])/, (c) => c.toLowerCase());
+      const fields = [n.name, KIND[kind].label, KIND[kind].title, summary, n.page ? posix.basename(n.page.src, '.md') : '', address(n.url)];
+      if (fields.some((f) => /[\t\n]/.test(f))) problems.push(`the name \`${n.name}\`: a tab or a line break in its line for sg help`);
+      rows.push(fields.join('\t'));
+    }
+  }
+  writeFileSync(join(dir, 'names.tsv'), `# Made by website/plain/build.mjs for \`sg help\`; change website/words/ and build the site.\n${rows.join('\n')}\n`);
 }
 
 // The front page.

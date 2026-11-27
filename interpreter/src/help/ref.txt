@@ -1,0 +1,172 @@
+NAME
+     ref - lends a value to be changed in place; the only borrow of it while
+     it lasts
+
+SYNOPSIS
+     void f(ref T name)
+            a parameter that changes what it is lent
+
+     f(ref value)
+            the call says so too
+
+     void m(ref this)
+            a method that changes its value
+
+     ref T[]
+            a slice whose items may be written
+
+     var b = ref value
+            a borrow kept in a variable
+
+     ref xs[..half], ref xs[half..]
+            two parts of one list, lent at once
+
+DESCRIPTION
+     A ref borrow lends a value to be changed where it lies: nothing is
+     copied, and the caller sees the change after the call. As with read, the
+     word is written at the parameter and at the call, so a call that may
+     change your variable says so.
+
+     A ref borrow must be the only borrow of its value while it lasts. Two
+     names that change the same place at once are how a function ends up
+     reading what it has just overwritten; SG refuses that when the program
+     compiles. The borrow ends at the last use of the name that holds it.
+
+EXAMPLES
+   Change a number
+         void addOne(ref int count) {
+             count += 1
+         }
+
+         void main() {
+             var count = 41
+             addOne(ref count)
+             print(count)
+         }
+
+         42
+
+   Change the items of an array or a list
+         void scale(ref int[] values, int by) {
+             for i in 0..values.length() {
+                 values[i] *= by
+             }
+         }
+
+         void main() {
+             var samples = int[4] { 3, 9, 4, 1 }
+             scale(ref samples, 2)
+             print(samples)
+             var more = List<int> { 1, 2, 3 }
+             scale(ref more, 10)
+             print(more)
+         }
+
+         [6, 18, 8, 2]
+         [10, 20, 30]
+
+     ref T[] takes an array and a list alike: it is a window on items that
+     something else owns.
+
+   One item, lent
+         void main() {
+             var scores = List<int> { 10, 20, 30 }
+             var last = ref scores[^1]
+             last += 5
+             print(scores)
+         }
+
+         [10, 20, 35]
+
+     last is the last item itself, not a copy of it.
+
+   Two parts of one list at once
+         void swap(ref int a, ref int b) {
+             var kept = a
+             a = b
+             b = kept
+         }
+
+         void main() {
+             var xs = List<int> { 1, 2, 3, 10, 20, 30 }
+             var half = xs.length() / 2
+             var left = ref xs[..half]
+             var right = ref xs[half..]
+             for i in 0..half {
+                 swap(ref left[i], ref right[i])
+             }
+             print(xs)
+         }
+
+         [10, 20, 30, 1, 2, 3]
+
+     Two windows that share no item are two places, so both may be lent for
+     changing. Whether they overlap is checked when the second is taken: where
+     the ends are numbers, when the program compiles; otherwise when it runs,
+     as an index out of range is.
+
+WHAT THE COMPILER REFUSES
+   A call that does not say ref
+         void scale(ref int[] values, int by) {
+             for i in 0..values.length() {
+                 values[i] *= by
+             }
+         }
+
+         void main() {
+             var samples = int[4] { 3, 9, 4, 1 }
+             scale(samples, 2)
+         }
+
+         error: expected `ref int[]`, found `int[4]`
+           --> example.sg:9:11
+          9 |     scale(samples, 2)
+            |           ^^^^^^^
+           hint: lend it with `ref`: `ref samples`
+
+   The same value lent twice
+         void addTo(ref int total, ref int amount) {
+             total += amount
+             amount = 0
+         }
+
+         void main() {
+             var balance = 10
+             addTo(ref balance, ref balance)
+             print(balance)
+         }
+
+         error: `balance` is lent twice in one call, and a `ref` borrow must be the only one
+           --> example.sg:8:28
+          8 |     addTo(ref balance, ref balance)
+            |                            ^^^^^^^
+           the other borrow is here:
+           --> example.sg:8:15
+          8 |     addTo(ref balance, ref balance)
+            |               ^^^^^^^
+           hint: copy what is needed into a variable before the call
+
+     With both names on one place, amount = 0 would also set total to 0.
+
+   Reading a value while a ref borrow of it is in use
+         void main() {
+             var count = 1
+             var other = ref count
+             print(count)
+             other += 1
+         }
+
+         error: `count` cannot be used here: `other` holds a `ref` borrow of it and is used again later
+           --> example.sg:4:11
+          4 |     print(count)
+            |           ^^^^^
+           `other` borrowed it here:
+           --> example.sg:3:17
+          3 |     var other = ref count
+            |                 ^^^^^^^^^
+           hint: finish with `other` before this line: a borrow ends at its last use
+
+SEE ALSO
+     sg help read, sg help shared, sg help list
+
+     https://sg-lang.org/reference/ref.html

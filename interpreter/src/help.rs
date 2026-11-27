@@ -1,0 +1,194 @@
+//! `sg help` (choice 2082): the page of a word of SG in the terminal, from `sg` itself, with no network.
+//!
+//! The pages are the text `man` shows for them, made by `website/plain/build.mjs` from the same Markdown as the
+//! site and the manual pages (`website/words/`) and written into `src/help/`, which `build.rs` lists. Change
+//! the Markdown and build the site; never the files here.
+
+include!(concat!(env!("OUT_DIR"), "/help.rs"));
+
+/// One name of the index, as a line of `names.tsv` gives it.
+struct Name<'a> {
+    name: &'a str,
+    kind: &'a str,
+    part: &'a str,
+    summary: &'a str,
+    /// The file of its page in `src/help/`, when it has one.
+    page: &'a str,
+    address: &'a str,
+}
+
+fn names() -> impl Iterator<Item = Name<'static>> {
+    NAMES.lines().filter(|line| !line.is_empty() && !line.starts_with('#')).map(|line| {
+        let mut fields = line.split('\t');
+        let mut next = || fields.next().unwrap_or("");
+        Name { name: next(), kind: next(), part: next(), summary: next(), page: next(), address: next() }
+    })
+}
+
+fn page(file: &str) -> Option<&'static str> {
+    PAGES.iter().find(|(name, _)| *name == file).map(|(_, text)| *text)
+}
+
+/// Why `sg help` printed nothing.
+#[derive(Debug, PartialEq)]
+pub enum Refusal {
+    /// More words than one: the command line is wrong.
+    Usage,
+    /// A name it does not know, and what to say about it.
+    Unknown(String),
+}
+
+/// What `sg help` prints for the words after it: the list of the words with a page, the index (`index`), or the
+/// page of one name. A name is looked for as it is written, then in any case, then as a command (`build` is
+/// `sg build`).
+pub fn text(words: &[String]) -> Result<String, Refusal> {
+    match words {
+        [] => Ok(overview()),
+        [word] if word == "index" => Ok(index()),
+        [word] => {
+            let all: Vec<Name> = names().collect();
+            let found = all
+                .iter()
+                .find(|n| n.name == word)
+                .or_else(|| all.iter().find(|n| n.name.eq_ignore_ascii_case(word)))
+                .or_else(|| all.iter().find(|n| n.kind == "command" && n.name.strip_prefix("sg ").is_some_and(|c| c.eq_ignore_ascii_case(word))))
+                .or_else(|| all.iter().find(|n| !n.page.is_empty() && n.page.eq_ignore_ascii_case(word)));
+            match found {
+                Some(n) => Ok(match page(n.page) {
+                    Some(text) if !n.page.is_empty() => text.to_string(),
+                    _ => line_of(n),
+                }),
+                None => Err(Refusal::Unknown(unknown(word, &all))),
+            }
+        }
+        _ => Err(Refusal::Usage),
+    }
+}
+
+/// A name `sg help` has no page for yet: its line, and where the site says more.
+fn line_of(n: &Name) -> String {
+    let mut out = format!("NAME\n{}\n\n", wrap(&format!("{} - {}", n.name, n.summary), 5));
+    out.push_str(&format!("{}\n\n", wrap(&format!("A {} of SG. sg help has no page for it yet; the site says more:", n.kind), 5)));
+    out.push_str(&format!("     {}\n", n.address));
+    out
+}
+
+fn overview() -> String {
+    let all: Vec<Name> = names().collect();
+    let mut out = String::from("SG HELP\n");
+    out.push_str("     sg help <name>     the page of a word, or the line of any other name\n");
+    out.push_str("     sg help index      every name of SG, with what it is in one line\n\n");
+    out.push_str("THE WORDS WITH A PAGE\n");
+    let with_page: Vec<&Name> = all.iter().filter(|n| !n.page.is_empty()).collect();
+    out.push_str(&rows(&with_page));
+    out.push('\n');
+    out.push_str(&wrap("The same pages are on the site, https://sg-lang.org/reference/, and are man(1)'s sg-read(7) and the others where they are installed.", 0));
+    out.push('\n');
+    out
+}
+
+fn index() -> String {
+    let all: Vec<Name> = names().collect();
+    let mut out = String::new();
+    let mut parts: Vec<&str> = Vec::new();
+    for n in &all {
+        if !parts.contains(&n.part) {
+            parts.push(n.part);
+        }
+    }
+    for part in parts {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&part.to_uppercase());
+        out.push('\n');
+        let list: Vec<&Name> = all.iter().filter(|n| n.part == part).collect();
+        out.push_str(&rows(&list));
+    }
+    out.push_str("\nsg help <name> prints the page of a name that has one, the line of any other.\n");
+    out
+}
+
+/// Names and what they are, in two columns as man lays out a list; a name too long for its column has a line
+/// of its own.
+fn rows(list: &[&Name]) -> String {
+    const MOST: usize = 14;
+    let column = list.iter().map(|n| n.name.chars().count()).filter(|&w| w <= MOST).max().unwrap_or(0) + 2;
+    let mut out = String::new();
+    for n in list {
+        let width = n.name.chars().count();
+        let text = wrap(n.summary, 5 + column);
+        if width + 2 <= column {
+            out.push_str(&format!("     {}{}{}\n", n.name, " ".repeat(column - width), &text[5 + column..]));
+        } else {
+            out.push_str(&format!("     {}\n{}\n", n.name, text));
+        }
+    }
+    out
+}
+
+/// The words of `text` in lines of at most 78 columns, each line indented by `indent`.
+fn wrap(text: &str, indent: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && indent + line.chars().count() + 1 + word.chars().count() > 78 {
+            lines.push(format!("{}{}", " ".repeat(indent), line));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines.push(format!("{}{}", " ".repeat(indent), line));
+    lines.join("\n")
+}
+
+fn unknown(word: &str, all: &[Name]) -> String {
+    let lower = word.to_lowercase();
+    let like: Vec<&str> = all
+        .iter()
+        .map(|n| n.name)
+        .filter(|name| {
+            let name = name.to_lowercase();
+            !lower.is_empty() && (name.starts_with(&lower) || name.strip_prefix("sg ").is_some_and(|c| c.starts_with(&lower)))
+        })
+        .take(8)
+        .collect();
+    let mut message = format!("SG has no name `{word}` that `sg help` knows");
+    if like.is_empty() {
+        message.push_str("; `sg help index` lists every name");
+    } else {
+        message.push_str(&format!("; names that start like it: {}", like.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")));
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_page_has_its_name_and_every_name_its_page() {
+        for n in names() {
+            assert!(!n.name.is_empty() && !n.summary.is_empty() && n.address.starts_with("https://sg-lang.org/"), "{}", n.name);
+            if !n.page.is_empty() {
+                assert!(page(n.page).is_some(), "{}: no file {}.txt", n.name, n.page);
+            }
+        }
+        for (file, text) in PAGES {
+            assert!(names().any(|n| n.page == *file), "{file}.txt: no name of the index has it as its page");
+            assert!(text.starts_with("NAME\n"), "{file}.txt");
+        }
+    }
+
+    #[test]
+    fn rows_keep_to_78_columns() {
+        for text in [overview(), index()] {
+            for line in text.lines() {
+                assert!(line.chars().count() <= 78, "{line}");
+            }
+        }
+    }
+}

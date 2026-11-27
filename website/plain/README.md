@@ -23,8 +23,12 @@ What it makes, and from what:
   is a link to its page (or to its line of the index), with what it is in one line; so is a name written alone
   in `code` in the text.
 - **Manual pages.** Each word's file also becomes its manual page, `build/man/man7/sg-read.7`, and the text `man`
-  shows for it, on the site under Manual and in `build/help/`. `npm run check` reads them with mandoc; the text
-  the site shows is the text mandoc prints.
+  shows for it, on the site under Manual. `npm run check` reads them with mandoc; the text the site shows is the
+  text mandoc prints.
+- **`sg help`** (choice 2082). The same text, without man's top and foot lines, is what `sg help read` prints:
+  the build writes it into `../../interpreter/src/help/` (`read.txt`, and `names.tsv`, a line for every name of
+  the index), which `sg` carries in itself. Commit those files with the change of a word; `cargo test` fails
+  when a word has no page there, or its first line differs from its Markdown.
 - **Search.** `build/search-index.js` lists every name, page and heading; the search runs in the page, with
   nothing sent anywhere.
 - **Headers.** `assets/_headers` allows the site only its own files: no script or style is written into a page,
