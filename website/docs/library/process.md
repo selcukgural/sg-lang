@@ -1,6 +1,6 @@
 ---
 title: Programs and the system
-description: Command, Process, Pipeline and ExitStatus to run other programs, jobs and the terminal, Environment, and Signals.
+description: Command, Process, Pipeline and ExitStatus to run other programs, jobs and the terminal, a terminal of its own and a raw one, Environment, and Signals.
 sidebar_position: 8
 ---
 
@@ -8,7 +8,8 @@ sidebar_position: 8
 
 `Command` runs another program and waits for it, or starts it and goes on with a `Process`. `Pipeline` joins
 programs by pipes, as `a | b` at a shell. A program starts in a group or a session of its own, and a job is put in
-front at the `Terminal`, as a shell runs its jobs. `ExitStatus` says how a program ended, `ProcessChange` what
+front at the `Terminal`, as a shell runs its jobs; a program starts at a terminal made for it, and this program
+makes its own terminal raw. `ExitStatus` says how a program ended, `ProcessChange` what
 became of one that runs, and `ProcessError` why it did not do its work. `Environment` reads the variables the
 program was started with, and `Signals` waits for the signals of the system. All of them are written in SG in
 the module `std`.
@@ -36,6 +37,7 @@ whole.
 | `void newGroup(ref this)` | It starts in a group of its own, which the programs it starts join (see [Jobs and the terminal](#jobs-and-the-terminal)) |
 | `void newSession(ref this)` | It starts in a session of its own, with no terminal, as a daemon; in a group of its own too |
 | `void foreground(ref this)` | A group of its own, put in front at the terminal of this program before it runs |
+| `void terminal(ref this, int rows, int columns)` | It starts at a terminal made for it, of that size (see [A terminal of its own](#a-terminal-of-its-own)); only `start` starts it |
 | `Result<void, ProcessError> run(read this)` | Runs it and waits; an end with anything but 0 is `Failed(status)` |
 | `Result<string, ProcessError> output(read this)` | The same, and gives what it wrote, as text (`InvalidText` if it is not UTF-8); empty when its output was sent to a file or nowhere |
 | `Result<ExitStatus, IoError> status(read this)` | Runs it and gives how it ended, whatever that was |
@@ -155,6 +157,8 @@ did not start: not found
 | `int id(read this)` | The number the system gave the program |
 | `StreamWriter? takeInput(ref this)` | Its input, once, after `pipeInput` |
 | `StreamReader? takeOutput(ref this)`, `takeError(ref this)` | Its output, or its standard error, once |
+| `StreamReader? takeTerminalReader(ref this)`, `StreamWriter? takeTerminalWriter(ref this)` | What it shows at the terminal made for it, and its keys, once |
+| `Result<void, IoError> resizeTerminal(read this, int rows, int columns)` | Another size for that terminal; nothing once it has ended |
 | `Result<ExitStatus, IoError> wait(this)` | Waits for it to end, and takes the `Process` |
 | `Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token)` | The same, async |
 | `Result<ExitStatus?, IoError> tryWait(ref this)` | Whether it has ended, without waiting: `null` while it runs, how it ended once it has |
@@ -412,6 +416,97 @@ A console of Windows has no group in front: there `foreground` only makes the gr
 `CREATE_NEW_PROCESS_GROUP`, to which only `Interrupt` can be sent (as Ctrl-Break), so another signal and
 `killGroup` reach the first program only, and each program of a pipeline gets a group of its own; `newSession`
 starts a program without a console (`DETACHED_PROCESS`).
+
+## A terminal of its own
+
+`terminal(rows, columns)` starts a program at a terminal made for it, a pseudo terminal, as if it ran in a terminal
+window: it sees a terminal (`isTerminal`, `Terminal.size`), colours its output, asks questions and may make the
+terminal raw, as an editor does. Its input, output and standard error go there, but for those sent elsewhere
+(`pipeError`, `outputTo` and the others). `takeTerminalReader` reads what it shows, as the terminal turns it: a
+`"\n"` comes as `"\r\n"`, and what was typed comes back unless the program turned that off. `takeTerminalWriter`
+types into it: `"\r"` is Enter, the byte 3 is Ctrl-C (`Signal.Interrupt` to it, since it is in a session of its
+own whose terminal this is), the byte 4 Ctrl-D (the end of its input, at the start of a line). The reader ends once
+the program, and the programs it started that still hold the terminal, have ended. A terminal holds little: read
+what the program shows while it runs, or it waits for the reader. Only `start` starts such a program: `run`,
+`output` and `status` are a panic, since no one would read its terminal, and so are `foreground` and a `Pipeline`
+with it. Rows or columns outside 1 to 65535 are `InvalidInput`.
+
+```sg
+Command shell(read string script) {
+    if OperatingSystem.isWindows() {
+        var cmd = Command("cmd")
+        cmd.arg("/c")
+        cmd.arg(script)
+        return cmd
+    }
+    var sh = Command("sh")
+    sh.arg("-c")
+    sh.arg(script)
+    return sh
+}
+
+Result<void, IoError> main() {
+    var command = shell("read name; echo hello $name")
+    command.terminal(24, 80)
+    var program = try command.start()
+    var screen = program.takeTerminalReader() ?? panic("asked for with terminal")
+    var keys = program.takeTerminalWriter() ?? panic("asked for with terminal")
+    try keys.write("Ada\r")
+    try keys.flush()
+    var shown = try screen.readText()
+    print(shown.replaceAll("\r", ""))
+    print(try program.wait())
+    _ = keys.close()
+    return Ok()
+}
+```
+
+On Linux and macOS it prints what the terminal showed, the name typed and the answer:
+
+```text
+Ada
+hello Ada
+
+exited with code 0
+```
+
+`Terminal.rawMode()` makes the terminal of this program's own input raw, for a program that reads each key as it
+is pressed: each byte comes as it is typed, nothing is shown back, Ctrl-C, Ctrl-Z and Ctrl-\\ come as the bytes 3,
+26 and 28, and a `"\n"` written goes down a line without going back to its start, so write `"\r\n"`. The
+`RawMode` it gives puts the terminal back with `restore`, or where it ends; should the program end without that,
+by a panic, `exit`, or a signal that ends it with no listener, the language puts back the terminal as it was
+before the first `rawMode`, so the shell is never left raw. `Terminal.size()` gives the rows and the columns of the
+terminal the output of this program goes to; `Signal.WindowChange` comes when it changes. Both are
+`NotATerminal` where there is none.
+
+| Signature | What it does |
+|---|---|
+| `Result<RawMode, IoError> Terminal.rawMode()` | The terminal of this program's input made raw |
+| `Result<void, IoError> restore(this)` | Of a `RawMode`: the terminal as it was |
+| `Result<TerminalSize, IoError> Terminal.size()` | Its `rows` and `columns` |
+
+```sg nocheck
+Result<void, IoError> main() {
+    var size = try Terminal.size()
+    var raw = try Terminal.rawMode()
+    try Stdout.write($"{size.rows} rows, {size.columns} columns; a key, q to stop\r\n")
+    try Stdout.flush()
+    var key = byte[1]
+    while try Stdin.readSome(ref key) > 0 && key[0] != 'q' {
+        try Stdout.write($"byte {key[0]}\r\n")
+        try Stdout.flush()
+    }
+    try raw.restore()
+    return Ok()
+}
+```
+
+On Windows the terminal is a pseudo console (ConPTY, Windows 10 1809 and later), which writes sequences of its
+own among what the program wrote and draws its whole screen again at another size. It takes all three streams or
+none: a stream sent elsewhere as well is `InvalidInput`. It is closed when the program ends; closing its writer
+ends the program. A console tells a program of a new size among the events of its input, not as a signal, so
+there `Signal.WindowChange` does not come, though `Terminal.size` says the new size; Ctrl-D is no end of input.
+`rawMode` sets the console: no line input, no echo, Ctrl-C as a byte, keys as a terminal sends them.
 
 ## `ExitStatus` and `ProcessError`
 

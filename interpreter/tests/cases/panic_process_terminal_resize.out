@@ -1,0 +1,4 @@
+panic: `resizeTerminal` of a program that was not started at a terminal of its own (`Command.terminal`)
+  --> panic_process_terminal_resize.sg:6:9
+ 6 |     _ = process.resizeTerminal(24, 80)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

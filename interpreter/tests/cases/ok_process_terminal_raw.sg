@@ -1,0 +1,126 @@
+// A terminal made raw (2049, 2050): `Terminal.rawMode` in a program at a terminal made for it,
+// which reads each byte as it comes, shows none back and takes Ctrl-C as the byte 3, and then
+// `restore`; the terminal put back by the language when the program panics while raw; and
+// `NotATerminal` from `rawMode` and `Terminal.size` here, where the input and the output are not
+// terminals. The program at the terminal is `sg-test-tool` (tests/tool); its step `raw=N` reads N
+// bytes raw and says each. What it shows is printed plain (see ok_process_terminal).
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.terminal(24, 80)
+    return command
+}
+
+// The text without the sequences of a terminal and without `\r`.
+string plain(read string text) {
+    var out = ""
+    nint i = 0
+    var bytes = text.asBytes()
+    nint from = 0
+    while i < bytes.length() {
+        var b = bytes[i]
+        if b == 13 {
+            out = $"{out}{text[from..i]}".toString()
+            i += 1
+            from = i
+        } else if b == 27 && i + 1 < bytes.length() {
+            out = $"{out}{text[from..i]}".toString()
+            var kind = bytes[i + 1]
+            i += 2
+            if kind == '[' {
+                // Up to a byte from `@` to `~`.
+                while i < bytes.length() && (bytes[i] < 0x40 || bytes[i] > 0x7e) {
+                    i += 1
+                }
+                i += 1
+            } else if kind == ']' {
+                // Up to BEL, or to `ESC \`.
+                while i < bytes.length() && bytes[i] != 7 && bytes[i] != 27 {
+                    i += 1
+                }
+                if i < bytes.length() && bytes[i] == 27 {
+                    i += 1
+                }
+                i += 1
+            }
+            from = i
+        } else {
+            i += 1
+        }
+    }
+    if from < bytes.length() {
+        out = $"{out}{text[from..]}".toString()
+    }
+    return out
+}
+
+// What the screen shows until a line holds `want` (or to its end), plain.
+Result<string, IoError> until(ref StreamReader screen, read string want) {
+    var seen = ""
+    while true {
+        var line = ""
+        if !try screen.readLine(ref line) {
+            break
+        }
+        var shown = plain(read line)
+        if shown.length() > 0 {
+            seen = $"{seen}{shown}\n".toString()
+        }
+        if shown.contains(want) {
+            break
+        }
+    }
+    return Ok(seen)
+}
+
+// What the screen shows to its end, plain, without empty lines.
+Result<string, IoError> rest(ref StreamReader screen) {
+    return until(ref screen, "\n")
+}
+
+Result<void, IoError> main() {
+    // Raw: the bytes come one by one, none is shown back, Ctrl-C is a byte.
+    var process = try tool(read List<string> { "raw=3", "line" }).start()
+    var screen = process.takeTerminalReader() ?? panic("asked for with terminal")
+    var keys = process.takeTerminalWriter() ?? panic("asked for with terminal")
+    var made = try until(ref screen, "raw")
+    print(made)
+    try keys.write("ab\u{3}")
+    try keys.flush()
+    var taken = try until(ref screen, "restored")
+    print(taken)
+    print($"shown back while raw: {taken.contains("ab")}")
+    // Put back: lines and echo again.
+    try keys.write("xy\r")
+    try keys.flush()
+    var again = try until(ref screen, "got:")
+    print($"shown back after restore: {again.contains("xy\n")}")
+    print($"read after restore: {again.contains("got: xy")}")
+    var status = try process.wait()
+    print($"ended: {status}")
+    _ = keys.close()
+
+    // A panic while raw: the terminal is put back as it was, which `stty` shows of it after.
+    if !OperatingSystem.isWindows() {
+        var shell = Command("/bin/sh")
+        shell.arg("-c")
+        shell.arg("sg-test-tool rawpanic; stty -a")
+        shell.terminal(24, 200)
+        var started = try shell.start()
+        var shown = started.takeTerminalReader() ?? panic("asked for with terminal")
+        var all = try rest(ref shown)
+        print($"panicked: {all.contains("panic: in raw mode")}")
+        print($"lines again: {all.contains("icanon") && !all.contains("-icanon")}")
+        print($"echo again: {all.contains("echo ") && !all.contains("-echo ")}")
+        _ = try started.wait()
+    } else {
+        print("panicked: true")
+        print("lines again: true")
+        print("echo again: true")
+    }
+
+    // Here the input and the output are not terminals.
+    print($"raw here: {Terminal.rawMode() is Error(NotATerminal)}")
+    print($"size here: {Terminal.size() is Error(NotATerminal)}")
+    return Ok()
+}

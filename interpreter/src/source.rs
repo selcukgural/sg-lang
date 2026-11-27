@@ -29,7 +29,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "Pipeline", "ExitStatus", "ProcessError", "ProcessChange"]),
-    ("terminal.sg", include_str!("std/terminal.sg"), &["Terminal"]),
+    ("terminal.sg", include_str!("std/terminal.sg"), &["Terminal", "TerminalSize", "RawMode"]),
     ("net.sg", include_str!("std/net.sg"), &["SocketAddress", "UdpSocket", "Received"]),
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
     ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),

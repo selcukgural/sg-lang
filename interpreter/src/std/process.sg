@@ -106,6 +106,9 @@ public struct Command {
     bool session
     // Its group is put in front at the terminal of this program as it starts.
     bool front
+    // The size of the terminal made for it (`terminal`); 0 rows for none.
+    long rows
+    long columns
 
     // The program to run. A name without `/` is looked for in the folders of `PATH` when it runs,
     // leaving out an empty folder and one that does not start with `/`, so a file of the folder this
@@ -118,7 +121,7 @@ public struct Command {
             program = program.clone(), words = words, folder = "", clear = false,
             names = List<string>(), values = List<string>(), kept = List<bool>(),
             inWay = 0, inPath = "", text = "", outWay = 0, outPath = "", errWay = 0, errPath = "",
-            group = 0, session = false, front = false
+            group = 0, session = false, front = false, rows = 0, columns = 0
         }
     }
 
@@ -279,6 +282,30 @@ public struct Command {
         this.front = true
     }
 
+    // The program starts at a terminal made for it (a pseudo terminal) of `rows` lines and
+    // `columns` characters, as it would in a terminal window: it sees a terminal (`isTerminal`,
+    // `Terminal.size`), and may turn it raw. What it writes is read from the `StreamReader` that
+    // `Process.takeTerminalReader` gives, as the terminal turns it (`"\n"` comes as `"\r\n"`), and
+    // what is written to the `StreamWriter` of `takeTerminalWriter` it reads as keys typed, which
+    // the terminal shows back unless the program turned that off. Its input, output and standard
+    // error go there, but for those sent elsewhere (`pipeOutput`, `errorTo` and the others). It
+    // starts in a session of its own, whose terminal this is: a Ctrl-C written there (the byte 3)
+    // sends `Signal.Interrupt` to the group in front at it, as a key at a terminal does. A
+    // terminal holds little: read what the program writes while it runs, or it waits for the
+    // reader. Only `start` starts it: `run`, `output`, `status` and their async kin are a panic,
+    // since no one would read the terminal, and so are `foreground` with it and a `Pipeline` with
+    // it. Rows or columns outside 1 to 65535 are `InvalidInput` where it starts. On Windows a
+    // pseudo console (ConPTY, Windows 10 1809 and later), which writes sequences of its own among
+    // what the program wrote, and where a stream sent elsewhere as well is `InvalidInput`.
+    public void terminal(ref this, int rows, int columns) {
+        this.rows = rows
+        this.columns = columns
+        if rows <= 0 {
+            // Asked for all the same: the size is the error where it starts.
+            this.rows = -1
+        }
+    }
+
     // Starts the program and goes on while it runs. Its input, output and standard error are what
     // the calls above said: pipes kept by the `Process` it gives where `pipeInput`, `pipeOutput`
     // and `pipeError` asked for them, and those of this program where nothing was said; a text of
@@ -294,6 +321,7 @@ public struct Command {
     // to those of this program when they were not; a pipe asked for is one only for `start`. An
     // end with anything but 0 is `Failed`.
     public Result<void, ProcessError> run(read this) {
+        this.unwaited("run")
         var nothing = ""
         match this.runWaiting(false, ref nothing) {
             Ok(status) => {
@@ -312,6 +340,7 @@ public struct Command {
     // read. An output sent to a file or nowhere is not read: the text is then empty. An end with
     // anything but 0 is `Failed`, whatever it wrote.
     public Result<string, ProcessError> output(read this) {
+        this.unwaited("output")
         var text = ""
         match this.runWaiting(true, ref text) {
             Ok(status) => {
@@ -327,6 +356,7 @@ public struct Command {
     // Runs the program as `run` does and gives how it ended, without taking any end for an error:
     // for a program whose code says something, as `grep` ends with 1 when it found nothing.
     public Result<ExitStatus, IoError> status(read this) {
+        this.unwaited("status")
         var nothing = ""
         return this.runWaiting(false, ref nothing)
     }
@@ -334,6 +364,7 @@ public struct Command {
     // `run` without holding the thread, for an async function. A cancel stops the program; with a
     // token cancelled before, it does not start.
     public async Result<void, ProcessError> runAsync(read this, read CancellationToken token = CancellationToken.None) {
+        this.unwaited("runAsync")
         try Command.unless(read token)
         var status = try await this.statusAsync(read token)
         if status.success() {
@@ -345,6 +376,7 @@ public struct Command {
     // `output` without holding the thread, for an async function. A cancel stops the program; with
     // a token cancelled before, it does not start.
     public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
+        this.unwaited("outputAsync")
         var got = await this.outputWaited(read token)
         this.giveBack()
         return got
@@ -378,6 +410,7 @@ public struct Command {
     // `status` without holding the thread, for an async function. A cancel stops the program; with
     // a token cancelled before, it does not start.
     public async Result<ExitStatus, IoError> statusAsync(read this, read CancellationToken token = CancellationToken.None) {
+        this.unwaited("statusAsync")
         try token.check()
         var ways = this.waysOf(false)
         var process = try this.begin(read ways)
@@ -405,7 +438,7 @@ public struct Command {
     // `start`, so it is the stream of this program here; the output is a pipe read into the text
     // when `capture`, unless it was sent to a file or nowhere, and the input is then nothing unless
     // the program was given one.
-    long[8] waysOf(read this, bool capture) {
+    long[10] waysOf(read this, bool capture) {
         long input = this.inWay
         if input == 3 || (capture && input == 0) {
             input = 0
@@ -424,14 +457,29 @@ public struct Command {
         if error == 1 {
             error = 0
         }
-        return long[8] { input, output, error, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0 }
+        return long[10] { input, output, error, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0, 0, 0 }
     }
 
     // The ways of a program started and gone on from: the streams as the calls above said, no
     // pipe of a `Pipeline`, then the group (0 this program's, -1 a new one, or the number of one
-    // to join), the session and the terminal (0 or 1), as `System.start` takes them.
-    long[8] plainWays(read this) {
-        return long[8] { this.inWay, this.outWay, this.errWay, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0 }
+    // to join), the session and the terminal it is put in front at (0 or 1), then the rows and
+    // the columns of a terminal made for it, as `System.start` takes them. A stream not sent
+    // elsewhere goes to that terminal (7), which is in a session of its own (on Linux and macOS).
+    long[10] plainWays(read this) {
+        var ways = long[10] { this.inWay, this.outWay, this.errWay, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0, 0, 0 }
+        if this.rows != 0 {
+            for i in 0..3 {
+                if ways[i] == 0 {
+                    ways[i] = 7
+                }
+            }
+            if !OperatingSystem.isWindows() {
+                ways[6] = 1
+            }
+            ways[8] = this.rows
+            ways[9] = this.columns
+        }
+        return ways
     }
 
     // `foreground` with `newSession` is a panic: a program in a session of its own cannot be in
@@ -439,6 +487,17 @@ public struct Command {
     void grouping(read this) {
         if this.front && this.session {
             panic("the program starts in a session of its own (`newSession`), which has no terminal of this program to be in front at (`foreground`)")
+        }
+        if this.front && this.rows != 0 {
+            panic("the program starts at a terminal of its own (`terminal`), not in front at the terminal of this program (`foreground`)")
+        }
+    }
+
+    // A program at a terminal of its own is only started (`start`): one run and waited for would
+    // have no one to read its terminal, and would wait for ever once the terminal is full.
+    void unwaited(read this, read string call) {
+        if this.rows != 0 {
+            panic($"`{call}` of a program at a terminal of its own (`terminal`): only `start` starts one, whose `Process` gives the terminal to read")
         }
     }
 
@@ -448,7 +507,7 @@ public struct Command {
         this.grouping()
         try this.valid()
         var path = try this.found()
-        var made = long[5]
+        var made = long[8]
         var paths = List<string> { this.inPath.clone(), this.outPath.clone(), this.errPath.clone() }
         try System.start(
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
@@ -464,7 +523,8 @@ public struct Command {
         }
         var process = Process {
             pid = made[0], handle = made[4], input = null, output = null, error = null, ended = false,
-            how = ExitStatus.Code(0), group = group
+            how = ExitStatus.Code(0), group = group, screen = null, keys = null, terminal = made[7],
+            atTerminal = ways[8] != 0
         }
         if made[1] >= 0 {
             process.input = System.writer(made[1])
@@ -474,6 +534,12 @@ public struct Command {
         }
         if made[3] >= 0 {
             process.error = System.reader(made[3])
+        }
+        if made[5] >= 0 {
+            process.screen = System.reader(made[5])
+        }
+        if made[6] >= 0 {
+            process.keys = System.writer(made[6])
         }
         return Ok(process)
     }
@@ -527,6 +593,15 @@ public struct Command {
         }
         for value in read this.values {
             if value.contains('\0') {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        if this.rows != 0 {
+            if this.rows < 1 || this.rows > 65535 || this.columns < 1 || this.columns > 65535 {
+                return Error(IoError.InvalidInput)
+            }
+            // A pseudo console of Windows takes all three streams or none.
+            if OperatingSystem.isWindows() && (this.inWay != 0 || this.outWay != 0 || this.errWay != 0) {
                 return Error(IoError.InvalidInput)
             }
         }
@@ -644,6 +719,15 @@ public struct Process : Disposable {
     // The group it is in when it was started in one of its own (`newGroup`, `newSession`,
     // `foreground`) or joined one (`Pipeline.newGroup`): its number; 0 for this program's.
     long group
+    // The ends of a terminal made for it (`Command.terminal`) not taken out yet: what it writes,
+    // and what it reads as keys.
+    StreamReader? screen
+    StreamWriter? keys
+    // What names that terminal to the system, to resize and close it: an end of it on Linux and
+    // macOS, the pseudo console on Windows; -1 once closed, or for none.
+    long terminal
+    // It was started at a terminal of its own.
+    bool atTerminal
 
     // The number the system knows the program by, as `ps` shows it.
     public int id(read this) {
@@ -700,6 +784,46 @@ public struct Process : Disposable {
     // did not, or when it was taken already.
     public StreamReader? takeError(ref this) {
         return this.error.take()
+    }
+
+    // The reader of what the program writes to the terminal made for it (`Command.terminal`), as
+    // the terminal turns it: `"\n"` comes as `"\r\n"`, what was written to `takeTerminalWriter`
+    // comes back unless the program turned that off, and on Windows sequences of the pseudo
+    // console come among it. It ends once the program, and all it started that still hold the
+    // terminal, have ended. `null` when the program was not started at one, or when it was taken
+    // already. Read it while the program runs: a terminal holds little, and a program that fills
+    // it waits for the reader, and is waited for by `wait` for ever.
+    public StreamReader? takeTerminalReader(ref this) {
+        return this.screen.take()
+    }
+
+    // The writer of what the program reads from its terminal, as keys typed there: `"\r"` is
+    // Enter, the byte 3 Ctrl-C (`Signal.Interrupt` to the group in front at it, unless the program
+    // made the terminal raw), the byte 4 Ctrl-D (the end of the input, at the start of a line, on
+    // Linux and macOS). On Windows the pseudo console takes the end of this writer as its own
+    // end, which ends the program: close it, or let it end, once the program has ended. `null`
+    // when the program was not started at one, or when it was taken already.
+    public StreamWriter? takeTerminalWriter(ref this) {
+        return this.keys.take()
+    }
+
+    // Gives the terminal made for the program another size, as a terminal window that is made
+    // larger does: the program gets `Signal.WindowChange`, and `Terminal.size` says the new one.
+    // A console of Windows tells of it among the events of its input, not as a signal, and its
+    // pseudo console draws its screen again.
+    // Rows or columns outside 1 to 65535 are `InvalidInput`. Once the program has ended, nothing.
+    // A program not started at a terminal of its own (`Command.terminal`) is a panic.
+    public Result<void, IoError> resizeTerminal(read this, int rows, int columns) {
+        if !this.atTerminal {
+            panic("`resizeTerminal` of a program that was not started at a terminal of its own (`Command.terminal`)")
+        }
+        if rows < 1 || rows > 65535 || columns < 1 || columns > 65535 {
+            return Error(IoError.InvalidInput)
+        }
+        if this.ended || this.terminal < 0 {
+            return Ok()
+        }
+        return System.resizeTerminal(this.terminal, rows, columns)
     }
 
     // Stops the program at once: the signal 9, which it cannot catch. It is still waited for, and
@@ -803,7 +927,7 @@ public struct Process : Disposable {
         if OperatingSystem.isWindows() {
             var ended = long[2]
             try await System.waitAsync(this.handle, read token, ref ended)
-            this.ended = true
+            this.over()
             this.how = Process.status(read ended)
             return Ok(ProcessChange.Ended(this.how))
         }
@@ -827,7 +951,7 @@ public struct Process : Disposable {
         if ended[0] == 3 {
             return ProcessChange.Continued
         }
-        this.ended = true
+        this.over()
         this.how = Process.status(read ended)
         return ProcessChange.Ended(this.how)
     }
@@ -851,7 +975,7 @@ public struct Process : Disposable {
         if !try System.tryWait(this.handle, ref ended) {
             return Ok(null)
         }
-        this.ended = true
+        this.over()
         this.how = Process.status(read ended)
         return Ok(this.how)
     }
@@ -866,7 +990,7 @@ public struct Process : Disposable {
         }
         var ended = long[2]
         System.wait(this.handle, ref ended)
-        this.ended = true
+        this.over()
         return Ok(Process.status(read ended))
     }
 
@@ -878,7 +1002,7 @@ public struct Process : Disposable {
         }
         var ended = long[2]
         try await System.waitAsync(this.handle, read token, ref ended)
-        this.ended = true
+        this.over()
         return Ok(Process.status(read ended))
     }
 
@@ -886,20 +1010,35 @@ public struct Process : Disposable {
     // waited for here. This program's runtime takes it away once it has ended, so that it does not
     // stay as a program that has ended and was never asked how. The pipes it still holds are
     // closed; those taken out stay open. It stays in the group and the session of this program:
-    // a terminal that closes still sends it `Hangup`.
+    // a terminal that closes still sends it `Hangup`. A terminal made for it (`Command.terminal`)
+    // is let go of here as well: once no reader or writer of it is left, the program gets
+    // `Hangup` on Linux and macOS, and on Windows its pseudo console is closed, which ends it.
     public void detach(this) {
         this.leave()
         if !this.ended {
             System.detach(this.handle)
-            this.ended = true
+            this.over()
         }
     }
 
     // The pipes it still holds end: the input is written out and closed, the readers let go of.
+    // The ends of a terminal made for it stay until the `Process` ends: the pseudo console of
+    // Windows takes the end of its keys as its own end, and ends the program.
     void leave(ref this) {
         this.input = null
         this.output = null
         this.error = null
+    }
+
+    // It has ended, or was let go of: the terminal made for it is closed here, so that its reader
+    // comes to the end once what the program wrote has been read (on Windows the pseudo console
+    // keeps its pipe open until then).
+    void over(ref this) {
+        this.ended = true
+        if this.terminal >= 0 {
+            System.closeTerminal(this.terminal)
+            this.terminal = -1
+        }
     }
 
     // How it ended, from what the system said: 0 and the code, or 1 and the signal.
@@ -921,6 +1060,9 @@ public struct Process : Disposable {
             System.signal(this.handle, 9)
             var ended = long[2]
             System.wait(this.handle, ref ended)
+        }
+        if this.terminal >= 0 {
+            System.closeTerminal(this.terminal)
         }
     }
 }
@@ -1138,6 +1280,9 @@ public struct Pipeline {
             }
             if i > 0 && command.inWay != 0 {
                 panic($"program {i + 1} of the pipeline has an input of its own, where the pipe from the one before comes")
+            }
+            if command.rows != 0 {
+                panic($"program {i + 1} of the pipeline starts at a terminal of its own (`terminal`), where the pipes of the pipeline go")
             }
             if this.grouped && command.session {
                 panic($"program {i + 1} of the pipeline starts a session of its own (`newSession`), out of the group of the pipeline (`newGroup`)")

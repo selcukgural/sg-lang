@@ -21,6 +21,12 @@
 //   stop        `Signals.stopSelf()`, then `went on`
 //   foreground  starts `sg-test-tool` put in front (`Command.foreground`): `foreground: ok`, or
 //               the error
+//   tty         whether its input and its output are terminals, and the size of the terminal
+//   winch       listens for `WindowChange`, says `ready`, and says the size once one comes
+//   raw=N       makes the terminal raw, says `raw`, reads N bytes one by one, saying each as
+//               `byte: B`, puts the terminal back and says `restored`
+//   rawpanic    makes the terminal raw and panics, leaving the language to put it back
+//   many=N      N lines of 99 times `x`
 async Result<void, IoError> main(List<string> args) {
     nint at = 0
     while at < args.length() {
@@ -158,6 +164,53 @@ async Result<void, IoError> main(List<string> args) {
                     Error(cause) => try await Stdout.writeLineAsync($"foreground: {cause}")
                 }
                 try await Stdout.flushAsync()
+            }
+            "tty" => {
+                var size = "none"
+                match Terminal.size() {
+                    Ok(got) => size = $"{got.rows}x{got.columns}".toString()
+                    Error(cause) => size = $"{cause}".toString()
+                }
+                try await Stdout.writeLineAsync($"in: {Stdin.isTerminal()}, out: {Stdout.isTerminal()}, size: {size}")
+                try await Stdout.flushAsync()
+            }
+            "winch" => {
+                var listener = Signals.listen(read List<Signal> { Signal.WindowChange })
+                try await Stdout.writeLineAsync("ready")
+                try await Stdout.flushAsync()
+                _ = await listener.nextAsync()
+                var size = try Terminal.size()
+                try await Stdout.writeLineAsync($"size: {size.rows}x{size.columns}")
+                try await Stdout.flushAsync()
+            }
+            "raw" => {
+                var mode = try Terminal.rawMode()
+                try await Stdout.writeLineAsync("raw")
+                try await Stdout.flushAsync()
+                var one = byte[1]
+                for _ in 0..number(read value) {
+                    if try await Stdin.readSomeAsync(ref one) == 0 {
+                        break
+                    }
+                    try await Stdout.writeLineAsync($"byte: {one[0]}")
+                    try await Stdout.flushAsync()
+                }
+                try mode.restore()
+                try await Stdout.writeLineAsync("restored")
+                try await Stdout.flushAsync()
+            }
+            "many" => {
+                var line = "x".repeat(99)
+                for _ in 0..number(read value) {
+                    try await Stdout.writeLineAsync(read line)
+                }
+                try await Stdout.flushAsync()
+            }
+            "rawpanic" => {
+                var mode = try Terminal.rawMode()
+                try await Stdout.writeLineAsync("raw")
+                try await Stdout.flushAsync()
+                panic("in raw mode")
             }
             _ => {
                 try await Stderr.writeLineAsync($"sg-test-tool: no step `{step}`")

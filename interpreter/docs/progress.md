@@ -663,8 +663,15 @@ macOS for that one way). `process.signalGroup`, `killGroup` and `groupId` reach 
 group that is not waited for stops the whole group. `waitChange`, `tryWaitChange` and `waitChangeAsync` give a
 `ProcessChange`: paused, gone on, or ended. `Terminal.giveTo` and `takeBack` move the terminal between a job and
 this program, `IoError.NotATerminal` says there is none, and `Signal` has `TerminalStop`, `Continue`,
-`TerminalInput`, `TerminalOutput`, `Child` and `Alarm`, with `Signals.stopSelf()`. Next is a terminal of its own
-and the raw mode of a terminal (198).
+`TerminalInput`, `TerminalOutput`, `Child` and `Alarm`, with `Signals.stopSelf()`.
+
+Slice 198 (2042-2053) gives a program a terminal of its own and this program a raw one. `Command.terminal(rows,
+columns)` starts a program at a pseudo terminal made for it (ConPTY on Windows), in a session of its own whose
+terminal it is; `process.takeTerminalReader()` reads what it shows, `takeTerminalWriter()` types its keys, and
+`resizeTerminal` gives it another size. `Terminal.rawMode()` makes the input of this program raw and gives a
+`RawMode` that puts it back, as the language does at the end, at a panic and at a signal that ends the program;
+`Terminal.size()` gives the rows and the columns. A terminal carries as much through SG as through C; a start at
+one is 15% slower than C on Linux.
 
 ## Next
 

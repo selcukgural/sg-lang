@@ -466,8 +466,9 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         }
         // A reader seeks without writing or reading: it only asks the system where the file stands.
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Seek), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
-        // Looking at the block of a reader, and giving out of it, do not read.
-        ExprKind::Method { callee: Callee::Stream(StreamCall::Buffered | StreamCall::Consume), .. } => None,
+        // Looking at the block of a reader, and giving out of it, do not read; nor does asking
+        // whether a stream is a terminal (`isatty`), `Stdin`'s too.
+        ExprKind::Method { callee: Callee::Stream(StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal), .. } => None,
         // A lock tried, and the lock of a reader let go, wait for nothing (1979).
         ExprKind::Method { callee: Callee::Stream(StreamCall::TryLock | StreamCall::TryLockShared), .. } => None,
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Unlock), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,

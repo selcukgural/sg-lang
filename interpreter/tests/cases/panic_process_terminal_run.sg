@@ -1,0 +1,6 @@
+// `run` of a program at a terminal of its own (2046): only `start` starts one.
+void main() {
+    var command = Command("sg-test-tool")
+    command.terminal(24, 80)
+    _ = command.run()
+}

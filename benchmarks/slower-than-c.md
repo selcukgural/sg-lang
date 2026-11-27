@@ -9,6 +9,15 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## The library
 
+- **A start at a terminal of its own** (`Command.terminal`, slice 198, choice 2045): `true` started at a pseudo
+  terminal and waited for, 5,000 times, takes 1.26 s on Linux against C's 1.10 (1.15 times, about 33 µs each;
+  on macOS SG is 0.91 times C). The child is the careful one of 2034, made by `fork`: a pipe that tells the
+  parent why `exec` failed, every signal held off across the `fork`, the signals of a terminal set back, where
+  the C of the measurement does none of that; the list of open descriptors is no longer read before each `fork`
+  where `close_range` works (2% of it). Candidate: on Linux, `posix_spawn` with `POSIX_SPAWN_SETSID`, the end of
+  the terminal opened by its path in the new session (which makes it the controlling terminal), as plain starts
+  are, which measured level with C (196); a change of 2045, so a choice of its own.
+
 - **Large values over a socket of the machine** (the store of RESP on macOS, `redis-benchmark`, 50
   connections, values of 64 KB, choice 1972, slice 190, one run): over a `UnixStream` SG answers 30,000 SET
   and 38,000 GET a second where Redis over the same answers 47,000 and 88,000; over TCP the two are even (59,000

@@ -1,0 +1,114 @@
+// A terminal made for a program, read and written by async functions (2052), with ten megabytes
+// through it (2053): `sg-test-tool many=N` writes N lines of 99 times `x`, every one of which
+// comes through the terminal, whose reader ends once the program has ended; and keys typed ahead
+// of a program that reads two lines, all it shows read by a task of its own. On Windows the
+// pseudo console draws the lines it is given, among sequences of its own, on a terminal wide
+// enough for them: a line is counted when it holds the 99 `x`.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.terminal(24, 200)
+    return command
+}
+
+// The text without the sequences of a terminal and without `\r`.
+string plain(read string text) {
+    var out = ""
+    nint i = 0
+    var bytes = text.asBytes()
+    nint from = 0
+    while i < bytes.length() {
+        var b = bytes[i]
+        if b == 13 {
+            out = $"{out}{text[from..i]}".toString()
+            i += 1
+            from = i
+        } else if b == 27 && i + 1 < bytes.length() {
+            out = $"{out}{text[from..i]}".toString()
+            var kind = bytes[i + 1]
+            i += 2
+            if kind == '[' {
+                // Up to a byte from `@` to `~`.
+                while i < bytes.length() && (bytes[i] < 0x40 || bytes[i] > 0x7e) {
+                    i += 1
+                }
+                i += 1
+            } else if kind == ']' {
+                // Up to BEL, or to `ESC \`.
+                while i < bytes.length() && bytes[i] != 7 && bytes[i] != 27 {
+                    i += 1
+                }
+                if i < bytes.length() && bytes[i] == 27 {
+                    i += 1
+                }
+                i += 1
+            }
+            from = i
+        } else {
+            i += 1
+        }
+    }
+    if from < bytes.length() {
+        out = $"{out}{text[from..]}".toString()
+    }
+    return out
+}
+
+// How many lines of 99 times `x` the screen shows, read in blocks to its end; and how many bytes.
+async Result<long[2], IoError> counted(StreamReader screen) {
+    var reader = screen
+    var block = byte[65536]
+    var line = "x".repeat(99)
+    var held = ""
+    long lines = 0
+    long bytes = 0
+    while true {
+        var got = try await reader.readSomeAsync(ref block)
+        if got == 0 {
+            break
+        }
+        bytes += got
+        held = $"{held}{string.fromUtf8(block[..got]) ?? panic("ASCII")}".toString()
+        var cut = held.lastIndexOf('\n') ?? -1
+        if cut < 0 {
+            continue
+        }
+        for each in held[..cut].split('\n') {
+            if each.contains(read line) {
+                lines += 1
+            }
+        }
+        held = held[cut + 1..].clone()
+    }
+    return Ok(long[2] { lines, bytes })
+}
+
+async Result<void, IoError> main() {
+    for count in (List<int> { 1, 1000, 100000 }) {
+        var process = try tool(read List<string> { $"many={count}".toString() }).start()
+        var screen = process.takeTerminalReader() ?? panic("asked for with terminal")
+        var seen = try await counted(screen)
+        var status = try await process.waitAsync()
+        print($"{count} lines: {seen[0]} came, at least {(long)count * 100} bytes: {seen[1] >= (long)count * 100}, {status}")
+    }
+
+    // Keys typed ahead, and what the program shows read by a task of its own.
+    var talking = try tool(read List<string> { "line", "line" }).start()
+    var shown = talking.takeTerminalReader() ?? panic("asked for")
+    var keys = talking.takeTerminalWriter() ?? panic("asked for")
+    try await keys.writeAsync("one\rtwo\r")
+    try await keys.flushAsync()
+    var reading = readAll(shown)
+    var all = try await reading
+    var status = try await talking.waitAsync()
+    print($"both read: {all.contains("got: one") && all.contains("got: two")}, {status}")
+    _ = await keys.closeAsync()
+    return Ok()
+}
+
+// All the screen shows, plain.
+async Result<string, IoError> readAll(StreamReader screen) {
+    var reader = screen
+    var text = try await reader.readTextAsync()
+    return Ok(plain(read text))
+}

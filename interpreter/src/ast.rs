@@ -1142,8 +1142,13 @@ pub enum SystemCall {
     /// (4) or the end `ways[3]` (5); its output (`ways[1]`) this program's (0), a pipe kept here
     /// (1), nowhere (2), the file `paths[1]` made empty (3) or at its end (4), or the end `ways[4]`
     /// (5); its standard error (`ways[2]`) as the output with `paths[2]`, or where the output goes
-    /// (6). The files are opened before the program starts. `made` gets the number of the
-    /// program, the ends of the pipes kept here, or -1, and what names the program.
+    /// (6); any stream the terminal made for it (7). `ways[5]` to `ways[7]` are its group, its
+    /// session and whether it is put in front at the terminal of this program; `ways[8]` and
+    /// `ways[9]` the rows and the columns of a terminal made for it (2043), 0 for none. The files
+    /// are opened before the program starts. `made` gets the number of the program, the ends of
+    /// the pipes kept here, or -1, what names the program, then the end of its terminal read
+    /// here, the end written, and what names the terminal to `resizeTerminal` and
+    /// `closeTerminal` (-1 each without one).
     Start,
     /// `System.wait(pid, ref ended)`: waits for the program to end and takes it away; `ended` gets
     /// 0 and the code, or 1 and the signal that stopped it.
@@ -1176,6 +1181,20 @@ pub enum SystemCall {
     /// `System.terminalFront(group)`: the group is put in front at the terminal of this program
     /// (`tcsetpgrp`), this program's own for 0 (2031, 2032). Nothing on Windows.
     TerminalFront,
+    /// `System.resizeTerminal(terminal, rows, columns)`: the terminal made for a program gets
+    /// another size (`TIOCSWINSZ`, `ResizePseudoConsole`), 2048.
+    ResizeTerminal,
+    /// `System.closeTerminal(terminal)`: the end kept to resize it is closed; on Windows the
+    /// pseudo console (`ClosePseudoConsole`), 2042.
+    CloseTerminal,
+    /// `System.terminalRaw(ref saved)`: the terminal of the input of this program made raw
+    /// (2049); `saved` gets its settings before, as the system keeps them, for `terminalRestore`.
+    TerminalRaw,
+    /// `System.terminalRestore(read saved)`: the settings `terminalRaw` saved, put back.
+    TerminalRestore,
+    /// `System.terminalSize(ref size)`: the rows and the columns of the terminal the output of
+    /// this program goes to (2051).
+    TerminalSize,
     /// `System.waitAsync(pid, read token, ref ended)`: the same without holding the thread. A
     /// cancel ends the wait and leaves the program to be stopped.
     WaitAsync,

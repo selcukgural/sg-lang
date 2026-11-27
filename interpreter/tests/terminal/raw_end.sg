@@ -1,0 +1,19 @@
+// A terminal left raw when the program ends (2050): by a panic, by `exit`, or by a signal that
+// stops it (`Terminate`, with no listener), which the language puts back as it was before the
+// first `rawMode`. Run at a terminal of its own by `script` (tests/cli.rs), whose `stty -a`
+// after each says whether lines and echo came back. The first word says how it ends.
+void main(List<string> args) {
+    var how = args[args.length() - 1].clone()
+    var mode = Terminal.rawMode() ?? panic("no terminal")
+    print("raw\r")
+    if how == "panic" {
+        panic("in raw mode")
+    }
+    if how == "exit" {
+        exit(3)
+    }
+    // Waits for the signal, reading what comes meanwhile (`script` types Ctrl-D, a byte here).
+    var one = byte[1]
+    while (Stdin.readSome(ref one) ?? 0) > 0 {}
+    _ = mode.restore()
+}

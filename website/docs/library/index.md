@@ -65,7 +65,7 @@ from each item to its source.
 - [Time](./time.md): `Duration`, `Instant`, `DateTime`, `DateTimeOffset` and the clocks under them.
 - [Tasks](./tasks.md): `Task<R>`, `Channel<T>` and `Sender<T>`, `shared locked T`, atomics and cancellation.
 - [Random numbers](./random.md): `Random`, with a seed, and `SecureRandom`.
-- [Programs and the system](./process.md): `Command`, `Process`, `Pipeline`, `ExitStatus`, `ProcessChange`, `Terminal`, `Environment` and `Signals`.
+- [Programs and the system](./process.md): `Command`, `Process`, `Pipeline`, `ExitStatus`, `ProcessChange`, `Terminal`, `RawMode`, `TerminalSize`, `Environment` and `Signals`.
 - [Hex, Base64 and percent](./encoding.md): `Hex`, `Base64` and `Percent`, bytes written as text and read back strictly.
 - [CRC-32 and Adler-32](./checksum.md): `Crc32`, the checksum of gzip, PNG and ZIP, and `Adler32`, that of zlib.
 - [SHA-256 and HMAC](./hash.md): `Sha256`, `Hmac.sha256` and `Bytes.equalInConstantTime`.

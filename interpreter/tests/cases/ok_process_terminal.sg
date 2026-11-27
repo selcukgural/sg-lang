@@ -1,0 +1,211 @@
+// A program started at a terminal made for it (2042-2048): `Command.terminal`, the reader of
+// what it shows and the writer of its keys (`takeTerminalReader`, `takeTerminalWriter`), and
+// `resizeTerminal`. The program is `sg-test-tool` (tests/tool), whose words are its steps. What
+// it shows is printed plain: the sequences of a terminal (`ESC [ ...`, `ESC ] ... BEL`) and the
+// `\r` of each line taken out, since the pseudo console of Windows writes sequences of its own,
+// and the lines it shows are kept apart. Each part prints the same on every system where the
+// systems agree; where they do not (Ctrl-D, which ends the input only on Linux and macOS; a
+// group, which only they make), what is printed says whether the system did what it does.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.terminal(24, 80)
+    return command
+}
+
+// The text without the sequences of a terminal and without `\r`.
+string plain(read string text) {
+    var out = ""
+    nint i = 0
+    var bytes = text.asBytes()
+    nint from = 0
+    while i < bytes.length() {
+        var b = bytes[i]
+        if b == 13 {
+            out = $"{out}{text[from..i]}".toString()
+            i += 1
+            from = i
+        } else if b == 27 && i + 1 < bytes.length() {
+            out = $"{out}{text[from..i]}".toString()
+            var kind = bytes[i + 1]
+            i += 2
+            if kind == '[' {
+                // Up to a byte from `@` to `~`.
+                while i < bytes.length() && (bytes[i] < 0x40 || bytes[i] > 0x7e) {
+                    i += 1
+                }
+                i += 1
+            } else if kind == ']' {
+                // Up to BEL, or to `ESC \`.
+                while i < bytes.length() && bytes[i] != 7 && bytes[i] != 27 {
+                    i += 1
+                }
+                if i < bytes.length() && bytes[i] == 27 {
+                    i += 1
+                }
+                i += 1
+            }
+            from = i
+        } else {
+            i += 1
+        }
+    }
+    if from < bytes.length() {
+        out = $"{out}{text[from..]}".toString()
+    }
+    return out
+}
+
+// What the screen shows until a line holds `want` (or to its end), plain.
+Result<string, IoError> until(ref StreamReader screen, read string want) {
+    var seen = ""
+    while true {
+        var line = ""
+        if !try screen.readLine(ref line) {
+            break
+        }
+        var shown = plain(read line)
+        if shown.length() > 0 {
+            seen = $"{seen}{shown}\n".toString()
+        }
+        if shown.contains(want) {
+            break
+        }
+    }
+    return Ok(seen)
+}
+
+// What the screen shows to its end, plain, without empty lines.
+Result<string, IoError> rest(ref StreamReader screen) {
+    return until(ref screen, "\n")
+}
+
+Result<void, IoError> main() {
+    // What the program sees: a terminal of the size asked for, as its input and its output.
+    var process = try tool(read List<string> { "tty", "out=hello" }).start()
+    var screen = process.takeTerminalReader() ?? panic("asked for with terminal")
+    var first = try rest(ref screen)
+    print(first)
+    var status = try process.wait()
+    print($"ended: {status}")
+    // A program of a terminal of its own is in a group of its own on Linux and macOS.
+    print($"a group where there is one: {(processGroup() is not null) != OperatingSystem.isWindows()}")
+
+    // Keys written are read as typed, and shown back.
+    var typing = try tool(read List<string> { "line" }).start()
+    var shown = typing.takeTerminalReader() ?? panic("asked for")
+    var keys = typing.takeTerminalWriter() ?? panic("asked for")
+    try keys.write("hi there\r")
+    try keys.flush()
+    var got = try until(ref shown, "got:")
+    print($"typed shown back: {got.contains("hi there\n")}")
+    print($"read: {got.contains("got: hi there")}")
+    try keys.close()
+    var typed = try typing.wait()
+    print($"ended: {typed}")
+
+    // Ctrl-C (the byte 3) is `Signal.Interrupt` to the program in front at its terminal.
+    var listening = try tool(read List<string> { "listen" }).start()
+    var heard = listening.takeTerminalReader() ?? panic("asked for")
+    var pressed = listening.takeTerminalWriter() ?? panic("asked for")
+    _ = try until(ref heard, "ready")
+    try pressed.write("\u{3}")
+    try pressed.flush()
+    var after = try rest(ref heard)
+    print($"Ctrl-C caught: {after.contains("caught")}")
+    var caught = try listening.wait()
+    print($"ended: {caught}")
+    _ = pressed.close()
+
+    // Ctrl-D at the start of a line ends the input, on Linux and macOS.
+    if !OperatingSystem.isWindows() {
+        var cat = try tool(read List<string> { "cat" }).start()
+        var copied = cat.takeTerminalReader() ?? panic("asked for")
+        var typedIn = cat.takeTerminalWriter() ?? panic("asked for")
+        try typedIn.write("abc\r\u{4}")
+        try typedIn.flush()
+        var both = try rest(ref copied)
+        print($"Ctrl-D ends the input: {both.contains("abc")}")
+        var ended = try cat.wait()
+        print($"ended: {ended}")
+        _ = typedIn.close()
+    } else {
+        print("Ctrl-D ends the input: true")
+        print("ended: exited with code 0")
+    }
+
+    // Another size: the program sees it.
+    var sized = try tool(read List<string> { "tty", "line", "tty" }).start()
+    var drawn = sized.takeTerminalReader() ?? panic("asked for")
+    var enter = sized.takeTerminalWriter() ?? panic("asked for")
+    var before = try until(ref drawn, "size")
+    print(before)
+    try sized.resizeTerminal(40, 120)
+    try enter.write("\r")
+    try enter.flush()
+    // The pseudo console of Windows draws its screen again at the new size: the line that says it
+    // is looked for.
+    var later = try until(ref drawn, "x120")
+    var last = ""
+    for line in later.lines() {
+        if line.contains("size") {
+            last = line.clone()
+        }
+    }
+    print(last)
+    // Once it has ended, and was seen to, nothing.
+    _ = try rest(ref drawn)
+    while true {
+        var seen = try sized.tryWait()
+        if seen is not null {
+            break
+        }
+        var pause = Command("sg-test-tool")
+        pause.arg("sleep=20")
+        _ = pause.status()
+    }
+    try sized.resizeTerminal(10, 10)
+    print($"no size after the end either: {sized.resizeTerminal(0, 10) is Error(InvalidInput)}")
+    var resized = try sized.wait()
+    print($"ended: {resized}")
+    _ = enter.close()
+
+    // A program whose reader is never taken: `wait` lets it go.
+    var unread = try tool(read List<string> { "out=nobody reads this" }).start()
+    var left = try unread.wait()
+    print($"unread: {left}")
+
+    // A size of 0, or past 65535, is no size.
+    var none = Command("sg-test-tool")
+    none.terminal(0, 80)
+    print($"0 rows: {none.start() is Error(InvalidInput)}")
+    var wide = Command("sg-test-tool")
+    wide.terminal(24, 70000)
+    print($"70000 columns: {wide.start() is Error(InvalidInput)}")
+
+    // A stream sent elsewhere stays there on Linux and macOS; on Windows, whose pseudo console
+    // takes all three, it is `InvalidInput`.
+    var apart = tool(read List<string> { "out=to the screen", "err=to the pipe" })
+    apart.pipeError()
+    match apart.start() {
+        Ok(started) => {
+            var errors = started.takeError() ?? panic("asked for with pipeError")
+            var front = started.takeTerminalReader() ?? panic("asked for")
+            var fromPipe = try errors.readText()
+            var fromScreen = try rest(ref front)
+            print($"apart: {fromPipe.trim()} / {fromScreen.trim()}")
+            _ = try started.wait()
+        }
+        Error(InvalidInput) => print("apart: to the pipe / to the screen")
+        Error(cause) => print($"apart: {cause}")
+    }
+    return Ok()
+}
+
+// The group of a program at a terminal of its own, or `null`.
+int? processGroup() {
+    var process = tool(read List<string> { "out=x" }).start() ?? panic("starts")
+    var group = process.groupId()
+    _ = process.wait()
+    return group
+}

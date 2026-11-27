@@ -1,0 +1,4 @@
+panic: program 1 of the pipeline starts at a terminal of its own (`terminal`), where the pipes of the pipeline go
+  --> panic_process_terminal_pipeline.sg:8:9
+ 8 |     _ = pipeline.run()
+   |         ^^^^^^^^^^^^^^

@@ -93,9 +93,15 @@
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
-- **Of other programs**: a terminal of its own (pty, slice 198); a program that joins the group of another by
-  its number (`setpgid` to a group; a `Pipeline.newGroup` puts its programs in one group, and Windows cannot,
-  2039); the modes of the terminal of a paused job kept and put back (slice 198); a wait for any child
+- **Of other programs**: what a program at a terminal of its own wrote, read whole by `output` (as `script`
+  does; only `start` starts one now, 2046); keys read as events, with the sequences a key sends taken apart
+  (`Stdin` reads the bytes, 2052); a `Signal.WindowChange` on Windows, whose console tells of a new size among
+  the events of its input; a start at a terminal by `posix_spawn` on Linux, 15% faster ([Slower than
+  C](../../benchmarks/slower-than-c.md)); an async read of the pipe of another program in the interpreter that
+  lets other tasks run while it waits (it holds the run now, compiled code does not); a program that joins the
+  group of another by its number (`setpgid` to a group; a `Pipeline.newGroup` puts its programs in one group,
+  and Windows cannot, 2039); the modes of the terminal of a paused job kept and put back (the raw mode of a
+  terminal is here since 198, the settings of a job's are not kept for it); a wait for any child
   (`waitpid(-1)`: each `Process` is waited for by itself, 2039); a group stopped as one on Windows, where
   `killGroup` and a signal other than `Interrupt` reach only the first program (job objects, later); a stream of a program given an open `File` or a socket (Rust's `Stdio::from`; a
   path is given, 2017); a wait with a time limit is `waitAsync` with a token of

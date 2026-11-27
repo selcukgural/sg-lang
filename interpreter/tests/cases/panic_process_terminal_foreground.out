@@ -1,0 +1,4 @@
+panic: the program starts at a terminal of its own (`terminal`), not in front at the terminal of this program (`foreground`)
+  --> panic_process_terminal_foreground.sg:6:9
+ 6 |     _ = command.start()
+   |         ^^^^^^^^^^^^^^^

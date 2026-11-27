@@ -2370,6 +2370,23 @@ print(editor.groupId())                        // int?: null in the group of thi
 Signals.stopSelf()                             // SIGSTOP to this program; Signal has TerminalStop, Continue, Child...
 ```
 
+A program can be started at a terminal made for it, read and typed into as a person at a terminal window would;
+and a program can make its own terminal raw, to read each key as it is pressed:
+
+```
+var shell = Command("vim")
+shell.terminal(24, 80)                         // a pseudo terminal (ConPTY on Windows); only start()
+var vim = try shell.start()
+var screen = vim.takeTerminalReader() ?? panic("asked for")   // what it shows: "\n" comes as "\r\n"
+var keys = vim.takeTerminalWriter() ?? panic("asked for")     // what it reads as keys: "\r" is Enter
+try keys.write(":q\r")
+try vim.resizeTerminal(40, 120)                // it gets Signal.WindowChange (Linux and macOS)
+
+var raw = try Terminal.rawMode()               // each byte as typed, no echo, Ctrl-C a byte
+var size = try Terminal.size()                 // size.rows, size.columns of this program's terminal
+try raw.restore()                              // also where it ends, at a panic, or a signal that ends the program
+```
+
 A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
 is written; one that takes `this` by value may start as a task of its own.
 

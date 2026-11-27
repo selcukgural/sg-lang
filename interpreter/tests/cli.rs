@@ -341,6 +341,38 @@ fn a_job_in_front_at_a_terminal() {
     }
 }
 
+/// A terminal made raw and left so, by a panic, by `exit` or by `SIGTERM` with no listener, is put
+/// back as it was before the first `rawMode`, interpreted and compiled (2050): `stty -a` after
+/// each, at the same terminal (`script`), shows lines and echo on again.
+#[cfg(unix)]
+#[test]
+fn a_raw_terminal_put_back_at_the_end() {
+    if Command::new("script").arg("-V").stdin(Stdio::null()).output().is_err() {
+        eprintln!("no `script`: a raw terminal put back at the end is not tested");
+        return;
+    }
+    let dir = work("a_raw_terminal_put_back_at_the_end");
+    let programs = [("raw_end", include_str!("terminal/raw_end.sg"))];
+    for (command, way) in both_ways(&dir, &programs) {
+        let program = std::iter::once(command.get_program()).chain(command.get_args()).map(|word| format!("'{}'", word.to_string_lossy())).collect::<Vec<_>>().join(" ");
+        // Lines and echo as `stty -a` says them: `icanon` or `-icanon`, `echo` or `-echo`.
+        let look = "stty -a | tr ' ;' '\\n\\n' | grep -x -e '-\\{0,1\\}icanon' -e '-\\{0,1\\}echo'";
+        let shell = format!(
+            "{program} panic 2>/dev/null; echo \"after panic: $?\"; {look}; {program} exit; echo \"after exit: $?\"; {look}; \
+             {program} wait </dev/tty & sleep 1; kill -TERM $!; wait $! 2>/dev/null; echo \"after the signal: $?\"; {look}"
+        );
+        let mut script = Command::new("script");
+        match cfg!(target_os = "macos") {
+            true => script.args(["-q", "/dev/null", "sh", "-c", &shell]),
+            false => script.args(["-qec", &shell, "/dev/null"]),
+        };
+        let out = script.current_dir(&dir).stdin(Stdio::null()).finished();
+        let shown = text(&out.stdout).replace('\r', "").replace("^D\u{8}\u{8}", "").replace("^D", "");
+        let wanted = "raw\nafter panic: 1\nicanon\necho\nraw\nafter exit: 3\nicanon\necho\nraw\nafter the signal: 143\nicanon\necho\n";
+        assert_eq!(shown, wanted, "{way}: {}", text(&out.stderr));
+    }
+}
+
 /// An output that was never open (`>&-`) takes what is written and drops it, interpreted and
 /// compiled (1547), as Rust's own output does: the program goes on to its end.
 #[cfg(unix)]

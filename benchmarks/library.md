@@ -9,6 +9,9 @@ measures one module again.
 
 Not measured yet: `atomic`, `files`, `process`, `regex`, `signals`, `terminal`.
 
+`process` and `terminal` were measured against C where they were built
+([196](../design/decisions/2026-11-26.md#slice-196), [198](../design/decisions/2026-11-27.md#slice-198)).
+
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,
 which 1637 does not name. The command line and the environment are measured for their memory and size alone,

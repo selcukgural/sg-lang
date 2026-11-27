@@ -1,0 +1,4 @@
+1 lines: 1 came, at least 100 bytes: true, exited with code 0
+1000 lines: 1000 came, at least 100000 bytes: true, exited with code 0
+100000 lines: 100000 came, at least 10000000 bytes: true, exited with code 0
+both read: true, exited with code 0

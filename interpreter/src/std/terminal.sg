@@ -1,9 +1,10 @@
 // The terminal of this program: the one it was started at, whose keyboard sends Ctrl-C and Ctrl-Z
 // to the group of programs in front there (`/dev/tty`). A shell puts the group of a job in front
 // while the job runs, and itself again once the job has ended or was paused: `giveTo` and
-// `takeBack`. A console of Windows has no group in front: there both do nothing. Written in SG and
-// brought along by the language; only the call of the system under it (`System.terminalFront`) is
-// the compiler's own.
+// `takeBack`. A console of Windows has no group in front: there both do nothing. A program that
+// reads each key as it is pressed, as an editor does, makes the terminal raw (`rawMode`), and
+// draws to the size it has (`size`). Written in SG and brought along by the language; only the
+// calls of the system under it (`System.terminalFront` and the others) are the compiler's own.
 
 public struct Terminal {
     // Puts the group of `process` in front at the terminal of this program, as `fg` at a shell
@@ -25,5 +26,59 @@ public struct Terminal {
     // when this program has none.
     public Result<void, IoError> takeBack() {
         return System.terminalFront(0)
+    }
+
+    // Makes the terminal the input of this program reads from raw, as an editor or a game does:
+    // each byte comes as it is typed, without waiting for Enter; nothing typed is shown back;
+    // Ctrl-C, Ctrl-Z and Ctrl-\ come as the bytes 3, 26 and 28, not as signals; and a `"\n"`
+    // written goes to the next line without going back to its start, so write `"\r\n"`. The
+    // `RawMode` it gives puts the terminal back as it was (`restore`, or where it ends). Should
+    // the program end without that, by a panic or a signal that stops it, the language puts back
+    // the terminal as it was before the first `rawMode`, so that the shell is not left raw.
+    // `NotATerminal` when the input of this program is not a terminal. On Windows the console is
+    // set so: no line input, no echo, Ctrl-C as a byte, and sequences of keys as a terminal sends
+    // them (`ENABLE_VIRTUAL_TERMINAL_INPUT`); its output reads the sequences of a terminal.
+    public Result<RawMode, IoError> rawMode() {
+        var saved = long[16]
+        try System.terminalRaw(ref saved)
+        return Ok(RawMode { saved = saved, done = false })
+    }
+
+    // How large the terminal the output of this program goes to is, in lines and characters, as
+    // a program that draws on the whole of it needs. `Signal.WindowChange` comes when it changes.
+    // `NotATerminal` when the output of this program is not a terminal. On Windows the window of
+    // the console.
+    public Result<TerminalSize, IoError> size() {
+        var size = long[2]
+        try System.terminalSize(ref size)
+        return Ok(TerminalSize { rows = (int)size[0], columns = (int)size[1] })
+    }
+}
+
+// How large a terminal is: `Terminal.size`.
+public struct TerminalSize : Copyable, Equatable, Formattable {
+    // Lines.
+    public readonly int rows
+    // Characters on a line.
+    public readonly int columns
+}
+
+// A terminal made raw (`Terminal.rawMode`), put back as it was by `restore`, or where it ends.
+public struct RawMode : Disposable {
+    // The settings of the terminal before, as the system keeps them.
+    long[16] saved
+    // Put back already.
+    bool done
+
+    // Puts the terminal back as it was before `rawMode`: lines, echo, signals of keys.
+    public Result<void, IoError> restore(this) {
+        this.done = true
+        return System.terminalRestore(read this.saved)
+    }
+
+    void dispose(ref this) {
+        if !this.done {
+            _ = System.terminalRestore(read this.saved)
+        }
     }
 }

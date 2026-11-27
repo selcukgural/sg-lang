@@ -1,0 +1,8 @@
+// `resizeTerminal` of a program not started at a terminal of its own (2048).
+void main() {
+    var command = Command("sg-test-tool")
+    command.arg("sleep=10")
+    var process = command.start() ?? panic("starts")
+    _ = process.resizeTerminal(24, 80)
+    _ = process.wait()
+}

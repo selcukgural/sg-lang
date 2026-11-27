@@ -735,6 +735,7 @@ pub(crate) fn io_kind(code: i32) -> usize {
         // ERROR_INVALID_PARAMETER, ERROR_INVALID_NAME
         87 | 123 => 15,
         MESSAGE_TOO_LONG => 16,
+        NOT_A_TERMINAL => 21,
         _ => 5,
     }
 }
@@ -1087,4 +1088,549 @@ fn file_on_the_way(path: &str) -> bool {
         on = folder.parent();
     }
     false
+}
+
+// The pseudo console of Windows 10 1809 and later (ConPTY) for a program started at a terminal
+// of its own (2043). std's `Command` cannot give a program one, so the program is started here
+// with `CreateProcessW`, from what `command_of` made of its words, folder and environment.
+
+#[repr(C)]
+struct StartupInfo {
+    cb: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    x: u32,
+    y: u32,
+    x_size: u32,
+    y_size: u32,
+    x_chars: u32,
+    y_chars: u32,
+    fill: u32,
+    flags: u32,
+    show: u16,
+    reserved2_size: u16,
+    reserved2: *mut u8,
+    input: Handle,
+    output: Handle,
+    error: Handle,
+}
+
+#[repr(C)]
+struct StartupInfoEx {
+    info: StartupInfo,
+    attributes: *mut c_void,
+}
+
+#[repr(C)]
+struct ProcessInformation {
+    process: Handle,
+    thread: Handle,
+    pid: u32,
+    tid: u32,
+}
+
+/// `COORD`: columns, then rows.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Coord {
+    x: i16,
+    y: i16,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct SmallRect {
+    left: i16,
+    top: i16,
+    right: i16,
+    bottom: i16,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ScreenBufferInfo {
+    size: [i16; 2],
+    cursor: [i16; 2],
+    attributes: u16,
+    window: SmallRect,
+    largest: [i16; 2],
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn InitializeProcThreadAttributeList(list: *mut c_void, count: u32, flags: u32, size: *mut usize) -> Bool;
+    fn UpdateProcThreadAttribute(list: *mut c_void, flags: u32, attribute: usize, value: *const c_void, size: usize, previous: *mut c_void, returned: *mut usize) -> Bool;
+    fn DeleteProcThreadAttributeList(list: *mut c_void);
+    fn CreateProcessW(
+        application: *const u16,
+        line: *mut u16,
+        process_security: *const c_void,
+        thread_security: *const c_void,
+        inherit: Bool,
+        flags: u32,
+        environment: *const c_void,
+        folder: *const u16,
+        startup: *const StartupInfo,
+        information: *mut ProcessInformation,
+    ) -> Bool;
+    fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    fn GetConsoleScreenBufferInfo(console: Handle, info: *mut ScreenBufferInfo) -> Bool;
+}
+
+type PtyCreate = unsafe extern "system" fn(Coord, Handle, Handle, u32, *mut isize) -> i32;
+type PtyResize = unsafe extern "system" fn(isize, Coord) -> i32;
+type PtyClose = unsafe extern "system" fn(isize);
+
+/// The three calls of a pseudo console, found in `kernel32.dll` when first asked for; `None` on
+/// a Windows without them.
+fn pty_calls() -> Option<(PtyCreate, PtyResize, PtyClose)> {
+    static CALLS: OnceLock<Option<(usize, usize, usize)>> = OnceLock::new();
+    const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x800;
+    let found = CALLS.get_or_init(|| {
+        let name = wide("kernel32.dll");
+        // SAFETY: the name ends with a zero; the names looked for end with one too.
+        unsafe {
+            let kernel = LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if kernel.is_null() {
+                return None;
+            }
+            let create = GetProcAddress(kernel, c"CreatePseudoConsole".as_ptr());
+            let resize = GetProcAddress(kernel, c"ResizePseudoConsole".as_ptr());
+            let close = GetProcAddress(kernel, c"ClosePseudoConsole".as_ptr());
+            if create.is_null() || resize.is_null() || close.is_null() {
+                return None;
+            }
+            Some((create as usize, resize as usize, close as usize))
+        }
+    });
+    // SAFETY: the addresses are of these functions, whose types are as Windows declares them.
+    found.map(|(create, resize, close)| unsafe {
+        (std::mem::transmute::<usize, PtyCreate>(create), std::mem::transmute::<usize, PtyResize>(resize), std::mem::transmute::<usize, PtyClose>(close))
+    })
+}
+
+/// A failed call of a pseudo console: its `HRESULT` as the code of Windows inside it.
+fn hresult_error(result: i32) -> std::io::Error {
+    match (result as u32) & 0xFFFF_0000 {
+        0x8007_0000 => std::io::Error::from_raw_os_error((result as u32 & 0xFFFF) as i32),
+        _ => std::io::Error::from_raw_os_error(31),
+    }
+}
+
+/// `ERROR_NOT_SUPPORTED`: a Windows with no pseudo console.
+const NOT_SUPPORTED: i32 = 50;
+
+/// A program started at a pseudo console, which std's `Child` cannot hold: its handle, closed
+/// where this ends.
+pub(crate) struct ConsoleChild {
+    process: isize,
+    pid: u32,
+}
+
+impl ConsoleChild {
+    pub(crate) fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// How it ended, once it has, waiting when `block`.
+    fn ended(&mut self, block: bool) -> std::io::Result<Option<std::process::ExitStatus>> {
+        use std::os::windows::process::ExitStatusExt;
+        const WAIT_OBJECT_0: u32 = 0;
+        // SAFETY: the handle is this program's until it ends.
+        unsafe {
+            if WaitForSingleObject(self.process as Handle, if block { u32::MAX } else { 0 }) != WAIT_OBJECT_0 {
+                return Ok(None);
+            }
+            let mut code = 0u32;
+            if GetExitCodeProcess(self.process as Handle, &mut code) == 0 {
+                return Err(last_error());
+            }
+            Ok(Some(std::process::ExitStatus::from_raw(code)))
+        }
+    }
+
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.ended(true).map(|status| status.unwrap_or_else(|| std::os::windows::process::ExitStatusExt::from_raw(1)))
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.ended(false)
+    }
+}
+
+impl Drop for ConsoleChild {
+    fn drop(&mut self) {
+        // SAFETY: the handle is closed once.
+        unsafe { CloseHandle(self.process as Handle) };
+    }
+}
+
+/// An argument as C's library reads it back, as Rust writes it (and compiled code,
+/// `sg_proc_arg`): quoted when it is empty or holds a space or a tab; a quote after `n`
+/// backslashes is written after `2n+1`, and the backslashes before the closing quote doubled.
+fn push_arg(line: &mut Vec<u16>, arg: &[u16]) {
+    let backslash = u16::from(b'\\');
+    let quote_mark = u16::from(b'"');
+    let quote = arg.is_empty() || arg.iter().any(|c| *c == u16::from(b' ') || *c == u16::from(b'\t'));
+    if quote {
+        line.push(quote_mark);
+    }
+    let mut slashes = 0;
+    for &c in arg {
+        if c == backslash {
+            slashes += 1;
+        } else {
+            if c == quote_mark {
+                line.extend(std::iter::repeat_n(backslash, slashes + 1));
+            }
+            slashes = 0;
+        }
+        line.push(c);
+    }
+    if quote {
+        line.extend(std::iter::repeat_n(backslash, slashes));
+        line.push(quote_mark);
+    }
+}
+
+/// An argument of a batch file, escaped for `cmd.exe` as Rust escapes it (and `sg_proc_bat_arg`);
+/// a `\r` or a `\n` cannot be passed.
+fn push_batch_arg(line: &mut Vec<u16>, arg: &[u16]) -> std::io::Result<()> {
+    let backslash = u16::from(b'\\');
+    let quote_mark = u16::from(b'"');
+    let mut quote = arg.is_empty() || arg.last() == Some(&backslash);
+    for &c in arg {
+        if c == u16::from(b'\r') || c == u16::from(b'\n') {
+            return Err(std::io::Error::from_raw_os_error(87));
+        }
+        let plain = c >= 0x80 || (c as u8).is_ascii_alphanumeric() || b"$#*+-./:?@\\_".contains(&(c as u8));
+        if !plain || (0x80..=0x9F).contains(&c) {
+            quote = true;
+        }
+    }
+    if quote {
+        line.push(quote_mark);
+    }
+    let mut slashes = 0;
+    for &c in arg {
+        if c == backslash {
+            slashes += 1;
+        } else {
+            if c == quote_mark {
+                line.extend(std::iter::repeat_n(backslash, slashes));
+                line.push(quote_mark);
+            } else if c == u16::from(b'%') {
+                line.extend("%%cd:~,".encode_utf16());
+            }
+            slashes = 0;
+        }
+        line.push(c);
+    }
+    if quote {
+        line.extend(std::iter::repeat_n(backslash, slashes));
+        line.push(quote_mark);
+    }
+    Ok(())
+}
+
+/// The block of the environment of a program: this program's, or none when cleared, with the
+/// changes of the command made, sorted as Windows wants it, without case.
+fn environment_block(command: &std::process::Command, clear: bool) -> Vec<u16> {
+    let mut entries: Vec<(std::ffi::OsString, std::ffi::OsString)> = match clear {
+        true => Vec::new(),
+        false => std::env::vars_os().collect(),
+    };
+    let same = |a: &std::ffi::OsStr, b: &std::ffi::OsStr| a.to_string_lossy().to_uppercase() == b.to_string_lossy().to_uppercase();
+    for (name, value) in command.get_envs() {
+        entries.retain(|(have, _)| !same(have, name));
+        if let Some(value) = value {
+            entries.push((name.to_os_string(), value.to_os_string()));
+        }
+    }
+    entries.sort_by_key(|(name, _)| name.to_string_lossy().to_uppercase());
+    let mut block = Vec::new();
+    for (name, value) in entries {
+        block.extend(name.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
+/// Starts the program of `values` (as `System.start` takes them) at a pseudo console of `rows`
+/// and `columns`: the program, the end its screen is read from, the end its keys are written to,
+/// and the pseudo console, which `close_terminal` closes.
+pub(crate) fn start_at_console(values: &[Value], rows: i128, columns: i128) -> std::io::Result<(ConsoleChild, std::fs::File, std::fs::File, i64)> {
+    use std::os::windows::io::IntoRawHandle;
+    const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+    const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
+    const PSEUDOCONSOLE: usize = 0x0002_0016;
+    let (create, _, close) = pty_calls().ok_or_else(|| std::io::Error::from_raw_os_error(NOT_SUPPORTED))?;
+    let command = command_of(values);
+    let program = command.get_program().to_os_string();
+    let mut app: Vec<u16> = program.encode_wide().collect();
+    let mut line = Vec::new();
+    let lower = program.to_string_lossy().to_lowercase();
+    let batch = lower.trim_end_matches(['.', ' ']).ends_with(".bat") || lower.trim_end_matches(['.', ' ']).ends_with(".cmd");
+    if batch {
+        // `cmd.exe` from the folder of the system, never from `PATH`.
+        let mut system = vec![0u16; 300];
+        // SAFETY: the buffer holds 300 characters, as told.
+        let n = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
+        system.truncate(n);
+        system.extend("\\cmd.exe".encode_utf16());
+        line.extend("cmd.exe /e:ON /v:OFF /d /c \"\"".encode_utf16());
+        line.extend(app.iter().copied());
+        line.push(u16::from(b'"'));
+        for arg in command.get_args() {
+            line.push(u16::from(b' '));
+            push_batch_arg(&mut line, &arg.encode_wide().collect::<Vec<u16>>())?;
+        }
+        line.push(u16::from(b'"'));
+        app = system;
+    } else {
+        // The name is quoted and not escaped, as Rust writes it: a quote cannot be in it.
+        if app.contains(&u16::from(b'"')) {
+            return Err(std::io::Error::from_raw_os_error(87));
+        }
+        line.push(u16::from(b'"'));
+        line.extend(app.iter().copied());
+        line.push(u16::from(b'"'));
+        for arg in command.get_args() {
+            line.push(u16::from(b' '));
+            push_arg(&mut line, &arg.encode_wide().collect::<Vec<u16>>());
+        }
+    }
+    app.push(0);
+    line.push(0);
+    let folder: Option<Vec<u16>> = command.get_current_dir().map(|dir| dir.as_os_str().encode_wide().chain([0]).collect());
+    let environment = environment_block(&command, matches!(values[3], Value::Bool(true)));
+    let (their_keys, keys) = std::io::pipe()?;
+    let (screen, their_screen) = std::io::pipe()?;
+    let their_keys = their_keys.into_raw_handle();
+    let their_screen = their_screen.into_raw_handle();
+    let mut console: isize = 0;
+    // SAFETY: the handles are open; the pseudo console keeps its own of them, so they are closed
+    // after the call.
+    let made = unsafe { create(Coord { x: columns as i16, y: rows as i16 }, their_keys, their_screen, 0, &mut console) };
+    // SAFETY: as above.
+    unsafe {
+        CloseHandle(their_keys);
+        CloseHandle(their_screen);
+    }
+    if made < 0 {
+        return Err(hresult_error(made));
+    }
+    let mut size = 0usize;
+    // SAFETY: the list is as large as the first call says; it is deleted after the start, and the
+    // pseudo console is closed when the program does not start.
+    unsafe {
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+        let mut list = vec![0u8; size];
+        let attributes = list.as_mut_ptr().cast::<c_void>();
+        let fail = |error: std::io::Error| {
+            close(console);
+            Err(error)
+        };
+        if InitializeProcThreadAttributeList(attributes, 1, 0, &mut size) == 0 {
+            return fail(last_error());
+        }
+        if UpdateProcThreadAttribute(attributes, 0, PSEUDOCONSOLE, console as *const c_void, std::mem::size_of::<isize>(), std::ptr::null_mut(), std::ptr::null_mut()) == 0 {
+            let error = last_error();
+            DeleteProcThreadAttributeList(attributes);
+            return fail(error);
+        }
+        let mut start: StartupInfoEx = std::mem::zeroed();
+        start.info.cb = std::mem::size_of::<StartupInfoEx>() as u32;
+        start.attributes = attributes;
+        // Handles that name none, or the program would get those of this one where they were sent
+        // elsewhere, and write there rather than to its console.
+        const STARTF_USESTDHANDLES: u32 = 0x100;
+        start.info.flags = STARTF_USESTDHANDLES;
+        start.info.input = INVALID_HANDLE;
+        start.info.output = INVALID_HANDLE;
+        start.info.error = INVALID_HANDLE;
+        let mut information: ProcessInformation = std::mem::zeroed();
+        let started = CreateProcessW(
+            app.as_ptr(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            environment.as_ptr().cast(),
+            folder.as_ref().map_or(std::ptr::null(), |folder| folder.as_ptr()),
+            &start.info,
+            &mut information,
+        );
+        let error = last_error();
+        DeleteProcThreadAttributeList(attributes);
+        if started == 0 {
+            return fail(error);
+        }
+        CloseHandle(information.thread);
+        let child = ConsoleChild { process: information.process as isize, pid: information.pid };
+        keep_console(console, information.pid);
+        let screen = std::fs::File::from(std::os::windows::io::OwnedHandle::from(screen));
+        let keys = std::fs::File::from(std::os::windows::io::OwnedHandle::from(keys));
+        Ok((child, screen, keys, console as i64))
+    }
+}
+
+/// A pseudo terminal of Linux and macOS is never made here: `start_at_console` starts the program.
+pub(crate) fn open_terminal(_rows: i128, _columns: i128) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    Err(std::io::Error::from_raw_os_error(NOT_SUPPORTED))
+}
+
+pub(crate) fn controlled(_command: &mut std::process::Command, _at: std::ffi::c_int) {}
+
+/// The pseudo consoles still open, by what names them: a thread waits for the end of the program
+/// of each and closes it then, so that the pipe of what it shows comes to its end as a terminal of
+/// Linux and macOS does, without waiting for `Process.wait`; `resizeTerminal` resizes only one
+/// still here.
+static CONSOLES: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+fn consoles() -> std::sync::MutexGuard<'static, Vec<i64>> {
+    CONSOLES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The pseudo console just made for program `pid`, closed once it ends (or by `close_terminal`).
+fn keep_console(console: isize, pid: u32) {
+    consoles().push(console as i64);
+    // SAFETY: the handle only waits, and is closed after.
+    let process = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) } as isize;
+    if process == 0 {
+        return;
+    }
+    let waiter = std::thread::Builder::new().name("pseudo console".to_string()).spawn(move || {
+        // SAFETY: as above.
+        unsafe {
+            WaitForSingleObject(process as Handle, u32::MAX);
+            CloseHandle(process as Handle);
+        }
+        close_terminal(console as i64);
+    });
+    if waiter.is_err() {
+        // SAFETY: closed once; the console is then closed only by `close_terminal`.
+        unsafe { CloseHandle(process as Handle) };
+    }
+}
+
+/// `System.resizeTerminal` (2048): `ResizePseudoConsole`; nothing once the program has ended.
+pub(crate) fn resize_terminal(terminal: i64, rows: i64, columns: i64) -> std::io::Result<()> {
+    let (_, resize, _) = pty_calls().ok_or_else(|| std::io::Error::from_raw_os_error(NOT_SUPPORTED))?;
+    let open = consoles();
+    if !open.contains(&terminal) {
+        return Ok(());
+    }
+    // SAFETY: the pseudo console is open while it is in the list, which is held.
+    match unsafe { resize(terminal as isize, Coord { x: columns as i16, y: rows as i16 }) } {
+        made if made < 0 => Err(hresult_error(made)),
+        _ => Ok(()),
+    }
+}
+
+/// `System.closeTerminal` (2042): the pseudo console ends, unless the end of its program closed it
+/// already, and with it the pipe of what it shows, once that has been read.
+pub(crate) fn close_terminal(terminal: i64) {
+    let mut open = consoles();
+    let Some(at) = open.iter().position(|kept| *kept == terminal) else { return };
+    open.swap_remove(at);
+    drop(open);
+    if let Some((_, _, close)) = pty_calls() {
+        // SAFETY: out of the list, so closed once.
+        unsafe { close(terminal as isize) };
+    }
+}
+
+/// No terminal where one was asked for: `IoError.NotATerminal`, a code of the runtime's own.
+pub(crate) const NOT_A_TERMINAL: i32 = -22;
+
+/// `System.terminalSize` (2051): the window of the console the output of this program goes to.
+pub(crate) fn terminal_size() -> std::io::Result<(i64, i64)> {
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    let mut info = ScreenBufferInfo::default();
+    // SAFETY: the information is written into `info`.
+    if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) } == 0 {
+        return Err(std::io::Error::from_raw_os_error(NOT_A_TERMINAL));
+    }
+    let window = &info.window;
+    Ok((i64::from(window.bottom - window.top + 1), i64::from(window.right - window.left + 1)))
+}
+
+/// The modes of the console before the first raw mode: input, output, and 1 when the output is a
+/// console; put back at the end of the run (2050).
+static FIRST_MODES: OnceLock<(u32, u32, bool)> = OnceLock::new();
+
+const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+const STD_OUTPUT: u32 = -11i32 as u32;
+
+/// `System.terminalRaw` (2049): the console of the input without line input, echo and Ctrl-C as a
+/// signal, giving keys as a terminal sends them; its output reads the sequences of a terminal.
+/// `saved` gets the mode of the input, of the output, and 1 when the output is a console, as
+/// numbers of 8 bytes, as compiled code keeps them.
+pub(crate) fn terminal_raw(saved: &mut [u8; 128]) -> std::io::Result<()> {
+    const ENABLE_PROCESSED_INPUT: u32 = 0x1;
+    const ENABLE_LINE_INPUT: u32 = 0x2;
+    const ENABLE_ECHO_INPUT: u32 = 0x4;
+    const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x200;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x4;
+    const DISABLE_NEWLINE_AUTO_RETURN: u32 = 0x8;
+    // SAFETY: the modes are written into the numbers given.
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        let output = GetStdHandle(STD_OUTPUT);
+        let mut in_mode = 0u32;
+        let mut out_mode = 0u32;
+        if GetConsoleMode(input, &mut in_mode) == 0 {
+            return Err(std::io::Error::from_raw_os_error(NOT_A_TERMINAL));
+        }
+        let console_out = GetConsoleMode(output, &mut out_mode) != 0;
+        saved[..8].copy_from_slice(&u64::from(in_mode).to_le_bytes());
+        saved[8..16].copy_from_slice(&u64::from(out_mode).to_le_bytes());
+        saved[16..24].copy_from_slice(&u64::from(console_out).to_le_bytes());
+        FIRST_MODES.get_or_init(|| (in_mode, out_mode, console_out));
+        let raw = (in_mode & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT)) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+        if SetConsoleMode(input, raw) == 0 {
+            return Err(last_error());
+        }
+        if console_out {
+            SetConsoleMode(output, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN);
+        }
+    }
+    Ok(())
+}
+
+/// `System.terminalRestore`: the modes `terminal_raw` saved.
+pub(crate) fn terminal_restore(saved: &[u8; 128]) -> std::io::Result<()> {
+    let number = |at: usize| u64::from_le_bytes(saved[at..at + 8].try_into().unwrap_or([0; 8]));
+    // SAFETY: modes of the console, as `GetConsoleMode` gave them.
+    unsafe {
+        if SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), number(0) as u32) == 0 {
+            return Err(std::io::Error::from_raw_os_error(NOT_A_TERMINAL));
+        }
+        if number(16) != 0 {
+            SetConsoleMode(GetStdHandle(STD_OUTPUT), number(8) as u32);
+        }
+    }
+    Ok(())
+}
+
+/// The console as it was before the first raw mode, put back at the end of the run (2050).
+pub(crate) fn terminal_back() {
+    if let Some(&(in_mode, out_mode, console_out)) = FIRST_MODES.get() {
+        // SAFETY: modes of the console, as `GetConsoleMode` gave them.
+        unsafe {
+            SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), in_mode);
+            if console_out {
+                SetConsoleMode(GetStdHandle(STD_OUTPUT), out_mode);
+            }
+        }
+    }
 }

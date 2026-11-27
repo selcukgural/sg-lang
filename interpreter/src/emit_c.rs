@@ -7757,6 +7757,9 @@ static int sg_net_accept_now(int lfd, int* out, bool nb) {
    with SELinux on, it cost the store of the server lane 8% of its processor. */
 static int sg_net_take_now(int fd, uint8_t* to, int64_t len, int64_t* got, bool pipe) {
     ssize_t n = pipe ? read(fd, to, (size_t)len) : recv(fd, to, (size_t)len, 0);
+    /* The end of a terminal made for a program says EIO on Linux once no program holds it: its
+       end (2047). A pipe never says it. */
+    if (n < 0 && pipe && errno == EIO) n = 0;
     if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     *got = n;
     return 0;
@@ -10217,6 +10220,138 @@ static int sg_proc_pipe(bool ours_reads, int* ours, HANDLE* theirs) {
         return 0;
     }
 }
+/* The pseudo console of Windows 10 1809 and later (ConPTY), found when first asked for, so that
+   the program starts on a Windows without it too. */
+typedef void* sg_hpcon;
+#define SG_ATTRIBUTE_PSEUDOCONSOLE ((DWORD_PTR)0x00020016)
+typedef HRESULT (WINAPI *sg_pty_create_t)(COORD, HANDLE, HANDLE, DWORD, sg_hpcon*);
+typedef HRESULT (WINAPI *sg_pty_resize_t)(sg_hpcon, COORD);
+typedef void (WINAPI *sg_pty_close_t)(sg_hpcon);
+static sg_pty_create_t sg_pty_create;
+static sg_pty_resize_t sg_pty_resize;
+static sg_pty_close_t sg_pty_close;
+static int sg_pty_calls(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    BOOL pending = FALSE;
+    if (InitOnceBeginInitialize(&once, 0, &pending, NULL) && pending) {
+        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+        if (kernel) {
+            sg_pty_create = (sg_pty_create_t)(void*)GetProcAddress(kernel, "CreatePseudoConsole");
+            sg_pty_resize = (sg_pty_resize_t)(void*)GetProcAddress(kernel, "ResizePseudoConsole");
+            sg_pty_close = (sg_pty_close_t)(void*)GetProcAddress(kernel, "ClosePseudoConsole");
+        }
+        InitOnceComplete(&once, 0, NULL);
+    }
+    return sg_pty_create && sg_pty_resize && sg_pty_close ? 0 : ERROR_NOT_SUPPORTED;
+}
+/* A pseudo console kept for a program: closed by the pool of threads of the system as soon as
+   the program ends (`wait`), so that the pipe of what it shows comes to its end then, as a
+   terminal of Linux and macOS does, without waiting for `Process.wait`; under `lock`, which
+   `resizeTerminal` takes too, so that it never resizes one closed. What names it to the calls of
+   `System` is its address. */
+typedef struct sg_pty_box { SRWLOCK lock; sg_hpcon console; HANDLE wait; } sg_pty_box;
+static void sg_pty_box_close(sg_pty_box* box) {
+    AcquireSRWLockExclusive(&box->lock);
+    sg_hpcon console = box->console;
+    box->console = NULL;
+    ReleaseSRWLockExclusive(&box->lock);
+    if (console) sg_pty_close(console);
+}
+static VOID CALLBACK sg_pty_ended(PVOID p, BOOLEAN timed_out) {
+    (void)timed_out;
+    sg_pty_box_close(p);
+}
+/* The box of a pseudo console just made for the program `process`; NULL when the system refused
+   the wait, and the console is then closed only by `closeTerminal`. */
+static sg_pty_box* sg_pty_keep(sg_hpcon console, HANDLE process) {
+    sg_pty_box* box = calloc(1, sizeof *box);
+    if (!box) abort();
+    InitializeSRWLock(&box->lock);
+    box->console = console;
+    if (!RegisterWaitForSingleObject(&box->wait, process, sg_pty_ended, box, INFINITE, WT_EXECUTEONLYONCE | WT_EXECUTELONGFUNCTION))
+        box->wait = NULL;
+    return box;
+}
+/* `System.resizeTerminal` (2048): nothing once the program has ended. */
+static int sg_term_resize(int64_t terminal, int32_t rows, int32_t columns) {
+    sg_pty_box* box = (sg_pty_box*)(intptr_t)terminal;
+    if (sg_pty_calls() || !box) return ERROR_NOT_SUPPORTED;
+    COORD size = { (SHORT)columns, (SHORT)rows };
+    HRESULT done = S_OK;
+    AcquireSRWLockShared(&box->lock);
+    if (box->console) done = sg_pty_resize(box->console, size);
+    ReleaseSRWLockShared(&box->lock);
+    return SUCCEEDED(done) ? 0 : (done & 0xFFFF0000) == 0x80070000 ? (int)(done & 0xFFFF) : ERROR_GEN_FAILURE;
+}
+/* `System.closeTerminal` (2042): the pseudo console ends, if the end of the program has not
+   closed it already, and with it the pipe of what it shows once that has been read. The wait for
+   the end is let go of first, its call back finished. */
+static void sg_term_close(int64_t terminal) {
+    sg_pty_box* box = (sg_pty_box*)(intptr_t)terminal;
+    if (terminal == -1 || !box || sg_pty_calls()) return;
+    if (box->wait) UnregisterWaitEx(box->wait, INVALID_HANDLE_VALUE);
+    sg_pty_box_close(box);
+    free(box);
+}
+/* `System.terminalSize` (2051): the window of the console the output of this program goes to. */
+static int sg_term_size(int64_t* size) {
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) return SG_NOT_A_TERMINAL;
+    size[0] = info.srWindow.Bottom - info.srWindow.Top + 1;
+    size[1] = info.srWindow.Right - info.srWindow.Left + 1;
+    return 0;
+}
+/* The modes of the console before the first raw mode (input, output, and whether the output is
+   a console), put back at the end of the program (2050). */
+static DWORD sg_term_first[2];
+static bool sg_term_first_out;
+static volatile LONG sg_term_kept = 0;
+static void sg_term_back(void) {
+    if (!sg_term_kept) return;
+    SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), sg_term_first[0]);
+    if (sg_term_first_out) SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), sg_term_first[1]);
+}
+#ifndef ENABLE_VIRTUAL_TERMINAL_INPUT
+#define ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200
+#endif
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+#ifndef DISABLE_NEWLINE_AUTO_RETURN
+#define DISABLE_NEWLINE_AUTO_RETURN 0x0008
+#endif
+/* `System.terminalRaw` (2049): the console of the input of this program without line input,
+   echo and Ctrl-C as a signal, giving keys as a terminal sends them; its output reads the
+   sequences of a terminal and does not go back to the start of the line at `\n`. `saved`: the
+   mode of the input, the mode of the output, and 1 when the output is a console. */
+static int sg_term_raw(int64_t* saved, int64_t room) {
+    if (room < 3) return SG_INVALID_INPUT;
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD in_mode = 0, out_mode = 0;
+    if (!GetConsoleMode(in, &in_mode)) return SG_NOT_A_TERMINAL;
+    bool console_out = GetConsoleMode(out, &out_mode) != 0;
+    saved[0] = in_mode;
+    saved[1] = out_mode;
+    saved[2] = console_out ? 1 : 0;
+    if (InterlockedCompareExchange(&sg_term_kept, 2, 0) == 0) {
+        sg_term_first[0] = in_mode;
+        sg_term_first[1] = out_mode;
+        sg_term_first_out = console_out;
+        atexit(sg_term_back);
+        InterlockedExchange(&sg_term_kept, 1);
+    }
+    DWORD raw = (in_mode & ~(DWORD)(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT)) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+    if (!SetConsoleMode(in, raw)) return sg_win_error();
+    if (console_out) SetConsoleMode(out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN);
+    return 0;
+}
+/* `System.terminalRestore`: the modes `sg_term_raw` saved. */
+static int sg_term_restore(const int64_t* saved, int64_t room) {
+    if (room < 3) return SG_INVALID_INPUT;
+    if (!SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), (DWORD)saved[0])) return SG_NOT_A_TERMINAL;
+    if (saved[2]) SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), (DWORD)saved[1]);
+    return 0;
+}
 /* A handle of this program as one the program it starts inherits, or NULL for none. */
 static HANDLE sg_proc_inherit(HANDLE h) {
     HANDLE copy = NULL;
@@ -10231,8 +10366,10 @@ static HANDLE sg_proc_inherit(HANDLE h) {
    and a `\r` or a `\n` for a batch file, are ERROR_INVALID_PARAMETER. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         const int64_t* ways, const sg_string* paths, HANDLE* process, DWORD* pid, int ends[3]) {
+                         const int64_t* ways, const sg_string* paths, HANDLE* process, DWORD* pid, int ends[3],
+                         int64_t* tty) {
     for (int i = 0; i < 3; i++) ends[i] = -1;
+    if (tty) tty[0] = tty[1] = tty[2] = -1;
     int code = 0;
     wchar_t* app = sg_wide(path, &code);
     if (!app) return code;
@@ -10285,9 +10422,28 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     wchar_t* env = sg_proc_env_block(clear, names, values, kept, changes);
     HANDLE given[3] = { NULL, NULL, NULL };
     SECURITY_ATTRIBUTES inherited = { sizeof inherited, NULL, TRUE };
+    /* A pseudo console made for it (2043): the program has it as its console, and its three
+       streams with it; its keys are written into one pipe and what it shows read from another,
+       whose ends here are kept. */
+    sg_hpcon console = NULL;
+    sg_pty_box* kept_console = NULL;
+    int keys = -1, screen = -1;
+    HANDLE their_keys = NULL, their_screen = NULL;
+    if (ways[8] != 0) {
+        code = sg_pty_calls();
+        if (!code) code = sg_proc_pipe(false, &keys, &their_keys);
+        if (!code) code = sg_proc_pipe(true, &screen, &their_screen);
+        if (!code) {
+            COORD size = { (SHORT)ways[9], (SHORT)ways[8] };
+            HRESULT made = sg_pty_create(size, their_keys, their_screen, 0, &console);
+            if (FAILED(made)) code = (made & 0xFFFF0000) == 0x80070000 ? (int)(made & 0xFFFF) : ERROR_GEN_FAILURE;
+        }
+    }
     for (int i = 0; i < 3 && !code; i++) {
         int64_t way = ways[i];
-        if (way == 0) {
+        if (way == 7) {
+            /* The pseudo console gives it. */
+        } else if (way == 0) {
             given[i] = sg_proc_inherit(GetStdHandle(i == 0 ? STD_INPUT_HANDLE : i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE));
         } else if ((i == 0 && (way == 2 || way == 3)) || (i > 0 && way == 1)) {
             code = sg_proc_pipe(i > 0, &ends[i], &given[i]);
@@ -10318,22 +10474,32 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         HANDLE list[3];
         int listed = 0;
         for (int i = 0; i < 3; i++) if (given[i]) list[listed++] = given[i];
+        int count_of = (listed ? 1 : 0) + (console ? 1 : 0);
         STARTUPINFOEXW start;
         memset(&start, 0, sizeof start);
-        start.StartupInfo.cb = listed ? sizeof start : sizeof start.StartupInfo;
+        start.StartupInfo.cb = count_of ? sizeof start : sizeof start.StartupInfo;
         start.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         start.StartupInfo.hStdInput = given[0];
         start.StartupInfo.hStdOutput = given[1];
         start.StartupInfo.hStdError = given[2];
+        /* At a pseudo console the streams are its own. Handles that name none are given, or
+           the program would get those of this one where they were sent elsewhere, and write
+           there rather than to its console. */
+        if (console) start.StartupInfo.hStdInput = start.StartupInfo.hStdOutput = start.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         void* attributes = NULL;
-        if (listed) {
+        if (count_of) {
             SIZE_T size = 0;
-            InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+            InitializeProcThreadAttributeList(NULL, (DWORD)count_of, 0, &size);
             attributes = malloc(size);
             if (!attributes) abort();
             start.lpAttributeList = attributes;
-            if (!InitializeProcThreadAttributeList(start.lpAttributeList, 1, 0, &size) ||
+            if (!InitializeProcThreadAttributeList(start.lpAttributeList, (DWORD)count_of, 0, &size))
+                code = sg_win_error();
+            if (!code && listed &&
                 !UpdateProcThreadAttribute(start.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, list, (SIZE_T)listed * sizeof(HANDLE), NULL, NULL))
+                code = sg_win_error();
+            if (!code && console &&
+                !UpdateProcThreadAttribute(start.lpAttributeList, 0, SG_ATTRIBUTE_PSEUDOCONSOLE, console, sizeof console, NULL, NULL))
                 code = sg_win_error();
         }
         if (!code) {
@@ -10341,12 +10507,15 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
             fflush(stderr);
             PROCESS_INFORMATION child;
             /* A group of its own (2023), or no console (`newSession`, 2024). */
-            DWORD flags = CREATE_UNICODE_ENVIRONMENT | (listed ? EXTENDED_STARTUPINFO_PRESENT : 0)
+            DWORD flags = CREATE_UNICODE_ENVIRONMENT | (count_of ? EXTENDED_STARTUPINFO_PRESENT : 0)
                         | (ways[5] != 0 ? CREATE_NEW_PROCESS_GROUP : 0) | (ways[6] ? DETACHED_PROCESS : 0);
             if (CreateProcessW(app, wline, NULL, NULL, listed > 0, flags, env, dir, &start.StartupInfo, &child)) {
                 CloseHandle(child.hThread);
                 *process = child.hProcess;
                 *pid = child.dwProcessId;
+                if (console) {
+                    kept_console = sg_pty_keep(console, child.hProcess);
+                }
             } else {
                 code = sg_win_error();
             }
@@ -10357,8 +10526,24 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         }
     }
     for (int i = 0; i < 3; i++) if (given[i]) CloseHandle(given[i]);
+    /* The pseudo console holds its own of the ends it was given. */
+    if (their_keys) CloseHandle(their_keys);
+    if (their_screen) CloseHandle(their_screen);
     if (code) {
         for (int i = 0; i < 3; i++) if (ends[i] >= 0) { sg_sys_close(ends[i]); ends[i] = -1; }
+        if (console) sg_pty_close(console);
+        if (keys >= 0) sg_sys_close(keys);
+        if (screen >= 0) sg_sys_close(screen);
+    } else if (console) {
+        if (tty) {
+            tty[0] = screen;
+            tty[1] = keys;
+            tty[2] = (int64_t)(intptr_t)kept_console;
+        } else {
+            sg_term_close((int64_t)(intptr_t)kept_console);
+            sg_sys_close(keys);
+            sg_sys_close(screen);
+        }
     }
     free(app);
     free(wline);
@@ -10541,7 +10726,7 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
     HANDLE child = NULL;
     DWORD pid = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends, NULL);
     if (code) return code;
     int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
     code = sg_proc_reap((int64_t)(intptr_t)child, ended);
@@ -10569,7 +10754,8 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
     HANDLE child = NULL;
     DWORD pid = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends);
+    int64_t tty[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, &pid, ends, tty);
     if (code) return code;
     if (ways[0] == 2) {
         sg_proc_feed* f = malloc(sizeof *f);
@@ -10587,6 +10773,7 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
     made[0] = pid;
     for (int i = 0; i < 3; i++) made[i + 1] = ends[i];
     made[4] = (int64_t)(intptr_t)child;
+    for (int i = 0; i < 3; i++) made[i + 5] = tty[i];
     return 0;
 }
 /* The writer of the input of a program that `start` started. */
@@ -10600,6 +10787,8 @@ static sg_writer sg_proc_writer(int64_t fd) {
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <dirent.h>
 #if defined(__linux__)
 #include <sys/epoll.h>
@@ -10818,6 +11007,23 @@ static int sg_proc_open(int64_t way, bool input, sg_string path, int* fd) {
    /proc/self/fd (the child first tries `close_range`, which needs no list), on macOS from the
    system. NULL with `*count` -1 when none could be read: the child then marks every number up to
    the limit of open files. */
+/* Whether `close_range` marks descriptors close-on-exec here (Linux 5.11 and later, and not
+   refused by a filter of system calls), asked once on a range no descriptor is in: the child of
+   `sg_proc_fork` then needs no list of the open ones, which reading `/proc/self/fd` before each
+   `fork` would cost. */
+static bool sg_proc_close_range_works(void) {
+#if defined(__linux__)
+    static int works = -1;
+    int known = __atomic_load_n(&works, __ATOMIC_RELAXED);
+    if (known < 0) {
+        known = syscall(436 /* close_range */, (unsigned)INT_MAX - 1, (unsigned)INT_MAX - 1, 4u /* CLOSE_RANGE_CLOEXEC */) == 0;
+        __atomic_store_n(&works, known, __ATOMIC_RELAXED);
+    }
+    return known == 1;
+#else
+    return false;
+#endif
+}
 static int* sg_proc_open_fds(int64_t* count) {
     *count = -1;
 #if defined(__APPLE__)
@@ -10861,6 +11067,105 @@ static int* sg_proc_open_fds(int64_t* count) {
     return fds;
 #endif
 }
+/* A pseudo terminal of `rows` and `columns` (2043): the end kept here (`master`) and the end a
+   program gets (`slave`), both close-on-exec, neither the terminal of this program. */
+static int sg_proc_pty(int64_t rows, int64_t columns, int* master, int* slave) {
+    int m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0) return sg_os_error();
+    fcntl(m, F_SETFD, FD_CLOEXEC);
+    char name[128];
+    int code = 0;
+    if (grantpt(m) != 0 || unlockpt(m) != 0) code = sg_os_error();
+#if defined(__linux__)
+    if (!code) code = ptsname_r(m, name, sizeof name);
+#else
+    if (!code && ioctl(m, TIOCPTYGNAME, name) != 0) code = sg_os_error();
+#endif
+    int s = -1;
+    if (!code) {
+        do { s = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC); } while (s < 0 && errno == EINTR);
+        if (s < 0) code = sg_os_error();
+    }
+    struct winsize size = { (unsigned short)rows, (unsigned short)columns, 0, 0 };
+    if (!code && ioctl(m, TIOCSWINSZ, &size) != 0) code = sg_os_error();
+    if (code) {
+        if (s >= 0) close(s);
+        close(m);
+        return code;
+    }
+    *master = m;
+    *slave = s;
+    return 0;
+}
+/* `System.resizeTerminal` (2048): the program at it gets `SIGWINCH`. */
+static int sg_term_resize(int64_t terminal, int32_t rows, int32_t columns) {
+    struct winsize size = { (unsigned short)rows, (unsigned short)columns, 0, 0 };
+    return ioctl((int)terminal, TIOCSWINSZ, &size) == 0 ? 0 : sg_os_error();
+}
+/* `System.closeTerminal`: the end kept to resize it. */
+static void sg_term_close(int64_t terminal) {
+    if (terminal >= 0) close((int)terminal);
+}
+/* `System.terminalSize` (2051): of the output of this program; ENOTTY when it is no terminal. */
+static int sg_term_size(int64_t* size) {
+    struct winsize got;
+    if (ioctl(1, TIOCGWINSZ, &got) != 0) return ENOTTY;
+    size[0] = got.ws_row;
+    size[1] = got.ws_col;
+    return 0;
+}
+/* The settings of the terminal before the first raw mode, which the end of the program (a panic
+   too, which ends with `exit`) and an ending signal with no listener put back (2050). */
+static struct termios sg_term_first;
+static volatile sig_atomic_t sg_term_kept = 0;
+static void sg_term_back(void) {
+    if (sg_term_kept) tcsetattr(0, TCSANOW, &sg_term_first);
+}
+/* An ending signal while the terminal is raw: the settings go back, then the signal does what
+   it does by default. `tcsetattr`, `signal` and `raise` are safe in a handler. */
+static void sg_term_ending(int number) {
+    int saved = errno;
+    sg_term_back();
+    signal(number, SIG_DFL);
+    raise(number);
+    errno = saved;
+}
+/* `System.terminalRaw` (2049): the terminal of the input of this program made raw, as
+   `cfmakeraw` makes it; its settings before go into `saved` (a `struct termios` fits in 128
+   bytes on Linux and macOS). ENOTTY when the input is no terminal. */
+static int sg_term_raw(int64_t* saved, int64_t room) {
+    struct termios before;
+    if ((size_t)room * sizeof(int64_t) < sizeof before) return EINVAL;
+    if (tcgetattr(0, &before) != 0) return ENOTTY;
+    memcpy(saved, &before, sizeof before);
+    if (!sg_term_kept) {
+        sg_term_first = before;
+        sg_term_kept = 1;
+        atexit(sg_term_back);
+        /* Only the signals that would end the program as they are, with no listener. */
+        int ending[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM };
+        for (int i = 0; i < 4; i++) {
+            struct sigaction now;
+            if (sigaction(ending[i], NULL, &now) == 0 && now.sa_handler == SIG_DFL && !(now.sa_flags & SA_SIGINFO)) {
+                struct sigaction put;
+                memset(&put, 0, sizeof put);
+                put.sa_handler = sg_term_ending;
+                sigemptyset(&put.sa_mask);
+                sigaction(ending[i], &put, NULL);
+            }
+        }
+    }
+    struct termios raw = before;
+    cfmakeraw(&raw);
+    return tcsetattr(0, TCSANOW, &raw) == 0 ? 0 : sg_os_error();
+}
+/* `System.terminalRestore`: the settings `sg_term_raw` saved. */
+static int sg_term_restore(const int64_t* saved, int64_t room) {
+    struct termios before;
+    if ((size_t)room * sizeof(int64_t) < sizeof before) return EINVAL;
+    memcpy(&before, saved, sizeof before);
+    return tcsetattr(0, TCSANOW, &before) == 0 ? 0 : ENOTTY;
+}
 /* The child of `sg_proc_fork` (2034): only calls a child of a program with threads may make
    between `fork` and `exec`. Every signal is held off until the program runs, so no handler of
    this program runs here. It goes into its group (or session), puts that group in front at the
@@ -10869,14 +11174,16 @@ static int* sg_proc_open_fds(int64_t* count) {
    other descriptors close-on-exec and runs the program. What fails is written into `report`
    (close-on-exec, so the parent reads nothing once the program runs). */
 static void sg_proc_child(const char* program, char** argv, char** envp, const char* dir, const int onto[3],
-                          bool error_to_output, const int64_t* ways, int tty, int report, const int* fds, int64_t fd_count,
-                          int most) {
+                          bool error_to_output, const int64_t* ways, int tty, int own_tty, int report, const int* fds,
+                          int64_t fd_count, int most) {
     int failed = 0;
     if (ways[6]) {
         if (setsid() < 0) failed = errno;
     } else if (ways[5] != 0 && setpgid(0, ways[5] < 0 ? 0 : (pid_t)ways[5]) != 0) {
         failed = errno;
     }
+    /* A terminal made for it (2044) is the controlling one of the session it made. */
+    if (!failed && own_tty >= 0 && ioctl(own_tty, TIOCSCTTY, 0) != 0) failed = errno;
     if (!failed && tty >= 0 && tcsetpgrp(tty, getpgrp()) != 0) failed = errno;
     if (!failed) {
         struct sigaction plain;
@@ -10926,18 +11233,23 @@ static void sg_proc_child(const char* program, char** argv, char** envp, const c
 /* Starts the program with `fork` and `exec` rather than `posix_spawn`, for a program to be put in
    front at the terminal of this one (`Command.foreground`, 2034): `posix_spawn` cannot do that
    before the program runs, and one that read the terminal first would be paused. The group is
-   in front before the program runs a single step. What the child could not do is the error of
-   the call; the child is then taken away. */
+   in front before the program runs a single step. So is one at a terminal made for it
+   (`own_tty`, 2045), which `posix_spawn` cannot make its controlling terminal on macOS. What the
+   child could not do is the error of the call; the child is then taken away. */
 static int sg_proc_fork(const char* program, char** argv, char** envp, const char* dir, const int onto[3],
-                        bool error_to_output, const int64_t* ways, pid_t* child) {
-    int tty;
-    do { tty = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); } while (tty < 0 && errno == EINTR);
-    if (tty < 0) return ENOTTY;
+                        bool error_to_output, const int64_t* ways, int own_tty, pid_t* child) {
+    int tty = -1;
+    if (ways[7]) {
+        do { tty = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); } while (tty < 0 && errno == EINTR);
+        if (tty < 0) return ENOTTY;
+    }
     int report[2];
     int code = sg_proc_pipe(report);
-    if (code) { close(tty); return code; }
-    int64_t fd_count = 0;
-    int* fds = sg_proc_open_fds(&fd_count);
+    if (code) { if (tty >= 0) close(tty); return code; }
+    /* No list (-1) where `close_range` works: should it fail in the child all the same, every
+       number up to the limit is marked. */
+    int64_t fd_count = -1;
+    int* fds = sg_proc_close_range_works() ? NULL : sg_proc_open_fds(&fd_count);
     long most = sysconf(_SC_OPEN_MAX);
     if (most < 0 || most > 1048576) most = 1048576;
     sigset_t all, before;
@@ -10946,11 +11258,11 @@ static int sg_proc_fork(const char* program, char** argv, char** envp, const cha
     sg_out_flush();
     fflush(stderr);
     pid_t pid = fork();
-    if (pid == 0) sg_proc_child(program, argv, envp, dir, onto, error_to_output, ways, tty, report[1], fds, fd_count, (int)most);
+    if (pid == 0) sg_proc_child(program, argv, envp, dir, onto, error_to_output, ways, tty, own_tty, report[1], fds, fd_count, (int)most);
     int forked = errno;
     pthread_sigmask(SIG_SETMASK, &before, NULL);
     close(report[1]);
-    close(tty);
+    if (tty >= 0) close(tty);
     free(fds);
     if (pid < 0) {
         close(report[0]);
@@ -10972,15 +11284,18 @@ static int sg_proc_fork(const char* program, char** argv, char** envp, const cha
    `SystemCall::Start`): `paths` names the files, `ways[3]` and `ways[4]` the ends of pipes of a
    `Pipeline`. `ways[5]` puts it into a new group of its own (-1) or the group of that number,
    `ways[6]` into a session of its own (2023, 2024), and `ways[7]` in front at the terminal of
-   this program, which `sg_proc_fork` does. `ends` gets the ends of the pipes this program keeps
-   (the input, the output, the standard error), or -1. What was printed goes out first. Only 0, 1
-   and 2 reach the program: every other descriptor of the runtime is opened close-on-exec, and on
+   this program, which `sg_proc_fork` does. `ways[8]` and `ways[9]` are the rows and the columns
+   of a pseudo terminal made for it (2043), which the streams of way 7 go to, also started by
+   `sg_proc_fork`. `ends` gets the ends of the pipes this program keeps (the input, the output,
+   the standard error), or -1; `tty` (when given) the end of its terminal read here, the one
+   written and the one kept to resize it, or -1. What was printed goes out first. Only 0, 1 and
+   2 reach the program: every other descriptor of the runtime is opened close-on-exec, and on
    macOS the spawn closes every descriptor it is not told to keep, with glibc 2.34 the spawn
    closes those above 2, and with another C library on Linux they are marked close-on-exec
    first. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                         const int64_t* ways, const sg_string* paths, pid_t* child, int ends[3]) {
+                         const int64_t* ways, const sg_string* paths, pid_t* child, int ends[3], int64_t* tty) {
     char* program = sg_proc_text(path.ptr, path.len);
     char** argv = malloc(sizeof(char*) * (size_t)(count + 1));
     if (!argv) abort();
@@ -10999,6 +11314,9 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     for (int i = 0; i < 3 && !code; i++)
         if (asked[i]) code = sg_proc_pipe(pipes[i]);
     for (int i = 0; i < 3 && !code; i++) code = sg_proc_open(ways[i], i == 0, paths[i], &files[i]);
+    /* A pseudo terminal made for it: the end kept here and the end it gets. */
+    int master = -1, slave = -1;
+    if (!code && ways[8] != 0) code = sg_proc_pty(ways[8], ways[9], &master, &slave);
     /* What goes onto each stream: a descriptor above 2, the null device (-2), or this program's
        own (-1). */
     int onto[3] = { -1, -1, -1 };
@@ -11007,11 +11325,13 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         else if (asked[0]) onto[0] = pipes[0][0];
         else if (ways[0] == 4) onto[0] = files[0];
         else if (ways[0] == 5) onto[0] = (int)ways[3];
+        else if (ways[0] == 7) onto[0] = slave;
         for (int i = 1; i < 3; i++) {
             if (ways[i] == 2) onto[i] = -2;
             else if (asked[i]) onto[i] = pipes[i][1];
             else if (ways[i] == 3 || ways[i] == 4) onto[i] = files[i];
             else if (i == 1 && ways[i] == 5) onto[i] = (int)ways[4];
+            else if (ways[i] == 7) onto[i] = slave;
         }
         for (int i = 0; i < 3 && !code; i++) {
             if (onto[i] >= 0) {
@@ -11020,14 +11340,14 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
             }
         }
     }
-    bool fork_path = ways[7] != 0;
+    bool fork_path = ways[7] != 0 || ways[8] != 0;
 #if !defined(POSIX_SPAWN_SETSID)
     /* A C library without the flag (glibc before 2.26): the session is made by the child of a
        `fork`. */
     fork_path = fork_path || ways[6] != 0;
 #endif
     if (!code && fork_path) {
-        code = sg_proc_fork(program, argv, envp, dir, onto, ways[2] == 6, ways, child);
+        code = sg_proc_fork(program, argv, envp, dir, onto, ways[2] == 6, ways, slave, child);
     } else if (!code) {
         posix_spawn_file_actions_t actions;
         posix_spawnattr_t attr;
@@ -11089,6 +11409,30 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     if (pipes[2][1] >= 0) close(pipes[2][1]);
     for (int i = 0; i < 3; i++) if (files[i] >= 0) close(files[i]);
     for (int i = 0; i < 6; i++) if (temps[i] >= 0) close(temps[i]);
+    /* The end of the terminal it got is closed here, so that a reader of the end kept sees the
+       end once no program holds it; the end kept here is read, written and resized through
+       descriptors of their own. */
+    if (slave >= 0) close(slave);
+    if (tty) tty[0] = tty[1] = tty[2] = -1;
+    if (master >= 0 && !code && tty) {
+        int reader = fcntl(master, F_DUPFD_CLOEXEC, 3);
+        int writer = reader >= 0 ? fcntl(master, F_DUPFD_CLOEXEC, 3) : -1;
+        if (writer < 0) {
+            /* No descriptor is left: the program is stopped, as one that did not start. */
+            code = sg_os_error();
+            if (reader >= 0) close(reader);
+            close(master);
+            kill(*child, SIGKILL);
+            int status;
+            while (waitpid(*child, &status, 0) < 0 && errno == EINTR) {}
+        } else {
+            tty[0] = reader;
+            tty[1] = writer;
+            tty[2] = master;
+        }
+    } else if (master >= 0) {
+        close(master);
+    }
     int kept_ends[3] = { pipes[0][1], pipes[1][0], pipes[2][0] };
     for (int i = 0; i < 3; i++) {
         if (code && kept_ends[i] >= 0) close(kept_ends[i]);
@@ -11278,7 +11622,7 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
                        const int64_t* ways, sg_str text, const sg_string* paths, sg_string* output, int64_t* ended) {
     pid_t child = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends);
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends, NULL);
     if (code) return code;
     int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
     code = sg_proc_reap(child, ended);
@@ -11306,7 +11650,8 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
                          const int64_t* ways, sg_str text, const sg_string* paths, int64_t* made) {
     pid_t child = 0;
     int ends[3];
-    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends);
+    int64_t tty[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, ways, paths, &child, ends, tty);
     if (code) return code;
     if (ways[0] == 2) {
 #ifdef F_SETNOSIGPIPE
@@ -11327,6 +11672,7 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
     made[0] = child;
     for (int i = 0; i < 3; i++) made[i + 1] = ends[i];
     made[4] = child;
+    for (int i = 0; i < 3; i++) made[i + 5] = tty[i];
     return 0;
 }
 /* The writer of the input of a program that `start` started. */
@@ -12327,6 +12673,7 @@ const IO_RUNTIME: &str = r#"
 #include <errno.h>
 #if !defined(_WIN32)
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -12352,6 +12699,7 @@ const IO_RUNTIME: &str = r#"
 #define SG_NOT_SEEKABLE (-17)
 #define SG_TOO_LONG (-18)
 #define SG_NOT_A_FILE (-20)
+#define SG_NOT_A_TERMINAL (-22)
 #if defined(_WIN32)
 /* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
    too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
@@ -12368,6 +12716,7 @@ static int sg_io_kind(int code) {
     case SG_NOT_SEEKABLE: return 17;
     case SG_TOO_LONG: return 18;
     case SG_NOT_A_FILE: return 20;
+    case SG_NOT_A_TERMINAL: return 21;
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
     case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
@@ -13524,6 +13873,13 @@ static bool __attribute__((unused)) sg_writer_terminal(const sg_writer* w) {
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
         ssize_t put = write(fd, bytes, (size_t)len);
+        if (put < 0 && errno == EAGAIN) {
+            /* A descriptor another made not to block (the end of a terminal is shared by its
+               reader, which an async read sets so): this writer waits until there is room. */
+            struct pollfd room = { fd, POLLOUT, 0 };
+            (void)poll(&room, 1, -1);
+            continue;
+        }
         if (put < 0) { if (errno == EINTR) continue; return sg_os_error(); }
         bytes += put;
         len -= put;
@@ -22486,9 +22842,9 @@ impl<'a> Emitter<'a> {
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
                     ],
                     format!(
-                        "int64_t made[5] = {{ 0, -1, -1, -1, 0 }}; \
+                        "int64_t made[8] = {{ 0, -1, -1, -1, 0, -1, -1, -1 }}; \
                          int code = sg_proc_start(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7.ptr, a8, a9->ptr, made); \
-                         if (code) {} for (int64_t i = 0; i < 5 && i < a10.len; i++) a10.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
+                         if (code) {} for (int64_t i = 0; i < 8 && i < a10.len; i++) a10.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
                         failed("sg_io_error(code)")
                     ),
                 )
@@ -22571,6 +22927,46 @@ impl<'a> Emitter<'a> {
                     "sg_system_terminal_front",
                     vec![Ty::Int(IntTy::Long)],
                     format!("int code = sg_term_front(a0); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                )
+            }
+            SystemCall::ResizeTerminal => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_resize_terminal",
+                    vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)],
+                    format!("int code = sg_term_resize(a0, a1, a2); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                )
+            }
+            SystemCall::CloseTerminal => {
+                self.made.insert("process".to_string());
+                ("sg_system_close_terminal", vec![Ty::Int(IntTy::Long)], "sg_term_close(a0);".to_string())
+            }
+            SystemCall::TerminalSize => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_terminal_size",
+                    vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!(
+                        "int64_t size[2] = {{ 0, 0 }}; int code = sg_term_size(size); if (code) {} \
+                         for (int64_t i = 0; i < 2 && i < a0.len; i++) a0.ptr[i] = size[i]; return ({gives}){{ .tag = 0 }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            SystemCall::TerminalRaw => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_terminal_raw",
+                    vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!("int code = sg_term_raw(a0.ptr, a0.len); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                )
+            }
+            SystemCall::TerminalRestore => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_terminal_restore",
+                    vec![Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!("int code = sg_term_restore(a0.ptr, a0.len); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
                 )
             }
             SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber => {

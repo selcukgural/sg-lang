@@ -1,0 +1,7 @@
+// A terminal of its own with `foreground` (2044): it cannot be in front at the terminal of this program too.
+void main() {
+    var command = Command("sg-test-tool")
+    command.terminal(24, 80)
+    command.foreground()
+    _ = command.start()
+}

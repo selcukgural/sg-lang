@@ -261,6 +261,213 @@ pub(crate) fn terminal_front(group: i64) -> std::io::Result<()> {
     }
 }
 
+// The calls of a terminal: a pseudo terminal made for a program (2043), its size (2048, 2051)
+// and the raw mode of this program's own (2049).
+extern "C" {
+    fn posix_openpt(flags: std::ffi::c_int) -> std::ffi::c_int;
+    fn grantpt(fd: std::ffi::c_int) -> std::ffi::c_int;
+    fn unlockpt(fd: std::ffi::c_int) -> std::ffi::c_int;
+    #[cfg(target_os = "linux")]
+    fn ptsname_r(fd: std::ffi::c_int, name: *mut std::ffi::c_char, len: usize) -> std::ffi::c_int;
+    fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+    fn tcgetattr(fd: std::ffi::c_int, settings: *mut u8) -> std::ffi::c_int;
+    fn tcsetattr(fd: std::ffi::c_int, when: std::ffi::c_int, settings: *const u8) -> std::ffi::c_int;
+    fn cfmakeraw(settings: *mut u8);
+    #[link_name = "raise"]
+    fn raise_signal(number: std::ffi::c_int) -> std::ffi::c_int;
+}
+
+/// The requests of `ioctl` for a terminal, which differ between Linux and macOS.
+#[cfg(target_os = "linux")]
+mod tty {
+    pub const TIOCSCTTY: std::ffi::c_ulong = 0x540E;
+    pub const TIOCGWINSZ: std::ffi::c_ulong = 0x5413;
+    pub const TIOCSWINSZ: std::ffi::c_ulong = 0x5414;
+}
+#[cfg(not(target_os = "linux"))]
+mod tty {
+    pub const TIOCSCTTY: std::ffi::c_ulong = 0x2000_7461;
+    pub const TIOCGWINSZ: std::ffi::c_ulong = 0x4008_7468;
+    pub const TIOCSWINSZ: std::ffi::c_ulong = 0x8008_7467;
+    pub const TIOCPTYGNAME: std::ffi::c_ulong = 0x4080_7453;
+}
+
+/// `struct winsize`: rows, columns, and the size in pixels, which no one here sets.
+#[repr(C)]
+#[derive(Default)]
+struct WindowSize {
+    rows: u16,
+    columns: u16,
+    width: u16,
+    height: u16,
+}
+
+/// A pseudo terminal of `rows` and `columns` for a program about to start (2043): the end kept
+/// here and the end the program gets, both close-on-exec until a start moves the second onto a
+/// stream, neither the terminal of this program.
+pub(crate) fn open_terminal(rows: i128, columns: i128) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    const O_RDWR: std::ffi::c_int = 2;
+    const O_NOCTTY: std::ffi::c_int = if cfg!(target_os = "linux") { 0o400 } else { 0x20000 };
+    const F_SETFD: std::ffi::c_int = 2;
+    const FD_CLOEXEC: std::ffi::c_int = 1;
+    // SAFETY: the calls take the descriptor `posix_openpt` gave, which `master` owns from here.
+    let master = unsafe {
+        let fd = posix_openpt(O_RDWR | O_NOCTTY);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let master = std::fs::File::from_raw_fd(fd);
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        if grantpt(fd) != 0 || unlockpt(fd) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        master
+    };
+    let name = terminal_name(&master)?;
+    let slave = std::fs::OpenOptions::new().read(true).write(true).custom_flags(O_NOCTTY).open(name)?;
+    resize_on(std::os::fd::AsRawFd::as_raw_fd(&master), rows, columns)?;
+    Ok((master, slave))
+}
+
+/// The path of the end a program gets of the pseudo terminal whose end here is `master`.
+fn terminal_name(master: &std::fs::File) -> std::io::Result<std::path::PathBuf> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let mut name = [0 as std::ffi::c_char; 128];
+    #[cfg(target_os = "linux")]
+    // SAFETY: the buffer holds 128 bytes, as told.
+    let code = unsafe { ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: `TIOCPTYGNAME` writes at most 128 bytes, ending in a zero.
+    let code = unsafe { ioctl(master.as_raw_fd(), tty::TIOCPTYGNAME, name.as_mut_ptr()) };
+    if code != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the name ends in a zero byte within the buffer.
+    let text = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(text.to_bytes())))
+}
+
+
+/// The terminal on `fd` gets the size, which reaches the program at it as `SIGWINCH`.
+fn resize_on(fd: std::ffi::c_int, rows: i128, columns: i128) -> std::io::Result<()> {
+    let size = WindowSize { rows: rows as u16, columns: columns as u16, ..WindowSize::default() };
+    // SAFETY: `TIOCSWINSZ` reads a `struct winsize`.
+    match unsafe { ioctl(fd, tty::TIOCSWINSZ, &size as *const WindowSize) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+/// A program about to start at the pseudo terminal whose end it gets is on its stream `at`: in
+/// the session of its own it makes, that terminal becomes its controlling one (`TIOCSCTTY`),
+/// after the streams were moved into place.
+pub(crate) fn controlled(command: &mut std::process::Command, at: std::ffi::c_int) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: between `fork` and `exec` the closure calls only `ioctl`, and allocates nothing.
+    unsafe {
+        command.pre_exec(move || match ioctl(at, tty::TIOCSCTTY, 0 as std::ffi::c_int) {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        });
+    }
+}
+
+/// `System.resizeTerminal`: the end kept here is a descriptor.
+pub(crate) fn resize_terminal(terminal: i64, rows: i64, columns: i64) -> std::io::Result<()> {
+    resize_on(terminal as std::ffi::c_int, i128::from(rows), i128::from(columns))
+}
+
+/// `System.closeTerminal`: the end kept to resize it is closed.
+pub(crate) fn close_terminal(terminal: i64) {
+    if terminal >= 0 {
+        // SAFETY: the end was made by `System.start`, and this closes it once.
+        drop(unsafe { file_of_fd(terminal as RawFd) });
+    }
+}
+
+/// `System.terminalSize`: of the output of this program; ENOTTY when it is no terminal.
+pub(crate) fn terminal_size() -> std::io::Result<(i64, i64)> {
+    let mut size = WindowSize::default();
+    // SAFETY: `TIOCGWINSZ` writes a `struct winsize`.
+    if unsafe { ioctl(1, tty::TIOCGWINSZ, &mut size as *mut WindowSize) } != 0 {
+        return Err(std::io::Error::from_raw_os_error(ENOTTY));
+    }
+    Ok((i64::from(size.rows), i64::from(size.columns)))
+}
+
+/// The settings of the terminal before the first raw mode (`struct termios`, at most 72 bytes),
+/// which the end of the run, and a signal that ends it, put back (2050); `RAW_SAVED` once kept.
+static mut FIRST_MODE: [u8; 128] = [0; 128];
+static RAW_SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The signals that end a program, which put the terminal back first while it is raw and they
+/// have no listener: `SIGHUP`, `SIGINT`, `SIGQUIT` and `SIGTERM`.
+const ENDING_SIGNALS: [std::ffi::c_int; 4] = [1, 2, 3, 15];
+
+/// The handler of an ending signal while the terminal is raw: the settings go back, then the
+/// signal does what it does by default. `tcsetattr`, `signal` and `raise` are safe in a handler.
+extern "C" fn put_back_and_end(number: std::ffi::c_int) {
+    terminal_back();
+    // SAFETY: the default of the signal, then the signal again, which ends the program.
+    unsafe {
+        set_handler(number, 0);
+        raise_signal(number);
+    }
+}
+
+/// `System.terminalRaw`: the terminal of the input of this program made raw (`cfmakeraw`), its
+/// settings before into `saved`; ENOTTY when the input is no terminal. The first one also keeps
+/// them for the end of the run, and the ending signals that do nothing else put them back first.
+pub(crate) fn terminal_raw(saved: &mut [u8; 128]) -> std::io::Result<()> {
+    const TCSANOW: std::ffi::c_int = 0;
+    let mut settings = [0u8; 128];
+    // SAFETY: the buffers have room for a `struct termios`.
+    unsafe {
+        if tcgetattr(0, settings.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::from_raw_os_error(ENOTTY));
+        }
+        saved.copy_from_slice(&settings);
+        if !RAW_SAVED.load(std::sync::atomic::Ordering::Acquire) {
+            *std::ptr::addr_of_mut!(FIRST_MODE) = settings;
+            RAW_SAVED.store(true, std::sync::atomic::Ordering::Release);
+            for number in ENDING_SIGNALS {
+                // Only where the signal would end the program as it is.
+                let before = set_handler(number, put_back_and_end as extern "C" fn(std::ffi::c_int) as usize);
+                if before != 0 {
+                    set_handler(number, before);
+                }
+            }
+        }
+        cfmakeraw(settings.as_mut_ptr());
+        if tcsetattr(0, TCSANOW, settings.as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// `System.terminalRestore`: the settings `terminal_raw` saved, put back.
+pub(crate) fn terminal_restore(saved: &[u8; 128]) -> std::io::Result<()> {
+    const TCSANOW: std::ffi::c_int = 0;
+    // SAFETY: the buffer holds a `struct termios` `tcgetattr` wrote.
+    match unsafe { tcsetattr(0, TCSANOW, saved.as_ptr()) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::from_raw_os_error(ENOTTY)),
+    }
+}
+
+/// The terminal as it was before the first raw mode, put back at the end of the run (2050).
+pub(crate) fn terminal_back() {
+    const TCSANOW: std::ffi::c_int = 0;
+    if RAW_SAVED.load(std::sync::atomic::Ordering::Acquire) {
+        // SAFETY: written once, before `RAW_SAVED` was set.
+        unsafe { tcsetattr(0, TCSANOW, std::ptr::addr_of!(FIRST_MODE).cast()) };
+    }
+}
+
 /// `System.signalGroup`: `killpg` to the group; one with no program left takes it as done.
 pub(crate) fn signal_group(_pid: i64, group: i64, signal: i64) {
     if let Ok(group) = std::ffi::c_int::try_from(group) {

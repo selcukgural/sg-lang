@@ -1,0 +1,21 @@
+in: true, out: true, size: 24x80
+hello
+
+ended: exited with code 0
+a group where there is one: true
+typed shown back: true
+read: true
+ended: exited with code 0
+Ctrl-C caught: true
+ended: exited with code 5
+Ctrl-D ends the input: true
+ended: exited with code 0
+in: true, out: true, size: 24x80
+
+in: true, out: true, size: 40x120
+no size after the end either: true
+ended: exited with code 0
+unread: exited with code 0
+0 rows: true
+70000 columns: true
+apart: to the pipe / to the screen

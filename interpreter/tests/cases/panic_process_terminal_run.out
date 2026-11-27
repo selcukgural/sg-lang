@@ -1,0 +1,4 @@
+panic: `run` of a program at a terminal of its own (`terminal`): only `start` starts one, whose `Process` gives the terminal to read
+  --> panic_process_terminal_run.sg:5:9
+ 5 |     _ = command.run()
+   |         ^^^^^^^^^^^^^

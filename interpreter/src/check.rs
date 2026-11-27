@@ -13338,6 +13338,11 @@ impl<'a> Checker<'a> {
             "signalGroup" => (SystemCall::SignalGroup, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], Ty::Void),
             "waitChange" => (SystemCall::WaitChange, vec![Ty::Int(IntTy::Long), Ty::Bool, Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Bool)),
             "terminalFront" => (SystemCall::TerminalFront, vec![Ty::Int(IntTy::Long)], io(Ty::Void)),
+            "resizeTerminal" => (SystemCall::ResizeTerminal, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)], io(Ty::Void)),
+            "closeTerminal" => (SystemCall::CloseTerminal, vec![Ty::Int(IntTy::Long)], Ty::Void),
+            "terminalRaw" => (SystemCall::TerminalRaw, vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+            "terminalRestore" => (SystemCall::TerminalRestore, vec![longs()], io(Ty::Void)),
+            "terminalSize" => (SystemCall::TerminalSize, vec![Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
             "waitAsync" => (
                 SystemCall::WaitAsync,
                 vec![Ty::Int(IntTy::Long), Ty::Read(Box::new(Ty::Token)), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],

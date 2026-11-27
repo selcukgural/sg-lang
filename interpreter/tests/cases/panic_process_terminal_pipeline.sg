@@ -1,0 +1,9 @@
+// A program of a `Pipeline` at a terminal of its own (2044), where the pipes go.
+void main() {
+    var first = Command("sg-test-tool")
+    first.terminal(24, 80)
+    var pipeline = Pipeline()
+    pipeline.add(first)
+    pipeline.add(Command("sg-test-tool"))
+    _ = pipeline.run()
+}

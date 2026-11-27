@@ -738,8 +738,34 @@ struct Handle {
 /// by a thread of its own and written out to the run's when it is waited for, since the run's
 /// output need not be the stream of the process (`copies`, with whether it is the standard error).
 struct Kid {
-    child: std::process::Child,
+    child: Child,
     copies: Vec<(std::thread::JoinHandle<Vec<u8>>, bool)>,
+}
+
+/// A program the run started: through std's `Command`, or at a pseudo console of Windows, which
+/// `Command` cannot give it (2043).
+enum Child {
+    Plain(std::process::Child),
+    #[cfg(windows)]
+    Console(crate::sys::ConsoleChild),
+}
+
+impl Child {
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Child::Plain(child) => child.wait(),
+            #[cfg(windows)]
+            Child::Console(child) => child.wait(),
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Child::Plain(child) => child.try_wait(),
+            #[cfg(windows)]
+            Child::Console(child) => child.try_wait(),
+        }
+    }
 }
 
 /// The numbers of `ways` that `System.start` and `System.run` are given.
@@ -790,19 +816,35 @@ struct Streams {
 }
 
 impl Streams {
-    fn of(ways: &[i128], paths: &[String]) -> std::io::Result<Streams> {
+    /// `terminal`: the end of the pseudo terminal made for the program (2043), for the streams
+    /// whose way is 7.
+    fn of(ways: &[i128], paths: &[String], terminal: Option<&std::fs::File>) -> std::io::Result<Streams> {
         use std::process::Stdio;
         let os = crate::names::os_of;
+        let at_terminal = |way: i128| -> std::io::Result<Option<Stdio>> {
+            match (way, terminal) {
+                (7, Some(end)) => Ok(Some(Stdio::from(end.try_clone()?))),
+                _ => Ok(None),
+            }
+        };
         let input = match ways[0] {
             0 => Stdio::inherit(),
             1 => Stdio::null(),
             4 => Stdio::from(std::fs::File::open(os(&paths[0]))?),
             5 => Stdio::from(end_copy(ways[3])?),
+            7 => at_terminal(7)?.unwrap_or_else(Stdio::null),
             _ => Stdio::piped(),
         };
         // Where an output goes: a pipe read here, nothing, a file, or the end of a pipe; with a
         // second handle of it when the standard error goes there too.
         let outlet = |way: i128, path: &str, end: i128, twice: bool| -> std::io::Result<(Stdio, Option<Stdio>, Option<std::io::PipeReader>)> {
+            if let Some(first) = at_terminal(way)? {
+                let second = match twice {
+                    true => at_terminal(way)?,
+                    false => None,
+                };
+                return Ok((first, second, None));
+            }
             Ok(match way {
                 2 => (Stdio::null(), twice.then(Stdio::null), None),
                 3 | 4 => {
@@ -1167,11 +1209,36 @@ pub struct FileBlock {
     block: Vec<u8>,
     /// Where what has not been given out starts in `block`.
     at: usize,
+    /// The end of a pipe or of a terminal made for a program (`System.reader`): EIO is its end,
+    /// which Linux gives once no program holds the terminal any more (2047).
+    pipe: bool,
 }
 
 impl FileBlock {
     fn new(file: std::fs::File) -> FileBlock {
-        FileBlock { file, block: Vec::new(), at: 0 }
+        FileBlock { file, block: Vec::new(), at: 0, pipe: false }
+    }
+
+    fn pipe(file: std::fs::File) -> FileBlock {
+        FileBlock { file, block: Vec::new(), at: 0, pipe: true }
+    }
+
+    /// One read into the block from `held` on.
+    fn take_at(&mut self, held: usize) -> std::io::Result<usize> {
+        let mut block = std::mem::take(&mut self.block);
+        let read = self.take(&mut block[held..]);
+        self.block = block;
+        read
+    }
+
+    /// One read of the system; EIO is the end on a pipe's, on Linux and macOS (Windows says the
+    /// end of a pipe as its end, and 5 is another error there).
+    fn take(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+        const EIO: i32 = 5;
+        match self.file.read(into) {
+            Err(error) if cfg!(unix) && self.pipe && error.raw_os_error() == Some(EIO) => Ok(0),
+            other => other,
+        }
     }
 
     fn get_ref(&self) -> &std::fs::File {
@@ -1194,7 +1261,7 @@ impl FileBlock {
         }
         self.block.resize(STREAM_BUFFER, 0);
         let read = loop {
-            match self.file.read(&mut self.block[held..]) {
+            match self.take_at(held) {
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 other => break other,
             }
@@ -1208,7 +1275,7 @@ impl Read for FileBlock {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         // A read as large as the block, with the block empty, goes straight into `out`.
         if self.at == self.block.len() && out.len() >= STREAM_BUFFER {
-            return self.file.read(out);
+            return self.take(out);
         }
         let held = self.fill_buf()?;
         let count = held.len().min(out.len());
@@ -1224,7 +1291,7 @@ impl BufRead for FileBlock {
             self.block.resize(STREAM_BUFFER, 0);
             self.at = 0;
             let count = loop {
-                match self.file.read(&mut self.block) {
+                match self.take_at(0) {
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(error) => {
                         self.block.clear();
@@ -2818,6 +2885,8 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
         // does not wait for their threads forever; then it goes on as the fault it is.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_main(&mut interp)));
         interp.end_fibers();
+        // A terminal made raw and not put back is put back as it was (2050).
+        crate::sys::terminal_back();
         result.unwrap_or_else(|crash| std::panic::resume_unwind(crash))
     })
 }
@@ -3580,6 +3649,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// was printed goes out, then the panic or the error, shown as at the end of a run.
     fn die(&self, stop: Stop) -> ! {
         ENDING.with(|ending| ending.set(true));
+        crate::sys::terminal_back();
         if let Ok(mut out) = self.io.out.try_borrow_mut() {
             let _ = out.flush();
         }
@@ -8135,6 +8205,53 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
                 });
             }
+            SystemCall::ResizeTerminal => {
+                return Ok(match crate::sys::resize_terminal(number(0) as i64, number(1) as i64, number(2) as i64) {
+                    Ok(()) => ok(Value::Void),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
+            SystemCall::CloseTerminal => {
+                crate::sys::close_terminal(number(0) as i64);
+                return Ok(Value::Void);
+            }
+            SystemCall::TerminalSize => {
+                return Ok(match crate::sys::terminal_size() {
+                    Ok((rows, columns)) => {
+                        for (slot, value) in cells_of(&values[0]).iter().zip([rows, columns]) {
+                            *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+                        }
+                        ok(Value::Void)
+                    }
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
+            // The settings of the terminal travel as 16 numbers of 8 bytes each.
+            SystemCall::TerminalRaw => {
+                let mut saved = [0u8; 128];
+                return Ok(match crate::sys::terminal_raw(&mut saved) {
+                    Ok(()) => {
+                        for (slot, word) in cells_of(&values[0]).iter().zip(saved.chunks(8)) {
+                            let word = i64::from_le_bytes(word.try_into().unwrap_or([0; 8]));
+                            *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(word));
+                        }
+                        ok(Value::Void)
+                    }
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
+            SystemCall::TerminalRestore => {
+                let mut saved = [0u8; 128];
+                for (word, slot) in saved.chunks_mut(8).zip(cells_of(&values[0]).iter()) {
+                    if let Value::Int(_, number) = &*slot.borrow() {
+                        word.copy_from_slice(&(*number as i64).to_le_bytes());
+                    }
+                }
+                return Ok(match crate::sys::terminal_restore(&saved) {
+                    Ok(()) => ok(Value::Void),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
             SystemCall::SignalId => {
                 return Ok(match crate::sys::signal_id(number(0) as i64, number(1) as i64) {
                     Ok(()) => ok(Value::Void),
@@ -8144,7 +8261,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: false }))));
+                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::pipe(file)), net: None, done: 0, seekable: false }))));
             }
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
@@ -8282,6 +8399,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalGroup
             | SystemCall::WaitChange
             | SystemCall::TerminalFront
+            | SystemCall::ResizeTerminal
+            | SystemCall::CloseTerminal
+            | SystemCall::TerminalRaw
+            | SystemCall::TerminalRestore
+            | SystemCall::TerminalSize
             | SystemCall::Signal
             | SystemCall::PipeReader
             | SystemCall::PipeWriter
@@ -8341,9 +8463,21 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// waited for (see `Kid`).
     fn start_child(&mut self, values: Vec<Value>, at: Span) -> Res<Value> {
         use std::io::Read;
-        let mut command = command_of(&values);
         let ways = ways_of(&values[7]);
-        let streams = match Streams::of(&ways, &texts_of(&values[9])) {
+        #[cfg(windows)]
+        if ways.get(8).copied().unwrap_or(0) != 0 {
+            return self.start_at_console(&values, &ways);
+        }
+        let mut command = command_of(&values);
+        // A pseudo terminal made for it (2043): the end kept here, and the end it gets.
+        let terminal = match ways.get(8).copied().unwrap_or(0) {
+            0 => None,
+            rows => match crate::sys::open_terminal(rows, ways[9]) {
+                Ok(ends) => Some(ends),
+                Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+            },
+        };
+        let streams = match Streams::of(&ways, &texts_of(&values[9]), terminal.as_ref().map(|(_, theirs)| theirs)) {
             Ok(streams) => streams,
             Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
         };
@@ -8354,6 +8488,13 @@ impl<'a, 'e> Interp<'a, 'e> {
             Ok(tty) => tty,
             Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
         };
+        // The terminal made for it is the controlling one of the session it makes, from the first
+        // stream that goes there.
+        if terminal.is_some() {
+            if let Some(at) = ways[..3].iter().position(|way| *way == 7) {
+                crate::sys::controlled(&mut command, at as std::ffi::c_int);
+            }
+        }
         self.flush_out()?;
         let _ = self.io.world.borrow_mut().err.flush();
         let spawned = command.spawn();
@@ -8361,6 +8502,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         // end once the program has ended.
         drop(command);
         drop(tty);
+        let ours = terminal.map(|(ours, _)| ours);
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
@@ -8370,7 +8512,24 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         // The number, the three ends kept here, and what names the program to the calls of the
         // system: the number again, which the interpreter keeps its children by on every system.
-        let mut made = [i128::from(child.id()), -1, -1, -1, i128::from(child.id())];
+        let mut made = [i128::from(child.id()), -1, -1, -1, i128::from(child.id()), -1, -1, -1];
+        // The end of the terminal kept here: read, written, and kept to resize it, each a
+        // descriptor of its own.
+        if let Some(ours) = ours {
+            let copies = ours.try_clone().and_then(|reader| Ok((reader, ours.try_clone()?)));
+            match copies {
+                Ok((reader, writer)) => {
+                    made[5] = i128::from(crate::sys::fd_of(reader));
+                    made[6] = i128::from(crate::sys::fd_of(writer));
+                    made[7] = i128::from(crate::sys::fd_of(ours));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(failed(io_cause(Some(&error), error.raw_os_error())));
+                }
+            }
+        }
         // A thread the system refuses ends the run with a panic, and the program started is
         // stopped first.
         let copy = |child: &mut std::process::Child, what: &str, work: Box<dyn FnOnce() -> Vec<u8> + Send>| match beside(at, what, work) {
@@ -8423,7 +8582,29 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         }
-        self.io.children.borrow_mut().insert(made[0] as i64, Kid { child, copies });
+        self.io.children.borrow_mut().insert(made[0] as i64, Kid { child: Child::Plain(child), copies });
+        for (slot, value) in cells_of(&values[10]).iter().zip(made) {
+            *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+        }
+        Ok(ok(Value::Void))
+    }
+
+    /// `System.start` of a program at a pseudo console of Windows (2043): all three of its streams
+    /// are the console's, whose screen is read and keys written through the ends `made` gets.
+    #[cfg(windows)]
+    fn start_at_console(&mut self, values: &[Value], ways: &[i128]) -> Res<Value> {
+        self.flush_out()?;
+        let _ = self.io.world.borrow_mut().err.flush();
+        let (child, screen, keys, console) = match crate::sys::start_at_console(values, ways[8], ways[9]) {
+            Ok(started) => started,
+            Err(error) => {
+                let error = crate::sys::not_started(error, &values[2]);
+                return Ok(failed(io_cause(Some(&error), error.raw_os_error())));
+            }
+        };
+        let pid = i128::from(child.id());
+        let made = [pid, -1, -1, -1, pid, i128::from(crate::sys::fd_of(screen)), i128::from(crate::sys::fd_of(keys)), i128::from(console)];
+        self.io.children.borrow_mut().insert(pid as i64, Kid { child: Child::Console(child), copies: Vec::new() });
         for (slot, value) in cells_of(&values[10]).iter().zip(made) {
             *slot.borrow_mut() = Value::Int(IntTy::Long, value);
         }
@@ -8820,7 +9001,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let mut command = command_of(&values);
         let ways = ways_of(&values[7]);
-        let streams = match Streams::of(&ways, &texts_of(&values[9])) {
+        let streams = match Streams::of(&ways, &texts_of(&values[9]), None) {
             Ok(streams) => streams,
             Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
         };
