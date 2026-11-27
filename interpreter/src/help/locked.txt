@@ -1,0 +1,273 @@
+NAME
+     locked - shared locked T: a value that tasks reach only inside a lock
+
+SYNOPSIS
+     new shared locked x
+            puts x on the heap behind a lock, owned by this task
+
+     shared locked T
+            the type of an owner
+
+     share v
+            one more owner, to give to another task
+
+     weak locked T
+            a look that does not keep the value alive
+
+     static locked T Name = e
+            one for the whole program, with no owners to count
+
+     lock v as name { ... }
+            the only place where what it holds is reached
+
+DESCRIPTION
+     A shared locked T is a value that several tasks own and change. What it
+     holds is reached only inside a lock block, and only one task is inside a
+     lock block of the value at a time. Two tasks therefore never change it at
+     once, nor read it while another changes it: the compiler rules the data
+     race out, and nothing is left to check while the program runs.
+
+     Outside a lock, what it holds is not reached at all, not even read: a
+     field, a method, for, print, == and read x are errors. What does not
+     touch it works: share, weak, same and .clone(), which also gives one more
+     owner, not a copy.
+
+     locked is written after shared or weak, or in a static. What it holds
+     follows the rule of what goes to another task: it owns all it holds, so
+     no borrow, no shared checked value and no Task is inside.
+
+     The cost is a mutex of the system in front of the value, 64 bytes on
+     macOS and 48 on Linux, taken and let go by each lock. A number or a bool
+     that tasks change one step at a time is cheaper as an atomic. A value
+     that one task changes through several owners is a shared checked T. Work
+     handed from task to task, rather than kept in one place, goes through a
+     Channel.
+
+EXAMPLES
+   One value, reached in a lock
+         void main() {
+             var hits = new shared locked 0
+             lock hits as h {
+                 h += 1
+             }
+             lock hits as h {
+                 h += 1
+                 print(h)
+             }
+         }
+
+         2
+
+     h is a ref int for the block: the number itself, lent to change.
+
+   Changed by several tasks
+         void collect(shared locked List<int> found, int from, int to) {
+             for n in from..to {
+                 if n % 7 == 0 {
+                     lock found as list {
+                         list.add(n)
+                     }
+                 }
+             }
+         }
+
+         void main() {
+             var found = new shared locked List<int>()
+             var low = Task.run(collect, share found, 0, 50)
+             var high = Task.run(collect, share found, 50, 100)
+             low.wait()
+             high.wait()
+             lock found as list {
+                 list.sort()
+                 print(list)
+             }
+         }
+
+         [0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98]
+
+     share found gives each task one more owner of the same list. The tasks
+     add in any order, so the list is sorted before it is printed.
+
+   A field of a struct
+         struct Stats {
+             int requests
+             long bytes
+         }
+
+         struct Server {
+             string name
+             shared locked Stats stats
+         }
+
+         void serve(Server server, int count) {
+             for _ in 0..count {
+                 lock server.stats as s {
+                     s.requests += 1
+                     s.bytes += 100
+                 }
+             }
+         }
+
+         void main() {
+             var stats = new shared locked Stats { requests = 0, bytes = 0 }
+             var api = Task.run(serve, Server { name = "api", stats = share stats }, 300)
+             var admin = Task.run(serve, Server { name = "admin", stats = share stats }, 200)
+             api.wait()
+             admin.wait()
+             lock stats as s {
+                 print($"{s.requests} requests, {s.bytes} bytes")
+             }
+         }
+
+         500 requests, 50000 bytes
+
+     A struct that several tasks change in part keeps that part in a shared
+     locked field. Each server goes to its own task, and both point to one
+     Stats.
+
+   One for the whole program
+         static locked List<string> Log = List<string>()
+
+         void note(string line) {
+             lock Log as log {
+                 log.add(line)
+             }
+         }
+
+         void work(int id) {
+             note($"task {id} done".toString())
+         }
+
+         void main() {
+             var a = Task.run(work, 1)
+             var b = Task.run(work, 2)
+             a.wait()
+             b.wait()
+             lock Log as log {
+                 log.sort()
+                 for line in log {
+                     print(line)
+                 }
+             }
+         }
+
+         task 1 done
+         task 2 done
+
+     A static locked value lives until the program ends, so no owner is
+     counted and none is given to the tasks. It is never assigned; it is
+     changed inside lock, as any locked value.
+
+   A look that does not keep it alive
+         struct Cache {
+             List<string> names
+         }
+
+         void remember(read weak locked Cache look, string name) {
+             var owner = share look
+             if owner is null {
+                 print($"{name}: the cache is gone")
+                 return
+             }
+             lock owner as c {
+                 c.names.add(name.clone())
+                 print($"{name}: {c.names.length()} kept")
+             }
+         }
+
+         void main() {
+             var cache = new shared locked Cache { names = List<string>() }
+             var look = weak cache
+             remember(read look, "tea")
+             remember(read look, "bread")
+             cache = new shared locked Cache { names = List<string>() }
+             remember(read look, "milk")
+         }
+
+         tea: 1 kept
+         bread: 2 kept
+         milk: the cache is gone
+
+     A weak locked value is not locked itself: share look asks for an owner
+     first, which is null once the value is gone.
+
+WHAT THE COMPILER REFUSES
+   Reading it outside a lock
+         struct Stats {
+             int requests
+         }
+
+         void main() {
+             var stats = new shared locked Stats { requests = 0 }
+             print(stats.requests)
+         }
+
+         error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+           --> example.sg:7:11
+          7 |     print(stats.requests)
+            |           ^^^^^
+           hint: `lock stats as name { ... }`
+
+     Even a read could see a change half made by another task.
+
+   locked alone
+         struct Server {
+             string name
+             locked int requests
+         }
+
+         void main() {
+         }
+
+         error: `locked` is written after `shared` or `weak`: several tasks own the value it holds
+           --> example.sg:3:5
+          3 |     locked int requests
+            |     ^^^^^^
+           hint: `shared locked T` for an owner, `weak locked T` for a look at one
+
+   new locked
+         void main() {
+             var requests = new locked 0
+         }
+
+         error: `locked` is written after `shared`: `new shared locked ...`
+           --> example.sg:2:24
+          2 |     var requests = new locked 0
+            |                        ^^^^^^
+
+   Something only one task may hold
+         struct Board {
+             shared checked List<int> scores
+         }
+
+         void main() {
+             var board = new shared locked Board { scores = new shared checked List<int>() }
+         }
+
+         error: a `locked` value cannot hold a `Board`, which holds a `shared checked List<int>` (the field `scores` of `Board`): a `shared checked List<int>` is checked within one task; one that several tasks change is `shared locked`
+           what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+           --> example.sg:6:35
+          6 |     var board = new shared locked Board { scores = new shared checked List<int>() }
+            |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+     The checks of a shared checked value are not made for several tasks. The
+     scores are kept in the Board itself, which the lock already guards.
+
+   checked and locked together
+         void count(shared checked locked int total) {
+         }
+
+         void main() {
+         }
+
+         error: a value with several owners is `checked` or `locked`, not both
+           `checked` lets one task change it, each access checked; `locked` lets several tasks change it, inside a `lock` block
+           --> example.sg:1:27
+          1 | void count(shared checked locked int total) {
+            |                           ^^^^^^
+
+SEE ALSO
+     sg help lock, sg help shared, sg help atomic, sg help share, sg help
+     static
+
+     https://sg-lang.org/reference/locked.html

@@ -1,0 +1,471 @@
+---
+name: when
+kind: keyword
+summary: Adds a condition to an arm of a match, or makes a lock block wait until one holds.
+see: match, or, is, null, lock
+learn: ../docs/learn/book/05-structs-and-enums.md#match
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `P when condition => ...` | an arm that runs when `P` fits and the condition holds |
+| `Circle(r) when r > 10 => ...` | the names of the pattern are seen in the condition |
+| `A or B when condition => ...` | the condition belongs to the whole arm, not to `B` |
+| `var x when condition => ...`, `_ when condition => ...` | a condition on any value |
+| `lock v as name when condition { ... }` | waits, with the lock let go, until the condition holds |
+| `await lock v as name when condition { ... }` | the same in an async function |
+
+## What it means
+
+In a `match`, `when` adds a condition to an arm. The arm runs when its pattern fits and its condition is `true`;
+when the condition is `false`, the arms below are tried. The condition is a `bool`, computed only when the
+pattern fits, and it sees the names the pattern gives and every variable around the `match`.
+
+An arm with `when` does not count as covering its pattern, since the condition may be false. A `match` still
+needs arms that take every value without a condition: most often the same pattern again, below, or `_`. An arm
+with `when` under an arm that already takes all its values can never run, and is an error.
+
+The condition only looks. It cannot move a value, since the arms below still need it when the condition fails;
+it reads, or lends with `read`. With `or`, the condition is computed once, with the names of the first pattern
+that fits. Below `null when ...`, a name is still a `T?`: only an arm `null` without a condition takes `null`
+away.
+
+In a `lock` block, `when` makes the task wait. The condition is computed under the lock; while it fails, the
+lock is let go and the task sleeps, and it looks again each time a `lock` block on the same value ends. Then the
+block runs under the lock. The condition reads only the locked values.
+
+`when` has no place in an `is`: an `if` joins a test and a condition with `&&`.
+
+## Examples
+
+### A condition on an arm
+
+```sg
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+string describe(read Shape shape) {
+    return match shape {
+        Circle(r) when r > 10 => "a big circle"
+        Circle(_) => "a circle"
+        Rect(w, h) when w == h => "a square"
+        Rect(_, _) => "a rectangle"
+        Empty => "nothing"
+    }
+}
+
+void main() {
+    print(describe(read Shape.Circle(20)))
+    print(describe(read Shape.Circle(2)))
+    print(describe(read Shape.Rect(3, 3)))
+    print(describe(read Shape.Rect(3, 4)))
+    print(describe(read Shape.Empty))
+}
+```
+
+```text
+a big circle
+a circle
+a square
+a rectangle
+nothing
+```
+
+`r`, `w` and `h` are named by the pattern and seen in the condition. A circle that is not big falls to the
+plain `Circle(_)` below.
+
+### The condition runs only when the pattern fits
+
+```sg
+bool even(int n) {
+    print($"is {n} even?")
+    return n % 2 == 0
+}
+
+string kind(int n) {
+    return match n {
+        0 => "zero"
+        1..=9 when even(n) => "small and even"
+        1..=9 => "small"
+        _ => "big"
+    }
+}
+
+void main() {
+    print(kind(0))
+    print(kind(4))
+    print(kind(7))
+    print(kind(50))
+}
+```
+
+```text
+zero
+is 4 even?
+small and even
+is 7 even?
+small
+big
+```
+
+`even` is called for 4 and 7, which fit `1..=9`, and not for 0 or 50.
+
+### Variables around the `match`
+
+```sg
+void main() {
+    var limit = 10
+    var fields = List<string> { "4", "40", "x" }
+    for field in read fields {
+        match int.parse(field) {
+            Ok(n) when n > limit => print($"{n} is over {limit}")
+            Ok(n) => print($"{n} is fine")
+            Error(_) => print($"{field} is not a number")
+        }
+    }
+}
+```
+
+```text
+4 is fine
+40 is over 10
+x is not a number
+```
+
+### `null`, and a name below it
+
+```sg
+nint score(read string? name) {
+    return match name {
+        null => 0
+        var n when n.length() > 5 => 99
+        var n => n.length()
+    }
+}
+
+void main() {
+    print(score(null))
+    print(score("Pasha"))
+    print(score("Augusta"))
+}
+```
+
+```text
+0
+5
+99
+```
+
+Below the arm `null`, `n` is a `read string`, so the condition can ask for its `length()`.
+
+### `when` after `or`
+
+```sg
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+    Empty
+}
+
+string describe(read Shape shape) {
+    return match shape {
+        Circle(n) or Square(n) when n > 10 => $"big, {n} across".toString()
+        Circle(_) or Square(_) => "small"
+        Empty => "nothing"
+    }
+}
+
+void main() {
+    print(describe(read Shape.Square(12)))
+    print(describe(read Shape.Circle(3)))
+    print(describe(read Shape.Empty))
+}
+```
+
+```text
+big, 12 across
+small
+nothing
+```
+
+The condition is on the whole arm: a big circle and a big square both take it.
+
+### The first pattern that fits
+
+```sg
+enum Pair {
+    Two(int a, int b)
+}
+
+void main() {
+    var p = Pair.Two(2, 7)
+    match p {
+        Two(x, 1..=9) or Two(1..=9, x) when x > 5 => print($"{x} is over 5")
+        Two(a, b) => print($"{a} and {b}")
+    }
+}
+```
+
+```text
+2 and 7
+```
+
+Both patterns fit `Two(2, 7)`. The first gives `x = 2`, and the condition is computed once, with that `x`; it
+fails, so the arm below runs. The second pattern, with `x = 7`, is not tried.
+
+### Looking in the condition, taking in the arm
+
+```sg
+enum Message {
+    Text(string body)
+    Quit
+}
+
+bool isLong(read string text) {
+    return text.length() > 3
+}
+
+void keep(string body) {
+    print($"kept {body}")
+}
+
+void main() {
+    var m = Message.Text("hello".clone())
+    match m {
+        Text(body) when isLong(read body) => keep(body)
+        Text(body) => print(body)
+        Quit => print("quit")
+    }
+}
+```
+
+```text
+kept hello
+```
+
+The condition lends `body` with `read`; the arm then owns it and gives it away.
+
+### Waiting under a lock
+
+```sg
+struct Box {
+    int value
+    bool ready
+}
+
+void fill(shared locked Box box) {
+    lock box as b {
+        b.value = 42
+        b.ready = true
+    }
+}
+
+void main() {
+    var box = new shared locked Box { value = 0, ready = false }
+    var task = Task.run(fill, share box)
+    lock box as b when b.ready {
+        print(b.value)
+    }
+    task.wait()
+}
+```
+
+```text
+42
+```
+
+`main` waits until `fill` has set `ready`. The end of `fill`'s `lock` block wakes it; no task has to wake
+another by hand.
+
+## What stops the program
+
+### Waiting for what nobody can change
+
+```sg panic
+struct Box {
+    int value
+    bool ready
+}
+
+void main() {
+    var box = new shared locked Box { value = 0, ready = false }
+    lock box as b when b.ready {
+        print(b.value)
+    }
+}
+```
+
+```text
+panic: this task waits until `b.ready`, and no other task could make it hold: it is the only owner of `box`
+```
+
+No other task holds `box`, so `ready` could never change. A task that has no more to give sets a field such as
+`done` in a `lock` block, and the condition looks at it: `when b.ready || b.done`.
+
+## What the compiler refuses
+
+### An arm with `when` as the only arm of a variant
+
+```sg error
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+string describe(read Shape shape) {
+    return match shape {
+        Circle(r) when r > 10 => "a big circle"
+        Empty => "nothing"
+    }
+}
+
+void main() {
+    print(describe(read Shape.Empty))
+}
+```
+
+```text
+error: this `match` does not handle `Circle`
+  an arm with `when` does not settle its variant: the condition may be false
+  --> example.sg:7:18
+ 7 |     return match shape {
+   |                  ^^^^^
+  hint: add an arm for each, or `_ => ...` for everything else
+```
+
+### An arm below one that takes all its values
+
+```sg error
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+void main() {
+    var s = Shape.Circle(3)
+    match s {
+        Circle(_) => print("a circle")
+        Circle(r) when r > 1 => print("a big circle")
+        Empty => print("nothing")
+    }
+}
+```
+
+```text
+error: this arm can never run: `Circle` is already handled above
+  --> example.sg:10:9
+ 10 |         Circle(r) when r > 1 => print("a big circle")
+    |         ^^^^^^^^^
+```
+
+The arm with the condition goes first.
+
+### Moving a value in the condition
+
+```sg error
+enum Message {
+    Text(string body)
+    Quit
+}
+
+bool keep(string body) {
+    print(body)
+    return true
+}
+
+void main() {
+    var m = Message.Text("hi".clone())
+    match m {
+        Text(body) when keep(body) => print("kept")
+        Text(body) => print(body)
+        Quit => print("quit")
+    }
+}
+```
+
+```text
+error: `body` cannot be moved in a `when` condition
+  if the condition does not hold, the arms below still need the value
+  --> example.sg:14:30
+ 14 |         Text(body) when keep(body) => print("kept")
+    |                              ^^^^
+  hint: a condition only looks: lend the value with `read`, or test it inside the arm
+```
+
+### A name below `null when`
+
+```sg error
+nint score(read string? name) {
+    return match name {
+        null when name is null => 0
+        var n => n.length()
+    }
+}
+
+void main() {
+    print(score("ab"))
+}
+```
+
+```text
+error: this is `read string?` and may be `null`; `.length()` needs a value
+  --> example.sg:4:18
+ 4 |         var n => n.length()
+   |                  ^
+```
+
+The arm `null` has a condition, so `null` may still reach `var n`. A plain `null => 0` makes `n` a
+`read string`.
+
+### `when` after `is`
+
+```sg error
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+void main() {
+    var s = Shape.Circle(4)
+    if s is Circle(r) when r > 2 {
+        print("a big circle")
+    }
+}
+```
+
+```text
+error: expected `{`, found `when`
+  --> example.sg:8:23
+ 8 |     if s is Circle(r) when r > 2 {
+   |                       ^^^^
+```
+
+In an `if`, the test and the condition are joined with `&&`: `if s is Circle(r) && r > 2`.
+
+### A condition that reads the clock
+
+```sg error
+struct Box {
+    long deadline
+}
+
+void take(shared locked Box box) {
+    lock box as b when b.deadline < Instant.now().elapsed().milliseconds() {
+        b.deadline = 0
+    }
+}
+
+void main() {
+    take(new shared locked Box { deadline = 0 })
+}
+```
+
+```text
+error: the condition of `when` calls `Instant.now`, which reads the clock, and a task waiting for it is woken only when a `lock` block on the same value ends
+  a change outside the locked value would not wake it, and it would wait for ever
+```

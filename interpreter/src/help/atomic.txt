@@ -149,6 +149,6 @@ WHAT THE COMPILER REFUSES
             |                ^^^^^^^^^^^^^^
 
 SEE ALSO
-     sg help shared
+     sg help shared, sg help locked, sg help lock
 
      https://sg-lang.org/reference/atomic.html

@@ -395,6 +395,7 @@ WHAT THE COMPILER REFUSES
          error: `Limit` is the name of a static, and a local cannot take it
 
 SEE ALSO
-     sg help const, sg help atomic, sg help shared, sg help public
+     sg help const, sg help atomic, sg help shared, sg help lock, sg help
+     public
 
      https://sg-lang.org/reference/static.html

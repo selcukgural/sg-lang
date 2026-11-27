@@ -20,12 +20,12 @@ if	keyword	Keywords	runs a block when a condition holds	if	https://sg-lang.org/r
 in	keyword	Keywords	stands between the name and the items in a for	in	https://sg-lang.org/reference/in
 interface	keyword	Keywords	what a type can do: Clonable, Formattable, Equatable, Comparable		https://sg-lang.org/reference/#n-interface
 is	keyword	Keywords	tests whether a value is one variant, or null, and names what it carries	is	https://sg-lang.org/reference/is
-lock	keyword	Keywords	a short block that alone touches a locked value		https://sg-lang.org/reference/#n-lock
-locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock		https://sg-lang.org/reference/#n-locked
+lock	keyword	Keywords	a short block that alone touches a locked value; it never waits, so locks cannot deadlock	lock	https://sg-lang.org/reference/lock
+locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock	locked	https://sg-lang.org/reference/locked
 match	keyword	Keywords	chooses by the shape of a value; every case must be covered	match	https://sg-lang.org/reference/match
 new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it	new	https://sg-lang.org/reference/new
 not	keyword	Keywords	is not: the test of is, the other way round		https://sg-lang.org/reference/#n-not
-or	keyword	Keywords	joins patterns in a match		https://sg-lang.org/reference/#n-or
+or	keyword	Keywords	joins patterns: the arm, or the is, fits when one of them does	or	https://sg-lang.org/reference/or
 packed	keyword	Keywords	a struct with no padding between its fields		https://sg-lang.org/reference/#n-packed
 public	keyword	Keywords	shows a name to other modules; without it, a name stays inside its own module	public	https://sg-lang.org/reference/public
 raw	keyword	Keywords	an address of C, which owns nothing, may be null, and is not checked by the compiler	raw	https://sg-lang.org/reference/raw
@@ -44,9 +44,9 @@ unsafe	keyword	Keywords	marks code the checker cannot follow: raw memory, calls 
 use	keyword	Keywords	brings the public names of a module into a file, to be written without the module in front	use	https://sg-lang.org/reference/use
 var	keyword	Keywords	declares a variable; its type comes from its value	var	https://sg-lang.org/reference/var
 weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang.org/reference/#n-weak
-when	keyword	Keywords	adds a condition to an arm of a match		https://sg-lang.org/reference/#n-when
+when	keyword	Keywords	adds a condition to an arm of a match, or makes a lock block wait until one holds	when	https://sg-lang.org/reference/when
 while	keyword	Keywords	repeats a block as long as a condition holds	while	https://sg-lang.org/reference/while
-with	keyword	Keywords	a copy of a struct with some fields changed		https://sg-lang.org/reference/#n-with
+with	keyword	Keywords	a copy of a struct with some fields changed: p with { x = 3 }	with	https://sg-lang.org/reference/with
 bool	type	Primitive types	true or false; the only type a condition can be	bool	https://sg-lang.org/reference/bool
 byte	type	Primitive types	an integer of 8 bits, 0 to 255: one byte of a text, a file or a buffer	byte	https://sg-lang.org/reference/byte
 char	type	Primitive types	one character of Unicode, in 32 bits; not a number	char	https://sg-lang.org/reference/char
@@ -65,7 +65,7 @@ ushort	type	Primitive types	an integer of 16 bits without a sign		https://sg-lan
 void	type	Primitive types	the type of a function that gives nothing back		https://sg-lang.org/reference/#n-void
 false	value	Values with a name	the bool that is not true		https://sg-lang.org/reference/#n-false
 null	value	Values with a name	no value; only a type written T? may hold it, and it is tested with is null	null	https://sg-lang.org/reference/null
-this	value	Values with a name	the value a method was called on		https://sg-lang.org/reference/#n-this
+this	value	Values with a name	the value a method was called on; read this looks, ref this changes, this alone takes it	this	https://sg-lang.org/reference/this
 true	value	Values with a name	the bool that is not false		https://sg-lang.org/reference/#n-true
 $"{x}"	sign	Signs	text with values written into it		https://sg-lang.org/reference/#n--24227b-x-7d22
 a..b	sign	Signs	a range: from a up to, not with, b		https://sg-lang.org/reference/#n-a-2e2e-b

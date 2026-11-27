@@ -399,6 +399,6 @@ WHAT THE COMPILER REFUSES
      it builds, though fallback then runs every time.
 
 SEE ALSO
-     sg help async
+     sg help async, sg help lock
 
      https://sg-lang.org/reference/await.html

@@ -294,6 +294,6 @@ WHAT THE COMPILER REFUSES
      match read m the first time keeps m.
 
 SEE ALSO
-     sg help is, sg help enum, sg help try
+     sg help is, sg help when, sg help or, sg help enum, sg help try
 
      https://sg-lang.org/reference/match.html

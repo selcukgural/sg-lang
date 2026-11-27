@@ -300,6 +300,6 @@ WHAT THE COMPILER REFUSES
      within one task.
 
 SEE ALSO
-     sg help shared, sg help new
+     sg help shared, sg help new, sg help locked
 
      https://sg-lang.org/reference/share.html

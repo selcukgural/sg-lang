@@ -1,0 +1,589 @@
+---
+name: lock
+kind: keyword
+summary: A short block that alone touches a locked value; it never waits, so locks cannot deadlock.
+see: locked, as, shared, atomic, await, Channel, Task
+learn: ../docs/learn/book/10-concurrency.md#values-that-several-tasks-change
+library: ../docs/library/tasks.md#shared-locked-t
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `lock v as name { ... }` | takes a `shared locked` value; `name` is a `ref` to what it holds, for the block |
+| `lock a as x, b as y { ... }` | takes several values together, in a fixed order |
+| `lock v as name when condition { ... }` | waits, with the lock let go, until the condition holds |
+| `await lock v as name when condition { ... }` | the same in an `async` function |
+| `lock Name as name { ... }` | takes a `static locked` value |
+
+## What it means
+
+`lock v as name` takes a `shared locked` value: only one task is inside a `lock` block of the value at a time,
+and `name` is a `ref` to what it holds until the closing `}`. Whatever way the block is left, its end,
+`return`, `break`, `continue` or `try`, the lock is let go there.
+
+A `lock` block never waits. Inside it there is no other `lock`, no `wait`, no `await`, no send, receive or
+`select` on a channel, and no call of a function that does one of these, followed through the calls. A task
+that holds a lock therefore always lets it go, and locks cannot deadlock. Values needed together are locked
+in one block: `lock a as x, b as y` takes them in the order of their addresses, whatever order it names them
+in, so two tasks never hold one each.
+
+`when` waits before the block, not in it. The condition is computed under the lock, with each name lent to
+read; while it fails the lock is let go and the task sleeps. Each `lock` block on the value that ends wakes
+those that wait to look again, so no task wakes another by hand. The condition looks only at the locked
+values, since a change elsewhere would wake nobody. That no more will come is said by a field of the value,
+set in a `lock` block.
+
+In the interpreter one task runs at a time, so the output is the same on every run. Compiled code runs the
+tasks at the same time, and `lock` takes a mutex of the system.
+
+## Examples
+
+### Several tasks, one value
+
+```sg
+void countWords(shared locked HashMap<string, int> counts, string line) {
+    for word in line.split(" ") {
+        lock counts as c {
+            var slot = c.getOrAdd(word, 0)
+            slot += 1
+        }
+    }
+}
+
+void main() {
+    var counts = new shared locked HashMap<string, int>()
+    var a = Task.run(countWords, share counts, "the cat and the dog")
+    var b = Task.run(countWords, share counts, "the bird and the cat")
+    a.wait()
+    b.wait()
+    lock counts as c {
+        for word in "the cat dog bird and".split(" ") {
+            print($"{word} {c[word]}")
+        }
+    }
+}
+```
+
+```text
+the 4
+cat 2
+dog 1
+bird 1
+and 2
+```
+
+The split runs in parallel; only the additions take turns. `slot` borrows a count inside the map, which lasts
+as long as the block.
+
+### Leaving the block early
+
+```sg
+struct Seats {
+    List<string> taken
+    int size
+}
+
+bool book(shared locked Seats seats, string name) {
+    lock seats as s {
+        if s.taken.length() >= s.size {
+            return false
+        }
+        s.taken.add(name)
+    }
+    return true
+}
+
+void main() {
+    var seats = new shared locked Seats { taken = List<string>(), size = 2 }
+    var asks = List<Task<bool>>()
+    for name in "Ada Pasha Linus Grace".split(" ") {
+        asks.add(Task.run(book, share seats, name.clone()))
+    }
+    var booked = 0
+    for ok in Task.whenAll(asks).wait() {
+        if ok {
+            booked += 1
+        }
+    }
+    lock seats as s {
+        print($"{booked} booked, {s.taken.length()} seats taken of {s.size}")
+    }
+}
+```
+
+```text
+2 booked, 2 seats taken of 2
+```
+
+The test and the change are made under one lock, so no two tasks take the last seat. `return false` lets the
+lock go on its way out; which two names got seats changes from run to run, how many does not.
+
+### Two values together
+
+```sg
+struct Account {
+    string name
+    long balance
+}
+
+void transfer(shared locked Account from, shared locked Account to, long amount) {
+    lock from as a, to as b {
+        a.balance -= amount
+        b.balance += amount
+    }
+}
+
+void main() {
+    var alice = new shared locked Account { name = "alice", balance = 100 }
+    var bob = new shared locked Account { name = "bob", balance = 100 }
+    var tasks = List<Task<void>>()
+    for _ in 0..10 {
+        tasks.add(Task.run(transfer, share alice, share bob, 5))
+        tasks.add(Task.run(transfer, share bob, share alice, 3))
+    }
+    Task.whenAll(tasks).wait()
+    lock alice as a, bob as b {
+        print($"{a.name} {a.balance}, {b.name} {b.balance}")
+    }
+}
+```
+
+```text
+alice 80, bob 120
+```
+
+Half the transfers name `alice` first and half `bob`, yet each takes the two in the same order, so no two of
+them wait for each other.
+
+### Waiting for a condition
+
+```sg
+struct Jobs {
+    List<int> waiting
+    bool done
+}
+
+long work(shared locked Jobs jobs) {
+    long sum = 0
+    while true {
+        int? job = null
+        lock jobs as j when j.waiting.length() > 0 || j.done {
+            job = j.waiting.removeLast()
+        }
+        if job is null {
+            return sum
+        }
+        sum += job * job
+    }
+    return sum
+}
+
+void main() {
+    var jobs = new shared locked Jobs { waiting = List<int>(), done = false }
+    var workers = List<Task<long>>()
+    for _ in 0..3 {
+        workers.add(Task.run(work, share jobs))
+    }
+    for n in 1..11 {
+        lock jobs as j {
+            j.waiting.add(n)
+        }
+    }
+    lock jobs as j {
+        j.done = true
+    }
+    long total = 0
+    for sum in Task.whenAll(workers).wait() {
+        total += sum
+    }
+    print(total)
+}
+```
+
+```text
+385
+```
+
+Each worker sleeps until there is a job or `done` is set. Every `lock` block in `main` wakes them to look
+again; nothing calls a `notify`. Once the list is empty and `done` is set, `removeLast` gives `null` and the
+worker ends.
+
+### In an async function
+
+```sg
+struct Mailbox {
+    List<string> letters
+    bool closed
+}
+
+async int collect(shared locked Mailbox box) {
+    var count = 0
+    while true {
+        var done = false
+        await lock box as b when b.letters.length() > 0 || b.closed {
+            if b.letters.length() == 0 {
+                done = true
+            } else {
+                _ = b.letters.removeLast()
+                count += 1
+            }
+        }
+        if done {
+            return count
+        }
+    }
+    return count
+}
+
+async void main() {
+    var box = new shared locked Mailbox { letters = List<string>(), closed = false }
+    var reader = collect(share box)
+    for i in 0..5 {
+        await Task.delay(1)
+        lock box as b {
+            b.letters.add($"letter {i}".toString())
+        }
+    }
+    lock box as b {
+        b.closed = true
+    }
+    print($"{await reader} letters read")
+}
+```
+
+```text
+5 letters read
+```
+
+`await lock` lets the thread go on with other tasks while this one waits. A `lock` without `when` is written
+as it is: it never waits, so there is nothing to await.
+
+## What stops the program
+
+### One value under two names
+
+```sg panic
+struct Account {
+    long balance
+}
+
+void transfer(shared locked Account from, shared locked Account to, long amount) {
+    lock from as a, to as b {
+        a.balance -= amount
+        b.balance += amount
+    }
+}
+
+void main() {
+    var alice = new shared locked Account { balance = 100 }
+    var bob = share alice
+    transfer(share alice, share bob, 10)
+}
+```
+
+```text
+panic: `a` and `b` are one value, which a `lock` takes once
+  --> example.sg:6:21
+ 6 |     lock from as a, to as b {
+   |                     ^^
+```
+
+`alice` and `bob` are two owners of one account, so the compiler cannot tell. Two names would change one
+value at once; a transfer to oneself is tested for before the `lock`.
+
+### Waiting for what nobody can change
+
+```sg panic
+struct Queue {
+    List<int> items
+}
+
+void main() {
+    var queue = new shared locked Queue { items = List<int>() }
+    lock queue as q when q.items.length() > 0 {
+        print(q.items.removeLast() ?? 0)
+    }
+}
+```
+
+```text
+panic: this task waits until `q.items.length() > 0`, and no other task could make it hold: it is the only owner of `queue`
+  --> example.sg:7:26
+ 7 |     lock queue as q when q.items.length() > 0 {
+   |                          ^^^^^^^^^^^^^^^^^^^^
+  hint: a task with no more to give says so inside the value before it lets it go, `lock queue as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
+```
+
+In the interpreter and in compiled code alike, a task that would wait for ever is stopped with the line it
+waits on.
+
+## What the compiler refuses
+
+### A lock inside a lock
+
+```sg error
+struct Account {
+    long balance
+}
+
+void main() {
+    var alice = new shared locked Account { balance = 100 }
+    var bob = new shared locked Account { balance = 50 }
+    lock alice as a {
+        lock bob as b {
+            a.balance -= 10
+            b.balance += 10
+        }
+    }
+}
+```
+
+```text
+error: a `lock` block does not take another lock
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:9:9
+ 9 |         lock bob as b {
+   |         ^^^^^^^^^^^^^^^
+  hint: lock both in one block, which takes them in a fixed order: `lock a as x, b as y { ... }`
+```
+
+### Waiting for a task
+
+```sg error
+int answer() {
+    return 42
+}
+
+void main() {
+    var total = new shared locked 0
+    var task = Task.run(answer)
+    lock total as t {
+        t += task.wait()
+    }
+}
+```
+
+```text
+error: a `lock` block does not wait for a task
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:9:19
+ 9 |         t += task.wait()
+   |                   ^^^^
+  hint: wait for the task before the block or after it
+```
+
+### A call that waits
+
+```sg error
+int answer() {
+    return 42
+}
+
+int ask() {
+    var task = Task.run(answer)
+    return task.wait()
+}
+
+void main() {
+    var total = new shared locked 0
+    lock total as t {
+        t += ask()
+    }
+}
+```
+
+```text
+error: `ask` waits, and a `lock` block does not wait
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:13:14
+ 13 |         t += ask()
+    |              ^^^
+  `ask` waits for a task here:
+  --> example.sg:7:17
+ 7 |     return task.wait()
+   |                 ^^^^
+```
+
+The compiler follows the calls, and shows where the wait is.
+
+### `await` inside
+
+```sg error
+async int answer() {
+    await Task.delay(5)
+    return 42
+}
+
+async void main() {
+    var total = new shared locked 0
+    lock total as t {
+        t += await answer()
+    }
+}
+```
+
+```text
+error: a `lock` block does not await a task
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:9:14
+ 9 |         t += await answer()
+   |              ^^^^^^^^^^^^^^
+  hint: await the task before the block or after it
+```
+
+### A send on a channel
+
+```sg error
+void main() {
+    var total = new shared locked 0
+    var numbers = Channel<int>(1)
+    var out = numbers.sender()
+    lock total as t {
+        t += 1
+        _ = out.send(t)
+    }
+}
+```
+
+```text
+error: `send` waits on a channel, and a `lock` block does not wait
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:7:17
+ 7 |         _ = out.send(t)
+   |                 ^^^^
+  hint: send before the block or after it
+```
+
+### A condition that changes the value
+
+```sg error
+struct Queue {
+    List<int> items
+}
+
+void main() {
+    var queue = new shared locked Queue { items = List<int> { 1 } }
+    lock queue as q when q.items.removeLast() is not null {
+        print("took one")
+    }
+}
+```
+
+```text
+error: `removeLast` changes the list, but it is reached through a `read` borrow
+  --> example.sg:7:26
+ 7 |     lock queue as q when q.items.removeLast() is not null {
+   |                          ^^^^^^^
+  hint: the condition only looks at what is locked; change it in the block
+```
+
+The condition may be computed many times; the change is made once, in the block.
+
+### A condition that looks elsewhere
+
+```sg error
+struct Queue {
+    List<int> items
+}
+
+static atomic bool Stop = atomic false
+
+void main() {
+    var queue = new shared locked Queue { items = List<int>() }
+    lock queue as q when q.items.length() > 0 || Stop.load() {
+        print("ready")
+    }
+}
+```
+
+```text
+error: the condition of `when` reads an `atomic`, and a task waiting for it is woken only when a `lock` block on the same value ends
+  a change outside the locked value would not wake it, and it would wait for ever
+  --> example.sg:9:50
+ 9 |     lock queue as q when q.items.length() > 0 || Stop.load() {
+   |                                                  ^^^^
+  hint: keep what the condition looks at inside the locked value, and change it in a `lock` block
+```
+
+The clock, random bytes and input or output are refused there for the same reason.
+
+### `when` in an async function, without `await`
+
+```sg error
+struct Queue {
+    List<int> items
+}
+
+async void main() {
+    var queue = new shared locked Queue { items = List<int> { 1 } }
+    lock queue as q when q.items.length() > 0 {
+        print(q.items.removeLast() ?? 0)
+    }
+}
+```
+
+```text
+error: `lock ... when` waits, and an async function awaits what waits: its task waits, and its thread goes on
+  --> example.sg:7:5
+ 7 |     lock queue as q when q.items.length() > 0 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: write `await lock ... when ...`
+```
+
+### Giving the value away inside its block
+
+```sg error
+struct Jobs {
+    List<int> waiting
+}
+
+void keep(shared locked Jobs jobs) {
+}
+
+void main() {
+    var jobs = new shared locked Jobs { waiting = List<int>() }
+    lock jobs as j {
+        j.waiting.add(1)
+        keep(jobs)
+    }
+}
+```
+
+```text
+error: `jobs` cannot be moved here: `j` borrows from it and is used again later
+  the block of `j` holds what it opened until the block ends, and lets go of it there
+  --> example.sg:12:14
+ 12 |         keep(jobs)
+    |              ^^^^
+  `j` borrowed it here:
+  --> example.sg:10:10
+ 10 |     lock jobs as j {
+    |          ^^^^
+  hint: move or change it after the block
+```
+
+The block lets go of the lock at its `}`, so the value must still be there: it is not given away or written over
+inside. `keep(share jobs)` gives one more owner and keeps this one.
+
+### A value that is not locked
+
+```sg error
+void main() {
+    var total = new shared checked 0
+    lock total as t {
+        t += 1
+    }
+}
+```
+
+```text
+error: `lock` is for a `shared locked` value, and this is `shared checked int`, which one task changes
+  --> example.sg:3:10
+ 3 |     lock total as t {
+   |          ^^^^^
+  hint: `ref total as name { ... }` changes it for a block
+```
+
+A value with one owner needs no lock: it is changed where it is.

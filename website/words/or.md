@@ -1,0 +1,368 @@
+---
+name: or
+kind: keyword
+summary: Joins patterns: the arm, or the is, fits when one of them does.
+see: match, is, when, not, null
+learn: ../docs/learn/book/05-structs-and-enums.md#match
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `Red or Green => ...` | an arm for either variant |
+| `10 or 12`, `'+' or '-'`, `"stop" or "halt"` | numbers, characters and texts |
+| `'a'..='z' or 'A'..='Z' or '_'` | ranges and values together |
+| `null or 0` | on a `T?`: `null`, or a value that must be equal |
+| `Add(l, _) or Mul(l, _)` | each pattern names the same values, with the same types |
+| `Number(1..=9 or 40)`, `Word("if" or "else")` | inside the parentheses of a variant |
+| `x is Plus or Minus` | in an `is`; `x is not A or B` is true when neither fits |
+| `A or` at the end of a line | the arm goes on in the next line |
+
+## What it means
+
+`or` joins two patterns or more into one. The arm runs, or the `is` is true, when one of them fits; they are
+tried from the left. It goes wherever a pattern goes: in an arm of a `match`, in an `is`, and inside the
+parentheses of a variant, at any depth.
+
+A pattern of an `or` can name values, and then every pattern of it names the same values with the same types:
+whichever fits, the arm finds each name set. A pattern that the arms above and the patterns before it take
+already can never match, and is an error.
+
+`or` joins patterns, not values. Two `bool` values are joined with `||`, and `|` is the `or` of the bits of two
+numbers; between patterns, `|` and `||` are errors whose hint is `or`. Since the words differ, a pattern and a
+value read apart: `x is A or B || ready`.
+
+A `when` after an `or` is on the whole arm. `x is not A or B` tests the whole `or`: it is true when neither
+`A` nor `B` fits.
+
+## Examples
+
+### The variants of an enum
+
+```sg
+enum Op {
+    Plus
+    Minus
+    Times
+    Over
+    Power
+}
+
+string kind(Op op) {
+    return match op {
+        Plus or Minus => "adds"
+        Times or Over or
+        Power => "multiplies"
+    }
+}
+
+void main() {
+    print(kind(Op.Minus))
+    print(kind(Op.Power))
+}
+```
+
+```text
+adds
+multiplies
+```
+
+A line that ends with `or` goes on in the next. Every variant has an arm, so the `match` needs no `_`.
+
+### Numbers and texts
+
+```sg
+string sizeOf(int n) {
+    return match n {
+        0 => "none"
+        1 or 2 or 3 => "a few"
+        10 or 12 or 20..=29 => "tens"
+        _ => "many"
+    }
+}
+
+void main() {
+    var commands = List<string> { "stop", "quit", "go" }
+    for command in read commands {
+        match command {
+            "stop" or "halt" or "quit" => print("stopping")
+            _ => print($"{command}?")
+        }
+    }
+    print($"{sizeOf(2)}, {sizeOf(12)}, {sizeOf(25)}, {sizeOf(99)}")
+}
+```
+
+```text
+stopping
+stopping
+go?
+a few, tens, tens, many
+```
+
+### Ranges of characters
+
+```sg
+string kind(char c) {
+    return match c {
+        'a'..='z' or 'A'..='Z' or '_' => "letter"
+        '0'..='9' => "digit"
+        ' ' or '\t' or '\n' => "space"
+        _ => "other"
+    }
+}
+
+void main() {
+    print($"{kind('q')} {kind('_')} {kind('7')} {kind('\t')} {kind('+')}")
+}
+```
+
+```text
+letter letter digit space other
+```
+
+### `null` or a value
+
+```sg
+string show(int? count) {
+    return match count {
+        null or 0 => "none"
+        var n => $"{n + 1}".toString()
+    }
+}
+
+void main() {
+    print(show(3))
+    print(show(0))
+    print(show(null))
+}
+```
+
+```text
+4
+none
+none
+```
+
+Below an arm that takes `null`, `n` is an `int`, so `n + 1` needs no test.
+
+### Names in an `or`
+
+```sg
+enum Note {
+    Text(string body)
+    Title(string body)
+    Picture(int width, int height)
+}
+
+void keep(string body) {
+    print($"kept {body}")
+}
+
+void main() {
+    var notes = List<Note> { Note.Title("Ships".clone()), Note.Picture(640, 480), Note.Text("ahoy".clone()) }
+    for note in notes {
+        match note {
+            Text(body) or Title(body) => keep(body)
+            Picture(w, h) => print($"a picture, {w} by {h}")
+        }
+    }
+}
+```
+
+```text
+kept Ships
+a picture, 640 by 480
+kept ahoy
+```
+
+Both patterns name `body`, a `string` in each, so one arm serves the two variants. The `match` takes `note`,
+and `body` owns its text.
+
+### In an `is`, and inside the parentheses
+
+```sg
+enum Token : Formattable {
+    Number(int value)
+    Word(string text)
+    Plus
+    Minus
+}
+
+void main() {
+    var tokens = List<Token> { Token.Plus, Token.Number(7), Token.Word("if".clone()), Token.Number(40) }
+    for token in read tokens {
+        if token is Plus or Minus {
+            print("an operator")
+        }
+        if token is Number(1..=9 or 40) or Word("if" or "else") {
+            print($"small, forty, or a keyword: {token}")
+        }
+        if token is not Number(_) or Word(_) {
+            print("neither a number nor a word")
+        }
+    }
+}
+```
+
+```text
+an operator
+neither a number nor a word
+small, forty, or a keyword: Number(7)
+small, forty, or a keyword: Word("if")
+small, forty, or a keyword: Number(40)
+```
+
+Inside the parentheses, `or` tests the value the variant carries. `is not` takes the whole `or`.
+
+### Names in an `is`, and `when`
+
+```sg
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+    Empty
+}
+
+string describe(read Shape shape) {
+    return match shape {
+        Circle(n) or Square(n) when n > 10 => $"big, {n} across".toString()
+        Circle(_) or Square(_) => "small"
+        Empty => "nothing"
+    }
+}
+
+void main() {
+    var shapes = List<Shape> { Shape.Circle(2), Shape.Square(15), Shape.Empty }
+    for shape in read shapes {
+        if shape is Circle(n) or Square(n) && n > 3 {
+            print($"more than 3: {n}")
+        }
+        print(describe(shape))
+    }
+}
+```
+
+```text
+small
+more than 3: 15
+big, 15 across
+nothing
+```
+
+The `when` belongs to the whole arm, and the `&&` to the whole `is`: either shape that is big enough takes them.
+
+## What the compiler refuses
+
+### A name in one pattern only
+
+```sg error
+enum Expr {
+    Add(int left, int right)
+    Neg(int value)
+}
+
+void main() {
+    var e = Expr.Neg(3)
+    match e {
+        Add(l, _) or Neg(v) => print(v)
+    }
+}
+```
+
+```text
+error: `l` is named in the first pattern of this `or` and not in this one
+  every pattern of an `or` names the same values; write `_` in each for a value that is not needed
+  --> example.sg:9:22
+ 9 |         Add(l, _) or Neg(v) => print(v)
+   |                      ^^^^^^
+```
+
+### A name of two types
+
+```sg error
+enum Item {
+    Count(int n)
+    Name(string s)
+}
+
+void main() {
+    var item = Item.Count(3)
+    match read item {
+        Count(x) or Name(x) => print(x)
+    }
+}
+```
+
+```text
+error: `x` is a `read int` in the first pattern of this `or` and a `read string` here
+  a name of an `or` has one type, whichever pattern took the value
+  --> example.sg:9:26
+ 9 |         Count(x) or Name(x) => print(x)
+   |                          ^
+```
+
+### `|` between patterns
+
+```sg error
+void main() {
+    var n = 3
+    match n {
+        1 | 2 => print("small")
+        _ => print("big")
+    }
+}
+```
+
+```text
+error: patterns are joined with `or`, not `|`
+  `|` and `||` are operators on values; a pattern is not a value: `'+' or '-'`
+  --> example.sg:4:11
+ 4 |         1 | 2 => print("small")
+   |           ^
+  hint: `or`
+```
+
+### A pattern that can never match
+
+```sg error
+void main() {
+    var n = 3
+    match n {
+        1..=5 => print("small")
+        3 or 9 => print("three or nine")
+        _ => print("big")
+    }
+}
+```
+
+```text
+error: this pattern can never match: the arms above and the patterns before it in the `or` take every value it matches
+  --> example.sg:5:9
+ 5 |         3 or 9 => print("three or nine")
+   |         ^
+```
+
+`1..=5` above takes 3 already. `9 => ...` alone says what is meant.
+
+### `or` between two `bool` values
+
+```sg error
+void main() {
+    var ready = true
+    var forced = false
+    if ready or forced {
+        print("go")
+    }
+}
+```
+
+```text
+error: expected `{`, found `or`
+  --> example.sg:4:14
+ 4 |     if ready or forced {
+   |              ^^
+```
+
+`or` joins patterns only; two conditions are joined with `||`: `if ready || forced`.
