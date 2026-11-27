@@ -10,7 +10,7 @@ const repo = 'https://github.com/selcukgural/sg-lang';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'SG',
-  tagline: 'Safe by design. Fast by default.',
+  tagline: 'Plain to read. Fast to run. Memory safe by design.',
   favicon: 'img/favicon.svg',
   // The icons of the logo (choice 1405), made by brand/src/build.py: the S-cat in white on a navy tile.
   headTags: [

@@ -6,8 +6,7 @@ sidebar_position: 1
 
 # Why SG
 
-SG is a small systems language: about as small and as fast as C, memory safe like Rust, and written in a
-notation that reads like C#.
+SG is a systems language: small like C, readable like C#, fast and memory safe like Rust.
 
 ## The idea
 

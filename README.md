@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><strong>Safe by design. Fast by default.</strong></p>
+<p align="center"><strong>Plain to read. Fast to run. Memory safe by design.</strong></p>
 
 <p align="center">
   <a href="https://sg-lang.org">Web site</a> ·
@@ -16,8 +16,7 @@
   <a href="https://sg-lang.org/docs/about/community">Community</a>
 </p>
 
-SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
-written in a notation that reads like C#.
+SG is a systems language: small like C, readable like C#, fast and memory safe like Rust.
 
 It is before its preview. The language, its checker, an interpreter and a back end that compiles
 through C are built and tested on Linux, macOS and Windows; nothing is released yet and everything
@@ -29,8 +28,9 @@ kept in the open.
 - **Memory safe without a collector.** One owner for each value, and borrows (`read`, `ref`) checked
   when the program compiles: the use after free, the dangling pointer and the forgotten error are
   compile errors, each with the fix when it is known.
-- **As fast as C.** SG compiles through C with no runtime to carry. Of 61 programs written in SG and
-  in C by hand, 37 take the time of C within 5% and 13 are faster ([the numbers](benchmarks/README.md)).
+- **Fast to run.** SG compiles through C with no runtime to carry. It is held to safe Rust doing the same
+  work, and measured against C: of 61 programs written in SG and in C by hand, 37 take the time of C within
+  5% and 13 are faster ([the numbers](benchmarks/README.md)).
 - **Real programs.** [gifsicle](https://www.lcdf.org/gifsicle/) 1.99, the GIF tool, is written in SG as
   [sg-gifsicle](https://github.com/selcukgural/sg-gifsicle): every option, the same bytes as gifsicle in 58,767
   runs, 1.01 to 1.31 times its time, and frames resized on several threads with no lock

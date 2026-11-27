@@ -1,7 +1,9 @@
 # Benchmarks
 
-SG's promise is software that is safe and runs as fast as C. These pages are where that is measured: the
-numbers, how they were taken, and where SG is still slower. A case SG loses is shown as plainly as one it
+SG's promise is software that is safe and fast. These pages are where that is measured: the
+numbers, how they were taken, and where SG is still slower. What SG is held to is safe Rust doing the same work,
+which gives the same guarantee: SG is not to be slower. C, which leaves memory to the programmer, is the yardstick:
+the distance to it is what safety costs ([the rule](method.md#the-rival-and-the-yardstick)). A case SG loses is shown as plainly as one it
 wins ([the rules](method.md#fairness)).
 
 ## The pages

@@ -15,7 +15,7 @@
         {
             "guid": "sg-lang",
             "name": "SG",
-            "description": "SG is a small systems programming language: about as small and as fast as C, memory safe like Rust, and written in a notation that reads like C#. The project includes the language design, a checker, an interpreter and a back end that compiles through C.",
+            "description": "SG is a systems programming language: small like C, readable like C#, fast and memory safe like Rust. The project includes the language design, a checker, an interpreter and a back end that compiles through C.",
             "webpageUrl": {
                 "url": "https://sg-lang.org",
                 "wellKnown": "https://sg-lang.org/.well-known/funding-manifest-urls"

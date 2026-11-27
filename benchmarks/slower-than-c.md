@@ -7,6 +7,18 @@ check off.
 Since the trials (choice 1418) the list also holds the cases where SG is slower than Rust or Zig. Each entry
 says what is slower, by how much and against what, the choice that measured it, and what would fix it.
 
+What SG is held to is safe Rust doing the same work; C is the yardstick ([the rule](method.md#the-rival-and-the-yardstick),
+choice 2078). So an entry also says **why** SG is slower, one of:
+
+- **a check safety needs**: the bounds of a list, the count of a `shared` value, a check that text is UTF-8. Safe
+  Rust pays it too, and it is not turned off; the entry stays as what the guarantee costs there;
+- **our code**: what SG writes for the C compiler is worse than what a programmer of C writes. Ours to mend;
+- **our library**: the way `std` or the runtime does the work costs more than it has to. Ours to mend;
+- **the system or the tools**: another C compiler, another kernel, a call the system does not have.
+
+An entry gets its **Why** when it is next looked at; nothing was measured again to give it one, and an entry
+without one has not been looked at since 27 November 2026.
+
 ## The library
 
 - **The memory of watching on macOS** (`Directory.watchAll`, slice 199, choice 2064): 13.0 MB while 100,000
@@ -16,6 +28,7 @@ says what is slower, by how much and against what, the choice that measured it, 
   tells such a file as made. The delay is FSEvents' for both (12.4 ms against 11.5 ms at the middle); on Linux
   SG keeps less than `inotifywait`. Candidates: names kept in one block, as the paths of a folder share their
   start; a table of hashes with the folders kept apart, so that a folder deleted can still take its names out.
+  **Why:** our library. The names are kept to tell a change truly where FSEvents does not, not for safety.
 
 - **A start at a terminal of its own** (`Command.terminal`, slice 198, choices 2045 and 2054): `true` started at
   a pseudo terminal and waited for, 5,000 times, takes 0.99 s on Linux against 0.94 s for C started the same
@@ -24,6 +37,7 @@ says what is slower, by how much and against what, the choice that measured it, 
   by `posix_spawn` (it was 1.15 times C that forks, by `fork` and the careful child of 2034). Not looked into
   yet: the likely cause is what SG does around every start (the environment and the arguments copied into
   strings of C, the streams moved above 2, two more descriptors of the end kept).
+  **Why:** our library, by what is known; no check of safety is on this path.
 
 - **Large values over a socket of the machine** (the store of RESP on macOS, `redis-benchmark`, 50
   connections, values of 64 KB, choice 1972, slice 190, one run): over a `UnixStream` SG answers 30,000 SET

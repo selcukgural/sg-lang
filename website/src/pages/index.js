@@ -87,8 +87,8 @@ const pillars = [
     text: 'Ownership and borrows are checked when the program compiles, with no garbage collector. What depends on data, an index or an overflow, stops the program with a message that says what to write instead. `unsafe` marks the rest.',
   },
   {
-    title: 'As fast as C',
-    text: 'SG compiles through C, with no runtime to carry. A check that safety does not need is left out by default; the checked way is one word away. Every claim is measured against C, Rust and Zig.',
+    title: 'Fast to run',
+    text: 'SG compiles through C, with no runtime to carry. A check that safety does not need is left out by default; the checked way is one word away. SG is held to safe Rust doing the same work, and every claim is measured against C, Rust and Zig.',
   },
   {
     title: 'Small and plain',
@@ -187,7 +187,7 @@ const next = [
 
 export default function Home() {
   return (
-    <Layout title="SG" description="SG, a small systems language: safe by design, fast by default.">
+    <Layout title="SG" description="SG, a systems language: small like C, readable like C#, fast and memory safe like Rust.">
       <header className={styles.hero}>
         <div className={styles.heroInner}>
           <div className={styles.heroText}>
@@ -195,9 +195,9 @@ export default function Home() {
               <img className={styles.mark} src="/img/logo-hero.svg" alt="" width="88" height="88" />
               <span className={styles.title}>SG</span>
             </div>
-            <p className={styles.tagline}>Safe by design. Fast by default.</p>
+            <p className={styles.tagline}>Plain to read. Fast to run. Memory safe by design.</p>
             <h1 className={styles.lead}>
-              A small systems language: as fast as C, memory safe like Rust, and written the way C# reads.
+              A systems language: small like C, readable like C#, fast and memory safe like Rust.
             </h1>
             <div className={styles.buttons}>
               <Link className="button button--secondary button--lg" to="/docs/learn/tour">Get started</Link>

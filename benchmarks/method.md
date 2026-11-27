@@ -27,6 +27,25 @@ No measurement is made, chosen or reported so that it favours SG. In particular:
 For the programs against C: the C is the ordinary program a C programmer writes, written by hand with no
 checks; every program measured is shown, also where SG loses; and SG keeps every check it has by default.
 
+## The rival and the yardstick
+
+What SG is held to is **safe Rust doing the same work**: SG is not to be slower (choice 2078, 27 November 2026).
+Rust gives the guarantee SG gives, memory kept safe by the language, and pays for it where a check has to run
+while the program does. C gives none and pays for none, so "not slower than C" cannot hold at every place where
+safety needs a check.
+
+C is still what most tables here are measured against. SG compiles through C, so a program of C written by hand is
+the ceiling of what SG can reach, and the distance to it shows what safety costs. A place where SG is slower than C
+is read by what safe Rust does there:
+
+- safe Rust pays the same: the price of the guarantee;
+- safe Rust does not: ours to mend, in the code SG writes or in its library.
+
+[Slower than C](slower-than-c.md) says of each place which it is, as the places are looked at again; nothing was
+measured again for it. Where a mature program of Rust does the job (a regular expression, an HTTP server, zip), Rust
+is the rival in the table. Where the program that exists is C (a port of a tool of C), SG is measured against that,
+and the cause of a difference is written beside it; nothing new is written in Rust only to have a rival.
+
 ## Against C
 
 `interpreter/bench/run.py` compiles each program of [`interpreter/bench/`](../interpreter/bench) three

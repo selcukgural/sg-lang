@@ -6,9 +6,10 @@ The reasons for the dropped generation model are in the [memory model](01-memory
 
 ## The idea of the language
 
-A language's reason to exist should fit in one sentence. The direction changed on 5 November, and the current
-sentence is: **a systems language as fast as C, without macros, that gives Rust's compile-time guarantees in a
-notation that reads like C#.** The solutions come from Rust, the naming and the notation are ours. No arena. A
+A language's reason to exist should fit in one sentence. The direction changed on 5 November, and the sentence
+became: **a systems language as fast as C, without macros, that gives Rust's compile-time guarantees in a
+notation that reads like C#.** Since 27 November 2026 (choices 2078 and 2079) it is: **a systems language small like
+C, readable like C#, fast and memory safe like Rust.** The solutions come from Rust, the naming and the notation are ours. No arena. A
 side project / research, with no revenue goal.
 
 ## Core principle: safe default
@@ -64,6 +65,20 @@ lacks many features and everything is still written in it, operating systems inc
 not a goal. The two things that are not given up are performance and simplicity: a feature that costs nothing at run
 time and does not complicate the language can stay (the collection methods, the text of a collection); a feature that
 costs at run time needs a reason that is about safety, and one that adds concepts and rules needs to be worth them.
+
+*Made exact on 27 November 2026 (choice 2078).* What SG is held to in speed is **safe Rust doing the same work**: it
+is not to be slower. C is the yardstick, not the rival. In C the programmer keeps memory safe by hand, and pays
+nothing at run time for it; SG keeps it safe itself, and where that needs a check while the program runs (the bounds
+of a list, the count of a `shared` value, two windows of one list that may not overlap), C does not pay for the check
+and safe Rust does. "Not slower than C" cannot hold at every such place by its own meaning; "not slower than the
+language that gives the same guarantee" can. C stays what everything is measured against, since SG compiles through
+C: a program of C written by hand is the ceiling, and the distance to it is what safety costs. So a place where SG is
+slower than C is read in one of two ways. Where safe Rust pays the same, it is the price of the guarantee. Where safe
+Rust does not, it is ours to mend: the code SG writes, or its library. [Slower than
+C](../benchmarks/slower-than-c.md) says of each place which it is. Nothing else changes: what is new is not written
+again in Rust to have something to measure against (where a program of C is what there is, as for a port, C is what
+SG is measured against, and the cause of a difference is written down), and a case SG loses against Rust is
+published as plainly as one it loses against C.
 
 *Added on 12 November 2026.* We are not tied to a single language. Rust's guarantees, C#'s notation, Go's simplicity, Zig's
 smallness: what each language does best is taken in the form that fits us, and is not taken if it does not fit. A proposal is accepted not because
