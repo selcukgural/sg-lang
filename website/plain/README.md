@@ -29,8 +29,8 @@ What it makes, and from what:
   nothing sent anywhere.
 - **Headers.** `assets/_headers` allows the site only its own files: no script or style is written into a page,
   and `build.mjs` fails if one is.
-- **Logo.** The wildcat (`../../brand/wildcat/`); `make.py` there makes `assets/logo.webp`, `logo-small.webp`,
-  `favicon.png` and `apple-touch-icon.png`.
+- **Logo.** The wildcat (`../../brand/wildcat/`), with its ground taken out: a light and a dark version, and the
+  stylesheet shows the one that fits the theme. `make.py` there makes them in `assets/`.
 
 Every page reads and works without its script; the script adds the search, the line shown over a name in a
-program, the filter of the index, and the button for light or dark.
+program, a button to copy each program and command, the filter of the index, and the button for light or dark.

@@ -61,6 +61,36 @@
   });
   window.addEventListener('scroll', hideTip, { passive: true });
 
+  // ---- a button to copy each program and each command ---------------------------------------------
+  // Outputs and manual pages have none: they are what a program says, not what is tried.
+  function copied(button, ok) {
+    button.textContent = ok ? 'Copied' : 'Select and copy';
+    setTimeout(function () { button.textContent = 'Copy'; }, 1600);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('pre.sg, pre.plain'), function (pre) {
+    var box = el('div', 'code-box');
+    pre.parentNode.insertBefore(box, pre);
+    box.appendChild(pre);
+    var button = el('button', 'copy', 'Copy');
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Copy this code');
+    box.appendChild(button);
+    button.addEventListener('click', function () {
+      var text = (pre.querySelector('code') || pre).textContent.replace(/\n$/, '') + '\n';
+      var select = function () {
+        var range = document.createRange();
+        range.selectNodeContents(pre.querySelector('code') || pre);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        copied(button, false);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { copied(button, true); }, select);
+      } else select();
+    });
+  });
+
   // ---- the search ----------------------------------------------------------------------------------
   var q = document.getElementById('q');
   var found = document.getElementById('found');

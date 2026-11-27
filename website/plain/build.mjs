@@ -352,11 +352,12 @@ function render(page, body) {
 // ---------------------------------------------------------------------------------------------------------
 // The frame of every page
 
-// The wildcat logo (brand/wildcat/), on its own dark ground in both themes. `to` makes its address from the page.
-const LOGO = (cls, to) =>
-  cls === 'big'
-    ? `<span class="logo-tile big"><img src="${to('logo.webp')}" width="880" height="676" alt="SG"></span>`
-    : `<span class="logo-tile small"><img src="${to('logo-small.webp')}" width="127" height="88" alt="SG"></span>`;
+// The wildcat logo (brand/wildcat/), with its ground taken out: one for light pages, one for dark, and the
+// stylesheet shows the one that fits the page. `to` makes its address from the page.
+const LOGO = (cls, to) => {
+  const [file, w, h] = cls === 'big' ? ['logo', 880, 676] : ['logo-small', 127, 88];
+  return `<span class="logo ${cls}"><img class="for-light" src="${to(`${file}-light.webp`)}" width="${w}" height="${h}" alt="SG"><img class="for-dark" src="${to(`${file}-dark.webp`)}" width="${w}" height="${h}" alt=""></span>`;
+};
 
 const NAV = [
   ['Learn', 'learn/index.html', 'learn'],
@@ -741,7 +742,7 @@ Windows and for a build from source where nothing installs the pages; the text i
 }
 
 // The files beside the pages.
-for (const name of ['style.css', 'site.js', 'theme.js', 'logo.webp', 'logo-small.webp', 'favicon.png', 'apple-touch-icon.png', '_headers']) copyFileSync(join(plain, 'assets', name), join(out, name));
+for (const name of ['style.css', 'site.js', 'theme.js', 'logo-light.webp', 'logo-dark.webp', 'logo-small-light.webp', 'logo-small-dark.webp', 'favicon.png', 'apple-touch-icon.png', '_headers']) copyFileSync(join(plain, 'assets', name), join(out, name));
 
 // ---------------------------------------------------------------------------------------------------------
 // Checks: every link leads somewhere, and no page carries a script or a style of its own.

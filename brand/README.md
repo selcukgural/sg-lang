@@ -12,9 +12,11 @@ drawn again with the next logo.
 
 **The wildcat** (`wildcat/source.png`, 1536 x 1024) is the logo of the plain site (`website/plain/`, choice
 2081): the letters SG in silver, a wildcat's head over the G, and a cyan ring of light, on a ground of `#00040c`.
-It is a picture with a glow, not a drawing, so it is shown on a tile of its own ground in both themes;
-`wildcat/make.py` cuts and sizes the files the site uses (`logo.webp`, `logo-small.webp`, `favicon.png`,
-`apple-touch-icon.png` in `website/plain/assets/`). It does not yet read at 16 pixels, and it has no one-colour
+It is a picture with a glow, not a drawing. `wildcat/make.py` takes the ground out (the glow is light added to
+it, so each pixel keeps its colour and gets an alpha) and makes two of it: for dark pages the colours as drawn,
+for light pages the silver and white made dark navy, since they would vanish on white. It cuts and sizes the files
+the site uses (`logo-light.webp`, `logo-dark.webp`, `logo-small-light.webp`, `logo-small-dark.webp`, and, on
+the ground as drawn, `favicon.png` and `apple-touch-icon.png`, in `website/plain/assets/`). It does not yet read at 16 pixels, and it has no one-colour
 or vector form; the S-cat below stays the logo of the README, the current site and the social card until those
 are made.
 
