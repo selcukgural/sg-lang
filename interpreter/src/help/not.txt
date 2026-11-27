@@ -1,0 +1,343 @@
+NAME
+     not - turns the test of is around: x is not P, whose names are seen where
+     the test failed
+
+SYNOPSIS
+     x is not null
+            true when a T? holds a value; where it holds, x is a T
+
+     x is not Empty
+            true when x is any other variant
+
+     x is not A or B
+            true when neither A nor B fits
+
+     x is not Ok(n) || n < 1
+            the names are seen on the right of ||
+
+     if x is not Ok(n) { return }, then n
+            and after an if whose block always leaves
+
+     if x is not Rect(w, h) { ... } else { ... }
+            and in else
+
+     x is not Rect(w, _) ? 0 : w
+            and in the second arm of ?:
+
+     while x is not Number(n) { ... }, then n
+            and after a while that only its test ends
+
+     ref x is not Circle(r)
+            the names borrow to change
+
+DESCRIPTION
+     not is written in one place: right after is. x is not P is the test of x
+     is P the other way round. It is true when x is another variant than P,
+     or, with null, when the T? holds a value. Everything else is as for is: P
+     is a variant, with the patterns of match inside its parentheses, or null;
+     x is not A or B tests the whole or, and is true when neither A nor B
+     fits. !(x is P) is the same test.
+
+     On a T?, where x is not null holds, x is a T: in the block of the if or
+     while, on the right of &&, and in the first arm of ?:.
+
+     The names of x is not P are seen where the test failed, since only there
+     did P fit: on the right of ||, in else, in the second arm of ?:, after an
+     if whose block always leaves (return, break, continue, panic, exit), and
+     after a while that only its test ends. A name used where the test held is
+     an error, and so is a break that leaves such a while. Like those of is,
+     the names are read borrows of what x carries, and ref borrows when x is a
+     ref borrow or the test is written ref x is not ....
+
+     not is not an operator. A bool is turned around with !: !ready.
+
+EXAMPLES
+   null
+         void main() {
+             var ages = List<int?> { 36, null, 45 }
+             var total = 0
+             for age in ages {
+                 if age is not null {
+                     total += age
+                 }
+             }
+             print(total)
+             int? missing = null
+             print(missing is not null)
+         }
+
+         81
+         false
+
+     In the block, age is an int, so it can be added. An is not that names
+     nothing is a bool like any other, and can be printed.
+
+   Another variant
+         enum Light {
+             Red
+             Amber
+             Green
+             Off
+         }
+
+         void main() {
+             var lights = List<Light> { Light.Red, Light.Off, Light.Green }
+             for light in read lights {
+                 if light is not Off {
+                     print("lit")
+                 }
+                 if light is not Red or Amber {
+                     print("neither red nor amber")
+                 }
+             }
+         }
+
+         lit
+         neither red nor amber
+         lit
+         neither red nor amber
+
+     is not Red or Amber takes the whole or: it is true for Off and Green.
+
+   The names after an if that leaves
+         void main() {
+             var fields = List<string> { "12", "x", "30" }
+             var total = 0
+             for field in read fields {
+                 if int.parse(field) is not Ok(n) {
+                     print($"{field} is not a number")
+                     continue
+                 }
+                 total += n
+             }
+             print(total)
+         }
+
+         x is not a number
+         42
+
+     The block ends with continue, so the code after the if runs only when the
+     parse gave Ok, and n is seen there.
+
+   ||, else and ?:
+         enum Shape {
+             Circle(int radius)
+             Rect(int width, int height)
+         }
+
+         void describe(read Shape shape) {
+             if shape is not Circle(r) || r > 10 {
+                 print("not a small circle")
+             }
+             if shape is not Rect(w, h) {
+                 print("round")
+             } else {
+                 print($"{w} by {h}")
+             }
+             var width = shape is not Rect(w, _) ? 0 : w
+             print($"width {width}")
+         }
+
+         void main() {
+             describe(read Shape.Circle(2))
+             describe(read Shape.Rect(3, 4))
+         }
+
+         round
+         width 0
+         not a small circle
+         3 by 4
+         width 3
+
+     r is seen on the right of ||, where the shape is a circle. w and h are
+     seen in else, and w in the second arm of ?:: in each, the test failed and
+     Rect fit.
+
+   An or that names, and ref
+         enum Shape : Formattable {
+             Circle(int radius)
+             Square(int side)
+             Empty
+         }
+
+         void grow(ref Shape shape) {
+             if shape is not Circle(n) or Square(n) {
+                 print("nothing to grow")
+                 return
+             }
+             n *= 2
+         }
+
+         void main() {
+             var shapes = List<Shape> { Shape.Circle(3), Shape.Square(5), Shape.Empty }
+             for shape in ref shapes {
+                 grow(ref shape)
+             }
+             print(shapes)
+         }
+
+         nothing to grow
+         [Circle(6), Square(10), Empty]
+
+     Both patterns name n, an int, so after the if it is the radius or the
+     side, whichever fit. shape is a ref borrow, so n is one too, and writing
+     it changes the shape in the list.
+
+   The names after a while
+         enum Token : Formattable {
+             Number(int value)
+             Word(string text)
+         }
+
+         Token tokenOf(read string text) {
+             return match int.parse(text) {
+                 Ok(n) => Token.Number(n)
+                 Error(_) => Token.Word(text.clone())
+             }
+         }
+
+         void main() {
+             var words = List<string> { "let", "x", "7", "y" }
+             nint at = 0
+             var token = tokenOf(words[at])
+             while token is not Number(n) {
+                 print($"skip {token}")
+                 at += 1
+                 token = tokenOf(words[at])
+             }
+             print($"the first number is {n}, at {at}")
+         }
+
+         skip Word("let")
+         skip Word("x")
+         the first number is 7, at 2
+
+     The loop has no break: it ends only when its test fails, so after it
+     token is a Number and n is seen. The test is made on a variable, which
+     the loop changes; a value with no name, made again in every round, could
+     not be looked at after the loop.
+
+WHAT THE COMPILER REFUSES
+   A name where the test held
+         enum Shape {
+             Circle(int radius)
+             Empty
+         }
+
+         void main() {
+             var s = Shape.Circle(2)
+             if s is not Circle(r) {
+                 print(r)
+             }
+         }
+
+         error: nothing here can use the names in this pattern
+           the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+           this `if` has no `else`, and the code after it also runs when the block has run
+           --> example.sg:8:17
+          8 |     if s is not Circle(r) {
+            |                 ^^^^^^^^^
+           hint: end the block with `return`, or use `match`
+
+     In the block the shape is not a circle, so there is no radius. if s is
+     Circle(r) says what is meant.
+
+   A name on the right of &&
+         enum Shape {
+             Circle(int radius)
+             Empty
+         }
+
+         void main() {
+             var s = Shape.Circle(2)
+             if s is not Circle(r) && r > 1 {
+                 print("a big circle, or none")
+             }
+         }
+
+         error: `is not` holds when the value is another variant, so nothing here can use the names
+           the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+           --> example.sg:8:17
+          8 |     if s is not Circle(r) && r > 1 {
+            |                 ^^^^^^^^^
+           hint: write `_` for each value, or test `is` without `not`
+
+     The right of && runs only where the left held. With || the names are
+     seen: s is not Circle(r) || r > 1.
+
+   A while that a break leaves
+         enum Token {
+             Number(int value)
+             Word(string text)
+         }
+
+         void main() {
+             var token = Token.Word("let".clone())
+             var tries = 0
+             while token is not Number(n) {
+                 tries += 1
+                 if tries == 3 {
+                     break
+                 }
+                 token = Token.Number(tries)
+             }
+             print(n)
+         }
+
+         error: nothing here can use the names in this pattern
+           after a `while`, the names of `is not` are seen only when the test is what ends the loop
+           --> example.sg:9:24
+          9 |     while token is not Number(n) {
+            |                        ^^^^^^^^^
+           this `break` leaves the loop while the test may still hold:
+           --> example.sg:12:13
+          12 |             break
+             |             ^^^^^
+           hint: test the value again after the loop, or use `match`
+
+     After the break, token may still be a Word.
+
+   not in an arm of a match
+         enum Light {
+             Red
+             Green
+             Off
+         }
+
+         void main() {
+             var light = Light.Green
+             match light {
+                 not Off => print("lit")
+                 Off => print("dark")
+             }
+         }
+
+         error: expected `=>`, found `Off`
+           --> example.sg:10:13
+          10 |         not Off => print("lit")
+             |             ^^^
+
+     not is written only after is. In a match, the arm of Off goes first, and
+     _ => ... takes the rest.
+
+   not on a bool
+         void main() {
+             var ready = false
+             if not ready {
+                 print("wait")
+             }
+         }
+
+         error: expected `{`, found `ready`
+           --> example.sg:3:12
+          3 |     if not ready {
+            |            ^^^^^
+
+     not turns a test of is around, not a value. A bool is turned around with
+     !: if !ready.
+
+SEE ALSO
+     sg help is, sg help null, sg help or, sg help match, sg help bool, sg
+     help nullable
+
+     https://sg-lang.org/reference/not.html

@@ -4,18 +4,12 @@
 # docs/library/, the modules from the pages there. A line here is a draft until its page is written: each is
 # checked against design/rules/ then.
 
-keyword | alias | gives a type a second name: alias Scores = List<int>
 keyword | align | align(N) keeps a type at a multiple of N bytes
-keyword | checked | shared checked T: borrows of it are checked while the program runs
 keyword | embed | embed("logo.gif"): the bytes of a file, put into the program
 keyword | export | makes a function that C calls
 keyword | extern | declares the functions of a C library
 keyword | interface | what a type can do: Clonable, Formattable, Equatable, Comparable
-keyword | not | is not: the test of is, the other way round
-keyword | packed | a struct with no padding between its fields
 keyword | readonly | a field given when the value is built and never changed
-keyword | union | holds one of its fields at a time in the same bytes
-keyword | weak | a link that does not keep its value alive
 
 type | float | a fraction of 32 bits
 type | nint | an integer as wide as an address: what length() gives

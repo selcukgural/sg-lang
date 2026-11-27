@@ -320,6 +320,7 @@ WHAT THE COMPILER REFUSES
            hint: `numbers.receive() as item => ...`, or `numbers.receive() as _ => ...` to drop it
 
 SEE ALSO
-     sg help read, sg help ref, sg help lock, sg help locked, sg help shared
+     sg help read, sg help ref, sg help lock, sg help locked, sg help checked,
+     sg help shared
 
      https://sg-lang.org/reference/as.html

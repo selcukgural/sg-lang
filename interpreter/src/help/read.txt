@@ -187,6 +187,6 @@ WHAT THE COMPILER REFUSES
            hint: declare `guest` where `shown` is declared, so that it lives as long
 
 SEE ALSO
-     sg help ref, sg help shared, sg help list
+     sg help ref, sg help shared, sg help checked, sg help list
 
      https://sg-lang.org/reference/read.html

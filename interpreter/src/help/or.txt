@@ -319,6 +319,6 @@ WHAT THE COMPILER REFUSES
      forced.
 
 SEE ALSO
-     sg help match, sg help is, sg help when, sg help null
+     sg help match, sg help is, sg help when, sg help not, sg help null
 
      https://sg-lang.org/reference/or.html

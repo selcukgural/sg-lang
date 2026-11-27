@@ -350,7 +350,7 @@ WHAT THE COMPILER REFUSES
      stays.
 
 SEE ALSO
-     sg help new, sg help nullable, sg help shared, sg help struct, sg help
-     enum, sg help raw
+     sg help new, sg help nullable, sg help shared, sg help weak, sg help
+     struct, sg help enum, sg help raw
 
      https://sg-lang.org/reference/pointer.html

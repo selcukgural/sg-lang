@@ -1,5 +1,5 @@
 # Made by website/plain/build.mjs for `sg help`; change website/words/ and build the site.
-alias	keyword	Keywords	gives a type a second name: alias Scores = List<int>		https://sg-lang.org/reference/#n-alias
+alias	keyword	Keywords	gives a type a second name: the same type, which builds what it builds	alias	https://sg-lang.org/reference/alias
 align	keyword	Keywords	align(N) keeps a type at a multiple of N bytes		https://sg-lang.org/reference/#n-align
 as	keyword	Keywords	names a value lent for a block: a shared value opened, a locked value taken, an item a select receives	as	https://sg-lang.org/reference/as
 assert	keyword	Keywords	stops the program, or fails the test, when a condition is false	assert	https://sg-lang.org/reference/assert
@@ -7,7 +7,7 @@ async	keyword	Keywords	makes a function a light task, which may await and never 
 atomic	keyword	Keywords	a number or a bool that tasks change without a lock, one step at a time	atomic	https://sg-lang.org/reference/atomic
 await	keyword	Keywords	waits for a task in an async function, without holding the thread, and gives what it returned	await	https://sg-lang.org/reference/await
 break	keyword	Keywords	leaves the loop it is in, or the loop it names, at once	break	https://sg-lang.org/reference/break
-checked	keyword	Keywords	shared checked T: borrows of it are checked while the program runs		https://sg-lang.org/reference/#n-checked
+checked	keyword	Keywords	shared checked T: a shared value changed through any owner, each borrow of it checked while the program runs	checked	https://sg-lang.org/reference/checked
 const	keyword	Keywords	a value fixed when the program is compiled	const	https://sg-lang.org/reference/const
 continue	keyword	Keywords	ends this round of the loop and goes on with the next	continue	https://sg-lang.org/reference/continue
 else	keyword	Keywords	the block that runs when the condition of an if is false	else	https://sg-lang.org/reference/else
@@ -24,9 +24,9 @@ lock	keyword	Keywords	a short block that alone touches a locked value; it never 
 locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock	locked	https://sg-lang.org/reference/locked
 match	keyword	Keywords	chooses by the shape of a value; every case must be covered	match	https://sg-lang.org/reference/match
 new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it	new	https://sg-lang.org/reference/new
-not	keyword	Keywords	is not: the test of is, the other way round		https://sg-lang.org/reference/#n-not
+not	keyword	Keywords	turns the test of is around: x is not P, whose names are seen where the test failed	not	https://sg-lang.org/reference/not
 or	keyword	Keywords	joins patterns: the arm, or the is, fits when one of them does	or	https://sg-lang.org/reference/or
-packed	keyword	Keywords	a struct with no padding between its fields		https://sg-lang.org/reference/#n-packed
+packed	keyword	Keywords	a struct with no padding between its fields and an alignment of 1, for a layout a file or a device gives	packed	https://sg-lang.org/reference/packed
 public	keyword	Keywords	shows a name to other modules; without it, a name stays inside its own module	public	https://sg-lang.org/reference/public
 raw	keyword	Keywords	an address of C, which owns nothing, may be null, and is not checked by the compiler	raw	https://sg-lang.org/reference/raw
 read	keyword	Keywords	lends a value to be looked at, not changed	read	https://sg-lang.org/reference/read
@@ -39,11 +39,11 @@ static	keyword	Keywords	a value made once, the first time the program uses it	st
 struct	keyword	Keywords	declares a type made of named fields, with the methods that work on them	struct	https://sg-lang.org/reference/struct
 test	keyword	Keywords	a block of checks written next to the code, which only sg test compiles and runs	test	https://sg-lang.org/reference/test
 try	keyword	Keywords	opens a Result: its value, or the error handed to the caller	try	https://sg-lang.org/reference/try
-union	keyword	Keywords	holds one of its fields at a time in the same bytes		https://sg-lang.org/reference/#n-union
+union	keyword	Keywords	a type whose fields all lie in the same bytes; it holds one of them at a time, read inside unsafe	union	https://sg-lang.org/reference/union
 unsafe	keyword	Keywords	marks code the checker cannot follow: raw memory, calls of C, the fields of a union	unsafe	https://sg-lang.org/reference/unsafe
 use	keyword	Keywords	brings the public names of a module into a file, to be written without the module in front	use	https://sg-lang.org/reference/use
 var	keyword	Keywords	declares a variable; its type comes from its value	var	https://sg-lang.org/reference/var
-weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang.org/reference/#n-weak
+weak	keyword	Keywords	weak T: a look at a shared value that does not keep it alive; share asks for an owner	weak	https://sg-lang.org/reference/weak
 when	keyword	Keywords	adds a condition to an arm of a match, or makes a lock block wait until one holds	when	https://sg-lang.org/reference/when
 while	keyword	Keywords	repeats a block as long as a condition holds	while	https://sg-lang.org/reference/while
 with	keyword	Keywords	a copy of a struct with some fields changed: p with { x = 3 }	with	https://sg-lang.org/reference/with

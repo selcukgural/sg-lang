@@ -1,0 +1,410 @@
+NAME
+     weak - weak T: a look at a shared value that does not keep it alive;
+     share asks for an owner
+
+SYNOPSIS
+     weak x a look at the value the owner x points to; of a shared T?, a weak
+            T?
+
+     weak T, weak T?
+            the type of a look, one that may be missing
+
+     weak checked T, weak locked T
+            a look at a shared checked or a shared locked value
+
+     share w
+            an owner from the look: a shared T?, null once the value is gone
+
+     w is null
+            on a weak T?: whether it looks at anything at all
+
+     weak this
+            in a method of read Ref this: a look at the value it was called on
+
+DESCRIPTION
+     weak x takes an owner, a shared T, and gives a weak T: it looks at the
+     same value but does not own it. The value is let go when its last owner
+     ends, however many looks remain.
+
+     A look is never followed by itself, since what it looks at may be gone. A
+     weak value is not printed, compared or reached into, and it is not opened
+     with read ... as or lock. share w asks for an owner first: a shared T?,
+     which is the value while it is alive and null once it is gone. Once
+     tested, that owner keeps the value alive for as long as it lives.
+
+     A weak T? may also be missing. There is one null for both cases: w is
+     null asks whether it looks at anything, and share w is null whether what
+     it looks at is still alive. A program asks both only where the difference
+     matters.
+
+     What weak is for is a circle. Owners that point at each other, as a
+     parent and its children, keep each other alive, and nothing frees them.
+     The side that does not own is made weak: a child's link to its parent, a
+     link back in a list, a friend. The interpreter, the tests and a debug
+     build report a circle that is left when the program ends, with the field
+     that holds it; a release build does not.
+
+     A look keeps the same word as the owner: weak checked T looks at a shared
+     checked T, weak locked T at a shared locked T, and share gives that owner
+     back. A weak T and a weak locked T go to another task, a weak checked T
+     does not, as its owner does not. share w is one atomic step, which adds
+     an owner only while there is one.
+
+EXAMPLES
+   A look that does not keep it alive
+         struct Config {
+             string host
+         }
+
+         void main() {
+             var config = new shared Config { host = "localhost" }
+             var look = weak config
+             var owner = share look
+             config = new shared Config { host = "example.org" }
+             print(owner?.host ?? "gone")
+             owner = null
+             owner = share look
+             print(owner?.host ?? "gone")
+         }
+
+         localhost
+         gone
+
+     When config gets a new value, owner is still an owner of the first one,
+     so it stays. Once owner is null, the first configuration has no owner
+     left, and share look gives null.
+
+   A link to the parent
+         struct Folder {
+             string name
+             weak checked Folder? parent
+             List<shared checked Folder> children
+         }
+
+         shared checked Folder folder(string name, read shared checked Folder? parent) {
+             var f = new shared checked Folder { name = name, parent = weak parent, children = List<shared checked Folder>() }
+             if parent is not null {
+                 parent.children.add(share f)
+             }
+             return f
+         }
+
+         void main() {
+             var home = folder("home".clone(), null)
+             var docs = folder("docs".clone(), read home)
+             var notes = folder("notes".clone(), read docs)
+             shared checked Folder? at = share notes
+             while at is not null {
+                 print(at.name)
+                 at = share at.parent
+             }
+             print(home.children.length())
+         }
+
+         notes
+         docs
+         home
+         1
+
+     A folder owns its children and looks at its parent. weak parent of a null
+     parent is a null look, so share at.parent gives null at the top and the
+     walk ends. Were the parent owned too, each folder and its parent would
+     keep each other alive.
+
+   Linked, or alive
+         struct Player {
+             string name
+         }
+
+         struct Seat {
+             int number
+             weak Player? player
+         }
+
+         string who(read Seat seat) {
+             if seat.player is null {
+                 return "empty"
+             }
+             var p = share seat.player
+             if p is null {
+                 return "left"
+             }
+             return p.name.clone()
+         }
+
+         void main() {
+             var ada = new shared Player { name = "Ada" }
+             var seats = List<Seat> { Seat { number = 1, player = weak ada }, Seat { number = 2, player = null } }
+             for seat in read seats {
+                 print($"{seat.number}: {who(seat)}")
+             }
+             ada = new shared Player { name = "Grace" }
+             for seat in read seats {
+                 print($"{seat.number}: {who(seat)}")
+             }
+         }
+
+         1: Ada
+         2: empty
+         1: left
+         2: empty
+
+     seat.player is null asks whether the seat was given a player; share
+     seat.player whether that player is still there. Seat 1 still looks at Ada
+     after she is gone, and the look says so.
+
+   Friends that look at each other
+         struct Person {
+             string name
+             List<weak checked Person> friends
+         }
+
+         shared checked Person person(string name) {
+             return new shared checked Person { name = name, friends = List<weak checked Person>() }
+         }
+
+         void main() {
+             var ada = person("ada".clone())
+             var grace = person("grace".clone())
+             ada.friends.add(weak grace)
+             grace.friends.add(weak ada)
+             for look in read grace.friends {
+                 var friend = share look
+                 if friend is not null {
+                     print($"grace knows {friend.name}")
+                 }
+             }
+             ada = person("linus".clone())
+             var friend = share grace.friends[0]
+             print(friend is null)
+         }
+
+         grace knows ada
+         true
+
+     Each person looks at the other, so neither keeps the other alive. When
+     ada is given another person, the first one is let go, and grace's look at
+     her gives null. With List<shared checked Person> the two would hold each
+     other for ever: see what stops the program below.
+
+   A cache that does not keep what it holds
+         struct Image {
+             string name
+             nint size
+         }
+
+         shared Image load(ref HashMap<string, weak Image> cache, string name) {
+             var kept = cache.get(read name)
+             if kept is not null {
+                 var image = share kept
+                 if image is not null {
+                     print($"{name}: from the cache")
+                     return image
+                 }
+             }
+             print($"{name}: loaded")
+             var image = new shared Image { name = name.clone(), size = name.length() }
+             _ = cache.remove(read name)
+             cache.add(name, weak image)
+             return image
+         }
+
+         void main() {
+             var cache = HashMap<string, weak Image>()
+             var a = load(ref cache, "cat.png")
+             var b = load(ref cache, "cat.png")
+             print(same(a, b))
+             a = load(ref cache, "dog.png")
+             b = load(ref cache, "dog.png")
+             _ = load(ref cache, "cat.png")
+         }
+
+         cat.png: loaded
+         cat.png: from the cache
+         true
+         dog.png: loaded
+         dog.png: from the cache
+         cat.png: loaded
+
+     The cache gives an image again for as long as someone owns it. When b is
+     given the dog, the cat has no owner left; its entry stays in the map, but
+     its look gives null, and the cat is loaded again.
+
+   Looks in other tasks
+         struct Log {
+             List<string> lines
+         }
+
+         bool write(weak locked Log look, string line) {
+             var log = share look
+             if log is null {
+                 return false
+             }
+             lock log as l {
+                 l.lines.add(line)
+             }
+             return true
+         }
+
+         void main() {
+             var log = new shared locked Log { lines = List<string>() }
+             var a = Task.run(write, weak log, "one".clone())
+             var b = Task.run(write, weak log, "two".clone())
+             print($"{a.wait()} {b.wait()}")
+             var look = weak log
+             log = new shared locked Log { lines = List<string>() }
+             var c = Task.run(write, look, "three".clone())
+             print(c.wait())
+             lock log as l {
+                 print(l.lines.length())
+             }
+         }
+
+         true true
+         false
+         0
+
+     A task given a look does not keep the log alive. share look in the task
+     gives an owner while main still has one; the third task starts after the
+     first log is gone, so it writes nothing.
+
+WHAT STOPS THE PROGRAM
+   Owners in a circle
+         struct Person {
+             string name
+             List<shared checked Person> friends
+         }
+
+         void main() {
+             var ada = new shared checked Person { name = "ada".clone(), friends = List<shared checked Person>() }
+             var grace = new shared checked Person { name = "grace".clone(), friends = List<shared checked Person>() }
+             ada.friends.add(share grace)
+             grace.friends.add(share ada)
+             print(grace.friends[0].name)
+         }
+
+         ada
+         leak: the program ended with 2 `shared` values still alive, which hold each other through `Person.friends`
+           1 x `Person`, made here:
+           --> example.sg:7:15
+          7 |     var ada = new shared checked Person { name = "ada".clone(), friends = List<shared checked Person>() }
+            |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           1 x `Person`, made here:
+           --> example.sg:8:17
+          8 |     var grace = new shared checked Person { name = "grace".clone(), friends = List<shared checked Person>() }
+            |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           hint: the side that does not own is `weak`: `List<weak checked Person>`
+
+     Each owns the other, so when main ends both are still alive. The compiler
+     cannot see a circle in the types, since a tree with none has the same
+     types. The interpreter and a debug build end with this report and exit
+     code 1, and a test that leaves a circle fails; a release build counts
+     nothing and says nothing.
+
+WHAT THE COMPILER REFUSES
+   Reaching through a look
+         struct Config {
+             string host
+         }
+
+         void main() {
+             var config = new shared Config { host = "localhost" }
+             var look = weak config
+             print(look.host)
+         }
+
+         error: this is `weak Config`: what it looks at may be gone, so `.host` cannot reach it
+           --> example.sg:8:11
+          8 |     print(look.host)
+            |           ^^^^
+           hint: ask for an owner first: `var owner = share look`, which is `null` if it is gone
+
+   A look at a value with one owner
+         struct City {
+             int id
+         }
+
+         void main() {
+             var home = City { id = 1 }
+             var look = weak home
+         }
+
+         error: `weak` needs a `shared` value, and this is `City`
+           --> example.sg:7:21
+          7 |     var look = weak home
+            |                     ^^^^
+           hint: a value with several owners is made with `new shared`: `var owner = new shared Node { ... }`
+
+     A value with one owner is borrowed with read or ref, and the compiler
+     sees that the borrow ends in time.
+
+   new weak
+         struct City {
+             int id
+         }
+
+         void main() {
+             var home = new weak City { id = 1 }
+         }
+
+         error: a `weak` value is not made with `new`: it looks at a `shared` one
+           --> example.sg:6:20
+          6 |     var home = new weak City { id = 1 }
+            |                    ^^^^
+           hint: make it `shared` and look at it with `weak`: `var owner = new shared Node { ... }`, then `weak owner`
+
+     A look made with nothing else to own the value would be gone at once.
+
+   Testing a look for null
+         struct City {
+             int id
+         }
+
+         void main() {
+             var home = new shared City { id = 1 }
+             var look = weak home
+             if look is null {
+                 print("gone")
+             }
+         }
+
+         error: this is `weak City`, which is never `null`
+           only a `T?` can be `null`
+           --> example.sg:8:8
+          8 |     if look is null {
+            |        ^^^^
+
+     A weak City always looks at something, which may be gone. Whether it is
+     gone is asked with share look is null.
+
+   A weak checked look sent to a task
+         struct Counter {
+             int n
+         }
+
+         int peek(weak checked Counter look) {
+             var c = share look
+             return c?.n ?? 0
+         }
+
+         void main() {
+             var counter = new shared checked Counter { n = 1 }
+             var task = Task.run(peek, weak counter)
+             print(task.wait())
+         }
+
+         error: `peek` takes a `weak checked Counter` here, which cannot go to another task: a `weak checked Counter` is checked within one task; one that several tasks change is `shared locked`
+           what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+           --> example.sg:12:31
+          12 |     var task = Task.run(peek, weak counter)
+             |                               ^^^^^^^^^^^^
+
+     share in the task would give a shared checked owner there, whose checks
+     belong to one task. A value that tasks change is shared locked, and a
+     task looks at it with weak locked.
+
+SEE ALSO
+     sg help shared, sg help share, sg help checked, sg help locked, sg help
+     new
+
+     https://sg-lang.org/reference/weak.html

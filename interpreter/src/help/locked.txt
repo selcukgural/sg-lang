@@ -267,7 +267,7 @@ WHAT THE COMPILER REFUSES
             |                           ^^^^^^
 
 SEE ALSO
-     sg help lock, sg help shared, sg help atomic, sg help share, sg help
-     static
+     sg help lock, sg help shared, sg help atomic, sg help checked, sg help
+     share, sg help weak, sg help static
 
      https://sg-lang.org/reference/locked.html

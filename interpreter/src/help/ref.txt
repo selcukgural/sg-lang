@@ -167,6 +167,6 @@ WHAT THE COMPILER REFUSES
            hint: finish with `other` before this line: a borrow ends at its last use
 
 SEE ALSO
-     sg help read, sg help shared, sg help list
+     sg help read, sg help shared, sg help checked, sg help list
 
      https://sg-lang.org/reference/ref.html

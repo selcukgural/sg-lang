@@ -309,6 +309,6 @@ WHAT THE COMPILER REFUSES
          error: `sum` takes a `Buffer` here, which holds a `raw long` (the field `items` of `Buffer`), which cannot go to another task: the checker does not follow a raw pointer, and two tasks could reach what it points at at once; a struct that keeps what it reaches safe for several tasks says so with `: unsafe Sendable`
 
 SEE ALSO
-     sg help raw
+     sg help raw, sg help union
 
      https://sg-lang.org/reference/unsafe.html

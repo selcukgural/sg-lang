@@ -1,0 +1,419 @@
+---
+name: union
+kind: keyword
+summary: A type whose fields all lie in the same bytes; it holds one of them at a time, read inside unsafe.
+see: unsafe, packed, struct, enum, raw, align
+learn: ../docs/learn/book/11-c.md#cs-types
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `union Bits { uint word` / `float number }` | a union: one field to a line, as a struct is written |
+| `Bits { number = 1.5 }` | a value, built with one field; the bytes it does not cover are zero |
+| `bits.word = 3` | a field written whole, with no `unsafe` |
+| `unsafe bits.word` | a field read as its own type, whichever field was written last |
+| `union Address : Copyable, Formattable { ... }` | copied instead of moved, and printed by a `format` of its own |
+| `Address.fromBytes(bytes)` | a union of numbers read out of exactly as many bytes as it takes |
+| `Memory.sizeOf<Bits>()`, `Memory.alignOf<Bits>()` | the size and the alignment C gives it |
+
+## What it means
+
+A union is a type whose fields all start where it starts, so a value of it holds one field at a time. As C lays
+a union out, its alignment is that of its most aligned field, and its size that of its largest field, rounded
+up to a multiple of the alignment: a `byte[3]` and a `ushort` take four bytes. It
+is written as a struct is, one field to a line, and has methods, `public` and `: Copyable` as a struct has. It
+holds plain data only: numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them.
+A field has no default value, and a union has no bit fields.
+
+A union is built with exactly one field, and the bytes that field does not cover are zero. Writing a field
+needs no `unsafe`: it writes over the bytes of that field and leaves the rest as they were. Reading one is
+inside `unsafe`, since the union does not know which field it holds: the bytes are read as the field's own
+type, whichever field was written last. A union with a tag beside it, in a struct, is how C keeps one of
+several values; an [`enum`](enum.md) with values keeps the tag itself and its `match` checks it, so a union is
+for a layout that C, a file or a device gives.
+
+A field is written whole. Changing what lies inside it (`word.halves.low = 1`, `bits.bytes[0] = 1`) or
+changing it in place (`bits.word += 1`) would read it first, so the field is read, changed as a copy and
+written back. A field is never lent, as a place in raw memory is not: `read bits.word` is an error whose hint
+copies it out. A method of the union itself is lent the whole value as usual.
+
+A union is not compared, hashed or ordered by its fields: `: Equatable`, `: Hashable` and `: Comparable` are
+errors, and so is `: Formattable` without a `format` of its own. There is no `match` on a union. Each of these
+reads the field it holds inside `unsafe`.
+
+`Bits.fromBytes(bytes)` reads a union out of exactly as many bytes as it takes, as they lie in memory, with no
+`unsafe`, when every pattern of bits is a value of each field: numbers, and arrays, structs and unions of
+them. A `bool`, a `char` or a raw pointer in it is an error there. For the bits of a `float` or a `double`,
+`toBits()` and `float.fromBits(bits)` need neither a union nor `unsafe`.
+
+In the interpreter a union is its bytes, as in C. The interpreter stops a `char` read from bits that are no
+character; compiled code reads what lies there.
+
+## Examples
+
+### One field at a time
+
+```sg
+union Bits {
+    uint word
+    float number
+    byte[4] bytes
+}
+
+void main() {
+    var bits = Bits { number = 1.0 }
+    print($"{unsafe bits.word:x8}")
+    bits.word = 0x40490fdb
+    print(unsafe bits.number)
+    print(Memory.sizeOf<Bits>())
+    print(Memory.alignOf<Bits>())
+}
+```
+
+```text
+3f800000
+3.1415927
+4
+4
+```
+
+The three fields share four bytes. Writing `word` needs no `unsafe`; reading `number` after it reads those
+bytes as a `float`.
+
+### The bytes a field does not cover
+
+```sg
+union Wide {
+    byte low
+    long whole
+    byte[8] bytes
+}
+
+void main() {
+    var w = Wide { low = 0xff }
+    print(unsafe w.bytes)
+    w.whole = -1
+    w.low = 0
+    print(unsafe w.bytes)
+}
+```
+
+```text
+[255, 0, 0, 0, 0, 0, 0, 0]
+[0, 255, 255, 255, 255, 255, 255, 255]
+```
+
+Built with `low`, the seven bytes after it are zero. Writing `low` later writes its one byte and leaves the
+other seven as `whole` left them.
+
+### Methods, a format, and `fromBytes`
+
+```sg
+union Address : Copyable, Formattable {
+    uint whole
+    byte[4] parts
+
+    Address create(byte a, byte b, byte c, byte d) {
+        return Address { parts = byte[4] { a, b, c, d } }
+    }
+
+    bool isPrivate(read this) {
+        var p = unsafe this.parts
+        return p[0] == 10 || (p[0] == 192 && p[1] == 168)
+    }
+
+    bool sameAs(read this, Address other) {
+        return unsafe (this.whole == other.whole)
+    }
+
+    void format(read this, ref Formatter f) {
+        var p = unsafe this.parts
+        f.write($"{p[0]}.{p[1]}.{p[2]}.{p[3]}")
+    }
+}
+
+void main() {
+    var home = Address(192, 168, 1, 20)
+    print($"{home} {home.isPrivate()}")
+    var packet = List<byte> { 8, 8, 4, 4 }
+    var dns = Address.fromBytes(read packet)
+    print($"{dns} {dns.isPrivate()}")
+    print(dns.sameAs(Address(8, 8, 4, 4)))
+    print(dns.sameAs(home))
+}
+```
+
+```text
+192.168.1.20 true
+8.8.4.4 false
+true
+false
+```
+
+An address is four bytes, or one `uint` to compare in one step. `fromBytes` takes the four bytes of a packet
+with no `unsafe`, since every pattern of bits is a value of both fields. `unsafe` in front of a value marks
+one expression, so the parentheses put both reads of `sameAs` inside it.
+
+### A tag beside it
+
+```sg
+enum Kind {
+    Integer
+    Real
+    Spot
+}
+
+struct Point : Copyable {
+    int x
+    int y
+}
+
+union Payload {
+    long integer
+    double real
+    Point spot
+}
+
+struct Value {
+    Kind kind
+    Payload data
+
+    void moveRight(ref this) {
+        if this.kind is Spot {
+            var p = unsafe this.data.spot
+            p.x += 1
+            this.data.spot = p
+        }
+    }
+
+    string describe(read this) {
+        return match read this.kind {
+            Integer => $"integer {unsafe this.data.integer}".toString()
+            Real => $"real {unsafe this.data.real}".toString()
+            Spot => $"spot {unsafe this.data.spot.x}, {unsafe this.data.spot.y}".toString()
+        }
+    }
+}
+
+void main() {
+    var values = List<Value> {
+        Value { kind = Kind.Integer, data = Payload { integer = 9000000000 } },
+        Value { kind = Kind.Real, data = Payload { real = 0.25 } },
+        Value { kind = Kind.Spot, data = Payload { spot = Point { x = 3, y = 4 } } },
+    }
+    values[2].moveRight()
+    for value in read values {
+        print(value.describe())
+    }
+    print(Memory.sizeOf<Payload>())
+}
+```
+
+```text
+integer 9000000000
+real 0.25
+spot 4, 4
+8
+```
+
+The struct keeps the tag, and each read of the union trusts it. `moveRight` cannot write `this.data.spot.x`
+alone: it reads the point, changes the copy and writes it back whole.
+
+### In raw memory
+
+```sg
+union Cell {
+    long integer
+    double real
+}
+
+void main() {
+    var cells = Memory.allocate<Cell>(3)
+    unsafe {
+        cells[0].integer = 40
+        cells[0].integer = cells[0].integer + 2
+        cells[1].real = 2.5
+        cells[2] = Cell { real = cells[1].real * 4.0 }
+    }
+    var view = unsafe Memory.view(cells, 3)
+    print(unsafe view[0].integer)
+    print(unsafe view[2].real)
+    print(Memory.sizeOf<Cell>() * view.length())
+    unsafe Memory.free(cells)
+}
+```
+
+```text
+42
+10
+24
+```
+
+A union is plain data, so it lies in raw memory as any item does. Inside the `unsafe` block its fields are
+read and written where they lie; through the view each read is still marked.
+
+## What the compiler refuses
+
+### A field read without `unsafe`
+
+```sg error
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { number = 1.0 }
+    print(bits.word)
+}
+```
+
+```text
+error: a field of a union is read as its own type, whichever field was written last, so it is written inside `unsafe`
+  --> example.sg:8:11
+ 8 |     print(bits.word)
+   |           ^^^^^^^^^
+  hint: `unsafe bits.word`, or `unsafe { ... }` around several statements
+```
+
+### A field changed in place
+
+```sg error
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { word = 1 }
+    bits.word += 1
+    print(unsafe bits.word)
+}
+```
+
+```text
+error: a field of a union is read inside `unsafe`, so it is not changed in place
+  --> example.sg:8:5
+ 8 |     bits.word += 1
+   |     ^^^^^^^^^
+  hint: `bits.word = unsafe bits.word + ...`
+```
+
+### A part of a field written
+
+```sg error
+union Bits {
+    uint word
+    byte[4] bytes
+}
+
+void main() {
+    var bits = Bits { word = 0 }
+    bits.bytes[0] = 1
+    print(unsafe bits.word)
+}
+```
+
+```text
+error: a field of a union is written whole: what lies inside it is not written on its own
+  --> example.sg:8:5
+ 8 |     bits.bytes[0] = 1
+   |     ^^^^^^^^^^
+  hint: read it, change the copy and write it back: `var part = unsafe bits.bytes`, then `bits.bytes = part`
+```
+
+### A field lent
+
+```sg error
+union Bits {
+    uint word
+    float number
+}
+
+void show(read uint word) {
+    print(word)
+}
+
+void main() {
+    var bits = Bits { number = 1.0 }
+    unsafe {
+        show(read bits.word)
+    }
+}
+```
+
+```text
+error: a field of a union is not lent: the checker does not know that the union holds it
+  --> example.sg:13:19
+ 13 |         show(read bits.word)
+    |                   ^^^^^^^^^
+  hint: copy it out: `var part = unsafe bits.word`
+```
+
+### Built with two fields
+
+```sg error
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { word = 1, number = 2.0 }
+    print(unsafe bits.word)
+}
+```
+
+```text
+error: a union is built with one of its fields, and this gives 2
+  a union holds one field at a time: they all start where it starts
+  --> example.sg:7:33
+ 7 |     var bits = Bits { word = 1, number = 2.0 }
+   |                                 ^^^^^^
+```
+
+### A field that owns memory
+
+```sg error
+union Name {
+    string text
+    int code
+}
+
+void main() {
+}
+```
+
+```text
+error: a union holds plain data, and `string` is not
+  plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out
+  --> example.sg:2:5
+ 2 |     string text
+   |     ^^^^^^
+```
+
+Whichever field was written last, the bytes of a text would be read as a number, or a number as a text; and
+nothing would know to free the text.
+
+### Compared by its fields
+
+```sg error
+union Bits : Equatable {
+    uint word
+    float number
+}
+
+void main() {
+}
+```
+
+```text
+error: union `Bits` cannot be `Equatable`
+  a union does not know which of its fields it holds, so it is not compared by them
+  --> example.sg:1:14
+ 1 | union Bits : Equatable {
+   |              ^^^^^^^^^
+  hint: read the field it holds inside `unsafe` and compare that
+```

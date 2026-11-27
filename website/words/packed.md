@@ -1,0 +1,417 @@
+---
+name: packed
+kind: keyword
+summary: A struct with no padding between its fields and an alignment of 1, for a layout a file or a device gives.
+see: struct, union, align, raw, unsafe
+learn: ../docs/learn/book/11-c.md#cs-types
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `packed struct Header { ... }` | a struct whose fields lie one after another, with no gap |
+| `Memory.sizeOf<Header>()`, `Memory.alignOf<Header>()` | the sum of the sizes of its fields, and 1 |
+| `header.size += 1` | a field read, written and changed as in any struct |
+| `var size = header.size` | a field copied out, where a borrow of it would be wanted |
+| `ref header.flags` | a field of one byte, lent as usual |
+| `Header.fromBytes(bytes)` | a header of numbers read out of exactly as many bytes as it takes |
+
+## What it means
+
+A struct of plain data is laid out as C lays it out: each field at a multiple of its alignment, with empty
+bytes before it where needed, and the size a multiple of the largest alignment. A `packed struct` has no such
+gaps. Its fields lie one after another, so its size is the sum of their sizes and its alignment is 1: a `uint`
+may lie at any byte. It is for a layout that a file, a network packet or a device gives, byte for byte; in C
+it is a struct between `#pragma pack(push, 1)` and `#pragma pack(pop)`.
+
+It holds plain data only: numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of
+them. A struct inside it keeps its own layout, gaps and all; a packed struct inside another struct needs no
+gap before it. It has no bit fields, holds no type written with `align(N)` and no
+atomic value, and is not `align(N)` itself.
+
+Its fields are read, written and changed as in any struct, with no `unsafe`. A field whose type has an
+alignment above 1 is not lent, since it may lie where that type cannot be reached through a pointer: not with
+`read` or `ref`, not by calling a method of it, not by taking a range of an array in it, and not by handing it
+to C. The hint copies it out; a change is written back whole. A field of one byte, or of a type whose
+alignment is 1, is lent as usual, and so is the packed struct itself: its own methods take `read this` and
+`ref this`.
+
+`Header.fromBytes(bytes)` reads a packed struct out of exactly as many bytes as it takes, as they lie in memory,
+with no `unsafe`, when every pattern of bits is a value of each field: numbers, and arrays, structs and unions
+of them. In raw memory a packed struct may lie at any address, where a struct with a field of a larger
+alignment stops the program in the interpreter and in a debug build.
+
+## Examples
+
+### No gaps
+
+```sg
+struct Loose {
+    byte kind
+    uint length
+    ushort port
+}
+
+packed struct Tight {
+    byte kind
+    uint length
+    ushort port
+}
+
+void main() {
+    print($"{Memory.sizeOf<Loose>()} {Memory.alignOf<Loose>()}")
+    print($"{Memory.sizeOf<Tight>()} {Memory.alignOf<Tight>()}")
+    var t = Tight { kind = 1, length = 4000000000, port = 8080 }
+    t.length += 1
+    print($"{t.kind} {t.length} {t.port}")
+}
+```
+
+```text
+12 4
+7 1
+1 4000000001 8080
+```
+
+`Loose` keeps `length` at a multiple of four, so three bytes stay empty after `kind`, and two more at the end
+make the size a multiple of four. `Tight` is the seven bytes of its fields. `+=` works on its fields as on any
+other.
+
+### A file header
+
+```sg
+packed struct BmpHeader : Copyable, Formattable, Equatable {
+    ushort kind
+    uint size
+    ushort reserved1
+    ushort reserved2
+    uint offset
+}
+
+void main() {
+    var file = List<byte> { 0x42, 0x4d, 0x36, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00 }
+    var header = BmpHeader.fromBytes(read file)
+    print(header)
+    print(header.kind == 0x4d42)
+    print($"{header.size - header.offset} bytes of pixels")
+    var copy = header
+    copy.size += 4
+    print(copy == header)
+}
+```
+
+```text
+BmpHeader { kind = 19778, size = 786486, reserved1 = 0, reserved2 = 0, offset = 54 }
+true
+786432 bytes of pixels
+false
+```
+
+The first fourteen bytes of a BMP file: its `uint` fields lie at bytes 2 and 10, where only a packed struct
+puts them. `fromBytes` takes the bytes as they lie in memory; the numbers of a BMP file are little-endian, as
+the memory of x86-64 and 64-bit Arm is. A packed struct can be `Formattable`, `Equatable` and the rest, as any
+struct can.
+
+### Copied out, not lent
+
+```sg
+packed struct Frame {
+    byte flags
+    uint length
+    byte[4] mark
+
+    void grow(ref this, uint more) {
+        this.length += more
+    }
+}
+
+void show(read uint n) {
+    print(n)
+}
+
+void raise(ref byte b) {
+    b |= 0x80
+}
+
+void main() {
+    var frame = Frame { flags = 1, length = 100, mark = byte[4] { 83, 71, 33, 0 } }
+    frame.grow(20)
+    var length = frame.length
+    show(read length)
+    raise(ref frame.flags)
+    print(frame.flags)
+    print(string.fromUtf8(frame.mark[0..3]) ?? "not UTF-8")
+}
+```
+
+```text
+120
+129
+SG!
+```
+
+`show` wants a borrow of a `uint`, and `frame.length` lies at byte 1, so it gets a copy. `flags` and `mark`
+are bytes, which lie anywhere, so they are lent as they are; the method `grow` is lent the whole frame.
+
+### Structs inside, and around
+
+```sg
+struct Plain : Copyable {
+    byte kind
+    ulong stamp
+}
+
+packed struct Record : Copyable {
+    byte tag
+    Plain inside
+    ushort[3] counts
+}
+
+struct Holder {
+    byte flag
+    Record record
+}
+
+void main() {
+    print($"{Memory.sizeOf<Plain>()} {Memory.sizeOf<Record>()} {Memory.sizeOf<Holder>()}")
+    var r = Record { tag = 7, inside = Plain { kind = 1, stamp = 1700000000 }, counts = ushort[3] { 1, 2, 3 } }
+    r.inside.stamp += 60
+    r.counts[2] = 65535
+    var h = Holder { flag = 1, record = r }
+    print(h.record.inside.stamp)
+    print(h.record.counts)
+}
+```
+
+```text
+16 23 24
+1700000060
+[1, 2, 65535]
+```
+
+`Plain` keeps its seven empty bytes inside `Record`, which adds no gap of its own: 1, 16 and 6 make 23. In
+`Holder` the record needs no gap before it either, since its alignment is 1.
+
+### At any address in raw memory
+
+```sg
+packed struct Entry : Copyable, Formattable {
+    byte kind
+    uint id
+    ushort size
+}
+
+void main() {
+    var count = 3
+    var bytes = 1 + count * Memory.sizeOf<Entry>()
+    var block = Memory.allocate<byte>(bytes)
+    var entries = unsafe (raw Entry)(block + 1)
+    unsafe {
+        for i in 0..count {
+            entries[i] = Entry { kind = (byte)i, id = 70000 + (uint)i, size = 512 }
+        }
+        entries[2].size *= 2
+    }
+    var all = unsafe Memory.view(entries, count)
+    for entry in all {
+        print(entry)
+    }
+    print(bytes)
+    unsafe Memory.free(block)
+}
+```
+
+```text
+Entry { kind = 0, id = 70000, size = 512 }
+Entry { kind = 1, id = 70001, size = 512 }
+Entry { kind = 2, id = 70002, size = 1024 }
+22
+```
+
+The entries start one byte into the block and lie seven bytes apart, as a format on the disk might put them.
+An alignment of 1 lets them lie there, and lets the view lend them.
+
+## What stops the program
+
+### A struct that is not packed, where it may not lie
+
+```sg panic
+struct Plain {
+    byte kind
+    uint size
+}
+
+void main() {
+    var block = Memory.allocate<byte>(16)
+    unsafe {
+        var items = (raw Plain)(block + 1)
+        items[0].size = 3
+        Memory.free(block)
+    }
+}
+```
+
+```text
+panic: raw memory is reached 1 byte(s) past a multiple of 4, the alignment of `Plain`: `Memory.readUnaligned` reads it there
+  --> example.sg:10:9
+ 10 |         items[0].size = 3
+    |         ^^^^^^^^
+```
+
+`Plain` has the alignment of its `uint`, 4, and its first item here lies one byte past a multiple of it. A
+debug build stops there too; a release build tests nothing. Declared `packed`, the same program runs.
+
+## What the compiler refuses
+
+### A field lent
+
+```sg error
+packed struct Header {
+    byte kind
+    uint size
+}
+
+void show(read uint size) {
+    print(size)
+}
+
+void main() {
+    var header = Header { kind = 1, size = 2 }
+    show(read header.size)
+}
+```
+
+```text
+error: a field of a `packed` struct is not lent: `header.size` may lie where a `uint` cannot be reached
+  --> example.sg:12:15
+ 12 |     show(read header.size)
+    |               ^^^^^^^^^^^
+  hint: copy it out: `var part = header.size`, and write it back whole
+```
+
+### A method called on a field
+
+```sg error
+struct Pair {
+    int low
+    int high
+
+    int sum(read this) {
+        return this.low + this.high
+    }
+}
+
+packed struct Header {
+    byte kind
+    Pair pair
+}
+
+void main() {
+    var header = Header { kind = 1, pair = Pair { low = 1, high = 2 } }
+    print(header.pair.sum())
+}
+```
+
+```text
+error: a field of a `packed` struct is not lent: `header.pair` may lie where a `Pair` cannot be reached
+  a method is lent the value it is called on
+  --> example.sg:17:11
+ 17 |     print(header.pair.sum())
+    |           ^^^^^^^^^^^
+  hint: copy it out: `var part = header.pair`, and write it back whole
+```
+
+### A range of an array in it
+
+```sg error
+packed struct Samples {
+    byte tag
+    uint[4] values
+}
+
+uint total(read uint[] xs) {
+    uint sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+void main() {
+    var s = Samples { tag = 1, values = uint[4] { 1, 2, 3, 4 } }
+    print(total(s.values[0..2]))
+}
+```
+
+```text
+error: a field of a `packed` struct is not lent: `s.values` may lie where a `uint[4]` cannot be reached
+  --> example.sg:16:17
+ 16 |     print(total(s.values[0..2]))
+    |                 ^^^^^^^^
+  hint: copy it out: `var part = s.values`, and write it back whole
+```
+
+The range would be a slice whose items lie where a `uint` cannot be reached.
+
+### Bit fields
+
+```sg error
+packed struct Header {
+    byte kind : 4
+    uint size
+}
+
+void main() {
+}
+```
+
+```text
+error: a `packed` struct has no bit fields: the compilers of C lay the two out in different ways
+  on Windows bit fields are packed by units of their type, elsewhere bit by bit
+  --> example.sg:2:15
+ 2 |     byte kind : 4
+   |               ^^^
+```
+
+A struct of bit fields is laid out as C lays it out on the machine; a packed struct has the same layout on
+every one.
+
+### `packed` and `align` together
+
+```sg error
+packed align(8) struct Header {
+    byte kind
+}
+
+void main() {
+}
+```
+
+```text
+error: a type is `packed` or `align(N)`, not both
+  `packed` takes the padding out and makes the alignment 1; `align` makes it larger
+  --> example.sg:1:1
+ 1 | packed align(8) struct Header {
+   | ^^^^^^^^^^^^^^^
+```
+
+### A field that owns memory
+
+```sg error
+packed struct Record {
+    byte kind
+    string name
+}
+
+void main() {
+}
+```
+
+```text
+error: a `packed` struct holds plain data, and `string` is not
+  plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out
+  --> example.sg:3:5
+ 3 |     string name
+   |     ^^^^^^
+```
