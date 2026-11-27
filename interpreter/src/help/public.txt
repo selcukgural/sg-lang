@@ -323,6 +323,6 @@ WHAT THE COMPILER REFUSES
             | ^^^^^^
 
 SEE ALSO
-     sg help use, sg help struct, sg help enum
+     sg help use, sg help struct, sg help enum, sg help const
 
      https://sg-lang.org/reference/public.html

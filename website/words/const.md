@@ -1,0 +1,478 @@
+---
+name: const
+kind: keyword
+summary: A value fixed when the program is compiled.
+see: static, var, assert, match, public
+learn: ../docs/learn/book/02-values.md#consts
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `const T Name = value` | a const at the top of a file, seen by the whole module |
+| `const T Name = value` in a block | a const seen to the end of the block |
+| `public const T Name = value` | a const other modules can read |
+| `const int[] Name = { 1, 2, 3 }` | a table; the count of its items is found from them (`int[3]`) |
+| `const byte[] Name = embed("file")` | the bytes of a file beside the source, read when the program is compiled |
+| `T[Name]` | an array whose count is an integer const |
+| `Name => ...` | in a `match`, an arm for the value of the const |
+| `const assert(condition)` | a condition checked when the program is compiled (see [`assert`](assert.md)) |
+
+## What it means
+
+A `const` is a value the compiler finds before the program runs. Its type is always written. It holds a number,
+a `bool`, a `char` or a text, or an array, a `Copyable` struct or a `Copyable` enum of them. A `List`, an owned
+`string`, a pointer and a `shared` value cannot be one.
+
+Its value is made of numbers, texts, other consts, operators and casts, `MinValue`, `MaxValue`, `Pi` and their
+kin, arrays, structs and variants, `.length()` of a const array or text, and an item or a field of one. Consts
+may name each other in any order, but not in a circle. A const calls no function, so the compiler runs none of
+the program's code; a value a function finds is a [`static`](static.md). An overflow, a division by zero or an
+index outside the array is a compile error, not a panic.
+
+Every use reads the one value. `var copy = Table` copies it, and `Table[i]` reads it where it lies. Nothing can
+write into a const. A local cannot take the name of a const it sees, so the name means the const everywhere,
+in a `match` too. By custom the name is in PascalCase.
+
+In compiled code a number is written where it is used, and a table is one `static const` of C, in the data the
+program only reads.
+
+## Examples
+
+### Numbers, text, `bool` and `char`
+
+```sg
+const int Width = 80
+const int Margin = 4
+const int Text = Width - 2 * Margin
+const double Ratio = Text / 2.0
+const string Title = "report"
+const bool Verbose = false
+const char Bullet = '*'
+
+void main() {
+    print($"{Title}: {Text} columns, ratio {Ratio}")
+    if !Verbose {
+        print($"{Bullet} quiet")
+    }
+}
+```
+
+```text
+report: 72 columns, ratio 36
+* quiet
+```
+
+`Text` is computed from two other consts. All of it is found when the program is compiled; nothing is computed
+when it runs.
+
+### In any order, with casts
+
+```sg
+const int Total = Half * 2
+const int Half = 21
+const byte Low = (byte)(Total & 0xff)
+const long Wide = (long)int.MaxValue + 1
+const double Circle = 2.0 * double.Pi
+
+void main() {
+    print($"{Total} {Low} {Wide}")
+    print($"{Circle:f4}")
+}
+```
+
+```text
+42 42 2147483648
+6.2832
+```
+
+`Total` names `Half`, which comes after it. `(long)` widens before the addition, so `Wide` does not overflow.
+
+### In a block, as the count of an array
+
+```sg
+void main() {
+    const int Rows = 3
+    const int Cols = Rows + 1
+    const int Cells = Rows * Cols
+    int[Cells] grid = int[Cells](1)
+    var row = int[Cols](0)
+    print($"{grid.length()} {row}")
+}
+```
+
+```text
+12 [0, 0, 0, 0]
+```
+
+A const in a block is seen to the end of the block. An integer const gives the count of an array; the count is
+a number or the name of a const, so `Cells` is written for `Rows * Cols`.
+
+### A table
+
+```sg
+const int[] Primes = { 2, 3, 5, 7, 11 }
+const nint Count = Primes.length()
+const int Largest = Primes[Count - 1]
+
+void main() {
+    var sum = 0
+    for p in Primes {
+        sum += p
+    }
+    var copy = Primes
+    copy[0] = 1
+    print($"{Count} primes up to {Largest}, sum {sum}")
+    print($"{copy} {Primes}")
+}
+```
+
+```text
+5 primes up to 11, sum 28
+[1, 3, 5, 7, 11] [2, 3, 5, 7, 11]
+```
+
+`int[]` after `const` counts the items, so `Primes` is an `int[5]`. `length()` gives an `nint`. `copy` is a copy
+of its own, and changing it leaves `Primes` as it was.
+
+### A struct and an enum
+
+```sg
+struct Size : Copyable {
+    int width
+    int height
+}
+
+enum Shade : Copyable, Formattable {
+    Light
+    Dark
+}
+
+const Size Page = Size { width = 210, height = 297 }
+const int Area = Page.width * Page.height
+const Shade Theme = Shade.Dark
+
+void main() {
+    print($"{Page.width} x {Page.height} = {Area}")
+    print(Theme)
+}
+```
+
+```text
+210 x 297 = 62370
+Dark
+```
+
+The struct and the enum must be `Copyable`: a const is a value that can be copied with no cost. A field of a
+const struct can be used in another const.
+
+### In a `match`
+
+```sg
+const int Fine = 200
+const int NotFound = 404
+const string Quit = "quit"
+
+string status(int code) {
+    return match code {
+        Fine => "fine"
+        NotFound => "not found"
+        _ => $"code {code}".toString()
+    }
+}
+
+string answer(string line) {
+    return match line {
+        Quit => "bye"
+        _ => "go on"
+    }
+}
+
+void main() {
+    print(status(200))
+    print(status(404))
+    print(status(500))
+    print(answer("quit"))
+    print(answer("next"))
+}
+```
+
+```text
+fine
+not found
+code 500
+bye
+go on
+```
+
+A const of a number, a `char`, a text or a `bool` stands for its value in a pattern. The arm `Fine` is taken
+when `code` is 200; it does not name a new variable.
+
+### Checked when the program is compiled
+
+```sg
+const int[] Masks = { 0x01, 0x02, 0x04, 0x08 }
+const int Bits = 4
+
+const assert(Masks.length() == Bits, "one mask for each bit")
+
+void main() {
+    var all = 0
+    for m in Masks {
+        all |= m
+    }
+    print(all)
+}
+```
+
+```text
+15
+```
+
+A `const assert` is made of consts, as a const is. Had `Masks` three items, the program would not compile:
+`const assert failed: one mask for each bit`, with both sides shown.
+
+### From another module
+
+```sg file title="screen/limits/sizes.sg"
+public const int Columns = 80
+public const string Ruler = "----"
+const int Hidden = 3
+```
+
+```sg file title="screen/main.sg"
+use limits
+
+void main() {
+    print($"{Columns} columns")
+    print(limits.Ruler)
+}
+```
+
+```text
+$ cd screen
+$ sg main.sg
+80 columns
+----
+```
+
+`public` lets other modules read a const, by its bare name after `use` or by its full name. `Hidden` stays
+inside `limits`: `main.sg` naming it gets `` `Hidden` exists in the `limits` module but is not public ``.
+
+### The bytes of a file
+
+```text title="motd/motd.txt"
+Welcome to the box.
+```
+
+```sg file title="motd/main.sg"
+const byte[] Motd = embed("motd.txt")
+
+void main() {
+    var text = string.fromUtf8(Motd) ?? "not UTF-8"
+    print(text.trimEnd())
+    print($"{Motd.length()} bytes")
+}
+```
+
+```text
+$ cd motd
+$ sg build main.sg -o motd
+$ rm motd.txt
+$ ./motd
+Welcome to the box.
+20 bytes
+$ sg main.sg
+error: there is no file `motd.txt` beside this file
+  it is looked for at motd.txt
+  --> main.sg:1:21
+ 1 | const byte[] Motd = embed("motd.txt")
+   |                     ^^^^^^^^^^^^^^^^^
+```
+
+`embed` reads the file when the program is compiled, so the built program keeps the bytes after the file is
+gone. The path is written out, with `/`, from the folder of the source file; the file is in that folder or
+below it, and holds 1 byte to 64 MB.
+
+## What the compiler refuses
+
+### A call
+
+```sg error
+int twice(int n) {
+    return n * 2
+}
+
+const int Size = twice(32)
+
+void main() {
+    print(Size)
+}
+```
+
+```text
+error: a const calls no function
+  a const is made of numbers, texts, other consts, operators and casts, and arrays, structs and enums of them
+  --> example.sg:5:18
+ 5 | const int Size = twice(32)
+   |                  ^^^^^
+  hint: a value a function finds is a `static`, found when the program first uses it: `static T Name = f()`
+```
+
+### A variable
+
+```sg error
+void main() {
+    var n = 8
+    const int Size = n * 2
+    print(Size)
+}
+```
+
+```text
+error: there is no variable named `n`
+  a const sees other consts, not variables: its value is found when the program is compiled
+  --> example.sg:3:22
+ 3 |     const int Size = n * 2
+   |                      ^
+```
+
+A static cannot be read either: `` `Base` is a static, and a const cannot read it ``.
+
+### Writing into it
+
+```sg error
+const int[] Primes = { 2, 3, 5 }
+
+void main() {
+    Primes[0] = 1
+}
+```
+
+```text
+error: `Primes` is a const: what it holds is fixed when the program is compiled
+  --> example.sg:4:5
+ 4 |     Primes[0] = 1
+   |     ^^^^^^^^^
+  hint: change a copy of it: `var copy = Primes`
+```
+
+`Primes = ...` and `ref Primes` are refused the same way.
+
+### An overflow
+
+```sg error
+const int Big = int.MaxValue + 1
+
+void main() {
+    print(Big)
+}
+```
+
+```text
+error: the value of `Big` is found when the program is compiled, and this stops it: overflow: 2147483647 + 1 does not fit in int
+  --> example.sg:1:17
+ 1 | const int Big = int.MaxValue + 1
+   |                 ^^^^^^^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+```
+
+What would panic when the program runs stops the compiler here: a division by zero, and an index outside a
+const array, are errors too.
+
+### A const with no type
+
+```sg error
+const Size = 64
+
+void main() {
+    print(Size)
+}
+```
+
+```text
+error: a const has a type and a name: `const int Size = 64`
+  --> example.sg:1:12
+ 1 | const Size = 64
+   |            ^
+```
+
+### A value of another type
+
+```sg error
+const int Size = 1.5
+
+void main() {
+    print(Size)
+}
+```
+
+```text
+error: expected `int`, found `double`
+  --> example.sg:1:18
+ 1 | const int Size = 1.5
+   |                  ^^^
+  hint: convert with `(int)`; it drops the fraction, and panics if the value does not fit
+```
+
+### A `List`
+
+```sg error
+const List<int> Sizes = List<int> { 1, 2 }
+
+void main() {
+    print(Sizes)
+}
+```
+
+```text
+error: a const cannot hold a `List<int>`: a `List<int>` is not known when the program is compiled
+  a const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of them
+  --> example.sg:1:7
+ 1 | const List<int> Sizes = List<int> { 1, 2 }
+   |       ^^^^^^^^^
+```
+
+A list owns a block of the heap. A table is an array, and a list built once when the program runs is a
+[`static`](static.md).
+
+### A const that needs itself
+
+```sg error
+const int A = B + 1
+const int B = A + 1
+
+void main() {
+    print(A)
+}
+```
+
+```text
+error: the value of `A` needs itself: `A` -> `B` -> `A`
+  --> example.sg:2:15
+ 2 | const int B = A + 1
+   |               ^
+  hint: a const is given a value that does not lead back to it
+```
+
+### A local with the name of a const
+
+```sg error
+const int Limit = 10
+
+void main() {
+    var Limit = 3
+    print(Limit)
+}
+```
+
+```text
+error: `Limit` is the name of a const, and a local cannot take it
+  in a pattern the name stands for the const, so it means one thing in a function
+  --> example.sg:4:9
+ 4 |     var Limit = 3
+   |         ^^^^^
+```
+
+The same holds for a const in a block with the name of one around it.

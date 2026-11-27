@@ -3,13 +3,13 @@ alias	keyword	Keywords	gives a type a second name: alias Scores = List<int>		htt
 align	keyword	Keywords	align(N) keeps a type at a multiple of N bytes		https://sg-lang.org/reference/#n-align
 as	keyword	Keywords	names a value lent for a block: a shared value opened, a locked value taken, an item a select receives	as	https://sg-lang.org/reference/as
 assert	keyword	Keywords	stops the program, or fails the test, when a condition is false	assert	https://sg-lang.org/reference/assert
-async	keyword	Keywords	a function that runs as a light task and may await		https://sg-lang.org/reference/#n-async
+async	keyword	Keywords	makes a function a light task, which may await and never holds its thread	async	https://sg-lang.org/reference/async
 atomic	keyword	Keywords	a number or a bool that tasks change without a lock, one step at a time	atomic	https://sg-lang.org/reference/atomic
-await	keyword	Keywords	waits for the result of an async call		https://sg-lang.org/reference/#n-await
-break	keyword	Keywords	leaves the loop		https://sg-lang.org/reference/#n-break
+await	keyword	Keywords	waits for a task in an async function, without holding the thread, and gives what it returned	await	https://sg-lang.org/reference/await
+break	keyword	Keywords	leaves the loop it is in, or the loop it names, at once	break	https://sg-lang.org/reference/break
 checked	keyword	Keywords	shared checked T: borrows of it are checked while the program runs		https://sg-lang.org/reference/#n-checked
-const	keyword	Keywords	a value fixed when the program is compiled		https://sg-lang.org/reference/#n-const
-continue	keyword	Keywords	goes on with the next turn of the loop		https://sg-lang.org/reference/#n-continue
+const	keyword	Keywords	a value fixed when the program is compiled	const	https://sg-lang.org/reference/const
+continue	keyword	Keywords	ends this round of the loop and goes on with the next	continue	https://sg-lang.org/reference/continue
 else	keyword	Keywords	the block that runs when the condition of an if is false	else	https://sg-lang.org/reference/else
 embed	keyword	Keywords	embed("logo.gif"): the bytes of a file, put into the program		https://sg-lang.org/reference/#n-embed
 enum	keyword	Keywords	declares a type whose value is one of several variants, each with values of its own	enum	https://sg-lang.org/reference/enum
@@ -35,7 +35,7 @@ ref	keyword	Keywords	lends a value to be changed in place; the only borrow of it
 return	keyword	Keywords	ends the function, with its value	return	https://sg-lang.org/reference/return
 share	keyword	Keywords	makes one more owner of a shared value, or an owner from a weak look	share	https://sg-lang.org/reference/share
 shared	keyword	Keywords	shared T: a value on the heap with several owners, only read	shared	https://sg-lang.org/reference/shared
-static	keyword	Keywords	a value made once, the first time the program uses it		https://sg-lang.org/reference/#n-static
+static	keyword	Keywords	a value made once, the first time the program uses it	static	https://sg-lang.org/reference/static
 struct	keyword	Keywords	declares a type made of named fields, with the methods that work on them	struct	https://sg-lang.org/reference/struct
 test	keyword	Keywords	a block of checks written next to the code, which only sg test compiles and runs	test	https://sg-lang.org/reference/test
 try	keyword	Keywords	opens a Result: its value, or the error handed to the caller	try	https://sg-lang.org/reference/try

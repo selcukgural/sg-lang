@@ -172,6 +172,6 @@ WHAT THE COMPILER REFUSES
      so the type is written there: Result<int, string> result = Ok(1).
 
 SEE ALSO
-     sg help read, sg help ref, sg help match
+     sg help read, sg help ref, sg help match, sg help const
 
      https://sg-lang.org/reference/var.html

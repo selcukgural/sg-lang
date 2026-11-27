@@ -1,0 +1,309 @@
+---
+name: continue
+kind: keyword
+summary: Ends this round of the loop and goes on with the next.
+see: break, for, while, match
+learn: ../docs/learn/book/08-collections.md#loops-with-names-and-counting-down
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `continue` | ends this round of the loop it is in; the next round starts |
+| `continue name` | ends the round of every loop inside the loop named `name`, and goes on with its next round |
+| `name: for ...`, `name: while ...` | a loop with a name, for `continue name` |
+| `pattern => continue` | an arm of a `match` or a `select` that goes on with the loop around it |
+
+## What it means
+
+`continue` skips the rest of the round. In a `for`, the next round has the next number or the next item; in a
+`while`, the next round starts with the condition, tested again. It takes no value. Inside a loop within a loop,
+it acts on the inner one; `continue name` leaves the loops inside the one named `name` and goes on with its next
+round.
+
+What the block would have done after the `continue` is not done. In a `while`, a count moved on at the end of
+the block is not moved on, and the loop goes round on the same value for ever: move it on before the
+`continue`, as in [Skipping a round](while.md#skipping-a-round) on the page of `while`.
+
+A `continue` belongs to the loops of its own function. A `match` is not a loop, so a `continue` in an arm goes on
+with the loop around the `match`; so does one in an arm of a `select`. It may stand where a value is expected,
+in an arm of a `match` that gives a value.
+
+A `continue` starts a round, so it is checked as the end of the block is. What the round owns is let go there,
+in compiled code too. A value from outside the round that was given away must have a new value before the
+`continue`, since the next round may use it. A file still open, or a task not yet waited for, is an error at the
+`continue`.
+
+## Examples
+
+### Skipping what is not wanted
+
+```sg
+void main() {
+    var config = "# the size of the window\nwidth = 80\n\nheight = 24\n# done\n"
+    for line in config.lines() {
+        if line.length() == 0 || line.startsWith("#") {
+            continue
+        }
+        print(line)
+    }
+}
+```
+
+```text
+width = 80
+height = 24
+```
+
+An empty line and a line that starts with `#` end their round before `print`.
+
+### `continue` where a value goes
+
+```sg
+void main() {
+    var inputs = List<string> { "12", "", "x7", "30", "-4" }
+    var total = 0
+    var skipped = 0
+    for text in read inputs {
+        var n = match int.parse(read text) {
+            Ok(value) => value
+            Error(_) => {
+                skipped += 1
+                continue
+            }
+        }
+        total += n
+    }
+    print($"total {total}, {skipped} skipped")
+}
+```
+
+```text
+total 38, 2 skipped
+```
+
+`n` is the number when the text is one. For `""` and `"x7"`, the arm counts the text and goes on with the next
+item, so `n` is never given a value it does not have.
+
+### Going on with an outer `while`
+
+```sg
+void main() {
+    var codes = List<string> { "4021", "33a1", "7", "12-5", "900" }
+    var sums = List<int>()
+    nint i = 0
+    lines: while i < codes.length() {
+        var code = read codes[i]
+        i += 1
+        var sum = 0
+        for c in code.chars() {
+            if !c.isAsciiDigit() {
+                continue lines
+            }
+            sum += (int)c - (int)'0'
+        }
+        sums.add(sum)
+    }
+    print(sums)
+}
+```
+
+```text
+[7, 7, 9]
+```
+
+At the first character that is not a digit, `continue lines` drops the rest of the code and the sum, and the
+`while` tests its condition again. `i` is moved on at the top of the block, so every way back to the condition
+has moved it.
+
+### `continue` in a `select`
+
+```sg
+void numbers(Sender<int> out) {
+    for i in -3..5 {
+        _ = out.send(i)
+    }
+}
+
+void words(Sender<string> out) {
+    _ = out.send("ab".clone())
+    _ = out.send("cde".clone())
+}
+
+void main() {
+    var ints = Channel<int>(4)
+    var texts = Channel<string>(4)
+    var a = Task.run(numbers, ints.sender())
+    var b = Task.run(words, texts.sender())
+    var sum = 0
+    var letters = 0
+    var kept = 0
+    while true {
+        select {
+            ints.receive() as n => {
+                if n <= 0 {
+                    continue
+                }
+                sum += n
+            }
+            texts.receive() as w => letters += (int)w.length()
+            ended => break
+        }
+        kept += 1
+    }
+    a.wait()
+    b.wait()
+    print($"{kept} kept: {sum} from numbers, {letters} letters")
+}
+```
+
+```text
+6 kept: 10 from numbers, 5 letters
+```
+
+The `continue` goes back to the top of the `while`, past `kept += 1`, so the numbers up to 0 are not counted.
+`ended => break` leaves the loop once both tasks have ended.
+
+### A value given away, and given again
+
+```sg
+void keep(List<string> names) {
+    print($"kept {names.length()}: {names}")
+}
+
+void main() {
+    var batch = List<string>()
+    var words = List<string> { "one", "two", "three", "four", "five" }
+    for word in read words {
+        batch.add(word.clone())
+        if batch.length() == 2 {
+            keep(batch)
+            batch = List<string>()
+            continue
+        }
+        print($"waiting with {word}")
+    }
+    print($"{batch.length()} left over")
+}
+```
+
+```text
+waiting with one
+kept 2: ["one", "two"]
+waiting with three
+kept 2: ["three", "four"]
+waiting with five
+1 left over
+```
+
+`keep` takes the list. A new empty list goes into `batch` before the `continue`, so the next round has one to add
+to.
+
+## What the compiler refuses
+
+### `continue` in a function a loop calls
+
+```sg error
+void work(int n) {
+    if n == 2 {
+        continue
+    }
+    print(n)
+}
+
+void main() {
+    for i in 0..4 {
+        work(i)
+    }
+}
+```
+
+```text
+error: `continue` can only be written inside a loop
+  --> example.sg:3:9
+ 3 |         continue
+   |         ^^^^^^^^
+```
+
+`work` can `return` early instead: the loop then goes on by itself.
+
+### A name no loop has
+
+```sg error
+void main() {
+    for i in 0..4 {
+        if i == 2 {
+            continue outer
+        }
+        print(i)
+    }
+}
+```
+
+```text
+error: no loop around this `continue` is named `outer`
+  --> example.sg:4:22
+ 4 |             continue outer
+   |                      ^^^^^
+  hint: name the loop it goes on with: `outer: for ...`
+```
+
+### A value given away, then `continue`
+
+```sg error
+void keep(List<string> names) {
+    print(names.length())
+}
+
+void main() {
+    var batch = List<string>()
+    var words = List<string> { "one", "two", "three" }
+    for word in read words {
+        batch.add(word.clone())
+        if batch.length() == 2 {
+            keep(batch)
+            continue
+        }
+    }
+}
+```
+
+```text
+error: `batch` is moved inside a loop, so the next iteration cannot use it
+  --> example.sg:11:18
+ 11 |             keep(batch)
+    |                  ^^^^^
+```
+
+The next round adds to `batch`, which is gone. `batch = List<string>()` before the `continue` gives it a new list.
+
+### A task not waited for at the `continue`
+
+```sg error
+int square(int n) {
+    return n * n
+}
+
+void main() {
+    for i in 0..3 {
+        var t = Task.run(square, i)
+        if i == 1 {
+            continue
+        }
+        print(t.wait())
+    }
+}
+```
+
+```text
+error: `t` is not waited for at this `continue`
+  every task is waited for: its error is not lost, and no work is cut off
+  --> example.sg:9:13
+ 9 |             continue
+   |             ^^^^^^^^
+  the task is kept here:
+```
+
+The round ends at the `continue`, and `t` with it. `t.wait()` before the `continue` waits for it; `_ = t.wait()`
+drops what it gives.

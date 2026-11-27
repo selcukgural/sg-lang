@@ -3505,7 +3505,8 @@ fn help_from_sg_itself() {
     assert!(out.lines().all(|line| line.chars().count() <= 78), "{out}");
     let (code, out, _) = ran(&sg(&dir, &["help"]));
     assert_eq!(code, 0);
-    assert!(out.contains("THE WORDS WITH A PAGE\n") && out.contains("\n     read    lends a value"), "{out}");
+    // The column of the lines is as wide as the longest word with a page, so it is not counted here.
+    assert!(out.contains("THE WORDS WITH A PAGE\n") && out.lines().any(|l| l.starts_with("     read ") && l.trim_start_matches("     read").trim_start().starts_with("lends a value")), "{out}");
     assert_eq!(
         ran(&sg(&dir, &["help", "li"])),
         (2, String::new(), "error: SG has no name `li` that `sg help` knows; names that start like it: `List`\n".into())
@@ -3542,6 +3543,9 @@ fn help_has_every_page_of_the_site() {
         assert_eq!((code, err.as_str()), (0, ""), "{stem}");
         let head: String = out.lines().skip(1).take_while(|l| !l.is_empty()).map(str::trim).collect::<Vec<_>>().join(" ");
         assert_eq!(head, format!("{name} - {line}"), "{stem}: src/help/{stem}.txt is older than its page; run `npm run build` in website/plain");
+        // The pages it names fit the width of a terminal, though `sg help x` is longer than `sg-x(7)`.
+        let see: Vec<&str> = out.lines().skip_while(|l| *l != "SEE ALSO").skip(1).take_while(|l| !l.is_empty()).collect();
+        assert!(!see.is_empty() && see.iter().all(|l| l.chars().count() <= 78), "{stem}: {see:?}");
         count += 1;
     }
     assert!(count >= 9, "{count}");

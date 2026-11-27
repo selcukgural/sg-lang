@@ -513,6 +513,7 @@ WHAT THE COMPILER REFUSES
          error: `i` is already a local variable of a block around this one, and a new name cannot hide it
 
 SEE ALSO
-     sg help in, sg help while, sg help read, sg help ref
+     sg help in, sg help while, sg help break, sg help continue, sg help read,
+     sg help ref
 
      https://sg-lang.org/reference/for.html

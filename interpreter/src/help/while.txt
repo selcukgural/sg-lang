@@ -289,6 +289,6 @@ WHAT THE COMPILER REFUSES
            hint: put `{` at the end of the previous line
 
 SEE ALSO
-     sg help for, sg help is, sg help if
+     sg help for, sg help break, sg help continue, sg help is, sg help if
 
      https://sg-lang.org/reference/while.html

@@ -1,0 +1,457 @@
+---
+name: await
+kind: keyword
+summary: Waits for a task in an async function, without holding the thread, and gives what it returned.
+see: async, Task, TaskGroup, Channel, CancellationSource, lock
+learn: ../docs/learn/book/10-concurrency.md#async-functions
+library: ../docs/library/tasks.md#taskr
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `await f(x)` | runs the async function `f` as part of this task, and gives what it returns |
+| `await t` | waits for the task `t` and takes it |
+| `_ = await t` | waits, and drops what it gave on purpose |
+| `try await t` | waits, and passes an error on |
+| `await Task.whenAll(tasks)` | waits for every task of a list |
+| `await Task.whenAny(ref tasks)` | takes the first task of a list to end |
+| `await Task.delay(ms)` | waits so many milliseconds |
+| `await select { ... }` | waits on several channels |
+| `await lock v as x when c { ... }` | waits until a condition on a locked value holds |
+
+## What it means
+
+`await` waits for a task and gives what the task returned. It is written only in an async function, and it
+does not hold the thread meanwhile: the thread runs other tasks until this one can go on. Code that is not
+async waits with `t.wait()` instead.
+
+`await f(x)` runs `f` as part of the task that awaits it, with no task of its own, so `f` may borrow:
+`await total(read numbers)`. `await t` takes the task kept in `t`, which cannot be awaited again. What it
+gives is used, or dropped with `_ =`; a `Task<void>` gives nothing to drop.
+
+`await` is an expression. It may stand in an argument, an operand, the condition of an `if` or a `while`, or
+the value of a `match`. The compiled program does not take it yet on a side that runs only sometimes, the
+right of `??`: give the value a name first.
+
+A `lock` block never waits, so there is no `await` inside one.
+
+## Examples
+
+### Waiting for a call
+
+```sg
+async int twice(int n) {
+    await Task.delay(10)
+    return n * 2
+}
+
+async void main() {
+    var answer = await twice(21)
+    print(answer)
+    _ = await twice(0)
+    await Task.delay(5)
+    print("done")
+}
+```
+
+```text
+42
+done
+```
+
+`_ =` says the value of the second call is not needed. `Task.delay` gives a `Task<void>`, so it needs no `_ =`.
+
+### A call that borrows
+
+```sg
+async int total(read List<int> numbers) {
+    await Task.delay(5)
+    var sum = 0
+    for n in numbers {
+        sum += n
+    }
+    return sum
+}
+
+async void main() {
+    var numbers = List<int> { 1, 2, 3, 4 }
+    print(await total(read numbers))
+    numbers.add(5)
+    print(await total(read numbers))
+}
+```
+
+```text
+10
+15
+```
+
+The awaited call ends before `main` goes on, so the borrow of `numbers` ends with it, and `numbers` can be
+changed on the next line.
+
+### Inside an expression
+
+```sg
+async int price(string item) {
+    await Task.delay(20)
+    return (int)item.length() * 10
+}
+
+async bool inStock(string item) {
+    await Task.delay(10)
+    return item != "kite"
+}
+
+async void main() {
+    var total = await price("tea") + await price("bread")
+    print(total)
+    if await inStock("kite") {
+        print("kites are in")
+    } else {
+        print("no kites")
+    }
+    print(await price("milk") > 30)
+}
+```
+
+```text
+80
+no kites
+true
+```
+
+Each `await` is an operand, a condition or an argument like any other value.
+
+### With `try` and `??`
+
+```sg
+async Result<int, string> parseLater(string text) {
+    await Task.delay(5)
+    if int.parse(read text) is Ok(n) {
+        return Ok(n)
+    }
+    return Error($"not a number: {text}".toString())
+}
+
+async Result<int, string> sum(string a, string b) {
+    var x = try await parseLater(a)
+    var y = try await parseLater(b)
+    return Ok(x + y)
+}
+
+async void main() {
+    match await sum("20", "22") {
+        Ok(total) => print(total)
+        Error(e) => print(e)
+    }
+    match await sum("20", "two") {
+        Ok(total) => print(total)
+        Error(e) => print(e)
+    }
+    var n = await parseLater("seven") ?? 7
+    print(n)
+}
+```
+
+```text
+42
+not a number: two
+7
+```
+
+`try await` waits, then passes an error on. `await parseLater("seven") ?? 7` waits first, then takes `7` in
+place of the error.
+
+### Several tasks at once
+
+```sg
+async int fetch(string name, int ms) {
+    await Task.delay(ms)
+    return (int)name.length()
+}
+
+async void main() {
+    var all = List<Task<int>>()
+    all.add(fetch("north", 30))
+    all.add(fetch("south-east", 10))
+    all.add(fetch("west", 20))
+    print(await Task.whenAll(all))
+
+    var race = List<Task<int>>()
+    race.add(fetch("slow", 300))
+    race.add(fetch("quick", 10))
+    while race.length() > 0 {
+        print(await Task.whenAny(ref race))
+    }
+}
+```
+
+```text
+[5, 10, 4]
+5
+4
+```
+
+`Task.whenAll` gives what each task gave, in the order of the list, whichever ended first. `Task.whenAny`
+takes the first task to end out of the list, so the loop empties it: `quick` comes before `slow`.
+
+### A wait cut short
+
+```sg
+async void main() {
+    var limit = CancellationSource.after(20)
+    var token = limit.token()
+    match await Task.delay(1000, read token) {
+        Ok => print("waited the whole second")
+        Error(cause) => print($"cut short: {cause}")
+    }
+}
+```
+
+```text
+cut short: Cancelled
+```
+
+Given a token, the delay gives a `Result`: `Ok` when it waited its time, `Error(Cancelled { })` when the token
+was cancelled first.
+
+### Waiting on several channels
+
+```sg
+async void produce(Sender<int> out, int from, int to) {
+    for i in from..to {
+        _ = await out.sendAsync(i)
+    }
+}
+
+async void main() {
+    var small = Channel<int>(4)
+    var large = Channel<int>(4)
+    var a = produce(small.sender(), 1, 6)
+    var b = produce(large.sender(), 100, 103)
+    var total = 0
+    var items = 0
+    while true {
+        await select {
+            small.receive() as n => total += n
+            large.receive() as n => total += n
+            ended => break
+        }
+        items += 1
+    }
+    await a
+    await b
+    print($"{items} items, {total} in all")
+}
+```
+
+```text
+8 items, 318 in all
+```
+
+In an async function, `select` is written `await select`, and a channel is sent to with `sendAsync`. `ended`
+runs once both producers have ended and their channels are empty.
+
+### Waiting for a locked value
+
+```sg
+struct Box {
+    List<int> items
+    bool done
+}
+
+async void fill(shared locked Box box) {
+    for i in 1..4 {
+        await Task.delay(5)
+        lock box as b {
+            b.items.add(i * 10)
+        }
+    }
+    lock box as b {
+        b.done = true
+    }
+}
+
+async void main() {
+    var box = new shared locked Box { items = List<int>(), done = false }
+    var filler = fill(share box)
+    await lock box as b when b.done {
+        print(b.items)
+    }
+    await filler
+}
+```
+
+```text
+[10, 20, 30]
+```
+
+`await lock ... when` lets the lock go and waits until `b.done` holds, then runs the block under the lock. The
+block itself waits for nothing.
+
+## What stops the program
+
+### A negative delay
+
+```sg panic
+async int pause(int ms) {
+    await Task.delay(ms)
+    return ms
+}
+
+async void main() {
+    print(await pause(10))
+    print(await pause(10 - 20))
+}
+```
+
+```text
+10
+panic: `Task.delay(-10)`: a delay is not negative
+  --> example.sg:2:11
+ 2 |     await Task.delay(ms)
+   |           ^^^^^^^^^^^^^^
+```
+
+## What the compiler refuses
+
+### `await` outside an async function
+
+```sg error
+async int twice(int n) {
+    await Task.delay(10)
+    return n * 2
+}
+
+void main() {
+    var x = await twice(2)
+    print(x)
+}
+```
+
+```text
+error: `await` is written in an async function
+  --> example.sg:7:13
+ 7 |     var x = await twice(2)
+   |             ^^^^^^^^^^^^^^
+  hint: make `main` async (`async` in front of it), or wait for the task here: `twice(2).wait()`
+```
+
+### A value that is not a task
+
+```sg error
+async void main() {
+    var n = await 5
+    print(n)
+}
+```
+
+```text
+error: `await` waits for a task, and this is an `int`
+  --> example.sg:2:19
+ 2 |     var n = await 5
+   |                   ^
+```
+
+### A value left unused
+
+```sg error
+async int twice(int n) {
+    await Task.delay(10)
+    return n * 2
+}
+
+async void main() {
+    await twice(2)
+}
+```
+
+```text
+error: the `int` that `await twice(2)` gives is not used
+  --> example.sg:7:5
+ 7 |     await twice(2)
+   |     ^^^^^^^^^^^^^^
+  hint: keep it: `var value = await twice(2)`; to drop it on purpose, `_ = await twice(2)`
+```
+
+### A task awaited twice
+
+```sg error
+async int twice(int n) {
+    await Task.delay(10)
+    return n * 2
+}
+
+async void main() {
+    var task = twice(2)
+    print(await task)
+    print(await task)
+}
+```
+
+```text
+error: `task` was moved and can no longer be used
+  --> example.sg:9:17
+ 9 |     print(await task)
+   |                 ^^^^
+  it was moved here:
+  --> example.sg:8:17
+ 8 |     print(await task)
+   |                 ^^^^
+```
+
+`await` takes the task. What it gave is kept in a variable when it is needed twice.
+
+### `await` in a `lock` block
+
+```sg error
+async void main() {
+    var counter = new shared locked 0
+    lock counter as c {
+        await Task.delay(10)
+        c += 1
+    }
+}
+```
+
+```text
+error: a `lock` block does not await a task
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> example.sg:4:9
+ 4 |         await Task.delay(10)
+   |         ^^^^^^^^^^^^^^^^^^^^
+  hint: await the task before the block or after it
+```
+
+### `await` on the right of `??`, compiled
+
+```sg file title="fallback/main.sg"
+async int fallback() {
+    await Task.delay(5)
+    return 7
+}
+
+async void main() {
+    int? cached = null
+    var n = cached ?? await fallback()
+    print(n)
+}
+```
+
+```text
+$ cd fallback
+$ sg main.sg
+7
+$ sg build main.sg -o fallback
+error: `await` in this part of a statement is not in the C back end yet
+  the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, the network, raw memory and calls of C, and `print`
+  --> main.sg:8:23
+ 8 |     var n = cached ?? await fallback()
+   |                       ^^^^^^^^^^^^^^^^
+  hint: give the value a name first: `var x = await ...`
+```
+
+The interpreter runs it; the compiled program does not take `await` on the right of `??` yet. Written as
+`var later = await fallback()` before the line, it builds, though `fallback` then runs every time.

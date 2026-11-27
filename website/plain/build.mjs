@@ -596,9 +596,14 @@ const manHtml = (text) => escape(text).replace(/\u0001/g, '<b>').replace(/\u0002
 const manPlain = (text) => text.replace(/\u0001|\u0002/g, '');
 // What `sg help <word>` prints (choice 2082): the text man shows, without the line at its top and the line
 // with the date at its foot, so that it changes only when the page does.
-// The pages it names are pages of `sg help` too.
+// The pages it names are pages of `sg help` too; `sg help for` is longer than `sg-for(7)`, so the list
+// under SEE ALSO is wrapped again, and stays within 78 columns.
+const helpPages = (text) => text.replace(/\bsg-([a-z0-9-]+)\(7\)/g, 'sg help $1');
 const helpText = (page) =>
-  manPlain(manText(page)).split('\n').slice(2, -2).join('\n').replace(/\n+$/, '').replace(/\bsg-([a-z0-9-]+)\(7\)/g, 'sg help $1') + '\n';
+  helpPages(
+    manPlain(manText(page)).split('\n').slice(2, -2).join('\n').replace(/\n+$/, '')
+      .replace(/^SEE ALSO\n((?: {5}\S.*\n)+)/m, (_, list) => `SEE ALSO\n${wrap(helpPages(list), 5)}\n`)
+  ) + '\n';
 
 // ---------------------------------------------------------------------------------------------------------
 // Writing the site
