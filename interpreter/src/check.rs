@@ -4224,6 +4224,12 @@ struct Borrows {
     opening: bool,
     /// The uses that are the `dispose` of a value at the end of its block, by `Point::seq`.
     disposed: Vec<usize>,
+    /// The uses that are the end of a `lock` or an `as` block, where it lets go of what it
+    /// opened, by `Point::seq`.
+    let_go: Vec<usize>,
+    /// The places an assignment writes over whole, and the fields that lead to each: such a
+    /// write takes away what a `lock` or an `as` block opened, where a write inside it does not.
+    replaced: Vec<(Span, String)>,
     /// Every `clear` of a local collection that let go of what its items borrowed (1733): the
     /// variable, how many touches came before it, and where.
     released: Vec<(usize, usize, Point)>,
@@ -5929,7 +5935,16 @@ impl<'a> Checker<'a> {
                         && cleared.loops.iter().all(|inner| at.loops.contains(inner))
                 })
             };
-            let used_later = self.borrows.uses.iter().find(|(var, at)| *var == clash.holder && (after(at) || next_round(at)) && !cleared_before(at));
+            // The end of a `lock` or an `as` block counts only against what takes the opened value
+            // away: a move, or an assignment over it or over a place it lies in. A write inside it
+            // is left to the checks of `opening.rs`.
+            let takes_away = match clash.access {
+                Access::Move | Access::Gone => true,
+                Access::Write => self.borrows.replaced.iter().any(|(span, path)| *span == clash.span && (path.is_empty() || within(&clash.loan.path, path))),
+                Access::Read => false,
+            };
+            let let_go = &self.borrows.let_go;
+            let used_later = self.borrows.uses.iter().find(|(var, at)| *var == clash.holder && (after(at) || next_round(at)) && !cleared_before(at) && (takes_away || !let_go.contains(&at.seq)));
             let Some((_, later)) = used_later else { continue };
             // Two borrows of items of one list held apart (choices 2011-2015).
             if let Some(apart) = self.window_clash(clash) {
@@ -5962,6 +5977,11 @@ impl<'a> Checker<'a> {
                 return Err(diag
                     .note(format!("`{holder}` is `Disposable`: its `dispose` runs at the end of its block and uses it there"))
                     .hint(format!("put `{holder}` in a block of its own that ends before this line")));
+            }
+            if self.borrows.let_go.contains(&later.seq) {
+                return Err(diag
+                    .note(format!("the block of `{holder}` holds what it opened until the block ends, and lets go of it there"))
+                    .hint("move or change it after the block"));
             }
             // Borrowed further down in a loop, or where the touch is (one part lends what another
             // changes, `later(Window { part = buffer.all() }, view)`): the borrow is of the round
@@ -6497,6 +6517,15 @@ impl<'a> Checker<'a> {
         if let Some(last) = block.last() {
             self.borrows.pos = self.borrows.pos.max(last.span.end);
         }
+        // A `lock` or an `as` block lets go of what it opened where it ends, not at the last use
+        // of the name: the name is used once more there, so the value it was opened from is not
+        // moved or written over inside the block (that would free the lock it still holds).
+        let opened: Vec<usize> = self.scopes.last().expect("an open scope").vars.iter().filter(|var| var.opened && !var.loans.is_empty()).map(|var| var.id).collect();
+        for id in opened {
+            let at = self.point(self.borrows.pos);
+            self.borrows.let_go.push(at.seq);
+            self.borrows.uses.push((id, at));
+        }
         let reached = !leaves(block, self.loops > 0);
         self.pop_scope(reached)
     }
@@ -6685,6 +6714,11 @@ impl<'a> Checker<'a> {
                 // so a borrow that the right side reads last ends before the write (`b = Box { n
                 // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
                 let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
+                if op.is_none() {
+                    if let Some((_, path)) = path_of(target) {
+                        self.borrows.replaced.push((target.span, path));
+                    }
+                }
                 // A `read` variable given another borrow; one that is `ref` is written through.
                 if let ExprKind::Var(name) = &target.kind {
                     if let Some(id) = self.var_named(name).filter(|var| !matches!(var.declared, Ty::Ref(_))).map(|var| var.id) {

@@ -1,0 +1,13 @@
+struct Box {
+    int n
+}
+void take(shared checked Box b) {
+}
+void main() {
+    var c = new shared checked Box { n = 1 }
+    ref c as v {
+        v.n = 2
+        take(c)
+    }
+    print("end")
+}

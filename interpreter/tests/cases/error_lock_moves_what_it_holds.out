@@ -1,0 +1,10 @@
+error: `box` cannot be moved here: `b` borrows from it and is used again later
+  the block of `b` holds what it opened until the block ends, and lets go of it there
+  --> error_lock_moves_what_it_holds.sg:10:14
+ 10 |         take(box)
+    |              ^^^
+  `b` borrowed it here:
+  --> error_lock_moves_what_it_holds.sg:8:10
+ 8 |     lock box as b {
+   |          ^^^
+  hint: move or change it after the block

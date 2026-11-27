@@ -1,0 +1,10 @@
+error: `c` cannot be moved here: `v` borrows from it and is used again later
+  the block of `v` holds what it opened until the block ends, and lets go of it there
+  --> error_as_moves_what_it_opened.sg:10:14
+ 10 |         take(c)
+    |              ^
+  `v` borrowed it here:
+  --> error_as_moves_what_it_opened.sg:8:9
+ 8 |     ref c as v {
+   |         ^
+  hint: move or change it after the block

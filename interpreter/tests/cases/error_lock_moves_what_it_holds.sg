@@ -1,0 +1,13 @@
+struct Box {
+    List<int> items
+}
+void take(shared locked Box box) {
+}
+void main() {
+    var box = new shared locked Box { items = List<int> { 1, 2, 3 } }
+    lock box as b {
+        b.items.add(4)
+        take(box)
+    }
+    print("end")
+}

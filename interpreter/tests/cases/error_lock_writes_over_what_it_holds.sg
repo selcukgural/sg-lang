@@ -1,0 +1,8 @@
+void main() {
+    var hits = new shared locked 5
+    lock hits as h {
+        h += 1
+        hits = new shared locked 7
+    }
+    print("end")
+}

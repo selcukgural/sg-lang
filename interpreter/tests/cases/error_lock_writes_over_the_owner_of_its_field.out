@@ -1,0 +1,10 @@
+error: `server` cannot be changed here: `s` borrows from it and is used again later
+  the block of `s` holds what it opened until the block ends, and lets go of it there
+  --> error_lock_writes_over_the_owner_of_its_field.sg:8:9
+ 8 |         server = Server { stats = new shared locked List<int>() }
+   |         ^^^^^^
+  `s` borrowed it here:
+  --> error_lock_writes_over_the_owner_of_its_field.sg:6:10
+ 6 |     lock server.stats as s {
+   |          ^^^^^^^^^^^^
+  hint: move or change it after the block

@@ -1,0 +1,10 @@
+error: `hits` cannot be changed here: `h` borrows from it and is used again later
+  the block of `h` holds what it opened until the block ends, and lets go of it there
+  --> error_lock_writes_over_what_it_holds.sg:5:9
+ 5 |         hits = new shared locked 7
+   |         ^^^^
+  `h` borrowed it here:
+  --> error_lock_writes_over_what_it_holds.sg:3:10
+ 3 |     lock hits as h {
+   |          ^^^^
+  hint: move or change it after the block

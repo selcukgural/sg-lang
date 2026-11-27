@@ -1,0 +1,11 @@
+struct Server {
+    shared locked List<int> stats
+}
+void main() {
+    var server = Server { stats = new shared locked List<int>() }
+    lock server.stats as s {
+        s.add(1)
+        server = Server { stats = new shared locked List<int>() }
+    }
+    print("end")
+}
