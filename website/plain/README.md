@@ -1,8 +1,8 @@
 # The plain site
 
-The next web site of SG: plain pages made from Markdown by one script (`build.mjs`), with one stylesheet, two small
-scripts and no framework. It reads the same pages as the Docusaurus site beside it (`../docs/`), so the two do not
-drift apart while both are kept; the Docusaurus site still publishes sg-lang.org until this one replaces it.
+The web site of SG, [sg-lang.org](https://sg-lang.org): plain pages made from Markdown by one script (`build.mjs`),
+with one stylesheet, two small scripts and no framework. It reads the same pages as the Docusaurus site beside it
+(`../docs/`), which published sg-lang.org until 27 November 2026 and is kept, not published.
 
     npm ci --ignore-scripts      # Node 22; one package, marked, pinned in package-lock.json
     npm run build                # the site, in build/ (runs ../scripts/sync-docs.mjs first)
@@ -29,8 +29,20 @@ What it makes, and from what:
   nothing sent anywhere.
 - **Headers.** `assets/_headers` allows the site only its own files: no script or style is written into a page,
   and `build.mjs` fails if one is.
+- **Old addresses.** `assets/_redirects` sends the addresses of the Docusaurus site (`/docs/learn/tour`) to the
+  same pages here (`/learn/tour`). An address with no page gets `404.html`, with status 404; its links start at
+  the root, since it is served at any depth.
 - **Logo.** The wildcat (`../../brand/wildcat/`), with its ground taken out: a light and a dark version, and the
   stylesheet shows the one that fits the theme. `make.py` there makes them in `assets/`.
 
 Every page reads and works without its script; the script adds the search, the line shown over a name in a
 program, a button to copy each program and command, the filter of the index, and the button for light or dark.
+
+## Publishing
+
+Cloudflare Pages builds `main` (project `sg-lang`): root directory `website/plain`, build command
+`npm ci --ignore-scripts && npm run build`, output `build`, `NODE_VERSION=22`; a pull request gets a preview. No
+secret is kept in the repository. `sg-lang.org` and `www.sg-lang.org` are the project's own domains.
+`man.sg-lang.org` is a redirect rule of the zone, not a page: every address on it goes to the same path under
+`sg-lang.org/manual/` (`man.sg-lang.org/sg-read.7.html` → `sg-lang.org/manual/sg-read.7.html`), with status 302,
+so that it can still become a site of its own.

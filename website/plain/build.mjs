@@ -725,6 +725,22 @@ Windows and for a build from source where nothing installs the pages; the text i
   write(url, frame({ url, title: 'SG', description: 'SG, a small systems language that makes fast software safe by construction.', section: null, main: home, wide: true }));
 }
 
+// The page for an address with no page. Cloudflare Pages serves it, with status 404, at whatever depth the
+// address asked for, so its links start at the root of the site instead of at the page.
+{
+  const url = '404.html';
+  const main = `<h1>No page here</h1>
+<p class="lead">There is no page at this address. The site was made anew in November 2026, and some addresses
+changed with it.</p>
+<p>Look for a word, a type or a page with the search at the top (or press <kbd>/</kbd>), or start from
+<a href="index.html">the front page</a>, <a href="learn/index.html">Learn</a> or
+<a href="reference/index.html">the index of every name</a>.</p>`;
+  const html = frame({ url, title: 'No page here', description: 'There is no page at this address.', section: null, main })
+    .replace(/(\s(?:href|src|action)=")(?![a-z]+:|\/|#)/g, '$1/')
+    .replace('<meta name="sg-root" content="./">', '<meta name="sg-root" content="/">');
+  write(url, html);
+}
+
 // The search: every name, page and heading.
 {
   const entries = [];
@@ -742,7 +758,7 @@ Windows and for a build from source where nothing installs the pages; the text i
 }
 
 // The files beside the pages.
-for (const name of ['style.css', 'site.js', 'theme.js', 'logo-light.webp', 'logo-dark.webp', 'logo-small-light.webp', 'logo-small-dark.webp', 'favicon.png', 'apple-touch-icon.png', '_headers']) copyFileSync(join(plain, 'assets', name), join(out, name));
+for (const name of ['style.css', 'site.js', 'theme.js', 'logo-light.webp', 'logo-dark.webp', 'logo-small-light.webp', 'logo-small-dark.webp', 'favicon.png', 'apple-touch-icon.png', '_headers', '_redirects']) copyFileSync(join(plain, 'assets', name), join(out, name));
 
 // ---------------------------------------------------------------------------------------------------------
 // Checks: every link leads somewhere, and no page carries a script or a style of its own.

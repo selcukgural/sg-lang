@@ -1,0 +1,6 @@
+# The addresses of the Docusaurus site, which served sg-lang.org until November 2026, lead to the same pages
+# here: its pages lived under /docs/, these live at the root (Cloudflare Pages serves /learn/tour from
+# learn/tour.html). Its search page has become the index of every name.
+/docs        /                    301
+/docs/*      /:splat              301
+/search      /reference/          301

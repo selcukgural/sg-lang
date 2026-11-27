@@ -1,11 +1,12 @@
 # The web site of SG
 
-**The next site is in [`plain/`](plain/README.md)** (choice 2081): plain pages made from the same `docs/` by one
-script, with a page for each word of the language (`words/`), its manual page, and the wildcat logo. This
-Docusaurus site still publishes sg-lang.org until the switch, and it stays here after it.
+**sg-lang.org is published from [`plain/`](plain/README.md)** (choice 2081, switched on 27 November 2026): plain
+pages made from the same `docs/` by one script, with a page for each word of the language (`words/`), its manual
+page, and the wildcat logo. The pages of `docs/` are still written here, and both sites read them.
 
-The source of [sg-lang.org](https://sg-lang.org) (choices [1383-1390](../design/decisions/2026-11-19.md#slice-121)): a static site
-built with Docusaurus, published by Cloudflare Pages from this folder.
+What follows is the Docusaurus site that published [sg-lang.org](https://sg-lang.org) before
+(choices [1383-1390](../design/decisions/2026-11-19.md#slice-121)). It is kept, not deleted, and it still builds;
+nothing publishes it.
 
     npm ci --ignore-scripts      # Node 22 (.nvmrc); the packages are pinned in package-lock.json
     npm start                    # a server that rebuilds as the pages change
@@ -30,5 +31,4 @@ built with Docusaurus, published by Cloudflare Pages from this folder.
 - `overrides` in `package.json` lift packages that Docusaurus pulls in to the versions their security fixes came
   in (`serialize-javascript`, `tinypool`, `uuid`); `editors/vscode` does the same for `minimatch`. Take one out when
   the package that needs it moves past it.
-- Publishing: Cloudflare Pages builds `main` from this folder (`npm ci --ignore-scripts && npm run build`,
-  output `build`); a pull request gets a preview. No secret is kept in the repository.
+- Publishing: until 27 November 2026 Cloudflare Pages built `main` from this folder; it builds `plain/` now.

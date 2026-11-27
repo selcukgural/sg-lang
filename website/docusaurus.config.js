@@ -1,5 +1,6 @@
-// The web site of SG, sg-lang.org (choices 1383-1390): a static site built with Docusaurus and
-// published by Cloudflare Pages. Its pages are written for the reader; the decisions behind them
+// The first web site of SG (choices 1383-1390): a static site built with Docusaurus. Since 27 November
+// 2026 sg-lang.org is published from ../plain/ (choice 2081); this one is kept but not published.
+// Its pages are written for the reader; the decisions behind them
 // stay in the repository's `design/` and `design/decisions/`.
 // @ts-check
 

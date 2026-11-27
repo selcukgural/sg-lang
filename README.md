@@ -9,11 +9,11 @@
 
 <p align="center">
   <a href="https://sg-lang.org">Web site</a> ·
-  <a href="https://sg-lang.org/docs/learn/tour">Tour</a> ·
-  <a href="https://sg-lang.org/docs/learn/book/getting-started">Book</a> ·
-  <a href="https://sg-lang.org/docs/learn/install">Install</a> ·
-  <a href="https://sg-lang.org/docs/status">Status</a> ·
-  <a href="https://sg-lang.org/docs/about/community">Community</a>
+  <a href="https://sg-lang.org/learn/tour">Tour</a> ·
+  <a href="https://sg-lang.org/learn/book/getting-started">Book</a> ·
+  <a href="https://sg-lang.org/learn/install">Install</a> ·
+  <a href="https://sg-lang.org/status">Status</a> ·
+  <a href="https://sg-lang.org/about/community">Community</a>
 </p>
 
 SG is a small systems language that makes fast software safe by construction.
@@ -38,8 +38,8 @@ kept in the open.
 - **Small.** A feature pays for itself in what it costs when the program runs and in what it costs
   to learn; the safe way is the default and the risky way is written on purpose (`unsafe`).
 
-More on the site: [why SG](https://sg-lang.org/docs/about/why), with a program, what the compiler
-says and the measurements, and [where it stands](https://sg-lang.org/docs/status).
+More on the site: [why SG](https://sg-lang.org/about/why), with a program, what the compiler
+says and the measurements, and [where it stands](https://sg-lang.org/status).
 
 ## Quick start
 
@@ -94,24 +94,24 @@ Types come first and lines need no semicolons. `read` lends the list to `total` 
 away, so `main` still owns it; an error is a value (`Result`) that must be handled, and `match`
 names every case.
 
-Then [take the tour](https://sg-lang.org/docs/learn/tour) or read [the book](https://sg-lang.org/docs/learn/book/getting-started).
+Then [take the tour](https://sg-lang.org/learn/tour) or read [the book](https://sg-lang.org/learn/book/getting-started).
 The programs in [interpreter/examples](interpreter/examples) show the language as it is today.
 
 ## Where to find what
 
 | To | Read |
 |---|---|
-| Learn the language | The [tour](https://sg-lang.org/docs/learn/tour) and the [book](https://sg-lang.org/docs/learn/book/getting-started) on the site, [SG for Rust programmers](design/06-rust-to-sg.md), and the [example programs](interpreter/examples) |
+| Learn the language | The [tour](https://sg-lang.org/learn/tour) and the [book](https://sg-lang.org/learn/book/getting-started) on the site, [SG for Rust programmers](design/06-rust-to-sg.md), and the [example programs](interpreter/examples) |
 | See what runs today | [What runs today](interpreter/docs/features/README.md), by topic: [the language](interpreter/docs/features/language.md) · [ownership and borrowing](interpreter/docs/features/ownership.md) · [collections](interpreter/docs/features/collections.md) · [numbers and text](interpreter/docs/features/numbers-and-text.md) · [tasks and async](interpreter/docs/features/concurrency.md) · [C and the machine](interpreter/docs/features/c-and-the-machine.md) · [the library](interpreter/docs/features/library.md) · [tests and the editor](interpreter/docs/features/tools.md) |
-| See what is missing | [Not here yet](interpreter/docs/not-here-yet.md), and in short the [status page](https://sg-lang.org/docs/status) |
+| See what is missing | [Not here yet](interpreter/docs/not-here-yet.md), and in short the [status page](https://sg-lang.org/status) |
 | Know the rules a program is held to | [Rules already enforced](interpreter/docs/rules-enforced.md) |
 | Know why it is so | [The decisions by topic](design/rules/README.md), each with its reason; [the idea and the principle behind them](design/04-decisions-and-open-questions.md); [the choices of each slice](design/decisions/README.md), day by day |
 | Follow how it was built, and what comes next | [How far it has come, and what is next](interpreter/docs/progress.md) |
 | See how fast it is | [Benchmarks](benchmarks/README.md): [against C](benchmarks/against-c.md) · [programs against Rust and Zig](benchmarks/programs.md) · [the library against Rust and Zig](benchmarks/library.md) · [slower than C](benchmarks/slower-than-c.md) · [how it is measured](benchmarks/method.md) |
 | Build it, run it, change it | [The interpreter](interpreter/README.md): [the C back end](interpreter/docs/c-back-end.md) · [how it is built](interpreter/docs/architecture.md) · [how it is tested](interpreter/docs/testing.md) |
-| Find your way in the repository | [The repository](https://sg-lang.org/docs/about/repository): every folder, the design documents and the background essays |
-| Read the background | [Essays on C, Rust, Zig and Go](topics), the [reading list](sources/reading-list.md), and [how it got here](https://sg-lang.org/docs/about/history) |
-| Ask a question, share an idea | The [mailing list](https://groups.google.com/g/sg-lang) (join by an empty message to [sg-lang+subscribe@googlegroups.com](mailto:sg-lang+subscribe@googlegroups.com)) or [Discussions](https://github.com/selcukgural/sg-lang/discussions) on GitHub, whichever you like; bugs go to [the issues](https://github.com/selcukgural/sg-lang/issues), security problems to [the security policy](SECURITY.md). [Community](https://sg-lang.org/docs/about/community) says where each thing goes |
+| Find your way in the repository | [The repository](https://sg-lang.org/about/repository): every folder, the design documents and the background essays |
+| Read the background | [Essays on C, Rust, Zig and Go](topics), the [reading list](sources/reading-list.md), and [how it got here](https://sg-lang.org/about/history) |
+| Ask a question, share an idea | The [mailing list](https://groups.google.com/g/sg-lang) (join by an empty message to [sg-lang+subscribe@googlegroups.com](mailto:sg-lang+subscribe@googlegroups.com)) or [Discussions](https://github.com/selcukgural/sg-lang/discussions) on GitHub, whichever you like; bugs go to [the issues](https://github.com/selcukgural/sg-lang/issues), security problems to [the security policy](SECURITY.md). [Community](https://sg-lang.org/about/community) says where each thing goes |
 
 ## License
 
