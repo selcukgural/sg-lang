@@ -154,7 +154,7 @@ Result<void, IoError> main() {
     var bytes = map.bytes()
     var spaces = 0
     for b in bytes {
-        if b == (byte)' ' {
+        if b == ' ' {
             spaces += 1
         }
     }
