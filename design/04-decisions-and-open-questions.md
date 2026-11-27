@@ -8,8 +8,10 @@ The reasons for the dropped generation model are in the [memory model](01-memory
 
 A language's reason to exist should fit in one sentence. The direction changed on 5 November, and the sentence
 became: **a systems language as fast as C, without macros, that gives Rust's compile-time guarantees in a
-notation that reads like C#.** Since 27 November 2026 (choices 2078 and 2079) it is: **a systems language small like
-C, readable like C#, fast and memory safe like Rust.** The solutions come from Rust, the naming and the notation are ours. No arena. A
+notation that reads like C#.** On 27 November 2026 it became, for a few hours, "a systems language small like
+C, readable like C#, fast and memory safe like Rust" (choice 2079); naming other languages was dropped the same
+day, and it is now (choice 2080): **a small systems language that makes fast software safe by construction.** The
+solutions come from Rust, the naming and the notation are ours. No arena. A
 side project / research, with no revenue goal.
 
 ## Core principle: safe default

@@ -291,4 +291,5 @@ while the slice was built and how it was tested. This folder is that record, one
 | [199](2026-11-27.md#slice-199) | Watching a folder | 2056–2065 |
 | [200](2026-11-27.md#slice-200) | A folder as a root, a file read and written through one opening, a file with no name | 2066–2077 |
 | [The rule of speed](2026-11-27.md#the-rule-of-speed) | SG is held to safe Rust doing the same work; C is the yardstick | 2078 |
-| [The sentence and the tagline](2026-11-27.md#the-sentence-and-the-tagline) | Small like C, readable like C#, fast and memory safe like Rust; "Plain to read. Fast to run. Memory safe by design." | 2079 |
+| [The sentence and the tagline](2026-11-27.md#the-sentence-and-the-tagline) | Small like C, readable like C#, fast and memory safe like Rust; "Plain to read. Fast to run. Memory safe by design." (replaced by 2080) | 2079 |
+| [The tagline, again](2026-11-27.md#the-tagline-again) | "Small enough to know by heart. Safe and fast by construction."; no other language named | 2080 |

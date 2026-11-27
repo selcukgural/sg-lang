@@ -87,7 +87,7 @@ const pillars = [
     text: 'Ownership and borrows are checked when the program compiles, with no garbage collector. What depends on data, an index or an overflow, stops the program with a message that says what to write instead. `unsafe` marks the rest.',
   },
   {
-    title: 'Fast to run',
+    title: 'Fast',
     text: 'SG compiles through C, with no runtime to carry. A check that safety does not need is left out by default; the checked way is one word away. SG is held to safe Rust doing the same work, and every claim is measured against C, Rust and Zig.',
   },
   {
@@ -187,7 +187,7 @@ const next = [
 
 export default function Home() {
   return (
-    <Layout title="SG" description="SG, a systems language: small like C, readable like C#, fast and memory safe like Rust.">
+    <Layout title="SG" description="SG, a small systems language that makes fast software safe by construction.">
       <header className={styles.hero}>
         <div className={styles.heroInner}>
           <div className={styles.heroText}>
@@ -195,9 +195,9 @@ export default function Home() {
               <img className={styles.mark} src="/img/logo-hero.svg" alt="" width="88" height="88" />
               <span className={styles.title}>SG</span>
             </div>
-            <p className={styles.tagline}>Plain to read. Fast to run. Memory safe by design.</p>
+            <p className={styles.tagline}>Small enough to know by heart. Safe and fast by construction.</p>
             <h1 className={styles.lead}>
-              A systems language: small like C, readable like C#, fast and memory safe like Rust.
+              A small systems language that makes fast software safe by construction.
             </h1>
             <div className={styles.buttons}>
               <Link className="button button--secondary button--lg" to="/docs/learn/tour">Get started</Link>

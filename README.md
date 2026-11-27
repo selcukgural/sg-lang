@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><strong>Plain to read. Fast to run. Memory safe by design.</strong></p>
+<p align="center"><strong>Small enough to know by heart. Safe and fast by construction.</strong></p>
 
 <p align="center">
   <a href="https://sg-lang.org">Web site</a> ·
@@ -16,7 +16,7 @@
   <a href="https://sg-lang.org/docs/about/community">Community</a>
 </p>
 
-SG is a systems language: small like C, readable like C#, fast and memory safe like Rust.
+SG is a small systems language that makes fast software safe by construction.
 
 It is before its preview. The language, its checker, an interpreter and a back end that compiles
 through C are built and tested on Linux, macOS and Windows; nothing is released yet and everything
@@ -28,7 +28,7 @@ kept in the open.
 - **Memory safe without a collector.** One owner for each value, and borrows (`read`, `ref`) checked
   when the program compiles: the use after free, the dangling pointer and the forgotten error are
   compile errors, each with the fix when it is known.
-- **Fast to run.** SG compiles through C with no runtime to carry. It is held to safe Rust doing the same
+- **Fast.** SG compiles through C with no runtime to carry. It is held to safe Rust doing the same
   work, and measured against C: of 61 programs written in SG and in C by hand, 37 take the time of C within
   5% and 13 are faster ([the numbers](benchmarks/README.md)).
 - **Real programs.** [gifsicle](https://www.lcdf.org/gifsicle/) 1.99, the GIF tool, is written in SG as

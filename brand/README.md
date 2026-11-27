@@ -4,8 +4,9 @@ The logo is the **S-cat**: a cat whose head and body make an S, with one blue an
 the cat of SG, has. The name is written **sg-lang** in the logo, the repository and the domain, and the
 language is called **SG** in text.
 
-Tagline: **Plain to read. Fast to run. Memory safe by design.** (choice 2079). The social card still shows the one before it, **Safe by design. Fast by default.**, drawn as
-outlines by `src/build.py`; it is drawn again with the next logo.
+Tagline: **Small enough to know by heart. Safe and fast by construction.** (choice 2080). The social card
+still shows an earlier one, **Safe by design. Fast by default.**, drawn as outlines by `src/build.py`; it is
+drawn again with the next logo.
 
 ## Files
 
