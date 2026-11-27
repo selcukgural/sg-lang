@@ -1,0 +1,11 @@
+TerminalStop
+Continue
+TerminalInput
+TerminalOutput
+Child
+Alarm
+true
+Continue and Child, not listened for: still here
+TerminalStop, TerminalInput, TerminalOutput, Alarm
+started: true
+then: Child

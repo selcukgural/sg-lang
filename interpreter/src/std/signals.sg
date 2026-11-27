@@ -7,7 +7,9 @@
 // call them.
 
 // A signal a program can listen for. Their numbers are not given: `User1` is 30 on macOS and 10 on
-// Linux.
+// Linux. A program that listens for one takes the place of what it does by default: a listener of
+// `TerminalStop` is not paused by Ctrl-Z, as a shell is not. Windows sends a program only
+// `Interrupt` and `Terminate`; the others come there only from `Signals.raise`.
 public enum Signal : Copyable, Equatable, Hashable, Formattable {
     // Ctrl-C at a terminal: SIGINT.
     Interrupt
@@ -23,6 +25,20 @@ public enum Signal : Copyable, Equatable, Hashable, Formattable {
     User2
     // The terminal changed its size: SIGWINCH.
     WindowChange
+    // Ctrl-Z at a terminal, which pauses a program by default: SIGTSTP.
+    TerminalStop
+    // A paused program goes on: SIGCONT. It goes on whether it listens or not.
+    Continue
+    // A program not in front at its terminal read from it, and is paused by default: SIGTTIN.
+    TerminalInput
+    // A program not in front at its terminal wrote to it or changed its settings, and is paused
+    // by default when the terminal says so: SIGTTOU.
+    TerminalOutput
+    // A program this one started ended, was paused or went on: SIGCHLD. Nothing by default.
+    Child
+    // A time set with the system ran out, which ends a program by default: SIGALRM. The language
+    // sets none; a library of C may.
+    Alarm
 }
 
 // The place of a signal among the kinds, as the system calls take it.
@@ -35,6 +51,12 @@ int signalKind(Signal signal) {
         User1 => return 4
         User2 => return 5
         WindowChange => return 6
+        TerminalStop => return 7
+        Continue => return 8
+        TerminalInput => return 9
+        TerminalOutput => return 10
+        Child => return 11
+        Alarm => return 12
     }
 }
 
@@ -47,7 +69,13 @@ Signal signalOf(long kind) {
         3 => return Signal.Quit
         4 => return Signal.User1
         5 => return Signal.User2
-        _ => return Signal.WindowChange
+        6 => return Signal.WindowChange
+        7 => return Signal.TerminalStop
+        8 => return Signal.Continue
+        9 => return Signal.TerminalInput
+        10 => return Signal.TerminalOutput
+        11 => return Signal.Child
+        _ => return Signal.Alarm
     }
 }
 
@@ -74,6 +102,14 @@ public struct Signals {
     // one it does what it does by default, ending the program at once for most of them.
     public void raise(Signal signal) {
         System.signalRaise(signalKind(signal))
+    }
+
+    // Pauses this program, as Ctrl-Z pauses it but with the signal `SIGSTOP`, which no program
+    // can listen for: what a shell does to itself when it is not to be in front. It goes on, and
+    // the call returns, when another program sends it `Signal.Continue` (`fg` at the shell that
+    // started it). What was printed goes out first. Windows pauses no program: there nothing.
+    public void stopSelf() {
+        System.signalRaise(13)
     }
 }
 

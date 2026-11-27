@@ -93,8 +93,11 @@
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
-- **Of other programs**: groups of processes and a session of its own (slice 197), a terminal of its own
-  (pty, slice 198); a stream of a program given an open `File` or a socket (Rust's `Stdio::from`; a
+- **Of other programs**: a terminal of its own (pty, slice 198); a program that joins the group of another by
+  its number (`setpgid` to a group; a `Pipeline.newGroup` puts its programs in one group, and Windows cannot,
+  2039); the modes of the terminal of a paused job kept and put back (slice 198); a wait for any child
+  (`waitpid(-1)`: each `Process` is waited for by itself, 2039); a group stopped as one on Windows, where
+  `killGroup` and a signal other than `Interrupt` reach only the first program (job objects, later); a stream of a program given an open `File` or a socket (Rust's `Stdio::from`; a
   path is given, 2017); a wait with a time limit is `waitAsync` with a token of
   `CancellationSource.after(ms)`. A program let go of by `detach` in the interpreter writes what it
   wrote to an output it shared with the run straight to the output of the process once it has ended. A program
@@ -157,9 +160,9 @@
 - **Of tests**: running the compiled tests at once, several processes side by side (974); the bytes and
   the places of the blocks a debug build reports as not given back, which a build under the sanitizers
   shows (975).
-- **Of signals**: the signals of faults (SIGSEGV and the others), SIGALRM, SIGCHLD and those of job control
-  (SIGTSTP, SIGCONT, SIGTTIN, SIGTTOU); real-time signals and the value they carry; how many of one kind
-  came (796 for one that comes as the last listener of its kind ends); a signal to a group of processes.
+- **Of signals**: the signals of faults (SIGSEGV and the others); real-time signals and the value they carry;
+  how many of one kind came (796 for one that comes as the last listener of its kind ends); `alarm()`, which
+  the clocks of SG stand for (2025).
   A handler of C set inside `unsafe` and a listener of the same signal are not checked against each
   other (787).
 - **Of `examples/curl`**: async requests (libcurl's multi interface on the loop of the network),

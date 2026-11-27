@@ -1,0 +1,4 @@
+panic: the program starts in a session of its own (`newSession`), which has no terminal of this program to be in front at (`foreground`)
+  --> panic_process_foreground_session.sg:7:9
+ 7 |     try command.run()
+   |         ^^^^^^^^^^^^^

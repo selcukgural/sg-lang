@@ -139,6 +139,172 @@ extern "C" {
     fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
     #[cfg(target_os = "linux")]
     fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+    fn killpg(group: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+    fn waitpid(pid: std::ffi::c_int, status: *mut std::ffi::c_int, options: std::ffi::c_int) -> std::ffi::c_int;
+    fn setsid() -> std::ffi::c_int;
+    fn getpgrp() -> std::ffi::c_int;
+    fn tcsetpgrp(fd: std::ffi::c_int, group: std::ffi::c_int) -> std::ffi::c_int;
+    fn sigemptyset(set: *mut u8) -> std::ffi::c_int;
+    fn sigaddset(set: *mut u8, signal: std::ffi::c_int) -> std::ffi::c_int;
+    fn pthread_sigmask(how: std::ffi::c_int, set: *const u8, old: *mut u8) -> std::ffi::c_int;
+    #[link_name = "signal"]
+    fn set_handler(number: std::ffi::c_int, handler: usize) -> usize;
+}
+
+/// `SIG_BLOCK` and `SIG_SETMASK`, which differ.
+const SIG_BLOCK: std::ffi::c_int = if cfg!(target_os = "linux") { 0 } else { 1 };
+const SIG_SETMASK: std::ffi::c_int = if cfg!(target_os = "linux") { 2 } else { 3 };
+/// `SIGTTOU`, the same on both; `SIGTSTP` and `SIGTTIN`.
+const SIGTTOU: std::ffi::c_int = 22;
+const SIGTSTP: std::ffi::c_int = if cfg!(target_os = "linux") { 20 } else { 18 };
+const SIGTTIN: std::ffi::c_int = 21;
+/// ENOTTY: no terminal where one was asked for (`IoError.NotATerminal`, 2033).
+const ENOTTY: i32 = 25;
+
+/// `tcsetpgrp` on `fd` while `SIGTTOU` is held off on this thread, so that a program not in front
+/// itself is not paused by asking; the errno of the call, or 0. Safe between `fork` and `exec`:
+/// it allocates nothing (a `sigset_t` is at most 128 bytes).
+fn front_on(fd: std::ffi::c_int, group: std::ffi::c_int) -> i32 {
+    let mut held = [0u8; 128];
+    let mut before = [0u8; 128];
+    // SAFETY: both sets have room for a `sigset_t`; the mask is put back as it was.
+    unsafe {
+        sigemptyset(held.as_mut_ptr());
+        sigaddset(held.as_mut_ptr(), SIGTTOU);
+        pthread_sigmask(SIG_BLOCK, held.as_ptr(), before.as_mut_ptr());
+        let done = tcsetpgrp(fd, group);
+        let code = if done == 0 { 0 } else { *errno_place() };
+        pthread_sigmask(SIG_SETMASK, before.as_ptr(), std::ptr::null_mut());
+        code
+    }
+}
+
+fn errno_place() -> *mut std::ffi::c_int {
+    extern "C" {
+        #[cfg(target_os = "linux")]
+        fn __errno_location() -> *mut std::ffi::c_int;
+        #[cfg(not(target_os = "linux"))]
+        fn __error() -> *mut std::ffi::c_int;
+    }
+    // SAFETY: both give the place of this thread's `errno`.
+    #[cfg(target_os = "linux")]
+    return unsafe { __errno_location() };
+    #[cfg(not(target_os = "linux"))]
+    return unsafe { __error() };
+}
+
+/// The terminal of this program, `/dev/tty`, opened close-on-exec; none is ENOTTY.
+fn open_tty() -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const O_NOCTTY: i32 = if cfg!(target_os = "linux") { 0o400 } else { 0x20000 };
+    std::fs::OpenOptions::new().read(true).write(true).custom_flags(O_NOCTTY).open("/dev/tty").map_err(|_| std::io::Error::from_raw_os_error(ENOTTY))
+}
+
+/// The group, the session and the terminal of a program about to start, as `ways[5]` to
+/// `ways[7]` say (see `SystemCall::Start`): a new group of its own (-1) or the group of that
+/// number (2023, 2037), a session of its own (2024), and its group put in front at the terminal of
+/// this program before the program runs (2034), with the three signals of a terminal at their
+/// default so that Ctrl-Z pauses it. The terminal is opened here, so that none is the error of the
+/// start; it is kept open until the program has started.
+pub(crate) fn grouped(command: &mut std::process::Command, ways: &[i128]) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let way = |at: usize| ways.get(at).copied().unwrap_or(0);
+    if way(6) != 0 {
+        // SAFETY: `setsid` is safe between `fork` and `exec`, and nothing is allocated.
+        unsafe {
+            command.pre_exec(|| match setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
+    } else if way(5) != 0 {
+        command.process_group(if way(5) < 0 { 0 } else { way(5) as i32 });
+    }
+    if way(7) == 0 {
+        return Ok(None);
+    }
+    let tty = open_tty()?;
+    let fd = tty.as_raw_fd();
+    // SAFETY: between `fork` and `exec` the closure calls only `getpgrp`, the calls of the mask,
+    // `tcsetpgrp` and `signal`, and allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            match front_on(fd, getpgrp()) {
+                0 => {}
+                code => return Err(std::io::Error::from_raw_os_error(code)),
+            }
+            for number in [SIGTSTP, SIGTTIN, SIGTTOU] {
+                set_handler(number, 0);
+            }
+            Ok(())
+        });
+    }
+    Ok(Some(tty))
+}
+
+/// `System.terminalFront`: the group (this program's own for 0) is put in front at the terminal.
+pub(crate) fn terminal_front(group: i64) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let tty = open_tty()?;
+    // SAFETY: `getpgrp` only asks.
+    let group = if group > 0 { group as std::ffi::c_int } else { unsafe { getpgrp() } };
+    // No program of the group is in the session of the terminal, or left at all: EPERM on Linux,
+    // EINVAL on macOS, ESRCH as well.
+    const EPERM: i32 = 1;
+    const ESRCH: i32 = 3;
+    const EINVAL: i32 = 22;
+    match front_on(tty.as_raw_fd(), group) {
+        0 => Ok(()),
+        EPERM | ESRCH | EINVAL => Err(std::io::Error::from_raw_os_error(2)),
+        code => Err(std::io::Error::from_raw_os_error(code)),
+    }
+}
+
+/// `System.signalGroup`: `killpg` to the group; one with no program left takes it as done.
+pub(crate) fn signal_group(_pid: i64, group: i64, signal: i64) {
+    if let Ok(group) = std::ffi::c_int::try_from(group) {
+        if group > 0 {
+            // SAFETY: sends a signal to the programs of one group.
+            unsafe { killpg(group, signal as std::ffi::c_int) };
+        }
+    }
+}
+
+/// `System.waitChange` (2036): the next change of program `pid`, as `waitpid` with `WUNTRACED`
+/// and `WCONTINUED` gives it, waited for when `block`: 0 and the code or 1 and the signal when it
+/// ended and was taken away, 2 and the signal that paused it, 3 when it went on; `None` when
+/// nothing changed.
+pub(crate) fn wait_change(pid: i64, block: bool) -> std::io::Result<Option<(i64, i64)>> {
+    const WNOHANG: std::ffi::c_int = 1;
+    const WUNTRACED: std::ffi::c_int = 2;
+    const WCONTINUED: std::ffi::c_int = if cfg!(target_os = "linux") { 8 } else { 0x10 };
+    let options = WUNTRACED | WCONTINUED | if block { 0 } else { WNOHANG };
+    let mut status: std::ffi::c_int = 0;
+    loop {
+        // SAFETY: `status` lives across the call.
+        let got = unsafe { waitpid(pid as std::ffi::c_int, &mut status, options) };
+        if got > 0 {
+            break;
+        }
+        if got == 0 {
+            return Ok(None);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    let low = status & 0x7f;
+    let high = i64::from((status >> 8) & 0xff);
+    // Went on: 0xffff on Linux; on macOS stopped (0x7f) with signal 0x13.
+    let continued = if cfg!(target_os = "linux") { status == 0xffff } else { low == 0x7f && high == 0x13 };
+    Ok(Some(match () {
+        () if continued => (3, 0),
+        () if low == 0x7f => (2, high),
+        () if low == 0 => (0, high),
+        () => (1, i64::from(low)),
+    }))
 }
 
 /// The highest descriptor the process may have, plus one: `sysconf(_SC_OPEN_MAX)`, at most a
@@ -513,6 +679,7 @@ pub(crate) fn io_kind(code: i32) -> usize {
         // ENOSPC, EDQUOT
         28 => 3,
         _ if code == QUOTA => 3,
+        ENOTTY => 21,
         _ => 5,
     }
 }

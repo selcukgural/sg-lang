@@ -1451,6 +1451,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     TooLong                                      // fill on a reader whose block holds its limit already
     AddressNotAvailable                          // not an address of the machine, or no local port left
     NotAFile                                     // File.openRegular met a pipe, a device or a socket
+    NotATerminal                                 // no terminal where one was asked for
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name
@@ -2349,6 +2350,26 @@ print(Process.currentId())                     // also parentId()
 try Process.signalId(4242, Signal.Terminate)   // a program by its number; killId(id) sends 9
 ```
 
+A program starts in a group or a session of its own, as a shell starts a job or a daemon; a job is put in front
+at the terminal, and what became of it, paused, gone on or ended, is waited for:
+
+```
+var job = Command("vim")
+job.foreground()                               // a group of its own, in front before it runs
+var editor = try job.start()                   // also newGroup(), newSession(); Pipeline.newGroup()
+match try editor.waitChange() {                // also tryWaitChange(), waitChangeAsync(token)
+    Stopped(number) => {                       // Ctrl-Z: was paused by signal 20
+        try Terminal.takeBack()                // this program in front again
+        try Terminal.giveTo(read editor)       // fg
+        editor.signalGroup(Signal.Continue)    // killGroup() sends 9 to the whole group
+    }
+    Continued => {}
+    Ended(status) => try Terminal.takeBack()
+}
+print(editor.groupId())                        // int?: null in the group of this program
+Signals.stopSelf()                             // SIGSTOP to this program; Signal has TerminalStop, Continue, Child...
+```
+
 A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
 is written; one that takes `this` by value may start as a task of its own.
 
@@ -2368,8 +2389,9 @@ waiting.signal(Signal.Hangup)                  // to a program started with Comm
 
 Several signals of one kind before a call are one, kinds come in the order they came, and every listener of a kind
 gets it. Once the last listener of a kind ends, the kind does what it did before, so the next Ctrl-C ends the
-program again. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`, with no
-numbers, since they differ between systems. A server that stops cleanly cancels its accepts on the first signal
+program again. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2`, `WindowChange`, or one of
+job control, `TerminalStop`, `Continue`, `TerminalInput`, `TerminalOutput`, `Child` and `Alarm`, with no numbers,
+since they differ between systems. A server that stops cleanly cancels its accepts on the first signal
 and waits for the connections it has (`examples/shutdown`). On Windows `Interrupt` is Ctrl-C and Ctrl-Break, and
 `Terminate` is the console closed, the user logging off and the system shutting down, after which the program has
 the few seconds Windows gives it to end; the other kinds never come there, and listening for them is no error.

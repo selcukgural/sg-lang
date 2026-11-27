@@ -1,0 +1,29 @@
+// The terminal of this program: the one it was started at, whose keyboard sends Ctrl-C and Ctrl-Z
+// to the group of programs in front there (`/dev/tty`). A shell puts the group of a job in front
+// while the job runs, and itself again once the job has ended or was paused: `giveTo` and
+// `takeBack`. A console of Windows has no group in front: there both do nothing. Written in SG and
+// brought along by the language; only the call of the system under it (`System.terminalFront`) is
+// the compiler's own.
+
+public struct Terminal {
+    // Puts the group of `process` in front at the terminal of this program, as `fg` at a shell
+    // does: it reads the keyboard, and Ctrl-C and Ctrl-Z reach it and not this program. This
+    // program may ask while it is not in front itself. A paused job does not go on by this; send it
+    // `Signal.Continue` after (`Process.signalGroup`). A program not started in a group of its own
+    // (`Command.newGroup`, `foreground`, `Pipeline.newGroup`) is a panic: its group is that of
+    // this program. `NotATerminal` when this program has none; `NotFound` when no program of the
+    // group is left.
+    public Result<void, IoError> giveTo(read Process process) {
+        match process.groupId() {
+            null => panic("`Terminal.giveTo` of a program that was not started in a group of its own (`Command.newGroup`)")
+            var group => return System.terminalFront((long)group)
+        }
+    }
+
+    // Puts the group of this program in front at its terminal again, after a job put in front
+    // has ended or was paused: what a shell does before it reads the next command. `NotATerminal`
+    // when this program has none.
+    public Result<void, IoError> takeBack() {
+        return System.terminalFront(0)
+    }
+}

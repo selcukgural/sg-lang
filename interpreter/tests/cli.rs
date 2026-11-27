@@ -302,6 +302,45 @@ fn streams_on_a_terminal() {
     }
 }
 
+/// A job in front at a terminal (2031 to 2036): `Command.foreground`, `Terminal.giveTo` and
+/// `takeBack`, a job paused as Ctrl-Z pauses it and told to go on, seen by `waitChange` and
+/// `waitChangeAsync`, interpreted and compiled. Each program runs at a terminal of its own made by
+/// `script`; `ps` says which group is in front. Skipped where there is no `script`.
+#[cfg(unix)]
+#[test]
+fn a_job_in_front_at_a_terminal() {
+    if Command::new("script").arg("-V").stdin(Stdio::null()).output().is_err() {
+        eprintln!("no `script`: a job in front at a terminal is not tested");
+        return;
+    }
+    let dir = work("a_job_in_front_at_a_terminal");
+    let programs = [("front", include_str!("terminal/front.sg")), ("front_async", include_str!("terminal/front_async.sg"))];
+    let expected = [
+        (
+            "front",
+            "me in front: true\nchild in front: 1\nstatus: true\nme in front again: true\ntrue\nme in front while it is paused: false\n\
+             me in front after takeBack: true\nthe job in front: true\nwent on\nresumed\nexited with code 0\nme in front at the end: true\n\
+             giving it to a group with no program left: true\nexited with code 0\n",
+        ),
+        ("front_async", "true\nwent on\nresumed again\nexited with code 0\nme in front at the end: true\nexited with code 0\n"),
+    ];
+    for (command, way) in both_ways(&dir, &programs) {
+        let program = std::iter::once(command.get_program()).chain(command.get_args()).map(|word| format!("'{}'", word.to_string_lossy())).collect::<Vec<_>>().join(" ");
+        // macOS's `script` takes the command as its words, util-linux's as `-c`.
+        let mut script = Command::new("script");
+        match cfg!(target_os = "macos") {
+            true => script.args(["-q", "/dev/null", "sh", "-c", &program]),
+            false => script.args(["-qec", &program, "/dev/null"]),
+        };
+        let out = script.current_dir(&dir).stdin(Stdio::null()).finished();
+        // The terminal ends its lines with `\r\n`, and macOS's `script` echoes the end of its
+        // input as `^D`, with the backspaces after it.
+        let shown = text(&out.stdout).replace('\r', "").replace("^D\u{8}\u{8}", "").replace("^D", "");
+        let (_, wanted) = expected.iter().find(|(stem, _)| way.starts_with(&format!("{stem} "))).expect("a program of the test");
+        assert_eq!(shown, *wanted, "{way}: {}", text(&out.stderr));
+    }
+}
+
 /// An output that was never open (`>&-`) takes what is written and drops it, interpreted and
 /// compiled (1547), as Rust's own output does: the program goes on to its end.
 #[cfg(unix)]

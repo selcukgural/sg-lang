@@ -1,0 +1,9 @@
+// A program in a session of its own has no terminal of this program to be put in front at, so
+// `foreground` with `newSession` is a panic where it starts (2034).
+Result<void, ProcessError> main() {
+    var command = Command("sg-test-tool")
+    command.newSession()
+    command.foreground()
+    try command.run()
+    return Ok()
+}

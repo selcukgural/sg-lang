@@ -7,7 +7,7 @@ its arithmetic checked, Zig with `ReleaseFast` and `ReleaseSafe`. The machine, t
 are in [How it is measured](method.md), and so are the rules of fairness (1554). `python3 trials/measure.py std/json`
 measures one module again.
 
-Not measured yet: `atomic`, `files`, `process`, `regex`, `signals`.
+Not measured yet: `atomic`, `files`, `process`, `regex`, `signals`, `terminal`.
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,

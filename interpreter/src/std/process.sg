@@ -32,6 +32,27 @@ public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
     }
 }
 
+// What became of a program that runs: `Process.waitChange` gives it, as a shell sees its jobs.
+public enum ProcessChange : Copyable, Equatable, Formattable {
+    // A signal paused it: Ctrl-Z at the terminal (`Signal.TerminalStop`), a read of the terminal
+    // while not in front (`TerminalInput`), or `SIGSTOP`. Its number, as `ExitStatus.Signal` has
+    // one: 20 for Ctrl-Z on Linux, 18 on macOS.
+    Stopped(int number)
+    // It went on after a pause (`Signal.Continue`).
+    Continued
+    // It ended, and has been waited for.
+    Ended(ExitStatus status)
+
+    // `was paused by signal 20`, `went on`, or how it ended (`exited with code 0`).
+    public void format(read this, ref Formatter f) {
+        match this {
+            Stopped(number) => f.write($"was paused by signal {number}")
+            Continued => f.write("went on")
+            Ended(status) => f.write($"{status}")
+        }
+    }
+}
+
 // Why `run` or `output` did not give what the program did.
 public enum ProcessError : Copyable, Equatable, Formattable {
     // The program could not be started (`NotFound`, `PermissionDenied`, `InvalidInput` for a word
@@ -79,6 +100,12 @@ public struct Command {
     // Where its standard error goes: as for the output, or where its output goes (6).
     long errWay
     string errPath
+    // The group it starts in: this program's (0) or a new one of its own (-1).
+    long group
+    // It starts in a session of its own.
+    bool session
+    // Its group is put in front at the terminal of this program as it starts.
+    bool front
 
     // The program to run. A name without `/` is looked for in the folders of `PATH` when it runs,
     // leaving out an empty folder and one that does not start with `/`, so a file of the folder this
@@ -90,7 +117,8 @@ public struct Command {
         return Command {
             program = program.clone(), words = words, folder = "", clear = false,
             names = List<string>(), values = List<string>(), kept = List<bool>(),
-            inWay = 0, inPath = "", text = "", outWay = 0, outPath = "", errWay = 0, errPath = ""
+            inWay = 0, inPath = "", text = "", outWay = 0, outPath = "", errWay = 0, errPath = "",
+            group = 0, session = false, front = false
         }
     }
 
@@ -222,13 +250,42 @@ public struct Command {
         this.errPath = ""
     }
 
+    // The program starts in a group of programs of its own, which those it starts join, as a shell
+    // starts each job: `Process.signalGroup` and `killGroup` then reach them all, and the end of
+    // its `Process` without a wait stops them all. Ctrl-C at the terminal reaches only the group in
+    // front there, so a program in a group of its own does not get it (unless `foreground` put it
+    // in front). On Windows the group is made with `CREATE_NEW_PROCESS_GROUP`, to which only Ctrl-
+    // Break can be sent.
+    public void newGroup(ref this) {
+        this.group = -1
+    }
+
+    // The program starts in a session of its own, with no terminal (`setsid`), as a daemon does: a
+    // terminal that closes does not send it `Hangup`. It is in a group of its own too. On Windows it
+    // starts without a console (`DETACHED_PROCESS`).
+    public void newSession(ref this) {
+        this.session = true
+    }
+
+    // The program starts in a group of its own that is put in front at the terminal of this
+    // program before it runs a single step, as a shell runs a job in front: it reads the keyboard,
+    // and Ctrl-C and Ctrl-Z at the terminal reach it and not this program. No terminal is
+    // `IoError.NotATerminal` where it starts. When it has ended, or was paused, `Terminal.takeBack`
+    // puts this program in front again; `run`, `output` and `status` do it themselves once it has
+    // ended. One with `newSession` too is a panic where it starts: a session of its own has no
+    // terminal of this program. On Windows, whose console has no group in front, only the group.
+    public void foreground(ref this) {
+        this.group = -1
+        this.front = true
+    }
+
     // Starts the program and goes on while it runs. Its input, output and standard error are what
     // the calls above said: pipes kept by the `Process` it gives where `pipeInput`, `pipeOutput`
     // and `pipeError` asked for them, and those of this program where nothing was said; a text of
     // `input` is written into its input while it runs. The `Process` it gives is waited for
     // (`wait`, `waitAsync`); one that ends without that stops the program.
     public Result<Process, IoError> start(read this) {
-        var ways = long[5] { this.inWay, this.outWay, this.errWay, -1, -1 }
+        var ways = this.plainWays()
         return this.begin(read ways)
     }
 
@@ -288,6 +345,13 @@ public struct Command {
     // `output` without holding the thread, for an async function. A cancel stops the program; with
     // a token cancelled before, it does not start.
     public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
+        var got = await this.outputWaited(read token)
+        this.giveBack()
+        return got
+    }
+
+    // `outputAsync`, but for the terminal given back.
+    async Result<string, ProcessError> outputWaited(read this, read CancellationToken token) {
         try Command.unless(read token)
         var ways = this.waysOf(true)
         var process = try this.begin(read ways)
@@ -317,7 +381,18 @@ public struct Command {
         try token.check()
         var ways = this.waysOf(false)
         var process = try this.begin(read ways)
-        return await process.waitAsync(read token)
+        var status = await process.waitAsync(read token)
+        this.giveBack()
+        return status
+    }
+
+    // A program put in front (`foreground`) that `run`, `output` or `status` waited for has ended:
+    // this one is put in front again. One that cannot be has no terminal any more, and nothing to
+    // give back.
+    void giveBack(read this) {
+        if this.front {
+            _ = System.terminalFront(0)
+        }
     }
 
     // `IoError.Cancelled` when the token is cancelled already, so that the program does not start.
@@ -330,7 +405,7 @@ public struct Command {
     // `start`, so it is the stream of this program here; the output is a pipe read into the text
     // when `capture`, unless it was sent to a file or nowhere, and the input is then nothing unless
     // the program was given one.
-    long[5] waysOf(read this, bool capture) {
+    long[8] waysOf(read this, bool capture) {
         long input = this.inWay
         if input == 3 || (capture && input == 0) {
             input = 0
@@ -349,12 +424,28 @@ public struct Command {
         if error == 1 {
             error = 0
         }
-        return long[5] { input, output, error, -1, -1 }
+        return long[8] { input, output, error, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0 }
+    }
+
+    // The ways of a program started and gone on from: the streams as the calls above said, no
+    // pipe of a `Pipeline`, then the group (0 this program's, -1 a new one, or the number of one
+    // to join), the session and the terminal (0 or 1), as `System.start` takes them.
+    long[8] plainWays(read this) {
+        return long[8] { this.inWay, this.outWay, this.errWay, -1, -1, this.group, this.session ? 1 : 0, this.front ? 1 : 0 }
+    }
+
+    // `foreground` with `newSession` is a panic: a program in a session of its own cannot be in
+    // front at the terminal of this one.
+    void grouping(read this) {
+        if this.front && this.session {
+            panic("the program starts in a session of its own (`newSession`), which has no terminal of this program to be in front at (`foreground`)")
+        }
     }
 
     // Starts the program with its streams where `ways` says: the three ways, then the ends of
     // pipes made by a `Pipeline` its input comes from and its output goes to, or -1.
     Result<Process, IoError> begin(read this, read long[] ways) {
+        this.grouping()
         try this.valid()
         var path = try this.found()
         var made = long[5]
@@ -363,9 +454,17 @@ public struct Command {
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
             read ways, read this.text, read paths, ref made
         )
+        // The group it is in: its own when it made one (a session makes one on Linux and macOS),
+        // the one it joined, or none.
+        long group = 0
+        if ways[5] < 0 || (ways[6] != 0 && !OperatingSystem.isWindows()) {
+            group = made[0]
+        } else if ways[5] > 0 {
+            group = ways[5]
+        }
         var process = Process {
             pid = made[0], handle = made[4], input = null, output = null, error = null, ended = false,
-            how = ExitStatus.Code(0)
+            how = ExitStatus.Code(0), group = group
         }
         if made[1] >= 0 {
             process.input = System.writer(made[1])
@@ -383,6 +482,7 @@ public struct Command {
     // waits for it to end. What it wrote must be UTF-8, unless it did not end with 0, when what it
     // wrote does not count.
     Result<ExitStatus, IoError> runWaiting(read this, bool capture, ref string output) {
+        this.grouping()
         try this.valid()
         var path = try this.found()
         var ways = this.waysOf(capture)
@@ -394,6 +494,7 @@ public struct Command {
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
             read ways, read this.text, read paths, capture && ways[1] == 1, ref output, ref ended
         )
+        this.giveBack()
         var status = ExitStatus.Signal((int)ended[1])
         if ended[0] == 0 {
             status = ExitStatus.Code(ended[1].wrappingToInt())
@@ -540,6 +641,9 @@ public struct Process : Disposable {
     bool ended
     // How it ended, once it has been waited for.
     ExitStatus how
+    // The group it is in when it was started in one of its own (`newGroup`, `newSession`,
+    // `foreground`) or joined one (`Pipeline.newGroup`): its number; 0 for this program's.
+    long group
 
     // The number the system knows the program by, as `ps` shows it.
     public int id(read this) {
@@ -607,8 +711,10 @@ public struct Process : Disposable {
         }
     }
 
-    // Asks the program to stop: the signal 15, which it may catch to end in its own way. Windows has
-    // no such request to send: there the program is stopped as `kill` stops it.
+    // Asks the program to stop: the signal 15, which it may catch to end in its own way. A paused
+    // program gets it only once it goes on: send `Signal.Continue` after it, as `kill` at a shell
+    // does for a job. Windows has no such request to send: there the program is stopped as `kill`
+    // stops it.
     public void terminate(read this) {
         if !this.ended {
             System.signal(this.handle, 15)
@@ -621,6 +727,115 @@ public struct Process : Disposable {
     public void signal(read this, Signal signal) {
         if !this.ended {
             System.signal(this.handle, signalNumber(signal))
+        }
+    }
+
+    // The number of the group the program is in, when it was started in a group of its own
+    // (`Command.newGroup`, `newSession`, `foreground`) or in that of a `Pipeline` (`newGroup`):
+    // the number of the program that made the group, as `ps -o pgid` shows it, and as `kill --
+    // -number` takes it at a shell. `null` when it is in the group of this program.
+    public int? groupId(read this) {
+        if this.group == 0 {
+            return null
+        }
+        return (int)this.group
+    }
+
+    // Sends a signal to every program of the group of this one: the programs it started, and the
+    // others of its `Pipeline`, which `signal` leaves out. `Signal.Continue` lets a paused job go
+    // on, as `fg` and `bg` do. A program of the group that ended long ago is no matter: the group
+    // lives while one of its programs does. A program not started in a group of its own (see
+    // `groupId`) is a panic: the group would be that of this program. A paused program gets
+    // `Signal.Terminate` only once it goes on, so send `Signal.Continue` after it. On Windows
+    // `Signal.Interrupt` is Ctrl-Break to the group, and another signal goes to this program only,
+    // as `signal` sends it, and to none once it has ended.
+    public void signalGroup(read this, Signal signal) {
+        this.grouped("signalGroup")
+        if OperatingSystem.isWindows() && this.ended {
+            return
+        }
+        System.signalGroup(this.handle, this.group, signalNumber(signal))
+    }
+
+    // Stops every program of the group at once, with the signal 9, which also ends a paused one.
+    // On Windows only this program, until the group is a job of the system.
+    public void killGroup(read this) {
+        this.grouped("killGroup")
+        if OperatingSystem.isWindows() && this.ended {
+            return
+        }
+        System.signalGroup(this.handle, this.group, 9)
+    }
+
+    // The next change of the program: paused, gone on, or ended, waited for as a shell waits for
+    // its jobs. One that ended has been waited for, as `tryWait` says, and gives the same at every
+    // later call; one that was paused or went on stays to be waited for. Windows pauses no program:
+    // there the only change is its end. A program paused for good is waited for forever by `wait`,
+    // and not by this.
+    public Result<ProcessChange, IoError> waitChange(ref this) {
+        if this.ended {
+            return Ok(ProcessChange.Ended(this.how))
+        }
+        var ended = long[2]
+        _ = try System.waitChange(this.handle, true, ref ended)
+        return Ok(this.changed(read ended))
+    }
+
+    // `waitChange` without waiting: `null` when nothing changed since the last change seen.
+    public Result<ProcessChange?, IoError> tryWaitChange(ref this) {
+        if this.ended {
+            return Ok(ProcessChange.Ended(this.how))
+        }
+        var ended = long[2]
+        if !try System.waitChange(this.handle, false, ref ended) {
+            return Ok(null)
+        }
+        return Ok(this.changed(read ended))
+    }
+
+    // `waitChange` without holding the thread, for an async function. It listens for
+    // `Signal.Child` while it waits, which the system sends this program at each change of one it
+    // started. A cancel ends the wait, and leaves the program as it is.
+    public async Result<ProcessChange, IoError> waitChangeAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        if this.ended {
+            return Ok(ProcessChange.Ended(this.how))
+        }
+        if OperatingSystem.isWindows() {
+            var ended = long[2]
+            try await System.waitAsync(this.handle, read token, ref ended)
+            this.ended = true
+            this.how = Process.status(read ended)
+            return Ok(ProcessChange.Ended(this.how))
+        }
+        // Listened for before the look, so that a change after it is not missed.
+        var listener = Signals.listen(read List<Signal> { Signal.Child })
+        while true {
+            match try this.tryWaitChange() {
+                null => {}
+                var change => return Ok(change)
+            }
+            _ = try await listener.nextAsync(read token)
+        }
+    }
+
+    // The change `System.waitChange` saw: a pause, a going on, or the end, after which the
+    // program has been waited for.
+    ProcessChange changed(ref this, read long[] ended) {
+        if ended[0] == 2 {
+            return ProcessChange.Stopped((int)ended[1])
+        }
+        if ended[0] == 3 {
+            return ProcessChange.Continued
+        }
+        this.ended = true
+        this.how = Process.status(read ended)
+        return ProcessChange.Ended(this.how)
+    }
+
+    // A program not in a group of its own has none to send a signal to.
+    void grouped(read this, read string call) {
+        if this.group == 0 {
+            panic($"`{call}` on a program that was not started in a group of its own (`Command.newGroup`)")
         }
     }
 
@@ -696,9 +911,13 @@ public struct Process : Disposable {
     }
 
     // A program that was not waited for is stopped, and waited for so that it does not stay as a
-    // process that has ended and was never asked how.
+    // process that has ended and was never asked how. One in a group of its own is stopped with
+    // the whole group.
     void dispose(ref this) {
         if !this.ended {
+            if this.group != 0 {
+                System.signalGroup(this.handle, this.group, 9)
+            }
             System.signal(this.handle, 9)
             var ended = long[2]
             System.wait(this.handle, ref ended)
@@ -712,10 +931,32 @@ public struct Process : Disposable {
 // the standard error of each is its own (`errorToOutput` sends it down the pipe too).
 public struct Pipeline {
     List<Command> commands
+    // Its programs start in one new group, the job of a shell (`newGroup`).
+    bool grouped
+    // That group is put in front at the terminal of this program as it starts (`foreground`).
+    bool front
 
     // A pipeline with no program in it yet.
     public Pipeline create() {
-        return Pipeline { commands = List<Command>() }
+        return Pipeline { commands = List<Command>(), grouped = false, front = false }
+    }
+
+    // Every program of the pipeline starts in one new group, made by the first, as a shell starts a
+    // job: `Process.signalGroup` and `killGroup` of any of them reach them all, and the end of the
+    // `Process` of one without a wait stops them all. A `Command` added with `newSession` is then a
+    // panic where the pipeline starts. On Windows, where a program cannot join the group of
+    // another, each starts in a group of its own.
+    public void newGroup(ref this) {
+        this.grouped = true
+    }
+
+    // `newGroup`, with the group put in front at the terminal of this program before the first
+    // program runs a single step, as `Command.foreground` does; the others join it before they
+    // run. `run`, `output` and `status` put this program in front again once all have ended; after
+    // `start` that is the caller's work (`Terminal.takeBack`). On Windows only the groups.
+    public void foreground(ref this) {
+        this.grouped = true
+        this.front = true
     }
 
     // One more program, at the end: it reads what the one before writes. The `Command` is taken,
@@ -752,6 +993,13 @@ public struct Pipeline {
     // pipeline failed as `run` says, whatever it wrote. The first reads nothing unless its
     // `Command` gave it an input.
     public Result<string, ProcessError> output(read this) {
+        var got = this.outputWaited()
+        this.giveBack()
+        return got
+    }
+
+    // `output`, but for the terminal given back.
+    Result<string, ProcessError> outputWaited(read this) {
         var processes = List<Process>()
         match this.begin(true, true) {
             Ok(all) => processes = all
@@ -782,8 +1030,15 @@ public struct Pipeline {
         var processes = try this.begin(true, false)
         var statuses = List<ExitStatus>()
         for process in processes {
-            statuses.add(try process.wait())
+            match process.wait() {
+                Ok(status) => statuses.add(status)
+                Error(cause) => {
+                    this.giveBack()
+                    return Error(cause)
+                }
+            }
         }
+        this.giveBack()
         return Ok(statuses)
     }
 
@@ -797,6 +1052,13 @@ public struct Pipeline {
 
     // `output` without holding the thread, for an async function. A cancel stops every program.
     public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token = CancellationToken.None) {
+        var got = await this.outputWaitedAsync(read token)
+        this.giveBack()
+        return got
+    }
+
+    // `outputAsync`, but for the terminal given back.
+    async Result<string, ProcessError> outputWaitedAsync(read this, read CancellationToken token) {
         try Command.unless(read token)
         var processes = List<Process>()
         match this.begin(true, true) {
@@ -841,9 +1103,23 @@ public struct Pipeline {
         var processes = try this.begin(true, false)
         var statuses = List<ExitStatus>()
         for process in processes {
-            statuses.add(try await process.waitAsync(read token))
+            match await process.waitAsync(read token) {
+                Ok(status) => statuses.add(status)
+                Error(cause) => {
+                    this.giveBack()
+                    return Error(cause)
+                }
+            }
         }
+        this.giveBack()
         return Ok(statuses)
+    }
+
+    // The group put in front (`foreground`) has ended: this program is put in front again.
+    void giveBack(read this) {
+        if this.front {
+            _ = System.terminalFront(0)
+        }
     }
 
     // Starts the programs, each joined to the next by a pipe of the system, from the first to the
@@ -863,15 +1139,30 @@ public struct Pipeline {
             if i > 0 && command.inWay != 0 {
                 panic($"program {i + 1} of the pipeline has an input of its own, where the pipe from the one before comes")
             }
+            if this.grouped && command.session {
+                panic($"program {i + 1} of the pipeline starts a session of its own (`newSession`), out of the group of the pipeline (`newGroup`)")
+            }
         }
         var processes = List<Process>()
         // The end of the pipe the next program reads from, kept here until it has started.
         long reading = -1
         for i in 0..count {
             var command = read this.commands[i]
-            var ways = long[5] { command.inWay, command.outWay, command.errWay, -1, -1 }
+            var ways = command.plainWays()
             if waiting {
                 ways = command.waysOf(capture)
+            }
+            // One group for them all: the first makes it, and is put in front when asked; the
+            // others join it (on Windows each makes one of its own).
+            if this.grouped {
+                ways[5] = -1
+                ways[7] = this.front ? 1 : 0
+                if i > 0 {
+                    ways[7] = 0
+                    if !OperatingSystem.isWindows() {
+                        ways[5] = processes[0].pid
+                    }
+                }
             }
             if i > 0 {
                 ways[0] = 5

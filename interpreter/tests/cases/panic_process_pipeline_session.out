@@ -1,0 +1,4 @@
+panic: program 2 of the pipeline starts a session of its own (`newSession`), out of the group of the pipeline (`newGroup`)
+  --> panic_process_pipeline_session.sg:10:9
+ 10 |     try pipeline.run()
+    |         ^^^^^^^^^^^^^^

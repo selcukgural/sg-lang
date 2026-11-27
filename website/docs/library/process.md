@@ -1,14 +1,15 @@
 ---
 title: Programs and the system
-description: Command, Process, Pipeline and ExitStatus to run other programs, Environment, and Signals.
+description: Command, Process, Pipeline and ExitStatus to run other programs, jobs and the terminal, Environment, and Signals.
 sidebar_position: 8
 ---
 
 # Programs and the system
 
 `Command` runs another program and waits for it, or starts it and goes on with a `Process`. `Pipeline` joins
-programs by pipes, as `a | b` at a shell. `ExitStatus` says how a program ended, and `ProcessError` why it did
-not do its work. `Environment` reads the variables the
+programs by pipes, as `a | b` at a shell. A program starts in a group or a session of its own, and a job is put in
+front at the `Terminal`, as a shell runs its jobs. `ExitStatus` says how a program ended, `ProcessChange` what
+became of one that runs, and `ProcessError` why it did not do its work. `Environment` reads the variables the
 program was started with, and `Signals` waits for the signals of the system. All of them are written in SG in
 the module `std`.
 
@@ -32,6 +33,9 @@ whole.
 | `void errorTo(ref this, read string path)`, `appendErrorTo` | Its standard error the same way (`2> path`, `2>> path`) |
 | `void discardOutput(ref this)`, `discardError` | Its output, or its standard error, goes nowhere (`> /dev/null`) |
 | `void errorToOutput(ref this)` | Its standard error goes where its output goes (`2>&1`), into the text of `output` too |
+| `void newGroup(ref this)` | It starts in a group of its own, which the programs it starts join (see [Jobs and the terminal](#jobs-and-the-terminal)) |
+| `void newSession(ref this)` | It starts in a session of its own, with no terminal, as a daemon; in a group of its own too |
+| `void foreground(ref this)` | A group of its own, put in front at the terminal of this program before it runs |
 | `Result<void, ProcessError> run(read this)` | Runs it and waits; an end with anything but 0 is `Failed(status)` |
 | `Result<string, ProcessError> output(read this)` | The same, and gives what it wrote, as text (`InvalidText` if it is not UTF-8); empty when its output was sent to a file or nowhere |
 | `Result<ExitStatus, IoError> status(read this)` | Runs it and gives how it ended, whatever that was |
@@ -160,6 +164,11 @@ did not start: not found
 | `void signal(read this, Signal signal)` | Sends it a signal by its name |
 | `int Process.currentId()`, `int Process.parentId()` | The number of this program, and of the one that started it |
 | `Result<void, IoError> Process.signalId(int id, Signal signal)`, `Process.killId(int id)` | A signal, or the signal 9, to the program of that number, which need not be one this program started |
+| `int? groupId(read this)` | The number of its group when it was started in one of its own; `null` in the group of this program |
+| `void signalGroup(read this, Signal signal)`, `void killGroup(read this)` | A signal, or the signal 9, to every program of its group |
+| `Result<ProcessChange, IoError> waitChange(ref this)` | Waits until it is paused, goes on or ends |
+| `Result<ProcessChange?, IoError> tryWaitChange(ref this)` | The same without waiting: `null` when nothing changed |
+| `Result<ProcessChange, IoError> waitChangeAsync(ref this, read CancellationToken token)` | The same, async; a cancel ends only the wait |
 
 A `Process` kept in a local variable is waited for on every path. One that ends without that stops its program
 with the signal 9, so nothing goes on running unseen:
@@ -238,7 +247,7 @@ that number is `NotFound`, one this program may not send a signal to `Permission
 less, which would name a group of programs on Linux and macOS, `InvalidInput`. A number is given again once
 its program has been waited for, so one kept from long ago may name another program by now; a `Process` names
 its own and no other until it is waited for. On Windows they stop the program as `kill` does, but `WindowChange`,
-which only looks whether it is there; a program there that has ended may still be found for a moment after it
+`Child`, `Continue` and the three of a terminal, which only look whether it is there; a program there that has ended may still be found for a moment after it
 was waited for, while the system holds it, and a signal to it is then no error.
 
 ## `Pipeline`
@@ -252,6 +261,8 @@ sends it down the pipe too.
 |---|---|
 | `Pipeline()` | A pipeline with no program in it yet |
 | `void add(ref this, Command command)` | One more program, at the end; the `Command` is taken |
+| `void newGroup(ref this)` | Every program in one new group, made by the first: the job of a shell |
+| `void foreground(ref this)` | That group, put in front at the terminal before the first program runs |
 | `Result<void, ProcessError> run(read this)` | Runs them all and waits; fails as `set -o pipefail` says |
 | `Result<string, ProcessError> output(read this)` | The same, and gives what the last wrote, as text |
 | `Result<List<ExitStatus>, IoError> status(read this)` | How each ended, in order, whatever that was |
@@ -311,6 +322,97 @@ exited with code 3, exited with code 0
 the program exited with code 3
 ```
 
+## Jobs and the terminal
+
+A shell starts each job in a group of programs of its own: Ctrl-C and Ctrl-Z at the terminal reach only the group
+in front there, and a job is stopped as one. `newGroup` starts a program at the head of a new group, which the
+programs it starts join, and `Pipeline.newGroup` puts every program of a pipeline in one. `signalGroup` and
+`killGroup` reach the whole group, and a `Process` of a group that is not waited for stops the whole group, not
+only its first program. `signalGroup`, `killGroup` and `Terminal.giveTo` of a program not started in a group of
+its own are a panic: its group is that of this program. `newSession` starts a program in a session of its own,
+with no terminal, so that a terminal that closes sends it nothing; with `detach`, it outlives its terminal.
+
+`waitChange` gives what became of a program, as a shell sees its jobs: a `ProcessChange`, which is
+`Stopped(int number)` (`was paused by signal 20`; Ctrl-Z is 20 on Linux and 18 on macOS), `Continued`
+(`went on`) or `Ended(ExitStatus status)`. Once the end was seen, the program has been waited for, as after
+`tryWait`. `waitChangeAsync` listens for `Signal.Child` while it waits. A paused program gets `terminate` only
+once it goes on: send `Signal.Continue` after it, as `kill` does at a shell for a job.
+
+| Signature | What it does |
+|---|---|
+| `Result<void, IoError> Terminal.giveTo(read Process process)` | Puts the group of the program in front at the terminal of this one, as `fg` does |
+| `Result<void, IoError> Terminal.takeBack()` | Puts this program in front again |
+
+`foreground` puts the group of a program in front before it runs a single step, so it never reads the terminal
+from behind and is paused for it; on Linux and macOS that one way starts the program with `fork` and `exec`.
+`run`, `output` and `status` of one put in front put this program in front again once it has ended; after `start`
+that is the work of the caller. Both calls of `Terminal` may be made while this program is not in front. No
+terminal is `IoError.NotATerminal`, and a group with no program left is `NotFound`.
+
+```sg
+Result<void, IoError> main() {
+    var command = Command("sh")
+    command.args(read List<string> { "-c", "sleep 30 & sleep 30" })
+    command.newGroup()
+    var job = try command.start()
+    print((job.groupId() ?? 0) == job.id())
+    job.signalGroup(Signal.TerminalStop)
+    var paused = try job.waitChange()
+    print(paused is Stopped(_))
+    job.signalGroup(Signal.Continue)
+    print(try job.waitChange())
+    job.killGroup()
+    print(try job.waitChange())
+    print(try job.wait())
+    return Ok()
+}
+```
+
+On Linux and macOS it prints, the `sleep` the shell started in the background stopped with it:
+
+```text
+true
+true
+went on
+was stopped by signal 9
+was stopped by signal 9
+```
+
+A shell runs a job in front, and when Ctrl-Z pauses it, takes the terminal back; `fg` gives it to the job again
+and lets it go on. This one needs a terminal, so it is not run here:
+
+```sg nocheck
+Result<void, IoError> main() {
+    var editor = Command("vi")
+    editor.foreground()
+    var job = try editor.start()
+    while true {
+        match try job.waitChange() {
+            Stopped(_) => {
+                try Terminal.takeBack()
+                print("paused; going on")      // a shell would read `fg` here
+                try Terminal.giveTo(read job)
+                job.signalGroup(Signal.Continue)
+            }
+            Continued => {}
+            Ended(status) => {
+                try Terminal.takeBack()
+                print(status)
+                break
+            }
+        }
+    }
+    _ = try job.wait()
+    return Ok()
+}
+```
+
+A console of Windows has no group in front: there `foreground` only makes the group, and both calls of
+`Terminal` do nothing. Windows pauses no program, so `waitChange` sees only the end; a group is made with
+`CREATE_NEW_PROCESS_GROUP`, to which only `Interrupt` can be sent (as Ctrl-Break), so another signal and
+`killGroup` reach the first program only, and each program of a pipeline gets a group of its own; `newSession`
+starts a program without a console (`DETACHED_PROCESS`).
+
 ## `ExitStatus` and `ProcessError`
 
 `ExitStatus` is `Code(int code)`, an end by itself (0 says the program did its work), or `Signal(int number)`, a
@@ -345,12 +447,17 @@ it, as in Go and Tokio, instead of a handler that would run between any two step
 | `Signal next(ref this)` | Waits for the next signal and gives it; one that came before is given at once |
 | `Result<Signal, Cancelled> nextAsync(ref this, read CancellationToken token)` | The same, async |
 | `void Signals.raise(Signal signal)` | Sends the signal to this program, as C's `raise` does |
+| `void Signals.stopSelf()` | Pauses this program with `SIGSTOP`, which no program can listen for, until another sends it `Signal.Continue` |
 
-`Signal` is `Interrupt` (Ctrl-C), `Terminate` (the polite stop), `Hangup`, `Quit`, `User1`, `User2` or
-`WindowChange`; their numbers are not given, since `User1` is 30 on macOS and 10 on Linux. Several of one kind
+`Signal` is `Interrupt` (Ctrl-C), `Terminate` (the polite stop), `Hangup`, `Quit`, `User1`, `User2`,
+`WindowChange`, or one of job control: `TerminalStop` (Ctrl-Z), `Continue`, `TerminalInput` and `TerminalOutput`
+(a program not in front read from or wrote to its terminal), `Child` (a program this one started ended, was paused
+or went on) and `Alarm`. Their numbers are not given, since `User1` is 30 on macOS and 10 on Linux. One that is
+listened for does nothing of its own: a listener of `TerminalStop` is not paused by Ctrl-Z, as a shell is not. Several of one kind
 before a `next` are one, as the system does not count them either, and every listener of a signal gets it. On
 Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed or the system shutting down; the
-others never come there, but `raise` hands them to listeners all the same.
+others never come there, but `raise` hands them to listeners all the same; without a listener, those that would
+leave a running program as it is or pause it do nothing there, as Windows pauses no program.
 
 ```sg
 void main() {

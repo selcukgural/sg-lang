@@ -15,12 +15,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::net::Done;
 
-/// The kinds, in the order of the variants of `Signal`: the numbers of the system.
+/// The kinds, in the order of the variants of `Signal`: the numbers of the system. The last,
+/// `SIGSTOP`, is no variant: it is only raised, by `Signals.stopSelf`, and never listened for.
 #[cfg(target_os = "linux")]
-const NUMBERS: [c_int; KINDS] = [2, 15, 1, 3, 10, 12, 28];
+const NUMBERS: [c_int; KINDS] = [2, 15, 1, 3, 10, 12, 28, 20, 18, 21, 22, 17, 14, 19];
 #[cfg(not(target_os = "linux"))]
-const NUMBERS: [c_int; KINDS] = [2, 15, 1, 3, 30, 31, 28];
-const KINDS: usize = 7;
+const NUMBERS: [c_int; KINDS] = [2, 15, 1, 3, 30, 31, 28, 18, 19, 21, 22, 20, 14, 17];
+const KINDS: usize = 14;
 
 /// What `signal` gives for a refused handler.
 const SIG_ERR: usize = usize::MAX;

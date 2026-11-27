@@ -1,0 +1,19 @@
+plain, in a group of its own: false
+plain: exited with code 0
+its group is its number: true
+a change before any: false
+after Ctrl-Z: paused
+again, nothing new: true
+after fg: went on
+paused again: paused
+after killGroup: was stopped by signal 9
+and again: was stopped by signal 9
+a group stopped again: nothing
+wait: was stopped by signal 9
+the one it started is gone too: true
+the first makes the group: true
+the second is in it: true
+in the pipeline: was stopped by signal 9
+in the pipeline: was stopped by signal 9
+left behind: true
+the one it started is gone: true

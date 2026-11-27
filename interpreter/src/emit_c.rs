@@ -8420,13 +8420,16 @@ const SIGNALS_RUNTIME: &str = r#"
 #include <pthread.h>
 #include <signal.h>
 #endif
-#define SG_SIG_KINDS 7
-/* The kinds, in the order of the variants of `Signal`. Windows has no numbers of its own: those
-   of Linux stand for them, for `Process.signal`, where only `WindowChange` (28) is told apart. */
+#define SG_SIG_KINDS 14
+/* The kinds, in the order of the variants of `Signal`, and last `SIGSTOP`, which is no variant:
+   `Signals.stopSelf` raises it, and nothing listens for it. Windows has no numbers of its own:
+   those of Linux stand for them, for `Process.signal`, where only those that leave a running
+   program as it is are told apart (`sg_proc_inert`). */
 #if defined(_WIN32)
-static const int sg_sig_numbers[SG_SIG_KINDS] = { 2, 15, 1, 3, 10, 12, 28 };
+static const int sg_sig_numbers[SG_SIG_KINDS] = { 2, 15, 1, 3, 10, 12, 28, 20, 18, 21, 22, 17, 14, 19 };
 #else
-static const int sg_sig_numbers[SG_SIG_KINDS] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGWINCH };
+static const int sg_sig_numbers[SG_SIG_KINDS] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGWINCH,
+                                                  SIGTSTP, SIGCONT, SIGTTIN, SIGTTOU, SIGCHLD, SIGALRM, SIGSTOP };
 #endif
 #if SG_SIGNALS_ASYNC
 struct sg_sig_wait;
@@ -8609,12 +8612,13 @@ static void sg_sig_raise(int32_t kind) {
     sg_out_flush();
 #if defined(_WIN32)
     /* Handed on here when someone listens; otherwise the default of the signal: the program ends
-       as Ctrl-C ends it (STATUS_CONTROL_C_EXIT), and `WindowChange` does nothing. */
+       as Ctrl-C ends it (STATUS_CONTROL_C_EXIT), and one whose default on Linux and macOS leaves a
+       running program as it is or pauses it does nothing, since Windows pauses no program. */
     sg_mtx_lock(&sg_sig_lock);
     bool heard = sg_sig_counts[kind] > 0;
     if (heard) sg_sig_hand(kind);
     sg_mtx_unlock(&sg_sig_lock);
-    if (!heard && kind != 6) {
+    if (!heard && !(kind == 6 || (kind >= 7 && kind <= 11) || kind == 13)) {
         fflush(stderr);
         ExitProcess(0xC000013A);
     }
@@ -10336,7 +10340,9 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
             sg_out_flush();
             fflush(stderr);
             PROCESS_INFORMATION child;
-            DWORD flags = CREATE_UNICODE_ENVIRONMENT | (listed ? EXTENDED_STARTUPINFO_PRESENT : 0);
+            /* A group of its own (2023), or no console (`newSession`, 2024). */
+            DWORD flags = CREATE_UNICODE_ENVIRONMENT | (listed ? EXTENDED_STARTUPINFO_PRESENT : 0)
+                        | (ways[5] != 0 ? CREATE_NEW_PROCESS_GROUP : 0) | (ways[6] ? DETACHED_PROCESS : 0);
             if (CreateProcessW(app, wline, NULL, NULL, listed > 0, flags, env, dir, &start.StartupInfo, &child)) {
                 CloseHandle(child.hThread);
                 *process = child.hProcess;
@@ -10435,11 +10441,18 @@ static int sg_proc_reap(int64_t child, int64_t* ended) {
     ended[1] = (int32_t)code;
     return failed;
 }
-/* `System.signal`: Windows has no polite stop to send another program, so every signal but
-   `WindowChange` (28 here, which does nothing) ends it with the code 1, as Rust's `kill` does.
-   Once it has ended, nothing. */
+/* Whether a signal (by its number on Linux) leaves a running program as it is on Windows: those
+   whose default on Linux and macOS does nothing to one (`WindowChange` 28, `Child` 17, `Continue`
+   18) and those that pause it (`SIGSTOP` 19 and the three of a terminal, 20 to 22), since Windows
+   pauses no program. */
+static bool sg_proc_inert(int32_t number) {
+    return number == 28 || (number >= 17 && number <= 22);
+}
+/* `System.signal`: Windows has no polite stop to send another program, so every signal but those
+   `sg_proc_inert` names ends it with the code 1, as Rust's `kill` does. Once it has ended,
+   nothing. */
 static void sg_proc_signal(int64_t child, int32_t number) {
-    if (number == 28) return;
+    if (sg_proc_inert(number)) return;
     TerminateProcess((HANDLE)(intptr_t)child, 1);
 }
 /* `System.tryWait`: 1 with `ended` as `sg_proc_reap` gives it, and the handle let go of, when the
@@ -10487,19 +10500,37 @@ static int64_t sg_proc_id(int32_t which) {
    that number is `NotFound`; one that has ended but is still known takes it as done. */
 static int sg_proc_signal_id(int64_t id, int32_t number) {
     if (id <= 0 || id > 0xFFFFFFFFLL) return ERROR_FILE_NOT_FOUND;
-    HANDLE h = OpenProcess(number == 28 ? SYNCHRONIZE : PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)id);
+    HANDLE h = OpenProcess(sg_proc_inert(number) ? SYNCHRONIZE : PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)id);
     if (!h) {
         DWORD e = GetLastError();
         return e == ERROR_INVALID_PARAMETER ? ERROR_FILE_NOT_FOUND : (int)e;
     }
     int code = 0;
-    if (number != 28 && !TerminateProcess(h, 1)) {
+    if (!sg_proc_inert(number) && !TerminateProcess(h, 1)) {
         code = sg_win_error();
         DWORD left = 0;
         if (GetExitCodeProcess(h, &left) && left != STILL_ACTIVE) code = 0;
     }
     CloseHandle(h);
     return code;
+}
+/* `System.signalGroup`: `Interrupt` (2) is Ctrl-Break to the group, the one event Windows sends
+   a group made by `CREATE_NEW_PROCESS_GROUP`; another signal goes to the first program only, as
+   `sg_proc_signal` sends it, until the slice of job objects. */
+static void sg_proc_signal_group(int64_t child, int64_t group, int32_t number) {
+    if (number == 2) (void)GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, (DWORD)group);
+    else sg_proc_signal(child, number);
+}
+/* `System.waitChange`: Windows pauses no program, so the only change is its end. */
+static int sg_proc_wait_change(int64_t child, bool block, int64_t* ended, int* code) {
+    if (!block) return sg_proc_try_reap(child, ended, code);
+    *code = sg_proc_reap(child, ended);
+    return *code ? 0 : 1;
+}
+/* `System.terminalFront`: a console of Windows has no group in front; nothing. */
+static int sg_term_front(int64_t group) {
+    (void)group;
+    return 0;
 }
 /* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
    0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
@@ -10563,16 +10594,21 @@ static sg_writer sg_proc_writer(int64_t fd) {
     return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0 };
 }
 #else
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #if defined(__linux__)
 #include <sys/epoll.h>
 #include <sys/syscall.h>
 #else
 #include <sys/event.h>
+#endif
+#if defined(__APPLE__)
+#include <libproc.h>
 #endif
 extern char** environ;
 
@@ -10777,13 +10813,171 @@ static int sg_proc_open(int64_t way, bool input, sg_string path, int* fd) {
     free(name);
     return *fd < 0 ? sg_os_error() : 0;
 }
+/* The descriptors this program has open from 3 up, for a child made by `fork` to mark
+   close-on-exec before it runs the program, which may not read a folder there: on Linux from
+   /proc/self/fd (the child first tries `close_range`, which needs no list), on macOS from the
+   system. NULL with `*count` -1 when none could be read: the child then marks every number up to
+   the limit of open files. */
+static int* sg_proc_open_fds(int64_t* count) {
+    *count = -1;
+#if defined(__APPLE__)
+    int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+    if (bytes <= 0) return NULL;
+    /* Room for some opened meanwhile. */
+    bytes += 64 * (int)sizeof(struct proc_fdinfo);
+    struct proc_fdinfo* info = malloc((size_t)bytes);
+    if (!info) abort();
+    bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, info, bytes);
+    if (bytes <= 0) { free(info); return NULL; }
+    int64_t n = bytes / (int)sizeof(struct proc_fdinfo);
+    int* fds = malloc(sizeof(int) * (size_t)(n + 1));
+    if (!fds) abort();
+    int64_t m = 0;
+    for (int64_t i = 0; i < n; i++) if (info[i].proc_fd > 2) fds[m++] = info[i].proc_fd;
+    free(info);
+    *count = m;
+    return fds;
+#else
+    DIR* d = opendir("/proc/self/fd");
+    if (!d) return NULL;
+    int64_t m = 0, room = 64;
+    int* fds = malloc(sizeof(int) * (size_t)room);
+    if (!fds) abort();
+    int self = dirfd(d);
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        char* end;
+        long fd = strtol(e->d_name, &end, 10);
+        if (end == e->d_name || *end || fd < 3 || fd > INT_MAX || fd == self) continue;
+        if (m == room) {
+            room *= 2;
+            fds = realloc(fds, sizeof(int) * (size_t)room);
+            if (!fds) abort();
+        }
+        fds[m++] = (int)fd;
+    }
+    closedir(d);
+    *count = m;
+    return fds;
+#endif
+}
+/* The child of `sg_proc_fork` (2034): only calls a child of a program with threads may make
+   between `fork` and `exec`. Every signal is held off until the program runs, so no handler of
+   this program runs here. It goes into its group (or session), puts that group in front at the
+   terminal `tty` while `SIGTTOU` is held, gives the three signals of a terminal back their
+   default so that Ctrl-Z pauses it, moves its streams into place, goes to its folder, marks the
+   other descriptors close-on-exec and runs the program. What fails is written into `report`
+   (close-on-exec, so the parent reads nothing once the program runs). */
+static void sg_proc_child(const char* program, char** argv, char** envp, const char* dir, const int onto[3],
+                          bool error_to_output, const int64_t* ways, int tty, int report, const int* fds, int64_t fd_count,
+                          int most) {
+    int failed = 0;
+    if (ways[6]) {
+        if (setsid() < 0) failed = errno;
+    } else if (ways[5] != 0 && setpgid(0, ways[5] < 0 ? 0 : (pid_t)ways[5]) != 0) {
+        failed = errno;
+    }
+    if (!failed && tty >= 0 && tcsetpgrp(tty, getpgrp()) != 0) failed = errno;
+    if (!failed) {
+        struct sigaction plain;
+        memset(&plain, 0, sizeof plain);
+        plain.sa_handler = SIG_DFL;
+        sigemptyset(&plain.sa_mask);
+        int defaults[] = { SIGPIPE, SIGTSTP, SIGTTIN, SIGTTOU };
+        for (int i = 0; i < 4; i++) sigaction(defaults[i], &plain, NULL);
+    }
+    for (int i = 0; i < 3 && !failed; i++) {
+        int fd = onto[i];
+        if (fd == -2) {
+            do { fd = open("/dev/null", i == 0 ? O_RDONLY : O_WRONLY); } while (fd < 0 && errno == EINTR);
+            if (fd < 0) { failed = errno; break; }
+            if (fd != i) {
+                if (dup2(fd, i) < 0) failed = errno;
+                close(fd);
+            }
+        } else if (fd >= 0) {
+            if (dup2(fd, i) < 0) failed = errno;
+        } else if (i == 2 && error_to_output) {
+            if (dup2(1, 2) < 0) failed = errno;
+        }
+    }
+    if (!failed && dir && chdir(dir) != 0) failed = errno;
+    if (!failed) {
+#if defined(__linux__)
+        bool marked = syscall(436 /* close_range */, 3u, ~0u, 4u /* CLOSE_RANGE_CLOEXEC */) == 0;
+#else
+        bool marked = false;
+#endif
+        if (!marked && fd_count >= 0) {
+            for (int64_t i = 0; i < fd_count; i++) if (fds[i] != report) fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+        } else if (!marked) {
+            for (int fd = 3; fd < most; fd++) if (fd != report) fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+        execve(program, argv, envp);
+        failed = errno;
+    }
+    ssize_t written;
+    do { written = write(report, &failed, sizeof failed); } while (written < 0 && errno == EINTR);
+    _exit(127);
+}
+/* Starts the program with `fork` and `exec` rather than `posix_spawn`, for a program to be put in
+   front at the terminal of this one (`Command.foreground`, 2034): `posix_spawn` cannot do that
+   before the program runs, and one that read the terminal first would be paused. The group is
+   in front before the program runs a single step. What the child could not do is the error of
+   the call; the child is then taken away. */
+static int sg_proc_fork(const char* program, char** argv, char** envp, const char* dir, const int onto[3],
+                        bool error_to_output, const int64_t* ways, pid_t* child) {
+    int tty;
+    do { tty = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); } while (tty < 0 && errno == EINTR);
+    if (tty < 0) return ENOTTY;
+    int report[2];
+    int code = sg_proc_pipe(report);
+    if (code) { close(tty); return code; }
+    int64_t fd_count = 0;
+    int* fds = sg_proc_open_fds(&fd_count);
+    long most = sysconf(_SC_OPEN_MAX);
+    if (most < 0 || most > 1048576) most = 1048576;
+    sigset_t all, before;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &before);
+    sg_out_flush();
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) sg_proc_child(program, argv, envp, dir, onto, error_to_output, ways, tty, report[1], fds, fd_count, (int)most);
+    int forked = errno;
+    pthread_sigmask(SIG_SETMASK, &before, NULL);
+    close(report[1]);
+    close(tty);
+    free(fds);
+    if (pid < 0) {
+        close(report[0]);
+        return forked;
+    }
+    int failed = 0;
+    ssize_t got;
+    do { got = read(report[0], &failed, sizeof failed); } while (got < 0 && errno == EINTR);
+    close(report[0]);
+    if (got == (ssize_t)sizeof failed) {
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        return failed ? failed : EIO;
+    }
+    *child = pid;
+    return 0;
+}
 /* Starts the program at `path` with `posix_spawn`, its streams where `ways` says (see
    `SystemCall::Start`): `paths` names the files, `ways[3]` and `ways[4]` the ends of pipes of a
-   `Pipeline`. `ends` gets the ends of the pipes this program keeps (the input, the output, the
-   standard error), or -1. What was printed goes out first. Only 0, 1 and 2 reach the program:
-   every other descriptor of the runtime is opened close-on-exec, and on macOS the spawn closes
-   every descriptor it is not told to keep, with glibc 2.34 the spawn closes those above 2, and
-   with another C library on Linux they are marked close-on-exec first. */
+   `Pipeline`. `ways[5]` puts it into a new group of its own (-1) or the group of that number,
+   `ways[6]` into a session of its own (2023, 2024), and `ways[7]` in front at the terminal of
+   this program, which `sg_proc_fork` does. `ends` gets the ends of the pipes this program keeps
+   (the input, the output, the standard error), or -1. What was printed goes out first. Only 0, 1
+   and 2 reach the program: every other descriptor of the runtime is opened close-on-exec, and on
+   macOS the spawn closes every descriptor it is not told to keep, with glibc 2.34 the spawn
+   closes those above 2, and with another C library on Linux they are marked close-on-exec
+   first. */
 static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
                          const int64_t* ways, const sg_string* paths, pid_t* child, int ends[3]) {
@@ -10805,7 +10999,36 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     for (int i = 0; i < 3 && !code; i++)
         if (asked[i]) code = sg_proc_pipe(pipes[i]);
     for (int i = 0; i < 3 && !code; i++) code = sg_proc_open(ways[i], i == 0, paths[i], &files[i]);
+    /* What goes onto each stream: a descriptor above 2, the null device (-2), or this program's
+       own (-1). */
+    int onto[3] = { -1, -1, -1 };
     if (!code) {
+        if (ways[0] == 1) onto[0] = -2;
+        else if (asked[0]) onto[0] = pipes[0][0];
+        else if (ways[0] == 4) onto[0] = files[0];
+        else if (ways[0] == 5) onto[0] = (int)ways[3];
+        for (int i = 1; i < 3; i++) {
+            if (ways[i] == 2) onto[i] = -2;
+            else if (asked[i]) onto[i] = pipes[i][1];
+            else if (ways[i] == 3 || ways[i] == 4) onto[i] = files[i];
+            else if (i == 1 && ways[i] == 5) onto[i] = (int)ways[4];
+        }
+        for (int i = 0; i < 3 && !code; i++) {
+            if (onto[i] >= 0) {
+                onto[i] = sg_proc_high(onto[i], &temps[i]);
+                if (onto[i] < 0) code = sg_os_error();
+            }
+        }
+    }
+    bool fork_path = ways[7] != 0;
+#if !defined(POSIX_SPAWN_SETSID)
+    /* A C library without the flag (glibc before 2.26): the session is made by the child of a
+       `fork`. */
+    fork_path = fork_path || ways[6] != 0;
+#endif
+    if (!code && fork_path) {
+        code = sg_proc_fork(program, argv, envp, dir, onto, ways[2] == 6, ways, child);
+    } else if (!code) {
         posix_spawn_file_actions_t actions;
         posix_spawnattr_t attr;
         posix_spawn_file_actions_init(&actions);
@@ -10819,28 +11042,23 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
         for (int fd = 0; fd < 3; fd++) posix_spawn_file_actions_addinherit_np(&actions, fd);
 #endif
+        /* A session of its own makes a group of its own too; a group may not be set after. */
+#ifdef POSIX_SPAWN_SETSID
+        if (ways[6]) flags |= POSIX_SPAWN_SETSID;
+        else
+#endif
+        if (ways[5] != 0) {
+            flags |= POSIX_SPAWN_SETPGROUP;
+            posix_spawnattr_setpgroup(&attr, ways[5] < 0 ? 0 : (pid_t)ways[5]);
+        }
         posix_spawnattr_setflags(&attr, flags);
         posix_spawnattr_setsigmask(&attr, &none);
         posix_spawnattr_setsigdefault(&attr, &plain);
-        /* What goes onto each stream: a descriptor, the null device (-2), or this program's own (-1). */
-        int onto[3] = { -1, -1, -1 };
-        if (ways[0] == 1) onto[0] = -2;
-        else if (asked[0]) onto[0] = pipes[0][0];
-        else if (ways[0] == 4) onto[0] = files[0];
-        else if (ways[0] == 5) onto[0] = (int)ways[3];
-        for (int i = 1; i < 3; i++) {
-            if (ways[i] == 2) onto[i] = -2;
-            else if (asked[i]) onto[i] = pipes[i][1];
-            else if (ways[i] == 3 || ways[i] == 4) onto[i] = files[i];
-            else if (i == 1 && ways[i] == 5) onto[i] = (int)ways[4];
-        }
-        for (int i = 0; i < 3 && !code; i++) {
+        for (int i = 0; i < 3; i++) {
             if (onto[i] == -2) {
                 posix_spawn_file_actions_addopen(&actions, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
             } else if (onto[i] >= 0) {
-                int fd = sg_proc_high(onto[i], &temps[i]);
-                if (fd < 0) code = sg_os_error();
-                else posix_spawn_file_actions_adddup2(&actions, fd, i);
+                posix_spawn_file_actions_adddup2(&actions, onto[i], i);
             } else if (i == 2 && ways[2] == 6) {
                 /* `2>&1`: the standard error where the output went, as the step before set it. */
                 posix_spawn_file_actions_adddup2(&actions, 1, 2);
@@ -10859,11 +11077,9 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
 #elif defined(SG_PROC_CLOSE_ON_EXEC)
         sg_proc_close_on_exec();
 #endif
-        if (!code) {
-            sg_out_flush();
-            fflush(stderr);
-            code = posix_spawn(child, program, &actions, &attr, argv, envp);
-        }
+        sg_out_flush();
+        fflush(stderr);
+        code = posix_spawn(child, program, &actions, &attr, argv, envp);
         posix_spawn_file_actions_destroy(&actions);
         posix_spawnattr_destroy(&attr);
     }
@@ -11013,6 +11229,46 @@ static int sg_proc_signal_id(int64_t id, int32_t number) {
     if (id <= 0 || id > 0x7FFFFFFF) return ENOENT;
     if (kill((pid_t)id, number) == 0) return 0;
     return errno == ESRCH ? ENOENT : sg_os_error();
+}
+/* `System.signalGroup`: `killpg` to the group, which may hold programs after its first has
+   ended; a group with none left takes it as done. */
+static void sg_proc_signal_group(int64_t child, int64_t group, int32_t number) {
+    (void)child;
+    if (group > 0 && group <= 0x7FFFFFFF) (void)killpg((pid_t)group, number);
+}
+/* `System.waitChange` (2036): the next change of the program, as `waitpid` with `WUNTRACED` and
+   `WCONTINUED` sees it, waited for when `block`: 1 with `ended` 0 and the code or 1 and the
+   signal when it ended and was taken away, 2 and the signal that paused it, 3 when it went on;
+   0 when nothing changed. */
+static int sg_proc_wait_change(int64_t child, bool block, int64_t* ended, int* code) {
+    int status = 0;
+    pid_t got;
+    while ((got = waitpid((pid_t)child, &status, WUNTRACED | WCONTINUED | (block ? 0 : WNOHANG))) < 0 && errno == EINTR) {}
+    if (got < 0) { *code = sg_os_error(); return 0; }
+    if (got == 0) return 0;
+    if (WIFCONTINUED(status)) { ended[0] = 3; ended[1] = 0; }
+    else if (WIFSTOPPED(status)) { ended[0] = 2; ended[1] = WSTOPSIG(status); }
+    else if (WIFSIGNALED(status)) { ended[0] = 1; ended[1] = WTERMSIG(status); }
+    else { ended[0] = 0; ended[1] = WEXITSTATUS(status); }
+    return 1;
+}
+/* `System.terminalFront` (2031, 2032): the group (this program's own for 0) is put in front at
+   the terminal of this program, `/dev/tty`, while `SIGTTOU` is held off on this thread, so that a
+   program not in front itself is not paused by asking. No terminal is ENOTTY. */
+static int sg_term_front(int64_t group) {
+    int tty;
+    do { tty = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); } while (tty < 0 && errno == EINTR);
+    if (tty < 0) return ENOTTY;
+    sigset_t output, before;
+    sigemptyset(&output);
+    sigaddset(&output, SIGTTOU);
+    pthread_sigmask(SIG_BLOCK, &output, &before);
+    int code = tcsetpgrp(tty, group > 0 ? (pid_t)group : getpgrp()) == 0 ? 0 : sg_os_error();
+    pthread_sigmask(SIG_SETMASK, &before, NULL);
+    close(tty);
+    /* No program of the group is in the session of the terminal, or left at all: EPERM on Linux,
+       EINVAL on macOS, ESRCH as well. */
+    return code == EPERM || code == EINVAL || code == ESRCH ? ENOENT : code;
 }
 /* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
    0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
@@ -12086,7 +12342,8 @@ const IO_RUNTIME: &str = r#"
    buffer it was received into; 17 NotSeekable, `seek` on a stream that is not a file opened to
    seek; 18 TooLong, `fill` on a reader whose block holds its limit already; 19 AddressNotAvailable,
    an address not of the machine or no local port left; 20 NotAFile, a pipe, a device or a socket
-   that `File.openRegular` did not open (1873). The runtime gives
+   that `File.openRegular` did not open (1873); 21 NotATerminal, no terminal where one was asked
+   for (ENOTTY, 2033). The runtime gives
    these itself as codes of its own, as it gives a place before the start of a file to `seek` as
    `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
@@ -12511,6 +12768,7 @@ static int sg_io_kind(int code) {
     case SG_NOT_SEEKABLE: return 17;
     case SG_TOO_LONG: return 18;
     case SG_NOT_A_FILE: return 20;
+    case ENOTTY: return 21;
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
     case EMSGSIZE: return 16;
@@ -22289,6 +22547,30 @@ impl<'a> Emitter<'a> {
                     "sg_system_signal_id",
                     vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)],
                     format!("int code = sg_proc_signal_id(a0, a1); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                )
+            }
+            SystemCall::SignalGroup => {
+                self.made.insert("process".to_string());
+                ("sg_system_signal_group", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "sg_proc_signal_group(a0, a1, a2);".to_string())
+            }
+            SystemCall::WaitChange => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_wait_change",
+                    vec![Ty::Int(IntTy::Long), Ty::Bool, Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    format!(
+                        "int64_t ended[2] = {{ 0, 0 }}; int code = 0; bool seen = sg_proc_wait_change(a0, a1, ended, &code) != 0; \
+                         if (code) {} for (int64_t i = 0; i < 2 && i < a2.len; i++) a2.ptr[i] = ended[i]; return ({gives}){{ .tag = 0, .u.v0 = {{ seen }} }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            SystemCall::TerminalFront => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_terminal_front",
+                    vec![Ty::Int(IntTy::Long)],
+                    format!("int code = sg_term_front(a0); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
                 )
             }
             SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber => {

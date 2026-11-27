@@ -8124,6 +8124,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 return Ok(Value::Int(IntTy::Long, i128::from(id)));
             }
+            SystemCall::SignalGroup => {
+                crate::sys::signal_group(number(0) as i64, number(1) as i64, number(2) as i64);
+                return Ok(Value::Void);
+            }
+            SystemCall::WaitChange => return Ok(self.wait_change(number(0) as i64, matches!(values[1], Value::Bool(true)), &values[2])),
+            SystemCall::TerminalFront => {
+                return Ok(match crate::sys::terminal_front(number(0) as i64) {
+                    Ok(()) => ok(Value::Void),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                });
+            }
             SystemCall::SignalId => {
                 return Ok(match crate::sys::signal_id(number(0) as i64, number(1) as i64) {
                     Ok(()) => ok(Value::Void),
@@ -8268,6 +8279,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::CloseEnd
             | SystemCall::ProcessId
             | SystemCall::SignalId
+            | SystemCall::SignalGroup
+            | SystemCall::WaitChange
+            | SystemCall::TerminalFront
             | SystemCall::Signal
             | SystemCall::PipeReader
             | SystemCall::PipeWriter
@@ -8335,12 +8349,18 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let Streams { input, output, error, out_pipe, err_pipe } = streams;
         command.stdin(input).stdout(output).stderr(error);
+        // Its group, its session and the terminal it is put in front at (2023, 2024, 2034).
+        let tty = match crate::sys::grouped(&mut command, &ways) {
+            Ok(tty) => tty,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
         self.flush_out()?;
         let _ = self.io.world.borrow_mut().err.flush();
         let spawned = command.spawn();
         // The ends the program writes into are let go of here, so that a reader of them sees the
         // end once the program has ended.
         drop(command);
+        drop(tty);
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
@@ -8459,6 +8479,43 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
         }
+    }
+
+    /// `System.waitChange` (2036): the next change of the program, waited for when `block`. One
+    /// that ended has been taken away, as by `try_reap`; a pause or a going on leaves it as it is.
+    /// Windows pauses no program, so there its end is the only change.
+    #[cfg(unix)]
+    fn wait_change(&mut self, pid: i64, block: bool, ended: &Value) -> Value {
+        if !self.io.children.borrow().contains_key(&pid) {
+            return ok(Value::Bool(false));
+        }
+        match crate::sys::wait_change(pid, block) {
+            Ok(None) => ok(Value::Bool(false)),
+            Ok(Some((kind, number))) => {
+                if kind < 2 {
+                    // Taken away here, so its `Child` is not waited for again.
+                    let kid = self.io.children.borrow_mut().remove(&pid).expect("looked at above");
+                    self.copied(kid.copies);
+                }
+                for (slot, value) in cells_of(ended).iter().zip([kind, number]) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+                }
+                ok(Value::Bool(true))
+            }
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_change(&mut self, pid: i64, block: bool, ended: &Value) -> Value {
+        if !block {
+            return self.try_reap(pid, ended);
+        }
+        let (kind, number) = self.reap(pid);
+        for (slot, value) in cells_of(ended).iter().zip([kind, number]) {
+            *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+        }
+        ok(Value::Bool(true))
     }
 
     /// `System.detach`: the program is let go of. A thread waits for it and takes it away, and
@@ -8769,6 +8826,11 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let Streams { input, output, error, out_pipe, err_pipe } = streams;
         command.stdin(input).stdout(output).stderr(error);
+        // Its group, its session and the terminal it is put in front at (2023, 2024, 2034).
+        let tty = match crate::sys::grouped(&mut command, &ways) {
+            Ok(tty) => tty,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
         let fed = text(8);
         let capture = matches!(values[10], Value::Bool(true));
         self.flush_out()?;
@@ -8777,6 +8839,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         // The ends the program writes into are let go of here, so that their reader sees the end
         // once the program has ended.
         drop(command);
+        drop(tty);
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {

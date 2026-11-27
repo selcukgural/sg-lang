@@ -70,6 +70,7 @@ extern "system" {
     fn OpenProcess(access: u32, inherit: Bool, pid: u32) -> Handle;
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> Bool;
     fn TerminateProcess(process: Handle, code: u32) -> Bool;
+    fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> Bool;
     fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
     fn GetStdHandle(which: u32) -> Handle;
     fn GetConsoleMode(console: Handle, mode: *mut u32) -> Bool;
@@ -321,10 +322,56 @@ pub(crate) fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
     (0, i64::from(status.code().unwrap_or(0)))
 }
 
-/// `System.signal`: every signal but `WindowChange` (28, which does nothing) ends the program with
-/// the code 1, since Windows has no polite stop to send another program.
+/// Whether a signal (by its number on Linux) leaves a running program as it is on Windows: those
+/// whose default on Linux and macOS does nothing to one (`WindowChange` 28, `Child` 17, `Continue`
+/// 18) and those that pause it (`SIGSTOP` 19 and the three of a terminal, 20 to 22), since
+/// Windows pauses no program.
+pub(crate) fn inert(signal: i64) -> bool {
+    matches!(signal, 17..=22 | 28)
+}
+
+/// A group of its own (2023, `CREATE_NEW_PROCESS_GROUP`) or no console (`newSession`, 2024,
+/// `DETACHED_PROCESS`); Windows has no terminal to put a group in front at, so `ways[7]` is only
+/// the group it makes.
+pub(crate) fn grouped(command: &mut std::process::Command, ways: &[i128]) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x200;
+    const DETACHED_PROCESS: u32 = 0x8;
+    let way = |at: usize| ways.get(at).copied().unwrap_or(0);
+    let mut flags = 0;
+    if way(5) != 0 {
+        flags |= CREATE_NEW_PROCESS_GROUP;
+    }
+    if way(6) != 0 {
+        flags |= DETACHED_PROCESS;
+    }
+    if flags != 0 {
+        command.creation_flags(flags);
+    }
+    Ok(None)
+}
+
+/// `System.terminalFront`: a console of Windows has no group in front; nothing.
+pub(crate) fn terminal_front(_group: i64) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// `System.signalGroup`: `Interrupt` (2) is Ctrl-Break to the group, the one event Windows sends
+/// a group; another signal goes to the first program, as `signal` sends it.
+pub(crate) fn signal_group(pid: i64, group: i64, number: i64) {
+    const CTRL_BREAK_EVENT: u32 = 1;
+    if number == 2 {
+        // SAFETY: sends an event to the programs of a group of this console.
+        unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, group as u32) };
+    } else {
+        signal(pid, number);
+    }
+}
+
+/// `System.signal`: every signal but those `inert` names ends the program with the code 1, since
+/// Windows has no polite stop to send another program.
 pub(crate) fn signal(pid: i64, signal: i64) {
-    if signal == 28 {
+    if inert(signal) {
         return;
     }
     // SAFETY: the handle is closed after the call.
@@ -371,7 +418,7 @@ pub(crate) fn signal_id(pid: i64, signal: i64) -> std::io::Result<()> {
     const ERROR_INVALID_PARAMETER: u32 = 87;
     const STILL_ACTIVE: u32 = 259;
     let Ok(pid) = u32::try_from(pid) else { return Err(std::io::Error::from_raw_os_error(2)) };
-    let access = if signal == 28 { SYNCHRONIZE } else { PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION };
+    let access = if inert(signal) { SYNCHRONIZE } else { PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION };
     // SAFETY: the handle is closed after the call.
     unsafe {
         let process = OpenProcess(access, 0, pid);
@@ -382,7 +429,7 @@ pub(crate) fn signal_id(pid: i64, signal: i64) -> std::io::Result<()> {
             });
         }
         let mut done = Ok(());
-        if signal != 28 && TerminateProcess(process, 1) == 0 {
+        if !inert(signal) && TerminateProcess(process, 1) == 0 {
             let error = std::io::Error::last_os_error();
             let mut code = 0;
             if GetExitCodeProcess(process, &mut code) == 0 || code == STILL_ACTIVE {

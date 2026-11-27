@@ -1,0 +1,8 @@
+// A program not started in a group of its own has none to send a signal to: its group is that of
+// this program, which `signalGroup` would reach too (2023).
+Result<void, IoError> main() {
+    var process = try Command("sg-test-tool").start()
+    process.signalGroup(Signal.Terminate)
+    _ = try process.wait()
+    return Ok()
+}

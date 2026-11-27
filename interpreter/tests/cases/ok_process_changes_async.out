@@ -1,0 +1,13 @@
+async, after Ctrl-Z: paused
+async, after fg: went on
+async, after Terminate: was stopped by signal 15
+async, once more: was stopped by signal 15
+async wait: was stopped by signal 15
+stopSelf: paused
+told to go on: went on
+it said: went on
+its end: exited with code 0
+wait: exited with code 0
+cancelled: the wait ends
+still running: true
+then stopped: was stopped by signal 9

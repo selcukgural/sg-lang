@@ -1,0 +1,137 @@
+// Programs in a group of their own (2023): `Command.newGroup` and `Pipeline.newGroup` (2037),
+// `groupId` (2038), `signalGroup` and `killGroup`, and the end of a `Process` without a wait,
+// which stops the whole group; and what a shell sees of its jobs (2036): `waitChange`,
+// `tryWaitChange` and `waitChangeAsync` give a pause, a going on and the end. The number of a
+// pause by Ctrl-Z differs (20 on Linux, 18 on macOS), so it is not printed. Windows pauses no
+// program and has no group to stop as one: there those parts are left out (see the
+// `.windows.out`). The program started is `sg-test-tool` (tests/tool), whose words are its steps;
+// its step `child` starts another and says its number.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+// A pause, as another program's run.
+Result<void, ProcessError> pause(int ms) {
+    return tool(read List<string> { $"sleep={ms}".toString() }).run()
+}
+
+// Whether the program of that number has ended and been taken away, looked at for up to ten
+// seconds: `WindowChange` stops no program, and finds one that is there.
+Result<bool, ProcessError> gone(int id) {
+    for _ in 0..500 {
+        if Process.signalId(id, Signal.WindowChange) is Error(NotFound) {
+            return Ok(true)
+        }
+        try pause(20)
+    }
+    return Ok(false)
+}
+
+// The change as it is printed: a pause without its number.
+string said(ProcessChange change) {
+    match change {
+        Stopped(_) => return "paused"
+        _ => return $"{change}".toString()
+    }
+}
+
+// Starts `sg-test-tool child` in a group of its own: its `Process`, and the number of the one it
+// started.
+Result<Process, IoError> parent(ref int grandchild) {
+    var command = tool(read List<string> { "child" })
+    command.newGroup()
+    command.pipeOutput()
+    var process = try command.start()
+    var reader = process.takeOutput() ?? panic("asked for with pipeOutput")
+    var line = ""
+    _ = try reader.readLine(ref line)
+    grandchild = int.parse(line.trim()) ?? panic("a number")
+    return Ok(process)
+}
+
+// A program in a group of its own whose `Process` ends without a wait: the whole group is stopped.
+Result<void, IoError> leftBehind(ref int grandchild) {
+    var process = try parent(ref grandchild)
+    if process.id() > 0 {
+        return Error(IoError.Other(1))
+    }
+    _ = try process.wait()
+    return Ok()
+}
+
+Result<void, ProcessError> main() {
+    var windows = OperatingSystem.isWindows()
+
+    // A program started as before is in the group of this one.
+    var plain = try tool(read List<string> { "sleep=10" }).start()
+    print($"plain, in a group of its own: {plain.groupId() is not null}")
+    var seen1 = try plain.wait()
+    print($"plain: {seen1}")
+
+    // A group of its own, whose first program started another.
+    var grandchild = 0
+    var job = try parent(ref grandchild)
+    print($"its group is its number: {(job.groupId() ?? 0) == job.id()}")
+    var nothing = try job.tryWaitChange()
+    print($"a change before any: {nothing is not null}")
+    if !windows {
+        job.signalGroup(Signal.TerminalStop)
+        var seen2 = try job.waitChange()
+        print($"after Ctrl-Z: {said(seen2)}")
+        var none = try job.tryWaitChange()
+        print($"again, nothing new: {none is null}")
+        job.signalGroup(Signal.Continue)
+        var seen3 = try job.waitChange()
+        print($"after fg: {said(seen3)}")
+        // Paused again, then stopped: 9 ends a paused program too.
+        job.signalGroup(Signal.TerminalStop)
+        var seen4 = try job.waitChange()
+        print($"paused again: {said(seen4)}")
+    }
+    job.killGroup()
+    var seen5 = try job.waitChange()
+    print($"after killGroup: {said(seen5)}")
+    var seen6 = try job.waitChange()
+    print($"and again: {said(seen6)}")
+    job.killGroup()
+    print("a group stopped again: nothing")
+    var seen7 = try job.wait()
+    print($"wait: {seen7}")
+    if windows {
+        // Windows stops only the first program of a group.
+        _ = Process.killId(grandchild)
+    }
+    var seen8 = try gone(grandchild)
+    print($"the one it started is gone too: {seen8}")
+
+    // A pipeline in one group: the first makes it, the second joins it.
+    var pipeline = Pipeline.create()
+    pipeline.add(tool(read List<string> { "sleep=60000" }))
+    pipeline.add(tool(read List<string> { "cat" }))
+    pipeline.newGroup()
+    var both = try pipeline.start()
+    var first = both[0].groupId() ?? 0
+    var second = both[1].groupId() ?? 0
+    print($"the first makes the group: {first == both[0].id()}")
+    print($"the second is in it: {second == first}")
+    both[1].killGroup()
+    if windows {
+        both[0].kill()
+    }
+    for process in both {
+        var seen9 = try process.wait()
+        print($"in the pipeline: {seen9}")
+    }
+
+    // The `Process` of a group ends without a wait: the program it started is stopped with it.
+    var orphan = 0
+    print($"left behind: {leftBehind(ref orphan) is Error(_)}")
+    if windows {
+        _ = Process.killId(orphan)
+    }
+    var seen10 = try gone(orphan)
+    print($"the one it started is gone: {seen10}")
+    return Ok()
+}

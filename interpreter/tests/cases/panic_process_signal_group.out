@@ -1,0 +1,4 @@
+panic: `signalGroup` on a program that was not started in a group of its own (`Command.newGroup`)
+  --> panic_process_signal_group.sg:5:5
+ 5 |     process.signalGroup(Signal.Terminate)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,15 @@
+plain, in a group of its own: false
+plain: exited with code 0
+its group is its number: true
+a change before any: false
+after killGroup: exited with code 1
+and again: exited with code 1
+a group stopped again: nothing
+wait: exited with code 1
+the one it started is gone too: true
+the first makes the group: true
+the second is in it: false
+in the pipeline: exited with code 1
+in the pipeline: exited with code 1
+left behind: true
+the one it started is gone: true

@@ -1,0 +1,12 @@
+// The programs of a pipeline in one group (2037) cannot have one that starts a session of its own,
+// which would leave the group.
+Result<void, ProcessError> main() {
+    var alone = Command("sg-test-tool")
+    alone.newSession()
+    var pipeline = Pipeline()
+    pipeline.add(Command("sg-test-tool"))
+    pipeline.add(alone)
+    pipeline.newGroup()
+    try pipeline.run()
+    return Ok()
+}

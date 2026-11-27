@@ -583,7 +583,7 @@ const IO_ERROR: &str = "IoError";
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
 /// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable,
-/// TooLong, AddressNotAvailable, NotAFile }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// TooLong, AddressNotAvailable, NotAFile, NotATerminal }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -601,11 +601,13 @@ const IO_ERROR: &str = "IoError";
 /// holds its limit already, which `consume` makes room in (1736). `AddressNotAvailable`: the
 /// address is not one of the machine's, or no local port is left to connect from (1764).
 /// `NotAFile`: `File.openRegular` met a pipe, a device or a socket, and did not open it (1873).
+/// `NotATerminal`: the program has no terminal where one was asked for (`Terminal.giveTo`,
+/// `Command.foreground`), 2033.
 /// What an `IoError` is written as (1537), by variant: a short sentence in lower case, as Go's
 /// errors are, followed by the number a variant carries (`invalid text at byte 812`,
 /// `system error 5`); `Cancelled` writes no field. The interpreter and compiled code write it
 /// from this table.
-pub const IO_ERROR_TEXTS: [&str; 21] = [
+pub const IO_ERROR_TEXTS: [&str; 22] = [
     "not found",
     "permission denied",
     "is a folder",
@@ -627,6 +629,7 @@ pub const IO_ERROR_TEXTS: [&str; 21] = [
     "too long",
     "address not available",
     "not a file",
+    "not a terminal",
 ];
 
 fn io_error() -> EnumDecl {
@@ -659,6 +662,7 @@ fn io_error() -> EnumDecl {
         variant("TooLong", Vec::new()),
         variant("AddressNotAvailable", Vec::new()),
         variant("NotAFile", Vec::new()),
+        variant("NotATerminal", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
@@ -13331,6 +13335,9 @@ impl<'a> Checker<'a> {
             "closeEnd" => (SystemCall::CloseEnd, vec![Ty::Int(IntTy::Long)], Ty::Void),
             "processId" => (SystemCall::ProcessId, vec![Ty::Int(IntTy::Int)], Ty::Int(IntTy::Long)),
             "signalId" => (SystemCall::SignalId, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], io(Ty::Void)),
+            "signalGroup" => (SystemCall::SignalGroup, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], Ty::Void),
+            "waitChange" => (SystemCall::WaitChange, vec![Ty::Int(IntTy::Long), Ty::Bool, Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Bool)),
+            "terminalFront" => (SystemCall::TerminalFront, vec![Ty::Int(IntTy::Long)], io(Ty::Void)),
             "waitAsync" => (
                 SystemCall::WaitAsync,
                 vec![Ty::Int(IntTy::Long), Ty::Read(Box::new(Ty::Token)), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],

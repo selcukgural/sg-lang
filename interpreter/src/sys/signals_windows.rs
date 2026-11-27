@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::net::Done;
 
-const KINDS: usize = 7;
+const KINDS: usize = 14;
 /// Windows has no numbers of its own: those of Linux stand for them, for `Process.signal`, where
-/// only `WindowChange` (28) is told apart.
-const NUMBERS: [i32; KINDS] = [2, 15, 1, 3, 10, 12, 28];
+/// only those whose default leaves a running program as it is are told apart (`sys::inert`). The
+/// last, `SIGSTOP`, is no variant of `Signal`: `Signals.stopSelf` raises it.
+const NUMBERS: [i32; KINDS] = [2, 15, 1, 3, 10, 12, 28, 20, 18, 21, 22, 17, 14, 19];
 
 const CTRL_C_EVENT: u32 = 0;
 const CTRL_BREAK_EVENT: u32 = 1;
@@ -149,7 +150,9 @@ pub fn forget_waiter(id: u64) {
 pub fn end_by_closed_output() {}
 
 /// The signal of the kind to this program: handed on here when someone listens; otherwise its
-/// default, the end of the program as Ctrl-C ends it, and nothing for `WindowChange`.
+/// default, the end of the program as Ctrl-C ends it, and nothing for a signal whose default on
+/// Linux and macOS leaves a running program as it is or pauses it, since Windows pauses no
+/// program (`WindowChange`, `Child`, `Continue`, the three of a terminal, and `SIGSTOP`).
 pub fn raise_kind(kind: usize) {
     let heard = {
         let mut table = table();
@@ -159,7 +162,7 @@ pub fn raise_kind(kind: usize) {
         }
         heard
     };
-    if !heard && kind != 6 {
+    if !heard && !crate::sys::inert(i64::from(NUMBERS[kind])) {
         // SAFETY: ends the process; what was printed went out before the call.
         unsafe { ExitProcess(STATUS_CONTROL_C_EXIT) };
     }

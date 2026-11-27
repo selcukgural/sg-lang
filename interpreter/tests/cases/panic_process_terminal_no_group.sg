@@ -1,0 +1,8 @@
+// The terminal is given to the group of a program, which one not started in a group of its own
+// does not have: its group is that of this program (2031).
+Result<void, IoError> main() {
+    var process = try Command("sg-test-tool").start()
+    _ = Terminal.giveTo(read process)
+    _ = try process.wait()
+    return Ok()
+}

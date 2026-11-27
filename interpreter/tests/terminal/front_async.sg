@@ -1,0 +1,40 @@
+// `front.sg` with the async wait for a change (2036): `waitChangeAsync` sees the pause, the going
+// on and the end of a job in front at the terminal. Run at a terminal of its own by `script`
+// (tests/cli.rs).
+
+// Whether the group of the program `id` is the one in front at its terminal.
+async bool inFront(int id) {
+    var look = Command("sh")
+    look.args(read List<string> { "-c", $"ps -o pgid= -o tpgid= -p {id}".toString() })
+    var seen = await look.outputAsync() ?? ""
+    var words = List<string>()
+    for word in seen.split(' ') {
+        var trimmed = word.trim()
+        if trimmed.length() > 0 {
+            words.add(trimmed.clone())
+        }
+    }
+    return words.length() == 2 && words[0] == words[1]
+}
+
+async Result<void, IoError> main() {
+    var me = Process.currentId()
+    var job = Command("sh")
+    job.args(read List<string> { "-c", "kill -TSTP $$; echo resumed again" })
+    job.foreground()
+    var process = try job.start()
+    var paused = try await process.waitChangeAsync()
+    print(paused is Stopped(_))
+    try Terminal.giveTo(read process)
+    process.signalGroup(Signal.Continue)
+    var went = try await process.waitChangeAsync()
+    print(went)
+    var ended = try await process.waitChangeAsync()
+    print(ended)
+    try Terminal.takeBack()
+    var front = await inFront(me)
+    print($"me in front at the end: {front}")
+    var status = try await process.waitAsync()
+    print(status)
+    return Ok()
+}

@@ -700,6 +700,7 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
 | `NotAFile` | `File.openRegular` or `File.mapRead` met a pipe, a device or a socket, and did not open it; a lock of a stream that is no file |
+| `NotATerminal` | No terminal where one was asked for: `Terminal.giveTo` or `takeBack` in a program without one, a program put in front (`Command.foreground`) |
 | `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `AddressNotAvailable`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
 
 Printed, an `IoError` is a sentence in lower case, as Go's errors are: `not found`, `permission denied`,

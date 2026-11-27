@@ -654,7 +654,16 @@ Slice 196 (2016-2029, with the plan of 197 and 198) sends the streams of a progr
 and faster than `sh` for small ones, and fails as `set -o pipefail` says but not for `yes | head`. `tryWait` looks
 without waiting, `detach` lets a program go on and has the runtime take it away once it ends, and
 `Process.currentId`, `parentId`, `signalId` and `killId` name programs by their numbers. `xs[^1]` in an async
-function compiles now. Next are groups, sessions and the signals of job control (197), then a terminal of its own
+function compiles now.
+
+Slice 197 (2023-2026, 2030-2041) gives a shell's job control. `Command.newGroup()`, `newSession()` and
+`foreground()`, and `Pipeline.newGroup()` and `foreground()`, start programs in a group or a session of their
+own, the group put in front at the terminal before its first program runs (by `fork` and `exec` on Linux and
+macOS for that one way). `process.signalGroup`, `killGroup` and `groupId` reach the group, and a `Process` of a
+group that is not waited for stops the whole group. `waitChange`, `tryWaitChange` and `waitChangeAsync` give a
+`ProcessChange`: paused, gone on, or ended. `Terminal.giveTo` and `takeBack` move the terminal between a job and
+this program, `IoError.NotATerminal` says there is none, and `Signal` has `TerminalStop`, `Continue`,
+`TerminalInput`, `TerminalOutput`, `Child` and `Alarm`, with `Signals.stopSelf()`. Next is a terminal of its own
 and the raw mode of a terminal (198).
 
 ## Next

@@ -16,6 +16,11 @@
 //   pid         its own number, as the system knows it  ppid      the number of its parent
 //   listen      listens for `Interrupt`, `Terminate` and `Hangup`, says `ready`, and when one
 //               comes says `caught` and ends with 5
+//   child       starts `sg-test-tool sleep=60000`, says its number, and waits for it
+//   front       `Terminal.takeBack()`: `front: ok`, or the error
+//   stop        `Signals.stopSelf()`, then `went on`
+//   foreground  starts `sg-test-tool` put in front (`Command.foreground`): `foreground: ok`, or
+//               the error
 async Result<void, IoError> main(List<string> args) {
     nint at = 0
     while at < args.length() {
@@ -121,6 +126,38 @@ async Result<void, IoError> main(List<string> args) {
                 try await Stdout.writeLineAsync("caught")
                 try await Stdout.flushAsync()
                 exit(5)
+            }
+            "child" => {
+                var command = Command("sg-test-tool")
+                command.arg("sleep=60000")
+                var child = try command.start()
+                try await Stdout.writeLineAsync($"{child.id()}")
+                try await Stdout.flushAsync()
+                _ = try await child.waitAsync()
+            }
+            "stop" => {
+                Signals.stopSelf()
+                try await Stdout.writeLineAsync("went on")
+                try await Stdout.flushAsync()
+            }
+            "front" => {
+                match Terminal.takeBack() {
+                    Ok => try await Stdout.writeLineAsync("front: ok")
+                    Error(cause) => try await Stdout.writeLineAsync($"front: {cause}")
+                }
+                try await Stdout.flushAsync()
+            }
+            "foreground" => {
+                var command = Command("sg-test-tool")
+                command.foreground()
+                match command.start() {
+                    Ok(started) => {
+                        _ = try await started.waitAsync()
+                        try await Stdout.writeLineAsync("foreground: ok")
+                    }
+                    Error(cause) => try await Stdout.writeLineAsync($"foreground: {cause}")
+                }
+                try await Stdout.flushAsync()
             }
             _ => {
                 try await Stderr.writeLineAsync($"sg-test-tool: no step `{step}`")

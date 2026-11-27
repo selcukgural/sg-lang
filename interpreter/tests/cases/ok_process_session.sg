@@ -1,0 +1,26 @@
+// A program in a session of its own (2024) has no terminal: `Terminal.takeBack` there is
+// `NotATerminal` (2033), and so is a program it starts put in front (`Command.foreground`, 2034).
+// It is in a group of its own too, whose number is its own. A console of Windows has no group in
+// front, so there both are `ok`, and a program without a console is in no group of its own (see
+// the `.windows.out`). The program started is `sg-test-tool` (tests/tool), whose steps `front` and
+// `foreground` say what they got.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.newSession()
+    return command
+}
+
+Result<void, ProcessError> main() {
+    var front = try tool(read List<string> { "front" }).output()
+    print(front.trim())
+    var foreground = try tool(read List<string> { "foreground" }).output()
+    print(foreground.trim())
+    var alone = try tool(read List<string> { "sleep=10" }).start()
+    var group = alone.groupId()
+    print($"in a group of its own: {group is not null && group == alone.id()}")
+    var ended = try alone.wait()
+    print(ended)
+    print(IoError.NotATerminal)
+    return Ok()
+}

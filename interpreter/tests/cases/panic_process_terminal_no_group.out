@@ -1,0 +1,4 @@
+panic: `Terminal.giveTo` of a program that was not started in a group of its own (`Command.newGroup`)
+  --> panic_process_terminal_no_group.sg:5:9
+ 5 |     _ = Terminal.giveTo(read process)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

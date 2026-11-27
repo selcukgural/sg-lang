@@ -1,0 +1,36 @@
+// The signals of job control (2025): `TerminalStop` (Ctrl-Z), `Continue`, `TerminalInput`,
+// `TerminalOutput`, `Child` and `Alarm`. One that is listened for does not do what it does by
+// default: a listener of `TerminalStop` is not paused by it, and one of `Alarm` is not ended.
+// `Continue` and `Child` do nothing to a program that runs, listened for or not. `Child` comes
+// when a program this one started ends; Windows sends none, so there that part is left out (see
+// the `.windows.out`). The program started is `sg-test-tool` (tests/tool).
+void main() {
+    print(Signal.TerminalStop)
+    print(Signal.Continue)
+    print(Signal.TerminalInput)
+    print(Signal.TerminalOutput)
+    print(Signal.Child)
+    print(Signal.Alarm)
+    print(Signal.Child != Signal.Alarm)
+
+    // Their defaults that leave a running program as it is.
+    Signals.raise(Signal.Continue)
+    Signals.raise(Signal.Child)
+    print("Continue and Child, not listened for: still here")
+
+    // Listened for: kept, and the program is neither paused nor ended.
+    var job = Signals.listen(read List<Signal> { Signal.TerminalStop, Signal.TerminalInput, Signal.TerminalOutput, Signal.Alarm })
+    Signals.raise(Signal.TerminalStop)
+    Signals.raise(Signal.TerminalInput)
+    Signals.raise(Signal.TerminalOutput)
+    Signals.raise(Signal.Alarm)
+    print($"{job.next()}, {job.next()}, {job.next()}, {job.next()}")
+
+    // A program this one started ends: `Child`.
+    if !OperatingSystem.isWindows() {
+        var children = Signals.listen(read List<Signal> { Signal.Child })
+        var started = Command("sg-test-tool").status()
+        print($"started: {started is Ok(_)}")
+        print($"then: {children.next()}")
+    }
+}

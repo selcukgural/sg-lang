@@ -1164,6 +1164,18 @@ pub enum SystemCall {
     ProcessId,
     /// `System.signalId(id, number)`: `kill` to a program that need not be one's own (2022).
     SignalId,
+    /// `System.signalGroup(handle, group, number)`: `killpg` to the group of a program started in
+    /// one of its own (2023); on Windows `Interrupt` (2) is Ctrl-Break to the group and another
+    /// signal goes to the program named by `handle`, as `Signal` sends it.
+    SignalGroup,
+    /// `System.waitChange(handle, block, ref ended)`: the next change of the program, waited for
+    /// when `block` (2036): `ended` gets 0 and the code or 1 and the signal when it ended (and was
+    /// taken away), 2 and the signal when it was paused, 3 when it went on; `false` when there was
+    /// none and `block` is not set.
+    WaitChange,
+    /// `System.terminalFront(group)`: the group is put in front at the terminal of this program
+    /// (`tcsetpgrp`), this program's own for 0 (2031, 2032). Nothing on Windows.
+    TerminalFront,
     /// `System.waitAsync(pid, read token, ref ended)`: the same without holding the thread. A
     /// cancel ends the wait and leaves the program to be stopped.
     WaitAsync,

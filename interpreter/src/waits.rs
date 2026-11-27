@@ -434,6 +434,13 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Call { callee: Callee::System(SystemCall::Wait), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Wait), name_span, .. } => {
             Some((*name_span, "`System.wait`".to_string()))
         }
+        // `Process.waitChange` waits for the next change of the program; asked with `false`, as
+        // `tryWaitChange` asks, it does not wait.
+        ExprKind::Call { callee: Callee::System(SystemCall::WaitChange), name_span, args, .. } | ExprKind::Method { callee: Callee::System(SystemCall::WaitChange), name_span, args, .. }
+            if !args.get(1).is_some_and(|block| matches!(block.kind, ExprKind::Bool(false))) =>
+        {
+            Some((*name_span, "`System.wait`".to_string()))
+        }
         // `SignalListener.next` waits for a signal.
         ExprKind::Call { callee: Callee::System(SystemCall::SignalNext), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::SignalNext), name_span, .. } => {
             Some((*name_span, "`System.signalNext`".to_string()))

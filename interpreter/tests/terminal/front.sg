@@ -1,0 +1,55 @@
+// A job in front at the terminal, as a shell runs one (2031 to 2036): `Command.foreground` puts
+// the group of the program in front before it runs, and `run`, `output` and `status` put this
+// program in front again once it has ended. A job that pauses itself, as Ctrl-Z would pause it,
+// is seen paused; this program takes the terminal back, gives it to the job again and tells the
+// job to go on, as `fg` does. Run at a terminal of its own by `script` (tests/cli.rs); `ps` says
+// which group is in front.
+
+// Whether the group of the program `id` is the one in front at its terminal.
+bool inFront(int id) {
+    var look = Command("sh")
+    look.args(read List<string> { "-c", $"ps -o pgid= -o tpgid= -p {id}".toString() })
+    var seen = look.output() ?? ""
+    var words = List<string>()
+    for word in seen.split(' ') {
+        var trimmed = word.trim()
+        if trimmed.length() > 0 {
+            words.add(trimmed.clone())
+        }
+    }
+    return words.length() == 2 && words[0] == words[1]
+}
+
+Result<void, IoError> main() {
+    var me = Process.currentId()
+    print($"me in front: {inFront(me)}")
+    var looking = Command("sh")
+    looking.args(read List<string> { "-c", "ps -o pgid= -o tpgid= -p $$ | awk '{print \"child in front:\", ($1 == $2)}'" })
+    looking.foreground()
+    print($"status: {looking.status() is Ok(_)}")
+    print($"me in front again: {inFront(me)}")
+
+    var job = Command("sh")
+    job.args(read List<string> { "-c", "kill -TSTP $$; echo resumed" })
+    job.foreground()
+    var process = try job.start()
+    var paused = try process.waitChange()
+    print(paused is Stopped(_))
+    print($"me in front while it is paused: {inFront(me)}")
+    try Terminal.takeBack()
+    print($"me in front after takeBack: {inFront(me)}")
+    try Terminal.giveTo(read process)
+    print($"the job in front: {inFront(process.id())}")
+    process.signalGroup(Signal.Continue)
+    var went = try process.waitChange()
+    print(went)
+    var ended = try process.waitChange()
+    print(ended)
+    try Terminal.takeBack()
+    print($"me in front at the end: {inFront(me)}")
+    var gone = Terminal.giveTo(read process)
+    print($"giving it to a group with no program left: {gone is Error(NotFound)}")
+    var status = try process.wait()
+    print(status)
+    return Ok()
+}

@@ -1,0 +1,77 @@
+// The wait for a change of a program without holding the thread (2036): `waitChangeAsync`
+// listens for `Signal.Child` while it waits, and gives a pause, a going on and the end, and the
+// end again once it was seen. The number of a pause by Ctrl-Z differs (20 on Linux, 18 on macOS),
+// so it is not printed. Windows pauses no program: there only the end is seen (see the
+// `.windows.out`). The program started is `sg-test-tool` (tests/tool), whose words are its steps;
+// its step `stop` pauses itself with `Signals.stopSelf`, which no program can listen for.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+// The change as it is printed: a pause without its number.
+string said(ProcessChange change) {
+    match change {
+        Stopped(_) => return "paused"
+        _ => return $"{change}".toString()
+    }
+}
+
+async Result<void, ProcessError> main() {
+    var windows = OperatingSystem.isWindows()
+    // A program in a group of its own, paused and told to go on by the group.
+    var paused = tool(read List<string> { "sleep=60000" })
+    paused.newGroup()
+    var later = try paused.start()
+    if !windows {
+        later.signalGroup(Signal.TerminalStop)
+        var seen1 = try await later.waitChangeAsync()
+        print($"async, after Ctrl-Z: {said(seen1)}")
+        later.signalGroup(Signal.Continue)
+        var seen2 = try await later.waitChangeAsync()
+        print($"async, after fg: {said(seen2)}")
+    }
+    later.signalGroup(Signal.Terminate)
+    var ended = try await later.waitChangeAsync()
+    print($"async, after Terminate: {said(ended)}")
+    var seen3 = try await later.waitChangeAsync()
+    print($"async, once more: {said(seen3)}")
+    var seen4 = try await later.waitAsync()
+    print($"async wait: {seen4}")
+
+    // A program that pauses itself, and goes on when told.
+    var self = tool(read List<string> { "stop" })
+    self.pipeOutput()
+    var stopping = try self.start()
+    var reader = stopping.takeOutput() ?? panic("asked for with pipeOutput")
+    if !windows {
+        var seen5 = try await stopping.waitChangeAsync()
+        print($"stopSelf: {said(seen5)}")
+        stopping.signal(Signal.Continue)
+        var seen6 = try await stopping.waitChangeAsync()
+        print($"told to go on: {said(seen6)}")
+    }
+    var line = ""
+    _ = try await reader.readLineAsync(ref line)
+    print($"it said: {line}")
+    var seen7 = try await stopping.waitChangeAsync()
+    print($"its end: {said(seen7)}")
+    var seen8 = try await stopping.waitAsync()
+    print($"wait: {seen8}")
+
+    // A cancelled wait leaves the program as it is.
+    var long = tool(read List<string> { "sleep=60000" })
+    var running = try long.start()
+    var soon = CancellationSource.after(50)
+    match await running.waitChangeAsync(read soon.token()) {
+        Error(Cancelled(_)) => print("cancelled: the wait ends")
+        var other => print($"not cancelled: {other is Ok(_)}")
+    }
+    var look = try running.tryWait()
+    print($"still running: {look is null}")
+    running.kill()
+    var seen9 = try await running.waitAsync()
+    print($"then stopped: {seen9}")
+    return Ok()
+}
