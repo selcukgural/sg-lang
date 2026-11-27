@@ -1,0 +1,121 @@
+<!-- The front page of sg-lang.org. build.mjs puts it in the frame of every page and colours the programs;
+     check.mjs runs them: the first must print what the page shows, the second must be refused with it. -->
+<section class="hero">
+  {{logo}}
+  <h1>Small enough to know by heart. Safe and fast by construction.</h1>
+</section>
+
+<div class="split">
+  <div class="intro">
+    <p class="lead">SG is a small systems language that makes fast software safe by construction. One owner for every value, borrows checked when the program compiles, no garbage collector. It
+    compiles through C and runs on Linux, macOS and Windows. It is before its preview.</p>
+    <p class="go"><a href="learn/install.html">Install</a> <a href="learn/tour.html">Take the tour</a> <a href="reference/index.html">Look a word up</a></p>
+    <div class="three">
+      <div>
+        <h3>Small</h3>
+        <p>Types before names, braces, no macros. A call says what it may do to your variable: <code>read</code> to
+        look, <code>ref</code> to change.</p>
+      </div>
+      <div>
+        <h3>Fast</h3>
+        <p>Compiled through C with no runtime to carry. SG is held to safe Rust doing the same work, and measured
+        against C.</p>
+      </div>
+      <div>
+        <h3>Safe</h3>
+        <p>A use after free, a dangling pointer and a forgotten error are compile errors, each with the fix when it
+        is known.</p>
+      </div>
+    </div>
+    <h3 class="get-title" id="get-it">Get it</h3>
+<pre class="plain get"><code>git clone https://github.com/selcukgural/sg-lang
+cd sg-lang/interpreter
+cargo build --release    # makes target/release/sg
+
+sg hello.sg              # runs a program
+man sg-read              # the page of a word</code></pre>
+  </div>
+  <div class="show">
+    <p class="cap">Point at a coloured word to see what it is; click it for its page.</p>
+<pre class="sg">
+int largest(read int[] values) {
+    var best = values[0]
+    for value in values {
+        if value &gt; best {
+            best = value
+        }
+    }
+    return best
+}
+
+void scale(ref int[] values, int by) {
+    for i in 0..values.length() {
+        values[i] *= by
+    }
+}
+
+void main() {
+    var samples = int[4] { 3, 9, 4, 1 }
+    print(largest(read samples))
+    scale(ref samples, 2)
+    print(samples)
+}</pre>
+<pre class="out" data-label="Output"><code>9
+[6, 18, 8, 2]</code></pre>
+  </div>
+</div>
+
+<h2 id="a-mistake">A mistake is a compile error</h2>
+<p class="pair-lead">A function lent the array with <code>read</code> may look at it and nothing more. Writing to
+it does not compile, and the message says what to write instead.</p>
+<div class="pair">
+  <div>
+<pre class="sg error">
+int largest(read int[] values) {
+    values[0] = 0
+    return values[0]
+}
+
+void main() {
+    var samples = int[4] { 3, 9, 4, 1 }
+    print(largest(read samples))
+}</pre>
+  </div>
+  <div>
+<pre class="out" data-label="The compiler says"><code>error: this item is reached through a `read` borrow and cannot be written
+  --&gt; main.sg:2:5
+ 2 |     values[0] = 0
+   |     ^^^^^^^^^
+  hint: take the value as `ref` instead of `read`</code></pre>
+  </div>
+</div>
+
+<h2 id="read-on">Read on</h2>
+<div class="cols">
+  <div>
+    <h3>Learn</h3>
+    <ul>
+      <li><a href="learn/install.html">Install</a></li>
+      <li><a href="learn/tour.html">A tour of SG</a></li>
+      <li><a href="learn/book/getting-started.html">The SG book</a></li>
+      <li><a href="learn/for-rust.html">SG for Rust programmers</a></li>
+    </ul>
+  </div>
+  <div>
+    <h3>Look up</h3>
+    <ul>
+      <li><a href="reference/index.html">The index of every name</a></li>
+      <li><a href="manual/index.html">The manual pages</a></li>
+      <li><a href="library/index.html">The library</a></li>
+    </ul>
+  </div>
+  <div>
+    <h3>The project</h3>
+    <ul>
+      <li><a href="status.html">Status</a></li>
+      <li><a href="benchmarks/index.html">Benchmarks</a></li>
+      <li><a href="about/why.html">Why SG</a></li>
+      <li><a href="about/community.html">Community</a></li>
+    </ul>
+  </div>
+</div>

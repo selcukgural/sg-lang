@@ -1,0 +1,89 @@
+# The names of the index (reference/index.html) that have no page of their own yet: one on each line, as
+# kind | name | what it is, in one line. A name with a page (a .md file in this folder) takes its line from
+# that page, and its line here is left out. The types of the library come from the headings of
+# docs/library/, the modules from the pages there. A line here is a draft until its page is written: each is
+# checked against design/rules/ then.
+
+keyword | alias | gives a type a second name: alias Scores = List<int>
+keyword | align | align(N) keeps a type at a multiple of N bytes
+keyword | as | names a lent value for a block: read mine as account { }
+keyword | assert | stops the program, or fails the test, when a condition is false
+keyword | async | a function that runs as a light task and may await
+keyword | await | waits for the result of an async call
+keyword | break | leaves the loop
+keyword | checked | shared checked T: borrows of it are checked while the program runs
+keyword | const | a value fixed when the program is compiled
+keyword | continue | goes on with the next turn of the loop
+keyword | else | the block that runs when the condition of if is false
+keyword | embed | embed("logo.gif"): the bytes of a file, put into the program
+keyword | enum | a type that is one of several variants, each with its own values
+keyword | export | makes a function that C calls
+keyword | extern | declares the functions of a C library
+keyword | for | goes over the items of a collection or a range: for i in 0..n
+keyword | if | runs a block when a condition holds
+keyword | in | stands between the name and the items in a for
+keyword | interface | what a type can do: Clonable, Formattable, Equatable, Comparable
+keyword | is | tests for one variant in a condition; is not turns it round
+keyword | lock | a short block that alone touches a locked value
+keyword | locked | shared locked T: a value that tasks reach only inside a lock
+keyword | match | chooses by the shape of a value; every case must be covered
+keyword | new | puts a value on the heap and gives the pointer that owns it
+keyword | not | is not: the test of is, the other way round
+keyword | or | joins patterns in a match
+keyword | packed | a struct with no padding between its fields
+keyword | public | shows a name to other modules
+keyword | raw | raw T: a pointer of C, which the compiler does not check
+keyword | readonly | a field given when the value is built and never changed
+keyword | return | ends the function, with its value
+keyword | share | makes one more owner of a shared value
+keyword | shared | shared T: a value on the heap with several owners, only read
+keyword | static | a value made once, the first time the program uses it
+keyword | struct | a type made of named fields, with its methods
+keyword | test | a block of checks that sg test runs
+keyword | try | opens a Result: its value, or the error handed to the caller
+keyword | union | holds one of its fields at a time in the same bytes
+keyword | unsafe | a block where what the checker cannot follow is written
+keyword | use | brings in a module
+keyword | var | declares a variable; its type comes from its value
+keyword | weak | a link that does not keep its value alive
+keyword | when | adds a condition to an arm of a match
+keyword | while | repeats a block as long as a condition holds
+keyword | with | a copy of a struct with some fields changed
+
+type | bool | true or false
+type | byte | an integer of 8 bits, 0 to 255
+type | char | one character of Unicode
+type | double | a fraction of 64 bits
+type | float | a fraction of 32 bits
+type | int | an integer of 32 bits
+type | long | an integer of 64 bits
+type | nint | an integer as wide as an address: what length() gives
+type | nuint | nint without a sign
+type | sbyte | an integer of 8 bits, -128 to 127
+type | short | an integer of 16 bits
+type | string | text in UTF-8 that owns its memory; read string is a borrow of it
+type | uint | an integer of 32 bits without a sign
+type | ulong | an integer of 64 bits without a sign
+type | ushort | an integer of 16 bits without a sign
+type | void | the type of a function that gives nothing back
+
+value | false | the bool that is not true
+value | null | no value; only a type written T? may hold it
+value | this | the value a method was called on
+value | true | the bool that is not false
+
+sign | T? | a T that may be null
+sign | T[] | a slice: items that something else owns
+sign | T* | a pointer that owns a value on the heap
+sign | a..b | a range: from a up to, not with, b
+sign | xs[^1] | an index counted from the end
+sign | x ?? y | x, or y when x is null or an error
+sign | x?.y | y of x, or null when x is null
+sign | $"{x}" | text with values written into it
+
+command | sg | runs a program: sg hello.sg, or a folder
+command | sg test | runs the tests of a file or of every module in a folder
+command | sg build | compiles through C: a program, a library, or an object without an operating system
+command | sg emit-c | prints the C
+command | sg lsp | the language server an editor starts
+command | sg add | adds a package to sg.project; with update, remove and lock

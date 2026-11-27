@@ -8,6 +8,16 @@ Tagline: **Small enough to know by heart. Safe and fast by construction.** (choi
 still shows an earlier one, **Safe by design. Fast by default.**, drawn as outlines by `src/build.py`; it is
 drawn again with the next logo.
 
+## The next logo: the wildcat
+
+**The wildcat** (`wildcat/source.png`, 1536 x 1024) is the logo of the plain site (`website/plain/`, choice
+2081): the letters SG in silver, a wildcat's head over the G, and a cyan ring of light, on a ground of `#00040c`.
+It is a picture with a glow, not a drawing, so it is shown on a tile of its own ground in both themes;
+`wildcat/make.py` cuts and sizes the files the site uses (`logo.webp`, `logo-small.webp`, `favicon.png`,
+`apple-touch-icon.png` in `website/plain/assets/`). It does not yet read at 16 pixels, and it has no one-colour
+or vector form; the S-cat below stays the logo of the README, the current site and the social card until those
+are made.
+
 ## Files
 
 | File | Use |

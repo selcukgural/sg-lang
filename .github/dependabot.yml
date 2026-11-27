@@ -1,6 +1,6 @@
 # Dependency updates: the GitHub Actions of the CI, the crate that fuzzes the front end (`fuzz/`,
 # which uses libfuzzer-sys), the extension for VS Code (`editors/vscode`, which uses
-# vscode-languageclient), the web site (`website/`, Docusaurus), the Rust versions of the trials
+# vscode-languageclient), the web site (`website/`, Docusaurus, and `website/plain/`, marked), the Rust versions of the trials
 # (`trials/`: Rust's `regex`, `serde_json` and `indexmap` for `jq`, `crc32fast` for `kv`, `crossbeam-channel` and `sha2` for
 # `hashsum`, the crates the
 # library is measured against, `tokio` and hyper for the servers, with `tokio-util` for the file server; the Zig versions use only Zig's library and PCRE2 of the system), the Rust side of the
@@ -25,7 +25,9 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: npm
-    directory: /website
+    directories:
+      - /website
+      - /website/plain
     schedule:
       interval: weekly
   - package-ecosystem: cargo

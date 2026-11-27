@@ -293,3 +293,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [The rule of speed](2026-11-27.md#the-rule-of-speed) | SG is held to safe Rust doing the same work; C is the yardstick | 2078 |
 | [The sentence and the tagline](2026-11-27.md#the-sentence-and-the-tagline) | Small like C, readable like C#, fast and memory safe like Rust; "Plain to read. Fast to run. Memory safe by design." (replaced by 2080) | 2079 |
 | [The tagline, again](2026-11-27.md#the-tagline-again) | "Small enough to know by heart. Safe and fast by construction."; no other language named | 2080 |
+| [The plain site](2026-11-27.md#the-plain-site) | Plain pages made by one script, a page for each word, manual pages, the wildcat logo; Docusaurus kept | 2081 |

@@ -1,5 +1,9 @@
 # The web site of SG
 
+**The next site is in [`plain/`](plain/README.md)** (choice 2081): plain pages made from the same `docs/` by one
+script, with a page for each word of the language (`words/`), its manual page, and the wildcat logo. This
+Docusaurus site still publishes sg-lang.org until the switch, and it stays here after it.
+
 The source of [sg-lang.org](https://sg-lang.org) (choices [1383-1390](../design/decisions/2026-11-19.md#slice-121)): a static site
 built with Docusaurus, published by Cloudflare Pages from this folder.
 
