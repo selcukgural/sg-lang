@@ -38,6 +38,7 @@ value | true | the bool that is not false
 
 sign | a..b | a range: from a up to, not with, b
 sign | xs[^1] | an index counted from the end
+sign | c ? a : b | a when c is true, b when it is false
 sign | $"{x}" | text with values written into it
 
 command | sg | runs a program: sg hello.sg, or a folder

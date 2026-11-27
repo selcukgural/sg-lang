@@ -58,6 +58,11 @@ Ada: 10 bytes
 C:\temp "quoted" text
 ```
 
+`F` in `$"{x:Fn}"` writes a number to `n` digits after the point. It rounds the exact value to the nearest,
+and a tie goes to the even digit: `{2.5:F0}` is `2` and `{0.125:F2}` is `0.12`. That is not what `round()`
+does, since `round()` takes a half away from zero (`2.5.round()` is `3`); `roundToEven()` gives the same
+digits as `F`. See [rounding of `F`](https://github.com/selcukgural/sg-lang/blob/main/design/rules/text.md#rounding-of-f).
+
 A formatted text is not a `string` by itself, so that every allocation is written where it happens:
 
 ```sg error

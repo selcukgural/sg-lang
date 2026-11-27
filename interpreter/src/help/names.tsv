@@ -69,6 +69,7 @@ this	value	Values with a name	the value a method was called on		https://sg-lang.
 true	value	Values with a name	the bool that is not false		https://sg-lang.org/reference/#n-true
 $"{x}"	sign	Signs	text with values written into it		https://sg-lang.org/reference/#n--24227b-x-7d22
 a..b	sign	Signs	a range: from a up to, not with, b		https://sg-lang.org/reference/#n-a-2e2e-b
+c ? a : b	sign	Signs	a when c is true, b when it is false		https://sg-lang.org/reference/#n-c-203f20-a-203a20-b
 T?	sign	Signs	a T that may be null; it is tested before it is used as a T	nullable	https://sg-lang.org/reference/nullable
 T[]	sign	Signs	a slice: a window onto items that something else owns	slice	https://sg-lang.org/reference/slice
 T*	sign	Signs	a pointer that owns a value on the heap	pointer	https://sg-lang.org/reference/pointer
