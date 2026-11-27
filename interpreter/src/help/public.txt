@@ -67,6 +67,8 @@ EXAMPLES
              account.sg
              fees.sg
 
+     The file bank/accounts/account.sg:
+
          public struct Account {
              public readonly string owner
              public string? note
@@ -85,12 +87,16 @@ EXAMPLES
              }
          }
 
+     The file bank/accounts/fees.sg:
+
          long fee(long cents) {
              if cents < 10000 {
                  return 25
              }
              return 0
          }
+
+     The file bank/main.sg:
 
          use accounts
 
@@ -130,6 +136,8 @@ EXAMPLES
      itself: it is made by its functions and read through its methods.
 
    An enum, a const and an alias
+     The file savings/rates/plan.sg:
+
          public const int MaxPercent = 5
 
          public enum Plan : Formattable {
@@ -149,6 +157,8 @@ EXAMPLES
          }
 
          public alias Plans = List<Plan>
+
+     The file savings/main.sg:
 
          use rates
 
@@ -183,12 +193,16 @@ EXAMPLES
            internal/
              group.sg
 
-         // shop/sg.project
+     The file shop/sg.project:
+
          require money example.com/ada/money 1.0.0
          local money ../money
 
-         // money/sg.project
+     The file money/sg.project:
+
          package example.com/ada/money
+
+     The file money/format.sg:
 
          use internal
 
@@ -196,12 +210,16 @@ EXAMPLES
              return $"{grouped(cents / 100)}.{cents % 100:d2} EUR".toString()
          }
 
+     The file money/internal/group.sg:
+
          public string grouped(long whole) {
              if whole < 1000 {
                  return $"{whole}".toString()
              }
              return $"{grouped(whole / 1000)},{whole % 1000:d3}".toString()
          }
+
+     The file shop/main.sg:
 
          use money
 
@@ -225,6 +243,8 @@ WHAT THE COMPILER REFUSES
    A field that is not public
      With the accounts module of the first example:
 
+     The file bank/main.sg:
+
          use accounts
 
          void main() {
@@ -233,6 +253,7 @@ WHAT THE COMPILER REFUSES
              print(account.balance())
          }
 
+         $ cd bank
          $ sg main.sg
          error: `cents` is not public: it stays inside the `accounts` module
            --> main.sg:5:13
@@ -249,6 +270,8 @@ WHAT THE COMPILER REFUSES
    A public function that shows a private type
      A file added to bank/accounts/:
 
+     The file bank/accounts/statement.sg:
+
          struct Line {
              string text
              long cents
@@ -258,6 +281,7 @@ WHAT THE COMPILER REFUSES
              return Line { text = "opening balance", cents = account.cents }
          }
 
+         $ cd bank
          $ sg main.sg
          error: `opening` is public, but it shows `Line`, which is not
            --> accounts/statement.sg:6:13

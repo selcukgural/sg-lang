@@ -179,6 +179,8 @@ EXAMPLES
      it out to compare it whole.
 
    What a failing test prints
+     The file ports.sg:
+
          enum PortError : Formattable {
              Empty
              NotANumber(string text)
@@ -220,12 +222,13 @@ EXAMPLES
              assert(port == 22)
          }
 
+         $ sg test ports.sg
          ok    a port is read
          FAIL  the usual ports
          panic: assert failed: ports == List<int> { 80, 8443 }
            left: [80, 443]
            right: [80, 8443]
-           --> example.sg:23:5
+           --> ports.sg:23:5
           23 |     assert(ports == List<int> { 80, 8443 })
              |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
          FAIL  a port with a scheme
@@ -233,7 +236,7 @@ EXAMPLES
          looking
          FAIL  the first of no ports
          panic: index 0 is out of range: the length is 0
-           --> example.sg:34:11
+           --> ports.sg:34:11
           34 |     print(ports[0])
              |           ^^^^^^^^
            hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
@@ -245,6 +248,8 @@ EXAMPLES
      The command ends with exit code 1, so a script or a CI job sees it.
 
    Tests in a folder of modules
+     The file library/loans/fines.sg:
+
          int daysLate(int dueDay, int returnedDay) {
              if returnedDay <= dueDay {
                  return 0
@@ -256,6 +261,8 @@ EXAMPLES
              return daysLate(dueDay, returnedDay) * 25
          }
 
+     The file library/loans/tests.sg:
+
          test "a book back early is not late" {
              assert(daysLate(10, 8) == 0)
          }
@@ -264,6 +271,8 @@ EXAMPLES
              assert(daysLate(10, 14) == 4)
              assert(fineCents(10, 14) == 100)
          }
+
+     The file library/main.sg:
 
          use loans
 

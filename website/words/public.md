@@ -54,7 +54,7 @@ bank/
     fees.sg
 ```
 
-```sg nocheck title="bank/accounts/account.sg"
+```sg file title="bank/accounts/account.sg"
 public struct Account {
     public readonly string owner
     public string? note
@@ -74,7 +74,7 @@ public struct Account {
 }
 ```
 
-```sg nocheck title="bank/accounts/fees.sg"
+```sg file title="bank/accounts/fees.sg"
 long fee(long cents) {
     if cents < 10000 {
         return 25
@@ -83,7 +83,7 @@ long fee(long cents) {
 }
 ```
 
-```sg nocheck title="bank/main.sg"
+```sg file title="bank/main.sg"
 use accounts
 
 void main() {
@@ -129,7 +129,7 @@ its count of nanoseconds to itself: it is made by its functions and read through
 
 ### An enum, a const and an alias
 
-```sg nocheck title="savings/rates/plan.sg"
+```sg file title="savings/rates/plan.sg"
 public const int MaxPercent = 5
 
 public enum Plan : Formattable {
@@ -151,7 +151,7 @@ int capped(int percent) {
 public alias Plans = List<Plan>
 ```
 
-```sg nocheck title="savings/main.sg"
+```sg file title="savings/main.sg"
 use rates
 
 void main() {
@@ -190,16 +190,16 @@ money/
     group.sg
 ```
 
-```text
-// shop/sg.project
+```text title="shop/sg.project"
 require money example.com/ada/money 1.0.0
 local money ../money
+```
 
-// money/sg.project
+```text title="money/sg.project"
 package example.com/ada/money
 ```
 
-```sg nocheck title="money/format.sg"
+```sg file title="money/format.sg"
 use internal
 
 public string euros(long cents) {
@@ -207,7 +207,7 @@ public string euros(long cents) {
 }
 ```
 
-```sg nocheck title="money/internal/group.sg"
+```sg file title="money/internal/group.sg"
 public string grouped(long whole) {
     if whole < 1000 {
         return $"{whole}".toString()
@@ -216,7 +216,7 @@ public string grouped(long whole) {
 }
 ```
 
-```sg nocheck title="shop/main.sg"
+```sg file title="shop/main.sg"
 use money
 
 void main() {
@@ -242,7 +242,7 @@ module is in a folder named `internal`, so only `money` and its folders name it:
 
 With the `accounts` module of the first example:
 
-```sg nocheck title="bank/main.sg"
+```sg file title="bank/main.sg"
 use accounts
 
 void main() {
@@ -253,6 +253,7 @@ void main() {
 ```
 
 ```text
+$ cd bank
 $ sg main.sg
 error: `cents` is not public: it stays inside the `accounts` module
   --> main.sg:5:13
@@ -270,7 +271,7 @@ the hint `` `Account(owner)` ``.
 
 A file added to `bank/accounts/`:
 
-```sg nocheck title="bank/accounts/statement.sg"
+```sg file title="bank/accounts/statement.sg"
 struct Line {
     string text
     long cents
@@ -282,6 +283,7 @@ public Line opening(read Account account) {
 ```
 
 ```text
+$ cd bank
 $ sg main.sg
 error: `opening` is public, but it shows `Line`, which is not
   --> accounts/statement.sg:6:13

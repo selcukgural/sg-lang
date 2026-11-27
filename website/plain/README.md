@@ -19,12 +19,20 @@ What it makes, and from what:
   `atomic.md`, `list.md`): its forms, what it means, examples from the simplest to the hardest, and what the
   compiler refuses. `../words/index.txt` gives the line of every other name of the index. The types and modules
   of the library come from the headings and pages of `../docs/library/`.
+- **Programs on a word's page.** A ```` ```sg ```` block is a whole program, and the ```` ```text ```` after it
+  what it prints; ```` ```sg error ```` must be refused and ```` ```sg panic ```` must stop, the text after
+  either being how the message starts; ```` ```sg test ```` runs its tests. A program of several files, or one
+  that is to fail, is written as its files and a terminal: ```` ```sg file title="bank/main.sg" ```` (or
+  ```` ```text title="shop/sg.project" ````) is written into a folder of the page under its title, and a
+  ```` ```text ```` block whose lines start with `$ ` is a terminal: each command runs in that folder, starting
+  at its root, and must write the lines under it (out and err together). `npm run check` runs them all, so
+  no example on a word's page is left unchecked.
 - **Names in programs.** In every program on every page, each word of the language and each type of the library
   is a link to its page (or to its line of the index), with what it is in one line; so is a name written alone
   in `code` in the text.
 - **Manual pages.** Each word's file also becomes its manual page, `build/man/man7/sg-read.7`, and the text `man`
-  shows for it, on the site under Manual. `npm run check` reads them with mandoc; the text the site shows is the
-  text mandoc prints.
+  shows for it, on the site under Manual. `npm run check` reads them with mandoc's lint, and compares the text the site
+  shows (and `sg help` prints) with the text mandoc lays out, line for line.
 - **`sg help`** (choice 2082). The same text, without man's top and foot lines, is what `sg help read` prints:
   the build writes it into `../../interpreter/src/help/` (`read.txt`, and `names.tsv`, a line for every name of
   the index), which `sg` carries in itself. Commit those files with the change of a word; `cargo test` fails

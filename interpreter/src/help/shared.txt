@@ -11,8 +11,7 @@ SYNOPSIS
      shared T, shared T?
             the type of an owner, one that may be missing
 
-     weak x
-            a look that does not keep the value alive
+     weak x a look that does not keep the value alive
 
      share w
             an owner from a weak look, or null once the value is gone

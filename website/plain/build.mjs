@@ -322,11 +322,17 @@ marked.use({
           `<pre class="sg${label ? ` ${kind}` : ''}"${label ? ` data-label="${label}"` : ''}><code>${colour(token.text, current.url)}</code></pre>\n`
         );
       }
-      if (lang === 'text' && token.after) {
+      const title = meta.match(/title="([^"]*)"/);
+      const file = title ? `<p class="file">${escape(title[1])}</p>` : '';
+      // A terminal: commands after `$ ` and what they write, which the check of the site runs (check.mjs).
+      if (lang === 'text' && token.text.startsWith('$ ')) {
+        return `<pre class="out" data-label="In a terminal"><code>${escape(token.text)}</code></pre>\n`;
+      }
+      if (lang === 'text' && token.after && !title) {
         const label = token.after === 'error' ? 'The compiler says' : token.after === 'panic' ? 'It stops with' : 'Output';
         return `<pre class="out" data-label="${label}"><code>${escape(token.text)}</code></pre>\n`;
       }
-      return `<pre class="plain"><code>${escape(token.text)}</code></pre>\n`;
+      return `${file}<pre class="plain"><code>${escape(token.text)}</code></pre>\n`;
     },
   },
 });
@@ -482,7 +488,12 @@ function blocksOf(body) {
     for (const t of tokens) {
       if (t.type === 'heading') blocks.push({ type: t.depth === 2 ? 'h2' : 'h3', text: plainText(t.text) });
       else if (t.type === 'paragraph') blocks.push({ type: 'p', inline: t.text });
-      else if (t.type === 'code') blocks.push({ type: 'code', lang: (t.lang || '').split(/\s+/)[0], kind: (t.lang || '').split(/\s+/)[1] || '', text: t.text });
+      else if (t.type === 'code') {
+        // A block with a title is a file of a program of several files: its name goes above it.
+        const title = (t.lang || '').match(/title="([^"]*)"/);
+        if (title) blocks.push({ type: 'p', inline: `The file ${title[1]}:` });
+        blocks.push({ type: 'code', lang: (t.lang || '').split(/\s+/)[0], kind: (t.lang || '').split(/\s+/)[1] || '', text: t.text });
+      }
       else if (t.type === 'table') blocks.push({ type: 'rows', rows: t.rows.map((r) => r.map((c) => c.text)) });
       else if (t.type === 'list') blocks.push(...t.items.map((i) => ({ type: 'p', inline: `- ${i.text}` })));
     }
@@ -492,6 +503,8 @@ function blocksOf(body) {
 }
 
 const roffText = (text) => text.replaceAll('\\', '\\e').replace(/^([.'])/gm, '\\&$1');
+// An argument of a macro in quotes: a quote inside it is written twice.
+const roffArg = (text) => `"${roffText(text).replaceAll('"', '""')}"`;
 function roffInline(md) {
   return md
     .split(/(`[^`]*`)/)
@@ -512,9 +525,9 @@ function roffOf(page) {
   for (const block of blocksOf(page.body)) {
     if (block.type === 'h2') {
       const title = SECTION_NAME[block.text] || block.text.toUpperCase();
-      lines.push(`.SH ${title.includes(' ') ? `"${roffText(title)}"` : title}`);
+      lines.push(`.SH ${title.includes(' ') ? roffArg(title) : title}`);
     }
-    else if (block.type === 'h3') lines.push(`.SS "${roffText(block.text)}"`);
+    else if (block.type === 'h3') lines.push(`.SS ${roffArg(block.text)}`);
     else if (block.type === 'p') lines.push('.PP', roffInline(block.inline));
     else if (block.type === 'rows') {
       for (const row of block.rows) lines.push('.TP', `\\fB${roffText(plainText(row[0])).replaceAll('-', '\\-')}\\fR`, roffText(plainText(row[1])));
@@ -525,7 +538,8 @@ function roffOf(page) {
   }
   const see = (page.meta.see || '').split(',').map((s) => s.trim()).filter(Boolean);
   lines.push('.SH "SEE ALSO"');
-  lines.push(see.map((s) => { const w = wordPages.find((p) => p.meta.name === s); return w ? `.BR ${w.manName} (7)${s === see.at(-1) ? '' : ','}` : null; }).filter(Boolean).join('\n') || '.BR sg-index (7)');
+  const seePages = see.map((s) => wordPages.find((p) => p.meta.name === s)).filter(Boolean);
+  lines.push(seePages.map((w, i) => `.BR ${w.manName} (7)${i === seePages.length - 1 ? '' : ','}`).join('\n') || '.BR sg-index (7)');
   lines.push('.PP', `https://sg\\-lang.org/${page.url}`);
   // A paragraph macro right after a heading is one too many: man starts a paragraph there anyway.
   // A paragraph macro next to a heading, or with nothing after it, is one too many.
@@ -567,7 +581,7 @@ function manText(page) {
       for (const row of block.rows) {
         const tag = plainText(row[0]);
         const text = wrap(plainText(row[1]), 12);
-        out.push(tag.length < 6 ? `     \u0001${tag}\u0002${' '.repeat(7 - tag.length)}${text.slice(12)}` : `     \u0001${tag}\u0002\n${text}`, '');
+        out.push(tag.length < 7 ? `     \u0001${tag}\u0002${' '.repeat(7 - tag.length)}${text.slice(12)}` : `     \u0001${tag}\u0002\n${text}`, '');
       }
     } else if (block.type === 'code') out.push(block.text.split('\n').map((l) => (l ? `         ${l}` : '')).join('\n'), '');
   }

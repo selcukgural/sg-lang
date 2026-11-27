@@ -16,8 +16,7 @@ SYNOPSIS
 
      1..=9  a range, both ends taken
 
-     A or B
-            either pattern
+     A or B either pattern
 
      P when condition
             the pattern, if the condition holds too

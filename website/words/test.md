@@ -186,7 +186,7 @@ ok    each wrong text gives its own error
 
 ### What a failing test prints
 
-```sg nocheck
+```sg file title="ports.sg"
 enum PortError : Formattable {
     Empty
     NotANumber(string text)
@@ -230,12 +230,13 @@ test "the tests after a failure still run" {
 ```
 
 ```text
+$ sg test ports.sg
 ok    a port is read
 FAIL  the usual ports
 panic: assert failed: ports == List<int> { 80, 8443 }
   left: [80, 443]
   right: [80, 8443]
-  --> example.sg:23:5
+  --> ports.sg:23:5
  23 |     assert(ports == List<int> { 80, 8443 })
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 FAIL  a port with a scheme
@@ -243,7 +244,7 @@ error: NotANumber("http:80")
 looking
 FAIL  the first of no ports
 panic: index 0 is out of range: the length is 0
-  --> example.sg:34:11
+  --> ports.sg:34:11
  34 |     print(ports[0])
     |           ^^^^^^^^
   hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
@@ -256,7 +257,7 @@ writes its message and where it happened. The command ends with exit code 1, so 
 
 ### Tests in a folder of modules
 
-```sg nocheck title="library/loans/fines.sg"
+```sg file title="library/loans/fines.sg"
 int daysLate(int dueDay, int returnedDay) {
     if returnedDay <= dueDay {
         return 0
@@ -269,7 +270,7 @@ public int fineCents(int dueDay, int returnedDay) {
 }
 ```
 
-```sg nocheck title="library/loans/tests.sg"
+```sg file title="library/loans/tests.sg"
 test "a book back early is not late" {
     assert(daysLate(10, 8) == 0)
 }
@@ -280,7 +281,7 @@ test "each late day costs 25 cents" {
 }
 ```
 
-```sg nocheck title="library/main.sg"
+```sg file title="library/main.sg"
 use loans
 
 void main() {

@@ -98,6 +98,8 @@ EXAMPLES
              wind/
                speed.sg
 
+     The file weather/units/temperature.sg:
+
          public double fahrenheit(double celsius) {
              return celsius * 9 / 5 + 32
          }
@@ -106,6 +108,8 @@ EXAMPLES
              return $"{celsius} C".toString()
          }
 
+     The file weather/units/wind/speed.sg:
+
          public double metersPerSecond(double kmh) {
              return kmh / 3.6
          }
@@ -113,6 +117,8 @@ EXAMPLES
          public string format(double kmh) {
              return $"{kmh} km/h".toString()
          }
+
+     The file weather/main.sg:
 
          use units
          use units.wind
@@ -137,6 +143,8 @@ EXAMPLES
      main.sg writes it with the module in front.
 
    Two modules that use each other
+     The file planner/calendar/day.sg:
+
          use holidays
 
          public struct Day : Copyable {
@@ -149,11 +157,15 @@ EXAMPLES
              }
          }
 
+     The file planner/holidays/list.sg:
+
          use calendar
 
          public bool isHoliday(Day day) {
              return day.month == 1 && day.date == 1 || day.month == 12 && day.date == 25
          }
+
+     The file planner/main.sg:
 
          use calendar
 
@@ -185,12 +197,16 @@ EXAMPLES
            internal/
              group.sg
 
-         // shop/sg.project
+     The file shop/sg.project:
+
          require money example.com/ada/money 1.0.0
          local money ../money
 
-         // money/sg.project
+     The file money/sg.project:
+
          package example.com/ada/money
+
+     The file money/format.sg:
 
          use internal
 
@@ -198,12 +214,16 @@ EXAMPLES
              return $"{grouped(cents / 100)}.{cents % 100:d2} EUR".toString()
          }
 
+     The file money/internal/group.sg:
+
          public string grouped(long whole) {
              if whole < 1000 {
                  return $"{whole}".toString()
              }
              return $"{grouped(whole / 1000)},{whole % 1000:d3}".toString()
          }
+
+     The file shop/main.sg:
 
          use money
 
@@ -271,6 +291,8 @@ WHAT THE COMPILER REFUSES
 
    One name in two modules
      With the folder weather above:
+
+     The file weather/main.sg:
 
          use units
          use units.wind

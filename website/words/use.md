@@ -99,7 +99,7 @@ weather/
       speed.sg
 ```
 
-```sg nocheck title="weather/units/temperature.sg"
+```sg file title="weather/units/temperature.sg"
 public double fahrenheit(double celsius) {
     return celsius * 9 / 5 + 32
 }
@@ -109,7 +109,7 @@ public string format(double celsius) {
 }
 ```
 
-```sg nocheck title="weather/units/wind/speed.sg"
+```sg file title="weather/units/wind/speed.sg"
 public double metersPerSecond(double kmh) {
     return kmh / 3.6
 }
@@ -119,7 +119,7 @@ public string format(double kmh) {
 }
 ```
 
-```sg nocheck title="weather/main.sg"
+```sg file title="weather/main.sg"
 use units
 use units.wind
 
@@ -146,7 +146,7 @@ not bring in `units.wind`. `fahrenheit` and `metersPerSecond` are written bare. 
 
 ### Two modules that use each other
 
-```sg nocheck title="planner/calendar/day.sg"
+```sg file title="planner/calendar/day.sg"
 use holidays
 
 public struct Day : Copyable {
@@ -160,7 +160,7 @@ public struct Day : Copyable {
 }
 ```
 
-```sg nocheck title="planner/holidays/list.sg"
+```sg file title="planner/holidays/list.sg"
 use calendar
 
 public bool isHoliday(Day day) {
@@ -168,7 +168,7 @@ public bool isHoliday(Day day) {
 }
 ```
 
-```sg nocheck title="planner/main.sg"
+```sg file title="planner/main.sg"
 use calendar
 
 void main() {
@@ -204,16 +204,16 @@ money/
     group.sg
 ```
 
-```text
-// shop/sg.project
+```text title="shop/sg.project"
 require money example.com/ada/money 1.0.0
 local money ../money
+```
 
-// money/sg.project
+```text title="money/sg.project"
 package example.com/ada/money
 ```
 
-```sg nocheck title="money/format.sg"
+```sg file title="money/format.sg"
 use internal
 
 public string euros(long cents) {
@@ -221,7 +221,7 @@ public string euros(long cents) {
 }
 ```
 
-```sg nocheck title="money/internal/group.sg"
+```sg file title="money/internal/group.sg"
 public string grouped(long whole) {
     if whole < 1000 {
         return $"{whole}".toString()
@@ -230,7 +230,7 @@ public string grouped(long whole) {
 }
 ```
 
-```sg nocheck title="shop/main.sg"
+```sg file title="shop/main.sg"
 use money
 
 void main() {
@@ -317,7 +317,7 @@ error: `std` is the language's own module, and its types are seen from every mod
 
 With the folder `weather` above:
 
-```sg nocheck title="weather/main.sg"
+```sg file title="weather/main.sg"
 use units
 use units.wind
 

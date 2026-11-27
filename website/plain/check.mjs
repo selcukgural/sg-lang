@@ -4,10 +4,12 @@
 // is what it prints; ```sg error must be refused by the checker and ```sg panic must stop when it runs, the
 // ```text after either being how the message starts. On the front page the first program must print what is
 // shown, and a program in <pre class="sg error"> must be refused with it.
+// A program of several files (modules, a package) or one that fails on purpose is written as files with a
+// title, ```sg file title="bank/main.sg", and a terminal, ```text that starts with `$ `: see terminal() below.
 // Then every manual page in build/man is read by mandoc's lint, where mandoc is installed.
 // `SG` names the sg program (../../interpreter/target/release/sg by default).
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,17 +46,70 @@ function check(name, file, body, kind, shown) {
   else if (shown !== null && result.text.trimEnd() !== shown) fail(`prints otherwise.\nshown:\n${shown}\ngiven:\n${result.text}`);
 }
 
+// A program of several files, as a page shows it: each ```sg file title="bank/main.sg" (or ```text
+// title="shop/sg.project") is written into a folder of the page under its title, a later block of the same
+// title taking its place; a ```text block whose first line starts with `$ ` is a terminal. Each `$` line runs
+// in that folder with `sh`, `sg` being the sg program, and what it writes (out and err together) must be the
+// lines under it. `$ cd x` moves within the folder; each terminal starts at the folder's root.
+const bin = mkdtempSync(join(tmpdir(), 'sg-bin-'));
+symlinkSync(sg, join(bin, 'sg'));
+function terminal(name, folder, body) {
+  programs += 1;
+  let at = folder;
+  const steps = [];
+  for (const line of body.trimEnd().split('\n')) {
+    if (line.startsWith('$ ')) steps.push({ command: line.slice(2), shown: [] });
+    else if (steps.length > 0) steps[steps.length - 1].shown.push(line);
+  }
+  for (const { command, shown } of steps) {
+    const cd = command.match(/^cd (\S+)$/);
+    if (cd) {
+      at = join(at, cd[1]);
+      continue;
+    }
+    let given;
+    try {
+      given = execFileSync('sh', ['-c', `{ ${command}\n} 2>&1`], { cwd: at, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    } catch (error) {
+      if (error.code === 'ETIMEDOUT' || error.signal) {
+        failures += 1;
+        console.error(`${name}: \`${command}\` did not end within 60 s`);
+        return;
+      }
+      given = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+    }
+    if (given.trimEnd() !== shown.join('\n').trimEnd()) {
+      failures += 1;
+      console.error(`${name}: \`${command}\` prints otherwise.\nshown:\n${shown.join('\n')}\ngiven:\n${given}`);
+      return;
+    }
+  }
+}
+
 // The pages of the words.
 const words = join(site, 'words');
 for (const file of readdirSync(words).filter((f) => f.endsWith('.md'))) {
   const text = readFileSync(join(words, file), 'utf8');
   const blocks = [...text.matchAll(/^```(\w+)([^\n]*)\n([\s\S]*?)^```$/gm)].map((m) => ({ lang: m[1], meta: m[2].trim(), body: m[3] }));
+  const folder = mkdtempSync(join(tmpdir(), 'sg-page-'));
   let at = 0;
+  let terminals = 0;
   blocks.forEach((block, i) => {
+    const title = block.meta.match(/title="([^"]*)"/);
+    if (title) {
+      const path = join(folder, title[1]);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, block.body);
+    }
+    if (block.lang === 'text' && block.body.startsWith('$ ')) {
+      terminals += 1;
+      terminal(`words/${file}, terminal ${terminals}`, folder, block.body);
+      return;
+    }
     if (block.lang !== 'sg') return;
     at += 1;
     const kind = block.meta.split(/\s+/)[0];
-    if (kind === 'nocheck') return;
+    if (kind === 'nocheck' || kind === 'file') return;
     const next = blocks[i + 1];
     check(`words/${file}, program ${at}`, 'example.sg', block.body, kind, next && next.lang === 'text' ? next.body.trimEnd() : null);
   });
@@ -88,6 +143,21 @@ if (!existsSync(man)) {
     } catch (error) {
       failures += 1;
       console.error(`${relative(plain, join(man, file))}: mandoc says\n${error.stdout ?? ''}${error.stderr ?? ''}`);
+      continue;
+    }
+    // The text the site shows for the page (and `sg help` prints) is the text mandoc lays out, line for line.
+    const page = join(plain, 'build', 'manual', `${file}.html`);
+    if (!existsSync(page)) continue;
+    const plainLines = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').trim();
+    const laid = execFileSync(mandoc, ['-T', 'utf8', '-O', 'width=78', join(man, file)], { encoding: 'utf8' }).replace(/.\u0008/g, '');
+    const shownHtml = readFileSync(page, 'utf8').match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1];
+    const shown = decode(shownHtml.replace(/<[^>]+>/g, '').replaceAll('&quot;', '"').replaceAll('&#39;', "'"));
+    if (plainLines(laid) !== plainLines(shown)) {
+      failures += 1;
+      const a = plainLines(laid).split('\n');
+      const b = plainLines(shown).split('\n');
+      const at = a.findIndex((line, i) => line !== b[i]);
+      console.error(`${relative(plain, page)}: differs from mandoc's text at line ${at + 1}:\nmandoc: ${a[at]}\nsite:   ${b[at]}`);
     }
   }
 }
