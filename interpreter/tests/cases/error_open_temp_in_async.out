@@ -1,0 +1,6 @@
+error: `File.openTemp` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_open_temp_in_async.sg:3:24
+ 3 |     var out = try File.openTemp()
+   |                        ^^^^^^^^
+  hint: `await File.openTempAsync()` does the same work without holding the thread

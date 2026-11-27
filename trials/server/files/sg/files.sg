@@ -2,7 +2,7 @@
 // own module: GET and HEAD of the files under a folder, over HTTP/1.1 with connections kept open, as
 // `../c/files.c` describes it for all four versions.
 //
-//     files PORT ROOT [--idle-limit MS] [--grace MS]
+//     files PORT ROOT [--idle-limit MS] [--grace MS] [--inside 1]
 //
 // Every connection is a task of a `TaskGroup`, as in `../../http/sg/http.sg`. What a request asks of
 // the disk is asked as a task (`File.openRegularAsync`, `readSomeAsync`), so a disk that is slow
@@ -10,6 +10,11 @@
 // pipe under ROOT is never opened, and its size and time are asked of the open file
 // (`reader.info()`, choice 1873). A body goes out in pieces of 64 KB, read into one buffer the
 // answer owns (1864).
+//
+// With `--inside 1` the files are opened through a `DirectoryRoot` of ROOT (choices 2066 to 2072):
+// a link under ROOT that leads out of it is not followed, and its file is a 404. The four versions
+// follow such a link, as nginx does, and `check.py` holds them to that; this way is measured
+// beside them (`sg-root` in `measure.py`).
 
 // The most bytes read and sent at a time.
 const nint Piece = 65536
@@ -235,7 +240,8 @@ async Result<void, IoError> fail(ref HttpConnection conn, int status) {
 
 // The status for a file that could not be looked at or opened.
 int statusOf(IoError cause) {
-    if cause == IoError.PermissionDenied {
+    // A path that leads out of the root (`--inside 1`) is not the client's to read either.
+    if cause == IoError.PermissionDenied || cause == IoError.OutsideRoot {
         return 403
     }
     return 404
@@ -248,6 +254,21 @@ async Result<void, IoError> answer(ref HttpConnection conn, read Asked asked, re
         Ok(reader) => {
             match reader.info() {
                 Ok(info) => return await answerFile(ref conn, asked, full, reader, info)
+                Error(cause) => return await fail(ref conn, statusOf(cause))
+            }
+        }
+        Error(IsDirectory) => return await answerFolder(ref conn, asked)
+        Error(cause) => return await fail(ref conn, statusOf(cause))
+    }
+}
+
+// The same through a root: `under` is the path counted from the folder of the root, which no
+// link leads out of.
+async Result<void, IoError> answerInside(ref HttpConnection conn, read Asked asked, read DirectoryRoot root, read string under) {
+    match await root.openRegularAsync(under) {
+        Ok(reader) => {
+            match reader.info() {
+                Ok(info) => return await answerFile(ref conn, asked, under, reader, info)
                 Error(cause) => return await fail(ref conn, statusOf(cause))
             }
         }
@@ -330,7 +351,7 @@ async Result<void, IoError> send(ref HttpConnection conn, bool head, read string
     return await conn.endAsync()
 }
 
-async Result<void, IoError> serve(TcpStream stream, HttpOptions options, string root) {
+async Result<void, IoError> serve(TcpStream stream, HttpOptions options, string root, shared DirectoryRoot? inside) {
     var conn = HttpConnection(stream, options)
     var asked = Asked { head = false, path = string.withCapacity(256), written = string.withCapacity(256), since = null, range = 0, first = 0, last = 0 }
     var decoded = List<byte>.withCapacity(256)
@@ -342,6 +363,15 @@ async Result<void, IoError> serve(TcpStream stream, HttpOptions options, string 
             continue
         }
         full.clear()
+        if inside is not null {
+            // The path without the `/` at its start: counted from the folder of the root.
+            full.write(asked.path[1..])
+            if asked.path.endsWith('/') {
+                full.write("index.html")
+            }
+            try await answerInside(ref conn, read asked, read inside, read full)
+            continue
+        }
         full.write(read root)
         full.write(read asked.path)
         if asked.path.endsWith('/') {
@@ -353,8 +383,8 @@ async Result<void, IoError> serve(TcpStream stream, HttpOptions options, string 
 }
 
 // A connection that fails, or is too slow, ends alone.
-async void connection(TcpStream stream, HttpOptions options, string root) {
-    _ = await serve(stream, options, root)
+async void connection(TcpStream stream, HttpOptions options, string root, shared DirectoryRoot? inside) {
+    _ = await serve(stream, options, root, inside)
 }
 
 // Waits for SIGTERM or Ctrl-C and cancels `stop`; the listener goes with it, so a second ends the
@@ -367,7 +397,7 @@ async void watch(SignalListener signals, CancellationSource stop) {
 
 // Takes connections until a signal comes with `grace` given, for ever without; one the listener
 // fails to take (too many open files, say) is tried again after 10 ms.
-async Result<void, IoError> listen(int port, string root, HttpOptions options, int grace) {
+async Result<void, IoError> listen(int port, string root, HttpOptions options, int grace, shared DirectoryRoot? inside) {
     var address = $":{port}".toString()
     var listener = try TcpListener.bind(read address)
     var connections = TaskGroup()
@@ -379,7 +409,13 @@ async Result<void, IoError> listen(int port, string root, HttpOptions options, i
     }
     while true {
         match await listener.acceptAsync(read accepting) {
-            Ok(conn) => connections.add(connection(conn, options, root.clone()))
+            Ok(conn) => {
+                shared DirectoryRoot? held = null
+                if inside is not null {
+                    held = share inside
+                }
+                connections.add(connection(conn, options, root.clone(), held))
+            }
             Error(Cancelled(_)) => break
             Error(_) => await Task.delay(10)
         }
@@ -389,7 +425,7 @@ async Result<void, IoError> listen(int port, string root, HttpOptions options, i
     return Ok()
 }
 
-const string Usage = "usage: files PORT ROOT [--idle-limit MS] [--grace MS]"
+const string Usage = "usage: files PORT ROOT [--idle-limit MS] [--grace MS] [--inside 1]"
 
 void main(List<string> args) {
     if args.length() % 2 != 0 || args.length() < 2 || int.parse(args[0]) is not Ok(port) {
@@ -407,6 +443,7 @@ void main(List<string> args) {
     }
     var options = HttpOptions {}
     int grace = 0
+    shared DirectoryRoot? inside = null
     for i in 1..args.length() / 2 {
         var name = args[2 * i]
         if int.parse(args[2 * i + 1]) is not Ok(ms) || ms <= 0 {
@@ -418,12 +455,20 @@ void main(List<string> args) {
             options.headTimeout = ms
         } else if name == "--grace" {
             grace = ms
+        } else if name == "--inside" {
+            match Directory.openRoot(read root) {
+                Ok(opened) => inside = new shared (opened)
+                Error(e) => {
+                    printError($"files: {root}: {e}".toString())
+                    exit(2)
+                }
+            }
         } else {
             printError(Usage)
             exit(2)
         }
     }
-    if listen(port, root, options, grace).wait() is Error(e) {
+    if listen(port, root, options, grace, inside).wait() is Error(e) {
         printError($"files: {e}".toString())
         exit(1)
     }

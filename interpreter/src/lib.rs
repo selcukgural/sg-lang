@@ -19,6 +19,7 @@ pub mod link;
 pub mod net;
 pub mod parser;
 pub mod raw;
+pub mod root;
 pub mod shortest;
 #[cfg(unix)]
 pub mod signals;

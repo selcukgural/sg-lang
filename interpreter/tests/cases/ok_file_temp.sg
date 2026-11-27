@@ -1,0 +1,103 @@
+// A file with no name (choice 2076): `File.openTemp()` gives a writer of a new file in
+// `Directory.temp()` that is gone when its last stream is closed, and `writer.openReader()` a
+// reader of it. Nothing is left in the folder of temporary files.
+long count(read string folder) {
+    match Directory.list(folder) {
+        Ok(entries) => return (long)entries.length()
+        Error(_) => return -1
+    }
+}
+
+async Result<void, IoError> asynchronous() {
+    var out = try await File.openTempAsync()
+    try await out.writeAsync("async temp\n")
+    try await out.flushAsync()
+    var reader = try out.openReader()
+    var line = ""
+    _ = try await reader.readLineAsync(ref line)
+    print($"async: {line}")
+    try await out.closeAsync()
+    var source = CancellationSource()
+    source.cancel()
+    match await File.openTempAsync(read source.token()) {
+        Ok(_) => print("opened?")
+        Error(cause) => print($"a token cancelled before: {cause}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var out = try File.openTemp()
+    print($"starts at {out.position() ?? -1}")
+    try out.write("first\nsecond\n")
+    try out.flush()
+    var reader = try out.openReader()
+    var line = ""
+    _ = try reader.readLine(ref line)
+    print($"read back: {line}")
+
+    // It is written and read as any file: moved in, cut, made longer.
+    _ = try out.seek(SeekFrom.Start(0))
+    try out.write("FIRST")
+    try out.flush()
+    _ = try reader.seek(SeekFrom.Start(0))
+    var text = try reader.readText()
+    print($"written over: {text.replaceAll("\n", "|")}")
+    try out.setLength(5)
+    _ = try reader.seek(SeekFrom.Start(0))
+    var cut = try reader.readText()
+    print($"cut: {cut}")
+    var info = try reader.info()
+    print($"a file of {info.size} bytes, {info.kind}")
+
+    // Four megabytes, written in pieces and read back, each byte as it was written.
+    _ = try out.seek(SeekFrom.Start(0))
+    var piece = List<byte>.withCapacity(65536)
+    for i in 0..65536 {
+        piece.add((byte)((i * 31 + i / 256) % 251))
+    }
+    var pieces = 64
+    for round in 0..pieces {
+        piece[0] = (byte)round
+        try out.writeBytes(read piece)
+    }
+    try out.flush()
+    print($"wrote {out.position() ?? -1} bytes")
+    _ = try reader.seek(SeekFrom.Start(0))
+    var back = byte[65536]
+    var wrong = 0
+    for round in 0..pieces {
+        var got = try reader.readBytes(ref back)
+        if got != 65536 || back[0] != (byte)round {
+            wrong += 1
+        }
+        for i in 1..65536 {
+            if back[i] != piece[i] {
+                wrong += 1
+            }
+        }
+    }
+    var more = try reader.readBytes(ref back)
+    print($"read them back: {wrong} wrong, {more} beyond the end")
+
+    // The reader keeps the file after the writer is closed; a second file is another.
+    try out.close()
+    _ = try reader.seek(SeekFrom.End(-65536))
+    var first = byte[1]
+    _ = try reader.readBytes(ref first)
+    print($"after the writer is closed, the first byte of the last piece: {first[0]}")
+    var other = try File.openTemp()
+    var empty = try other.openReader()
+    var nothing = try empty.readText()
+    print($"a second one is empty: {nothing.length()}")
+    try other.close()
+
+    // Nothing with the name of a temporary file of the program is left, whatever folder
+    // `TMPDIR` names: the folder made here holds only what the program put in it by name.
+    var folder = try Directory.createTemp()
+    print($"a folder of its own is empty: {count(read folder)}")
+    try Directory.delete(read folder)
+
+    try asynchronous().wait()
+    return Ok()
+}

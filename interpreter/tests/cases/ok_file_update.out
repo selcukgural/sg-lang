@@ -1,0 +1,46 @@
+a missing file: true
+a folder: true
+the writer starts at: 0
+the file is as it was: one|two|three|
+the reader starts at: 0
+read: one
+the reader after a line: 4
+the writer has not moved: 0
+the writer holds three bytes: 3
+not written yet: one|two|three|
+the writer after the flush: 3
+written: ONE|two|three|
+read again from the start: ONE
+read on after a seek to where it stands: TWO
+the reader: 8
+the writer: 7
+the writer at the end: 14
+the writer after four: 19
+the reader goes on: three
+and reads what came: four
+then meets: (the end)
+the reader at the end: 19
+the reader back five: 14
+the last line again: four
+a second reader starts at: 0
+it reads: ONE
+the first is where it was: 19
+after the cut: TWO|
+the writer keeps its place past the end: 19
+after a hundred thousand bytes: 100000
+the reader finds the last ten: 10
+the reader past them: 100000
+after the writer is closed: xx
+createText gives no reader: true
+but has a place: 0
+which counts what it holds: 3
+openWrite gives no reader: true
+openWrite starts at: 0
+openAppend gives no reader: true
+a writer at the end has no place: (cannot seek)
+openText starts at: 0
+after two bytes: 2
+at the end: 3
+async: ASYNC line, the writer at 5, the reader at 11
+a token cancelled before: cancelled
+after the async part: ASYNC line|second line|

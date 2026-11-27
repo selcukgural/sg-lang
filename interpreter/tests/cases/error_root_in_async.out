@@ -1,0 +1,7 @@
+error: `DirectoryRoot.openText` holds the thread until it is done, and an async function does not hold its thread
+  `DirectoryRoot.openText` waits for the disk
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_root_in_async.sg:5:27
+ 5 |     var reader = try root.openText("a.txt")
+   |                           ^^^^^^^^
+  hint: `await root.openTextAsync("a.txt")` does the same work without holding the thread

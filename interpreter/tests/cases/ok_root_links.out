@@ -1,0 +1,19 @@
+one link: the end
+ten links: the end
+forty links: the end
+forty-one links: (too many links)
+forty-two links: (too many links)
+info through forty: true, through forty-one: false
+the link itself is always seen: true
+from its own folder: deep
+up two, still inside: the end
+up three, outside: (outside the root)
+a link to a link: deep
+a link with dots: deep
+up out of what a link leads into: the end
+up past the root after a link: (outside the root)
+a link to itself: (too many links)
+a ring is not there: false
+but is listed and removed: true true true
+a link to nothing: (not found)
+is not there: false, but is a name: true

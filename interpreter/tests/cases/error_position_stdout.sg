@@ -1,0 +1,5 @@
+// The output of the program has no place in a file.
+Result<void, IoError> main() {
+    print(try Stdout.position())
+    return Ok()
+}

@@ -253,9 +253,7 @@
   (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no test: the tests cannot make a file
   they may not read or fill a disk.
 - **Of folders and the environment**: changing the owner of a file (`chown`), patterns of
-  names (`*.txt`), a listing of a whole tree, all the variables at once, the path of the program itself. A path
-  opened by the handle of a folder (Go's `os.Root`, `openat`), so that a link inside the folder cannot lead out of
-  it as it can after `Path.joinInside` (954). On Windows a junction is no link to `File.linkInfo` and
+  names (`*.txt`), a listing of a whole tree, all the variables at once, the path of the program itself. On Windows a junction is no link to `File.linkInfo` and
   `File.readLink` (`Other`, `InvalidInput`), though `Directory.list` calls it `Link` (1976); the times of a link
   itself are not set.
 - **Of watching a folder (199)**: a rename told as one change with both names (Linux and Windows could pair them,
@@ -267,10 +265,18 @@
   a range), the order in which waiting programs get a lock (`lockAsync` tries it every 1 to 10 ms, 1983), a file
   put in memory to be written or of a part only (`MAP_SHARED` with `PROT_WRITE`, an offset), and advice to the
   system on how it is read (`madvise`). Permissions are not written in octal by `$"{mode:o}"`.
-- **Of seeking in a file**: reading and
-  writing one file through one stream (C's `"r+"`), a temporary file with no name that goes when it is closed
-  (C's `tmpfile`), and where a stream stands without moving it other than by `seek(SeekFrom.Current(0))`
-  (1211-1222).
+- **Of a folder as a root (200)**: under a `DirectoryRoot` a file is not moved, copied, given a link or permissions;
+  a whole tree is not made or removed (`createAll`, `deleteAll`); a file is not read or written whole in one call
+  (`readText`, `writeBytes`), locked through its path, put in memory or watched. A root does not stop a path at
+  another file system mounted inside the folder (Linux's `RESOLVE_NO_XDEV`). On Windows a link made to something
+  that is not there yet is a link to a file and is not gone through as a folder, and a folder that holds an open
+  file or folder is not renamed by anyone. A rename that swaps a folder out of the root while a path is walked
+  through it is not seen by the walk (Linux's `openat2` sees it and asks again).
+- **Of one file read and written (200)**: one stream that both reads and writes, reads and writes at a place given
+  with each call (`pread`, `pwrite`), and the length of an open file without `info()`. After the end of its file a
+  reader of compiled code reads on only after a seek, where the interpreter's reads what was written since.
+- **Of a file with no name (200)**: a name given to it later (`linkat` of Linux), one in a folder the program
+  chooses, and on Windows a file that has no name in the folder while it is open.
 - **Of the clock**: time zones by name (`Europe/Istanbul`, the IANA database; Windows has no files of it) and
   `TZ` on Windows (1300, 1309), a date without a time and a time without a date, the text of HTTP's dates
   (`Tue, 18 Nov 2026 09:30:05 GMT`) and the names of the months, minutes and hours in the text of a `Duration`

@@ -41,8 +41,12 @@ ROOT, BIN, OUT, LINUX, SG = lane.ROOT, lane.BIN, lane.OUT, lane.LINUX, lane.SG
 # Zig twice (choice 1872's B): on `Io.Threaded`, its default, and on `Io.Evented`, its io_uring
 # (`zig/uring.zig`), the fastest form of it on Linux, when Zig's library compiles it
 LANGUAGES = ["sg", "rust", "zig", "zig-uring", "c"]
-# measured beside the four, not one of them: nginx as it is run (sendfile on), and C with sendfile
-BESIDE = ["c-sendfile", "nginx"]
+# measured beside the four, not one of them: nginx as it is run (sendfile on), C with sendfile, and
+# SG's server opening its files through a `DirectoryRoot` (`--inside 1`, choice 2072), which follows
+# no link out of the root: `check.py` holds the four to following one, so it is not held to it
+BESIDE = ["c-sendfile", "nginx", "sg-root"]
+# what a server is started with after its root
+EXTRA = {"sg-root": ["--inside", "1"]}
 GB = 1 << 30
 
 # name -> the root it reads (count, size) and what the load is given
@@ -109,7 +113,7 @@ def build(languages):
     bins = {}
     for lang in languages:
         out = BIN / f"files-{lang}"
-        if lang == "sg":
+        if lang in ("sg", "sg-root"):
             lane.run([str(SG), "build", str(HERE / "sg" / "files.sg"), "-o", str(out), "--release"])
         elif lang == "c":
             lane.run(["cc", "-O2", "-Wall", "-pthread", "-o", str(out), str(HERE / "c" / "files.c")])
@@ -215,7 +219,7 @@ def one(bins, case, lang, top):
     port = lane.next_port()
     root = str(top / case["set"])
     kind = Tree if lang == "nginx" else lane.Server
-    server = kind(bins[lang], port, pin=True, extra=[root])
+    server = kind(bins[lang], port, pin=True, extra=[root] + EXTRA.get(lang, []))
     try:
         time.sleep(0.2)
         base = {**server.status(), "fds": server.fds()}
@@ -276,7 +280,7 @@ def check(languages):
     top = Path(tempfile.mkdtemp(prefix="files-measure-"))
     failed = []
     try:
-        commands = [f"{lang}={bins[lang]}" for lang in languages if lang in bins and lang != "nginx"]
+        commands = [f"{lang}={bins[lang]}" for lang in languages if lang in bins and lang not in ("nginx", "sg-root")]
         r = subprocess.run([sys.executable, str(HERE / "check.py"), *commands])
         if r.returncode:
             failed.append("check.py")
@@ -288,7 +292,7 @@ def check(languages):
             for name, extra in [("1k", []), ("64k", []), ("1k", ["--since"]), ("1k", ["--missing"]), ("big", ["--range", "4096"]), ("big", [])]:
                 port = lane.next_port()
                 kind = Tree if lang == "nginx" else lane.Server
-                server = kind(bins[lang], port, pin=False, extra=[str(top / name)])
+                server = kind(bins[lang], port, pin=False, extra=[str(top / name)] + EXTRA.get(lang, []))
                 try:
                     count, size = SETS[name]
                     a = ["--check", "--conns", "8", "--duration", "0.5", "--warmup", "0", "--files", str(count), "--size", str(size), *extra]

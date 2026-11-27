@@ -1,0 +1,8 @@
+// What comes over the network goes only forward: the reader of a connection has no place.
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var conn = try listener.accept()
+    var reader = conn.reader()
+    print(try reader.position())
+    return Ok()
+}

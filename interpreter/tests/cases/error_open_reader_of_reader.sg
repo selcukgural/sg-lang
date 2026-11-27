@@ -1,0 +1,7 @@
+// A reader gives no reader: `openReader` is asked of the writer of the file.
+Result<void, IoError> main() {
+    var reader = try File.openText("a.txt")
+    var second = try reader.openReader()
+    print(try second.readText())
+    return Ok()
+}

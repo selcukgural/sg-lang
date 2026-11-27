@@ -1,0 +1,156 @@
+// One file read and written through one opening (choices 2073 to 2075): `File.openUpdate` gives a
+// writer of a file that is there, `writer.openReader()` a reader of the same open file with a
+// place of its own, and `position()` says where a stream stands without moving it. The reader sees
+// what the writer has flushed, and lets go of what its block holds when it seeks, as a stream of C
+// opened with "r+" is flushed or moved between a write and a read.
+void at(read string what, Result<long, IoError> result) {
+    match result {
+        Ok(place) => print($"{what}: {place}")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+void line(read string what, ref StreamReader reader) {
+    var text = ""
+    match reader.readLine(ref text) {
+        Ok(true) => print($"{what}: {text}")
+        Ok(false) => print($"{what}: (the end)")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+void whole(read string what, Result<string, IoError> result) {
+    match result {
+        Ok(text) => print($"{what}: {text.replaceAll("\n", "|")}")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+async Result<void, IoError> asynchronous(string path) {
+    var out = try await File.openUpdateAsync(read path)
+    try await out.writeAsync("ASYNC")
+    try await out.flushAsync()
+    var reader = try out.openReader()
+    var first = ""
+    _ = try await reader.readLineAsync(ref first)
+    print($"async: {first}, the writer at {out.position() ?? -1}, the reader at {reader.position() ?? -1}")
+    try await out.closeAsync()
+    var source = CancellationSource()
+    source.cancel()
+    match await File.openUpdateAsync(read path, read source.token()) {
+        Ok(_) => print("opened?")
+        Error(cause) => print($"a token cancelled before: {cause}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "data.txt")
+
+    // The file must be there, and is not emptied.
+    print($"a missing file: {File.openUpdate(read path) is Error(NotFound)}")
+    print($"a folder: {File.openUpdate(read folder) is Error(IsDirectory)}")
+    try File.writeText(read path, "one\ntwo\nthree\n")
+    var out = try File.openUpdate(read path)
+    at("the writer starts at", out.position())
+    whole("the file is as it was", File.readText(read path))
+
+    // A reader of the same file, at a place of its own.
+    var reader = try out.openReader()
+    at("the reader starts at", reader.position())
+    line("read", ref reader)
+    at("the reader after a line", reader.position())
+    at("the writer has not moved", out.position())
+
+    // What the writer holds is counted in its place, and is not in the file until it is flushed.
+    try out.write("ONE")
+    at("the writer holds three bytes", out.position())
+    whole("not written yet", File.readText(read path))
+    try out.flush()
+    at("the writer after the flush", out.position())
+    whole("written", File.readText(read path))
+
+    // The reader reads again what was written once it seeks, also to where it stands.
+    _ = try reader.seek(SeekFrom.Start(0))
+    line("read again from the start", ref reader)
+    try out.write("\nTWO")
+    try out.flush()
+    _ = try reader.seek(SeekFrom.Current(0))
+    line("read on after a seek to where it stands", ref reader)
+    at("the reader", reader.position())
+    at("the writer", out.position())
+
+    // The writer goes to the end and writes more; the reader follows.
+    at("the writer at the end", out.seek(SeekFrom.End(0)))
+    try out.write("four\n")
+    try out.flush()
+    at("the writer after four", out.position())
+    line("the reader goes on", ref reader)
+    _ = try reader.seek(SeekFrom.Current(0))
+    line("and reads what came", ref reader)
+    line("then meets", ref reader)
+    at("the reader at the end", reader.position())
+    at("the reader back five", reader.seek(SeekFrom.End(-5)))
+    line("the last line again", ref reader)
+
+    // A second reader stands on its own.
+    var second = try out.openReader()
+    at("a second reader starts at", second.position())
+    line("it reads", ref second)
+    at("the first is where it was", reader.position())
+
+    // A file cut short under a reader.
+    try out.setLength(8)
+    _ = try second.seek(SeekFrom.Start(4))
+    whole("after the cut", second.readText())
+    at("the writer keeps its place past the end", out.position())
+
+    // More than the block of the writer holds.
+    _ = try out.seek(SeekFrom.Start(0))
+    var big = List<byte>.repeat((byte)'x', 100000)
+    try out.writeBytes(read big)
+    at("after a hundred thousand bytes", out.position())
+    try out.flush()
+    _ = try reader.seek(SeekFrom.Start(99990))
+    var rest = try reader.readText()
+    print($"the reader finds the last ten: {rest.length()}")
+    at("the reader past them", reader.position())
+
+    // The reader lives on after its writer is closed.
+    try out.close()
+    _ = try reader.seek(SeekFrom.Start(99998))
+    whole("after the writer is closed", reader.readText())
+
+    // Only a file opened to be read too gives a reader.
+    var plain = try File.createText(read Path.join(read folder, "plain.txt"))
+    print($"createText gives no reader: {plain.openReader() is Error(InvalidInput)}")
+    at("but has a place", plain.position())
+    try plain.write("abc")
+    at("which counts what it holds", plain.position())
+    try plain.close()
+    var onto = try File.openWrite(read Path.join(read folder, "plain.txt"))
+    print($"openWrite gives no reader: {onto.openReader() is Error(InvalidInput)}")
+    at("openWrite starts at", onto.position())
+    try onto.close()
+    var after = try File.openAppend(read Path.join(read folder, "plain.txt"))
+    print($"openAppend gives no reader: {after.openReader() is Error(InvalidInput)}")
+    at("a writer at the end has no place", after.position())
+    try after.close()
+
+    // A reader of `File.openText`.
+    var text = try File.openText(read Path.join(read folder, "plain.txt"))
+    at("openText starts at", text.position())
+    var two = byte[2]
+    _ = try text.readBytes(ref two)
+    at("after two bytes", text.position())
+    _ = try text.seek(SeekFrom.End(0))
+    at("at the end", text.position())
+
+    try File.writeText(read path, "first line\nsecond line\n")
+    try asynchronous(path.clone()).wait()
+    whole("after the async part", File.readText(read path))
+
+    try Directory.deleteAll(read folder)
+    return Ok()
+}

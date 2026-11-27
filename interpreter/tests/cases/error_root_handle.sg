@@ -1,0 +1,6 @@
+// The handle of a root is its own: a program does not make a `DirectoryRoot` from a number.
+Result<void, IoError> main() {
+    var root = DirectoryRoot { handle = 3 }
+    print(root.exists("a.txt"))
+    return Ok()
+}

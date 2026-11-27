@@ -989,7 +989,7 @@ mod system {
             loop {
                 let word = |i: usize| u32::from_ne_bytes(bytes[at + i..at + i + 4].try_into().expect("four bytes"));
                 let (next, action, attributes, length) = (word(0) as usize, word(4), word(56), word(80) as usize);
-                let name: Vec<u16> = bytes[at + 84..at + 84 + length].chunks_exact(2).map(|pair| u16::from_ne_bytes([pair[0], pair[1]])).collect();
+                let name: Vec<u16> = bytes[at + 84..at + 84 + length].as_chunks::<2>().0.iter().map(|pair| u16::from_ne_bytes(*pair)).collect();
                 let rel = std::ffi::OsString::from_wide(&name).as_encoded_bytes().to_vec();
                 let folder = attributes & ATTRIBUTE_DIRECTORY != 0 && attributes & ATTRIBUTE_REPARSE == 0;
                 match action {

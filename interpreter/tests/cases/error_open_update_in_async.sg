@@ -1,0 +1,6 @@
+// Opening a file waits for the disk: an async function awaits `File.openUpdateAsync`.
+async Result<void, IoError> main() {
+    var out = try File.openUpdate("a.txt")
+    try await out.closeAsync()
+    return Ok()
+}

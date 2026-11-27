@@ -1,0 +1,248 @@
+// A folder as the root of paths that come from outside (choices 2066 to 2071): what a
+// `DirectoryRoot` opens, lists, makes and removes lies inside its folder. A link is followed
+// while it stays inside; a path that leads out, by `..`, by starting at the root of the system or
+// through a link, is `OutsideRoot`, and nothing outside is read, made or removed.
+Result<string, IoError> textOf(read DirectoryRoot root, read string path) {
+    var reader = try root.openText(path)
+    return reader.readText()
+}
+
+Result<string, IoError> regularOf(read DirectoryRoot root, read string path) {
+    var reader = try root.openRegular(path)
+    return reader.readText()
+}
+
+void shown(read string what, Result<string, IoError> result) {
+    match result {
+        Ok(text) => print($"{what}: {text}")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+void said(read string what, Result<void, IoError> result) {
+    match result {
+        Ok => print($"{what}: ok")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+void kind(read string what, Result<FileInfo, IoError> result) {
+    match result {
+        // The size of a folder, and of a link, is the system's own business.
+        Ok(info) => print($"{what}: {info.kind} {(info.kind == FileKind.File ? info.size : 0)}")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+void listed(read string what, Result<List<DirectoryEntry>, IoError> result) {
+    match result {
+        Ok(entries) => {
+            var line = ""
+            for entry in entries {
+                line.write($" {entry.name}={entry.kind}")
+            }
+            print($"{what}:{line}")
+        }
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+Result<void, IoError> put(read DirectoryRoot root, read string path, read string text) {
+    var out = try root.createText(path)
+    try out.write(text)
+    return out.close()
+}
+
+// A folder inside as a root of its own: what is beside it is outside.
+Result<void, IoError> inside(read DirectoryRoot root) {
+    var inner = try root.openRoot("sub")
+    shown("inner b.txt", textOf(read inner, "b.txt"))
+    shown("inner deep/c.txt", textOf(read inner, "deep/c.txt"))
+    shown("inner ../a.txt", textOf(read inner, "../a.txt"))
+    shown("inner back.link", textOf(read inner, "back.link"))
+    listed("inner list .", inner.list("."))
+    print($"a root of a file: {root.openRoot("a.txt") is Error(NotDirectory)}")
+    print($"a root outside: {root.openRoot("out.dir") is Error(OutsideRoot)}")
+    print($"a root of nothing: {root.openRoot("missing") is Error(NotFound)}")
+    var through = try root.openRoot("dir.link")
+    shown("a root through a link", textOf(read through, "b.txt"))
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var base = try Directory.createTemp()
+    var site = Path.join(read base, "site")
+    var secret = Path.join(read base, "secret.txt")
+    try Directory.createAll(read Path.join(read site, "sub/deep"))
+    try File.writeText(read secret, "secret")
+    try File.writeText(read Path.join(read site, "a.txt"), "alpha")
+    try File.writeText(read Path.join(read site, "sub/b.txt"), "beta")
+    try File.writeText(read Path.join(read site, "sub/deep/c.txt"), "gamma")
+    try File.createLink("sub/b.txt", read Path.join(read site, "in.link"))
+    try File.createLink("../secret.txt", read Path.join(read site, "up.link"))
+    try File.createLink(read secret, read Path.join(read site, "abs.link"))
+    try File.createLink("../a.txt", read Path.join(read site, "sub/back.link"))
+    try File.createLink("sub", read Path.join(read site, "dir.link"))
+    try File.createLink("..", read Path.join(read site, "out.dir"))
+    try File.createLink("loop2", read Path.join(read site, "loop1"))
+    try File.createLink("loop1", read Path.join(read site, "loop2"))
+    try File.createLink("sub/made.txt", read Path.join(read site, "fresh.link"))
+
+    var root = try Directory.openRoot(read site)
+
+    // Inside: by name, through folders, with `.` and `..` that stay inside, through links.
+    shown("a.txt", textOf(read root, "a.txt"))
+    shown("sub/b.txt", textOf(read root, "sub/b.txt"))
+    shown("sub/../a.txt", textOf(read root, "sub/../a.txt"))
+    shown("./sub/./deep/c.txt", textOf(read root, "./sub/./deep/c.txt"))
+    shown("in.link", textOf(read root, "in.link"))
+    shown("sub/back.link", textOf(read root, "sub/back.link"))
+    shown("dir.link/b.txt", textOf(read root, "dir.link/b.txt"))
+    shown("dir.link/deep/../../a.txt", textOf(read root, "dir.link/deep/../../a.txt"))
+
+    // Out: each is refused, and the secret is not read.
+    shown("../secret.txt", textOf(read root, "../secret.txt"))
+    shown("sub/../../secret.txt", textOf(read root, "sub/../../secret.txt"))
+    shown("sub/deep/../../../secret.txt", textOf(read root, "sub/deep/../../../secret.txt"))
+    shown("up.link", textOf(read root, "up.link"))
+    shown("abs.link", textOf(read root, "abs.link"))
+    shown("out.dir/secret.txt", textOf(read root, "out.dir/secret.txt"))
+    shown("out.dir/site/a.txt", textOf(read root, "out.dir/site/a.txt"))
+    shown("/etc/hosts", textOf(read root, "/etc/hosts"))
+
+    // What is not there, a file on the way, a folder, links in a ring.
+    shown("missing.txt", textOf(read root, "missing.txt"))
+    shown("missing/x.txt", textOf(read root, "missing/x.txt"))
+    shown("a.txt/x", textOf(read root, "a.txt/x"))
+    shown("sub", textOf(read root, "sub"))
+    shown(".", textOf(read root, "."))
+    print($"a ring of links is an error: {textOf(read root, "loop1") is Error(Other(_))}")
+
+    // Names no system may be given under a folder (2070).
+    shown("empty", textOf(read root, ""))
+    shown("a//b", textOf(read root, "sub//b.txt"))
+    shown("sub/", textOf(read root, "sub/"))
+    shown("backslash", textOf(read root, "sub\\b.txt"))
+    shown("colon", textOf(read root, "a.txt:stream"))
+    shown("device", textOf(read root, "nul.txt"))
+    shown("dot at the end", textOf(read root, "a.txt."))
+    shown("space at the end", textOf(read root, "sub /b.txt"))
+    shown("three dots", textOf(read root, ".../a.txt"))
+    shown("a tab", textOf(read root, "a\tb.txt"))
+    shown("a control character of C1", textOf(read root, "a\u{85}b.txt"))
+    shown("a delete", textOf(read root, "sub/a\u{7F}"))
+    shown("CON", textOf(read root, "sub/CON"))
+    shown("com1.txt", textOf(read root, "com1.txt"))
+    shown("lpt9 in any case", textOf(read root, "LpT9"))
+    shown("conin$", textOf(read root, "conin$"))
+    shown("aux with spaces", textOf(read root, "aux  .txt"))
+    shown("a colon in a path from the root of the system", textOf(read root, "/a:b"))
+    shown("two slashes in front", textOf(read root, "//a.txt"))
+    shown("a dot at the end of a path from the root of the system", textOf(read root, "/a."))
+    shown("names that only start as a device does", textOf(read root, "console.txt"))
+    shown("spaces alone", textOf(read root, "  "))
+    shown("a dot and a space", textOf(read root, ". "))
+    shown("two dots and more", textOf(read root, "sub/..x"))
+
+    // Only a regular file.
+    shown("regular", regularOf(read root, "sub/b.txt"))
+    print($"a folder is no regular file: {root.openRegular("sub") is Error(IsDirectory)}")
+    print($"nor is the root: {root.openRegular(".") is Error(IsDirectory)}")
+    print($"nor what is outside: {root.openRegular("up.link") is Error(OutsideRoot)}")
+
+    // What the system knows: a link followed, or the link itself.
+    kind("info a.txt", root.info("a.txt"))
+    kind("info in.link", root.info("in.link"))
+    kind("linkInfo in.link", root.linkInfo("in.link"))
+    kind("info sub", root.info("sub"))
+    kind("info .", root.info("."))
+    kind("info sub/..", root.info("sub/.."))
+    kind("info up.link", root.info("up.link"))
+    kind("linkInfo up.link", root.linkInfo("up.link"))
+    kind("info missing", root.info("missing"))
+    kind("info ..", root.info(".."))
+    print($"exists: {root.exists("a.txt")} {root.exists("sub")} {root.exists("in.link")} {root.exists("up.link")} {root.exists("missing")} {root.exists("..")}")
+
+    // Listings.
+    listed("list .", root.list("."))
+    listed("list sub", root.list("sub"))
+    listed("list dir.link", root.list("dir.link"))
+    listed("list sub/deep/..", root.list("sub/deep/.."))
+    listed("list out.dir", root.list("out.dir"))
+    listed("list a.txt", root.list("a.txt"))
+    listed("list missing", root.list("missing"))
+
+    // Writing: a new file, through a link that stays inside, never through one that leads out.
+    said("create new.txt", put(read root, "new.txt", "one"))
+    shown("new.txt", textOf(read root, "new.txt"))
+    said("create in a missing folder", put(read root, "none/x.txt", "x"))
+    said("create through in.link", put(read root, "in.link", "BETA"))
+    shown("sub/b.txt", textOf(read root, "sub/b.txt"))
+    said("create through a link to nothing yet", put(read root, "fresh.link", "made"))
+    shown("sub/made.txt", textOf(read root, "sub/made.txt"))
+    said("create through up.link", put(read root, "up.link", "stolen"))
+    said("create through abs.link", put(read root, "abs.link", "stolen"))
+    said("create ../x.txt", put(read root, "../x.txt", "x"))
+    said("create out.dir/x.txt", put(read root, "out.dir/x.txt", "x"))
+    said("create a folder", put(read root, "sub", "x"))
+    said("create the root", put(read root, ".", "x"))
+    shown("the secret is as it was", File.readText(read secret))
+    print($"nothing was made outside: {!File.exists(read Path.join(read base, "x.txt"))}")
+    var more = try root.openAppend("new.txt")
+    try more.write(" two")
+    try more.close()
+    shown("appended", textOf(read root, "new.txt"))
+    var over = try root.openWrite("new.txt")
+    try over.write("ONE")
+    try over.close()
+    shown("written over", textOf(read root, "new.txt"))
+    print($"append leads out: {root.openAppend("up.link") is Error(OutsideRoot)}")
+    print($"write leads out: {root.openWrite("out.dir/secret.txt") is Error(OutsideRoot)}")
+
+    // Folders made and removed.
+    said("make made", root.createDirectory("made"))
+    said("make made again", root.createDirectory("made"))
+    said("make made/x/y", root.createDirectory("made/x/y"))
+    said("make made/x", root.createDirectory("made/x"))
+    said("make .", root.createDirectory("."))
+    said("make ../evil", root.createDirectory("../evil"))
+    said("make out.dir/evil", root.createDirectory("out.dir/evil"))
+    said("make over a link", root.createDirectory("up.link"))
+    print($"no folder was made outside: {!Directory.exists(read Path.join(read base, "evil"))}")
+    said("remove folder made", root.deleteDirectory("made"))
+    said("remove folder made/x", root.deleteDirectory("made/x"))
+    said("remove folder made", root.deleteDirectory("made"))
+    said("remove folder a.txt", root.deleteDirectory("a.txt"))
+    said("remove folder .", root.deleteDirectory("."))
+    said("remove folder sub/..", root.deleteDirectory("sub/.."))
+    said("remove folder ..", root.deleteDirectory(".."))
+
+    // Files removed: a link itself, never what it points at.
+    said("delete new.txt", root.delete("new.txt"))
+    said("delete new.txt again", root.delete("new.txt"))
+    said("delete sub", root.delete("sub"))
+    said("delete .", root.delete("."))
+    said("delete out.dir/secret.txt", root.delete("out.dir/secret.txt"))
+    said("delete ../secret.txt", root.delete("../secret.txt"))
+    said("delete up.link", root.delete("up.link"))
+    shown("the secret is still there", File.readText(read secret))
+    print($"the link is gone: {root.linkInfo("up.link") is Error(NotFound)}")
+
+    try inside(read root)
+    print($"Directory.openRoot of a file: {Directory.openRoot(read secret) is Error(NotDirectory)}")
+    print($"Directory.openRoot of nothing: {Directory.openRoot(read Path.join(read base, "none")) is Error(NotFound)}")
+
+    // The root is the folder, not its path: renamed, it is still that folder, and a folder put
+    // where it was is another. (Nothing inside it is open now: Windows renames no folder that
+    // holds an open file or folder.)
+    var moved = Path.join(read base, "moved")
+    try File.replace(read site, read moved)
+    try Directory.create(read site)
+    try File.writeText(read Path.join(read site, "a.txt"), "another")
+    shown("after the rename", textOf(read root, "a.txt"))
+    shown("and below", textOf(read root, "sub/deep/c.txt"))
+    print($"its way out is still shut: {textOf(read root, "out.dir/secret.txt") is Error(OutsideRoot)}")
+
+    try Directory.deleteAll(read base)
+    return Ok()
+}

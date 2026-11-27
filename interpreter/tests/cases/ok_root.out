@@ -1,0 +1,126 @@
+a.txt: alpha
+sub/b.txt: beta
+sub/../a.txt: alpha
+./sub/./deep/c.txt: gamma
+in.link: beta
+sub/back.link: alpha
+dir.link/b.txt: beta
+dir.link/deep/../../a.txt: alpha
+../secret.txt: (outside the root)
+sub/../../secret.txt: (outside the root)
+sub/deep/../../../secret.txt: (outside the root)
+up.link: (outside the root)
+abs.link: (outside the root)
+out.dir/secret.txt: (outside the root)
+out.dir/site/a.txt: (outside the root)
+/etc/hosts: (outside the root)
+missing.txt: (not found)
+missing/x.txt: (not found)
+a.txt/x: (not a folder)
+sub: (is a folder)
+.: (is a folder)
+a ring of links is an error: true
+empty: (invalid input)
+a//b: (invalid input)
+sub/: (invalid input)
+backslash: (invalid input)
+colon: (invalid input)
+device: (invalid input)
+dot at the end: (invalid input)
+space at the end: (invalid input)
+three dots: (invalid input)
+a tab: (invalid input)
+a control character of C1: (invalid input)
+a delete: (invalid input)
+CON: (invalid input)
+com1.txt: (invalid input)
+lpt9 in any case: (invalid input)
+conin$: (invalid input)
+aux with spaces: (invalid input)
+a colon in a path from the root of the system: (invalid input)
+two slashes in front: (outside the root)
+a dot at the end of a path from the root of the system: (outside the root)
+names that only start as a device does: (not found)
+spaces alone: (invalid input)
+a dot and a space: (invalid input)
+two dots and more: (not found)
+regular: beta
+a folder is no regular file: true
+nor is the root: true
+nor what is outside: true
+info a.txt: File 5
+info in.link: File 4
+linkInfo in.link: Link 0
+info sub: Directory 0
+info .: Directory 0
+info sub/..: Directory 0
+info up.link: (outside the root)
+linkInfo up.link: Link 0
+info missing: (not found)
+info ..: (outside the root)
+exists: true true true false false false
+list .: a.txt=File abs.link=Link dir.link=Link fresh.link=Link in.link=Link loop1=Link loop2=Link out.dir=Link sub=Directory up.link=Link
+list sub: b.txt=File back.link=Link deep=Directory
+list dir.link: b.txt=File back.link=Link deep=Directory
+list sub/deep/..: b.txt=File back.link=Link deep=Directory
+list out.dir: (outside the root)
+list a.txt: (not a folder)
+list missing: (not found)
+create new.txt: ok
+new.txt: one
+create in a missing folder: (not found)
+create through in.link: ok
+sub/b.txt: BETA
+create through a link to nothing yet: ok
+sub/made.txt: made
+create through up.link: (outside the root)
+create through abs.link: (outside the root)
+create ../x.txt: (outside the root)
+create out.dir/x.txt: (outside the root)
+create a folder: (is a folder)
+create the root: (is a folder)
+the secret is as it was: secret
+nothing was made outside: true
+appended: one two
+written over: ONE two
+append leads out: true
+write leads out: true
+make made: ok
+make made again: (already exists)
+make made/x/y: (not found)
+make made/x: ok
+make .: (already exists)
+make ../evil: (outside the root)
+make out.dir/evil: (outside the root)
+make over a link: (already exists)
+no folder was made outside: true
+remove folder made: (folder not empty)
+remove folder made/x: ok
+remove folder made: ok
+remove folder a.txt: (not a folder)
+remove folder .: (invalid input)
+remove folder sub/..: (invalid input)
+remove folder ..: (outside the root)
+delete new.txt: ok
+delete new.txt again: (not found)
+delete sub: (is a folder)
+delete .: (is a folder)
+delete out.dir/secret.txt: (outside the root)
+delete ../secret.txt: (outside the root)
+delete up.link: ok
+the secret is still there: secret
+the link is gone: true
+inner b.txt: BETA
+inner deep/c.txt: gamma
+inner ../a.txt: (outside the root)
+inner back.link: (outside the root)
+inner list .: b.txt=File back.link=Link deep=Directory made.txt=File
+a root of a file: true
+a root outside: true
+a root of nothing: true
+a root through a link: BETA
+Directory.openRoot of a file: true
+Directory.openRoot of nothing: true
+after the rename: alpha
+and below: gamma
+its way out is still shut: true

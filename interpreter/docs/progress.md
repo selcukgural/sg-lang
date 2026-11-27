@@ -685,6 +685,17 @@ it is as quick as `inotifywait` and keeps less; on macOS its delay is FSEvents' 
 keeps, which take the place of FSEvents' flags that hold what happened seconds before, cost about 6.5 MB at 100,000
 names.
 
+Slice 200 (2066-2077) keeps paths from outside inside a folder, and reads and writes one file through one opening.
+`Directory.openRoot(path)` gives a `DirectoryRoot`, the folder held by its handle: what it opens, lists, makes and
+removes lies inside it, a link followed only while it stays inside, and a path that leads out, by `..`, from the
+root of the system or through a link, is the new `IoError.OutsideRoot`. Linux asks the kernel to keep the path under
+the folder (`openat2`), macOS and Windows walk it part by part, and a path longer than the system's limit works.
+`File.openUpdate(path)` opens a file that is there to be read and written, `writer.openReader()` gives a reader of
+the same open file with a place of its own, and `position()` says where a stream stands. `File.openTemp()` gives a
+file with no name that is gone when it is closed, also when its program is ended. Tests swap the names a program
+asks for between what is inside and links that lead out during a hundred thousand calls, send a gigabyte through a
+file with no name, and compare a file written and read at random places with what C's `"r+"` leaves.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

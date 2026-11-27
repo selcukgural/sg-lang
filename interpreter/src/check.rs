@@ -583,7 +583,7 @@ const IO_ERROR: &str = "IoError";
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
 /// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable,
-/// TooLong, AddressNotAvailable, NotAFile, NotATerminal }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// TooLong, AddressNotAvailable, NotAFile, NotATerminal, OutsideRoot }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -602,12 +602,13 @@ const IO_ERROR: &str = "IoError";
 /// address is not one of the machine's, or no local port is left to connect from (1764).
 /// `NotAFile`: `File.openRegular` met a pipe, a device or a socket, and did not open it (1873).
 /// `NotATerminal`: the program has no terminal where one was asked for (`Terminal.giveTo`,
-/// `Command.foreground`), 2033.
+/// `Command.foreground`), 2033. `OutsideRoot`: a path given to a `DirectoryRoot` leads out of its
+/// folder, by `..`, by starting at the root of the system, or through a link (2068).
 /// What an `IoError` is written as (1537), by variant: a short sentence in lower case, as Go's
 /// errors are, followed by the number a variant carries (`invalid text at byte 812`,
 /// `system error 5`); `Cancelled` writes no field. The interpreter and compiled code write it
 /// from this table.
-pub const IO_ERROR_TEXTS: [&str; 22] = [
+pub const IO_ERROR_TEXTS: [&str; 23] = [
     "not found",
     "permission denied",
     "is a folder",
@@ -630,6 +631,7 @@ pub const IO_ERROR_TEXTS: [&str; 22] = [
     "address not available",
     "not a file",
     "not a terminal",
+    "outside the root",
 ];
 
 fn io_error() -> EnumDecl {
@@ -663,6 +665,7 @@ fn io_error() -> EnumDecl {
         variant("AddressNotAvailable", Vec::new()),
         variant("NotAFile", Vec::new()),
         variant("NotATerminal", Vec::new()),
+        variant("OutsideRoot", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
@@ -12739,10 +12742,10 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
                     .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
             }
-            (_, "isTerminal") => {
+            (_, "isTerminal" | "position") | (Ty::Writer, "openReader") => {
                 let stream = &self.src[recv.span.start..recv.span.end];
-                return Err(Diag::error(name_span, format!("a `{target}` has no `{name}`: `isTerminal` does not wait"))
-                    .hint(format!("`{stream}.isTerminal()`, in an async function too")));
+                return Err(Diag::error(name_span, format!("a `{target}` has no `{name}`: `{base}` does not wait"))
+                    .hint(format!("`{stream}.{base}()`, in an async function too")));
             }
             (Ty::Writer, "write" | "writeLine" | "writeBytes" | "writePieces") => 1,
             (Ty::Writer, "flush" | "syncData" | "sync") => 0,
@@ -13118,6 +13121,7 @@ impl<'a> Checker<'a> {
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             ("File", "openWrite") => (IoCall::OpenWrite, vec![text()], Ty::Writer),
+            ("File", "openUpdate") => (IoCall::OpenUpdate, vec![text()], Ty::Writer),
             // The calls of the file system a program writes itself; an async one is done on a
             // thread of input and output (1871). A link and the permissions came in with 191.
             ("File", "delete" | "move" | "replace" | "copy" | "createLink" | "createHardLink" | "readLink" | "setPermissions") => {
@@ -13157,12 +13161,14 @@ impl<'a> Checker<'a> {
             // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`, and
             // `File.createTemp()` is `FileInfo.makeTemp()`; `File.infoAsync(path)` is
             // `FileInfo.ofAsync(path)` (1871), and `File.linkInfo(path)` `FileInfo.ofLink(path)` (1976).
-            ("File", "info" | "exists" | "createTemp" | "linkInfo") => {
+            ("File", "info" | "exists" | "createTemp" | "linkInfo" | "openTemp") => {
                 let owner = format!("{STD_MODULE}.FileInfo");
                 let inner = match (base, is_async) {
                     ("info", false) => "of",
                     ("exists", false) => "isFile",
                     ("linkInfo", false) => "ofLink",
+                    ("openTemp", false) => "openTemp",
+                    ("openTemp", true) => "openTempAsync",
                     (_, false) => "makeTemp",
                     ("info", true) => "ofAsync",
                     ("exists", true) => "isFileAsync",
@@ -13178,11 +13184,11 @@ impl<'a> Checker<'a> {
             _ => {
                 let known: &[&str] = match is_async {
                     true => &[
-                        "readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "openRegularAsync", "createTextAsync", "openAppendAsync", "openWriteAsync", "deleteAsync", "moveAsync", "replaceAsync", "copyAsync", "infoAsync", "existsAsync", "createTempAsync",
+                        "readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "openRegularAsync", "createTextAsync", "openAppendAsync", "openWriteAsync", "openUpdateAsync", "openTempAsync", "deleteAsync", "moveAsync", "replaceAsync", "copyAsync", "infoAsync", "existsAsync", "createTempAsync",
                         "createLinkAsync", "createHardLinkAsync", "readLinkAsync", "linkInfoAsync", "setPermissionsAsync", "mapReadAsync",
                     ],
                     false => &[
-                        "readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "openRegular", "createText", "openAppend", "openWrite", "delete", "move", "replace", "copy", "info", "exists", "createTemp", "createLink",
+                        "readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "openRegular", "createText", "openAppend", "openWrite", "openUpdate", "openTemp", "delete", "move", "replace", "copy", "info", "exists", "createTemp", "createLink",
                         "createHardLink", "readLink", "linkInfo", "setPermissions", "mapRead",
                     ],
                 };
@@ -13198,6 +13204,8 @@ impl<'a> Checker<'a> {
                     "lstat" | "symlinkMetadata" | "linkMetadata" => Some("linkInfo"),
                     "chmod" | "setPermission" | "setMode" => Some("setPermissions"),
                     "mmap" | "map" | "memoryMap" => Some("mapRead"),
+                    "tmpfile" | "tempFile" | "createUnnamed" | "openUnnamed" => Some("openTemp"),
+                    "openReadWrite" | "openBoth" | "openRw" => Some("openUpdate"),
                     _ => None,
                 };
                 if let Some(other) = other {
@@ -13248,6 +13256,22 @@ impl<'a> Checker<'a> {
                 "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
                 "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
                 "watchStart" => (SystemCall::WatchStart, vec![text(), Ty::Bool], io(Ty::Int(IntTy::Long))),
+                "rootOpen" => (SystemCall::RootOpen, vec![Ty::Int(IntTy::Long), text()], io(Ty::Int(IntTy::Long))),
+                "rootReader" => (SystemCall::RootReader, vec![Ty::Int(IntTy::Long), text(), Ty::Bool], io(Ty::Reader(false))),
+                "rootWriter" => (SystemCall::RootWriter, vec![Ty::Int(IntTy::Long), text(), Ty::Int(IntTy::Int)], io(Ty::Writer)),
+                "rootStatus" => (
+                    SystemCall::RootStatus,
+                    vec![Ty::Int(IntTy::Long), text(), Ty::Bool, Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    io(Ty::Void),
+                ),
+                "rootList" => (
+                    SystemCall::RootList,
+                    vec![Ty::Int(IntTy::Long), text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
+                    io(Ty::Void),
+                ),
+                "rootMake" => (SystemCall::RootMake, vec![Ty::Int(IntTy::Long), text()], io(Ty::Void)),
+                "rootRemove" => (SystemCall::RootRemove, vec![Ty::Int(IntTy::Long), text(), Ty::Bool], io(Ty::Void)),
+                "openTemp" => (SystemCall::OpenTemp, vec![text()], io(Ty::Writer)),
                 _ => return None,
             })
         };
@@ -13371,6 +13395,7 @@ impl<'a> Checker<'a> {
                 Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))))),
             ),
             "watchStop" => (SystemCall::WatchStop, vec![Ty::Int(IntTy::Long)], Ty::Void),
+            "rootClose" => (SystemCall::RootClose, vec![Ty::Int(IntTy::Long)], Ty::Void),
             "reader" => (SystemCall::PipeReader, vec![Ty::Int(IntTy::Long)], Ty::Reader(false)),
             "writer" => (SystemCall::PipeWriter, vec![Ty::Int(IntTy::Long)], Ty::Writer),
             "udpBind" | "udpConnect" | "udpSend" | "udpSendAsync" | "udpReceive" | "udpReceiveAsync" | "socketAddress" | "streamAddress" | "streamOption" | "unixStreamOption" | "closeSocket" | "lookup" | "lookupAsync" => {
@@ -15447,6 +15472,8 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "setLength") => StreamCall::SetLength,
             (_, "seek") => StreamCall::Seek,
             (_, "isTerminal") => StreamCall::IsTerminal,
+            (_, "position") => StreamCall::Position,
+            (Ty::Writer, "openReader") => StreamCall::OpenReader,
             (_, "lock") => StreamCall::Lock,
             (_, "lockShared") => StreamCall::LockShared,
             (_, "tryLock") => StreamCall::TryLock,
@@ -15454,8 +15481,8 @@ impl<'a> Checker<'a> {
             (_, "unlock") => StreamCall::Unlock,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "info", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
-                    _ => &["write", "writeLine", "writeBytes", "writePieces", "flush", "close", "seek", "syncData", "sync", "setLength", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
+                    Ty::Reader(_) => &["readLine", "readLineBytes", "readText", "lines", "readBytes", "readSome", "fill", "buffered", "consume", "seek", "position", "info", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
+                    _ => &["write", "writeLine", "writeBytes", "writePieces", "flush", "close", "seek", "position", "openReader", "syncData", "sync", "setLength", "isTerminal", "lock", "lockShared", "tryLock", "tryLockShared", "unlock"],
                 };
                 // Names other languages give the lock of a file.
                 if matches!(name, "flock" | "lockExclusive" | "tryLockExclusive" | "release" | "lockFile") {
@@ -15473,6 +15500,7 @@ impl<'a> Checker<'a> {
                 };
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
+                    (Ty::Reader(_), "openReader") => diag.note("the writer of a file gives a reader of it: one of `File.openUpdate(path)` or `File.openTemp()`"),
                     (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "writePieces" | "flush" | "syncData" | "sync" | "setLength") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
                     (Ty::Writer, "readLine" | "readLineBytes" | "readText" | "lines" | "readBytes" | "readSome" | "fill" | "buffered" | "consume") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
@@ -15497,17 +15525,27 @@ impl<'a> Checker<'a> {
             recv.moved = true;
             return Ok(result(Ty::Void));
         }
-        if call == StreamCall::Seek {
+        if matches!(call, StreamCall::Seek | StreamCall::Position) {
+            let (can, cannot) = if call == StreamCall::Seek { ("can seek", "cannot seek") } else { ("has a place", "has no place in a file") };
             if let ExprKind::Var(var) = &recv.kind {
                 if let Some(what) = std_stream(var) {
                     let opened = if var == "Stdin" { "`File.openText(path)`" } else { "`File.createText(path)` or `File.openWrite(path)`" };
                     return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which goes only forward"))
-                        .note(format!("a file opened with {opened} can seek")));
+                        .note(format!("a file opened with {opened} {can}")));
                 }
             }
             if *target == Ty::Reader(true) {
-                return Err(Diag::error(recv.span, "the reader of a connection cannot seek: what has come over the network goes only forward")
-                    .note("a file opened with `File.openText(path)` can seek"));
+                return Err(Diag::error(recv.span, format!("the reader of a connection {cannot}: what has come over the network goes only forward"))
+                    .note(format!("a file opened with `File.openText(path)` {can}")));
+            }
+        }
+        // Only a file opened to be read and written gives a reader of itself (2074).
+        if call == StreamCall::OpenReader {
+            if let ExprKind::Var(var) = &recv.kind {
+                if let Some(what) = std_stream(var) {
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which is not a file opened to be read"))
+                        .note("a writer of `File.openUpdate(path)` or `File.openTemp()` gives a reader of its file"));
+                }
             }
         }
         // A standard stream is not a file the program holds: it may be a terminal or a pipe, and
@@ -15542,6 +15580,18 @@ impl<'a> Checker<'a> {
             arity(0)?;
             self.not_locked(recv, Access::Read)?;
             return Ok(Ty::Bool);
+        }
+        // Nor does asking where it stands, or for a reader of the file a writer writes, which has
+        // a place of its own.
+        if call == StreamCall::Position {
+            arity(0)?;
+            self.not_locked(recv, Access::Read)?;
+            return Ok(result(Ty::Int(IntTy::Long)));
+        }
+        if call == StreamCall::OpenReader {
+            arity(0)?;
+            self.not_locked(recv, Access::Read)?;
+            return Ok(result(Ty::Reader(false)));
         }
         if !writable {
             let what = match call {
@@ -15582,7 +15632,7 @@ impl<'a> Checker<'a> {
                 self.args(shown, args, &[Ty::Int(IntTy::Nint)], span)?;
                 Ty::Void
             }
-            StreamCall::Buffered | StreamCall::IsTerminal => unreachable!("answered above"),
+            StreamCall::Buffered | StreamCall::IsTerminal | StreamCall::Position | StreamCall::OpenReader => unreachable!("answered above"),
             StreamCall::ReadBytes | StreamCall::ReadSome => {
                 let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
                 self.args(shown, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {

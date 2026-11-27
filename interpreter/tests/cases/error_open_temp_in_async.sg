@@ -1,0 +1,6 @@
+// Making a file waits for the disk: an async function awaits `File.openTempAsync`.
+async Result<void, IoError> main() {
+    var out = try File.openTemp()
+    try await out.closeAsync()
+    return Ok()
+}

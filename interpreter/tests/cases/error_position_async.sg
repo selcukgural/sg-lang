@@ -1,0 +1,7 @@
+// Asking where a stream stands does not wait, so it has no async form.
+async Result<void, IoError> main() {
+    var out = try await File.openUpdateAsync("a.txt")
+    print(try await out.positionAsync())
+    try await out.closeAsync()
+    return Ok()
+}

@@ -1,0 +1,200 @@
+// A root under attack, a file with no name and a file read and written through one opening
+// (choices 2066 to 2077), started by `tests/roots.rs`:
+//   race FOLDER COUNT    opens, looks at and lists names under the root `FOLDER/site` COUNT times
+//                        while another program swaps them between what is inside and links that
+//                        lead out, and counts what it read from inside, from outside, and the errors
+//   temp                 opens a file with no name, writes into it, says `ready`, and closes it
+//                        when a line comes in
+//   big MEGABYTES        writes so many megabytes into a file with no name and reads them back
+//   update PATH SEED OPS writes and reads the file at places a seed gives, through one opening,
+//                        as `tests/roots/update.c` does with a stream of C opened with "r+", and
+//                        says the sum of what it read and the size of the file
+
+Result<string, IoError> textOf(read DirectoryRoot root, read string path) {
+    var reader = try root.openText(path)
+    return reader.readText()
+}
+
+Result<void, IoError> race(read string folder, long count) {
+    var root = try Directory.openRoot(read Path.join(folder, "site"))
+    var inside = 0
+    var outside = 0
+    var errors = 0
+    var names = List<string> { "flip/data.txt", "leaf.txt", "flip/../flip/data.txt", "./flip/./data.txt" }
+    for round in 0..count {
+        var name = names[(nint)(round % 4)].clone()
+        match textOf(read root, read name) {
+            Ok(text) => {
+                if text == "inside" {
+                    inside += 1
+                } else {
+                    outside += 1
+                    print($"read from outside through {name}: {text}")
+                }
+            }
+            Error(_) => errors += 1
+        }
+        match root.openRegular(read name) {
+            Ok(opened) => {
+                var reader = opened
+                match reader.readText() {
+                    Ok(text) => {
+                        if text == "inside" {
+                            inside += 1
+                        } else {
+                            outside += 1
+                            print($"a regular file read from outside through {name}: {text}")
+                        }
+                    }
+                    Error(_) => errors += 1
+                }
+            }
+            Error(_) => errors += 1
+        }
+        match root.info(read name) {
+            Ok(info) => {
+                if info.size == 6 {
+                    inside += 1
+                } else {
+                    outside += 1
+                    print($"looked at outside through {name}: {info.size} bytes")
+                }
+            }
+            Error(_) => errors += 1
+        }
+        match root.list("flip") {
+            Ok(entries) => {
+                var out = false
+                for entry in entries {
+                    if entry.name == "marker-outside" {
+                        out = true
+                    }
+                }
+                if out {
+                    outside += 1
+                    print("listed outside")
+                } else {
+                    inside += 1
+                }
+            }
+            Error(_) => errors += 1
+        }
+        // Nothing is made outside either: a file made through the name that is swapped lands in
+        // the folder inside, or is refused.
+        if round % 16 == 0 {
+            match root.createText("flip/made.txt") {
+                Ok(writer) => {
+                    var out = writer
+                    _ = out.close()
+                }
+                Error(_) => errors += 1
+            }
+        }
+    }
+    print($"inside {inside} outside {outside} errors {errors}")
+    return Ok()
+}
+
+Result<void, IoError> temp() {
+    var out = try File.openTemp()
+    for _ in 0..100 {
+        try out.write("0123456789")
+    }
+    try out.flush()
+    print("ready")
+    try Stdout.flush()
+    var line = ""
+    _ = try Stdin.readLine(ref line)
+    try out.close()
+    print("closed")
+    return Ok()
+}
+
+Result<void, IoError> big(long megabytes) {
+    var out = try File.openTemp()
+    var piece = List<byte>.withCapacity(1048576)
+    for i in 0..1048576 {
+        piece.add((byte)((i * 31 + i / 4096) % 251))
+    }
+    for round in 0..megabytes {
+        piece[0] = (byte)(round % 256)
+        piece[1] = (byte)(round / 256)
+        try out.writeBytes(read piece)
+    }
+    try out.flush()
+    var size = try out.position()
+    var reader = try out.openReader()
+    var back = List<byte>.repeat((byte)0, 1048576)
+    var wrong = 0
+    for round in 0..megabytes {
+        var got = try reader.readBytes(ref back[..])
+        piece[0] = (byte)(round % 256)
+        piece[1] = (byte)(round / 256)
+        if got != 1048576 || back != piece {
+            wrong += 1
+        }
+    }
+    var beyond = try reader.readBytes(ref back[..])
+    try out.close()
+    print($"{size} bytes, {wrong} wrong, {beyond} beyond the end")
+    return Ok()
+}
+
+Result<void, IoError> update(read string path, long seed, long ops) {
+    var out = try File.openUpdate(path)
+    var reader = try out.openReader()
+    var info = try reader.info()
+    var size = info.size
+    var state = seed
+    long sum = 0
+    var data = List<byte>.withCapacity(300)
+    var buffer = byte[300]
+    for i in 0..ops {
+        state = (state * 1103515245 + 12345) % 2147483648
+        var kind = state / 65536 % 4
+        state = (state * 1103515245 + 12345) % 2147483648
+        var place = state % (size + 1)
+        state = (state * 1103515245 + 12345) % 2147483648
+        var n = state / 65536 % 300 + 1
+        if kind == 2 {
+            // A read: what the writer holds is written first, and the reader lets go of its block.
+            try out.flush()
+            _ = try reader.seek(SeekFrom.Start(place))
+            var got = try reader.readBytes(ref buffer[..(nint)n])
+            for j in 0..got {
+                sum = (sum * 31 + (long)buffer[j]) % 1000000007
+            }
+            sum = (sum * 31 + (long)got) % 1000000007
+        } else {
+            data.clear()
+            for j in 0..n {
+                data.add((byte)((i + j) % 251))
+            }
+            if kind == 3 {
+                place = try out.seek(SeekFrom.End(0))
+            } else {
+                _ = try out.seek(SeekFrom.Start(place))
+            }
+            try out.writeBytes(read data)
+            if place + n > size {
+                size = place + n
+            }
+        }
+    }
+    try out.close()
+    print($"sum {sum} size {size}")
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    if args[0] == "race" {
+        return race(read args[1], (long)(int.parse(read args[2]) ?? 0))
+    }
+    if args[0] == "temp" {
+        return temp()
+    }
+    if args[0] == "big" {
+        return big((long)(int.parse(read args[1]) ?? 0))
+    }
+    return update(read args[1], (long)(int.parse(read args[2]) ?? 0), (long)(int.parse(read args[3]) ?? 0))
+}

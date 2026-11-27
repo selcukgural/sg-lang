@@ -1,0 +1,6 @@
+// Opening a folder as a root waits for the disk: an async function awaits `openRootAsync`.
+async Result<void, IoError> main() {
+    var root = try Directory.openRoot(".")
+    print(await root.existsAsync("a.txt"))
+    return Ok()
+}

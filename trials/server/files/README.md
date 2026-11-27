@@ -13,6 +13,14 @@ of [`c/files.c`](c/files.c); the numbers are in [Servers against Rust, Zig and C
 | [check.py](check.py) | Every server held to a model of the rules in Python, over raw sockets: 320 requests at every edge, 1,001 ranges at random, requests sent together, files cut, grown and removed while they are sent; with `--stand` clients of 1 GB that do not read, read slowly and reset halfway; with `--nginx` where nginx answers otherwise, printed and not held |
 | [measure.py](measure.py) | The cases, on Linux in the lane's image, on the machinery of `../measure.py` |
 
+SG's server started with `--inside 1` opens its files through a `DirectoryRoot` of the root
+([slice 200](../../../design/decisions/2026-11-27.md#slice-200)): a link under the root that leads out of it is
+not followed, and its file is a 403. The four versions follow such a link, as nginx does, and `check.py` holds them
+to that, so this way is not one of the four: `measure.py` measures it beside them as `sg-root`, to show what a root
+costs a server. On 27 November 2026 it answered as many requests as the server without a root, within what one server
+differs from itself between two runs (1,000 files of 1 KB over 50 connections: 454,354 and 477,626 answers a second
+without, 467,670 and 471,942 with), in the same memory.
+
 ```sh
 python3 trials/server/files/measure.py              # every case, on Linux in the image
 python3 trials/server/files/measure.py --check      # check.py and the load's own check, natively

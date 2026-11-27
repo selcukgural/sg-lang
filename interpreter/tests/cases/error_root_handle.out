@@ -1,0 +1,5 @@
+error: a `DirectoryRoot` is made by its functions, not field by field
+  --> error_root_handle.sg:3:16
+ 3 |     var root = DirectoryRoot { handle = 3 }
+   |                ^^^^^^^^^^^^^
+  hint: nothing is made: the functions are called on the type

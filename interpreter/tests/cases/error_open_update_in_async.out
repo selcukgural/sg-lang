@@ -1,0 +1,6 @@
+error: `File.openUpdate` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_open_update_in_async.sg:3:24
+ 3 |     var out = try File.openUpdate("a.txt")
+   |                        ^^^^^^^^^^
+  hint: `await File.openUpdateAsync("a.txt")` does the same work without holding the thread

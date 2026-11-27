@@ -1,0 +1,12 @@
+a path of 2001 bytes
+read at the bottom: bottom
+File of 6 bytes
+the last folder holds 1 name(s)
+back at the top: 1 name(s), d
+one more is the root: top
+and one more is outside: true
+and it stays so whatever comes after: true
+down, half the way up and down again: bottom
+a root at the bottom: bottom
+which the folders above are outside of: true
+all removed: 0 left

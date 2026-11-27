@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program, which is not a file opened to be read
+  a writer of `File.openUpdate(path)` or `File.openTemp()` gives a reader of its file
+  --> error_open_reader_stdout.sg:3:22
+ 3 |     var reader = try Stdout.openReader()
+   |                      ^^^^^^

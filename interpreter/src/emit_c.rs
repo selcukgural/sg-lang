@@ -587,7 +587,7 @@ const C_LIBRARY: &[&str] = &[
 const RUNTIME_PARTS: &[&str] = &[
     FREESTANDING_PRELUDE, FREESTANDING_RUNTIME, FREESTANDING_DIVISION, RUNTIME, RAW_RUNTIME, CLOCK_RUNTIME, FFI_RUNTIME, TABLE,
     STATIC_RUNTIME, TEST_SUPPORT, SHARED_RUNTIME, TASK_RUNTIME, CHAN_RUNTIME, SELECT_RUNTIME, NET_RUNTIME, UDP_RUNTIME, SIGNALS_RUNTIME,
-    UDP_ASYNC_RUNTIME, NET_ASYNC_RUNTIME, PROCESS_PIPES_RUNTIME, PROCESS_ASYNC_RUNTIME, PROCESS_RUNTIME, FILES_RUNTIME, IO_RUNTIME,
+    UDP_ASYNC_RUNTIME, NET_ASYNC_RUNTIME, PROCESS_PIPES_RUNTIME, PROCESS_ASYNC_RUNTIME, PROCESS_RUNTIME, FILES_RUNTIME, ROOT_RUNTIME, IO_RUNTIME,
     ASYNC_IO_RUNTIME, TEST_RUNNER, LEAKS,
 ];
 
@@ -11755,7 +11755,7 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
 }
 /* The writer of the input of a program that `start` started. */
 static sg_writer sg_proc_writer(int64_t fd) {
-    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0 };
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0, 0 };
 }
 #else
 #include <limits.h>
@@ -12677,7 +12677,7 @@ static sg_writer sg_proc_writer(int64_t fd) {
 #ifdef F_SETNOSIGPIPE
     fcntl((int)fd, F_SETNOSIGPIPE, 1);
 #endif
-    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0 };
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0, 0 };
 }
 #endif
 "#;
@@ -13192,7 +13192,7 @@ static int sg_fs_current(uint8_t** bytes, int64_t* len) {
 /* A new folder, or with `file` a new empty file, named from the template, its `XXXXXX` made
    random, that only its owner may open: its list of access has one entry, full access for the
    owner, and inherits none. */
-static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t* len) {
+static int sg_fs_make_temp_kept(sg_str template, bool file, uint8_t** bytes, int64_t* len, HANDLE* keep) {
     static const char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     if (template.len < 6 || memcmp(template.ptr + template.len - 6, "XXXXXX", 6) != 0) return ERROR_INVALID_PARAMETER;
     PSECURITY_DESCRIPTOR descriptor = NULL;
@@ -13210,9 +13210,12 @@ static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t*
         wchar_t* w = sg_wide((sg_str){ (const uint8_t*)name, template.len }, &code);
         if (!w) break;
         if (file) {
-            HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+            /* `keep`: the file stays open, to be read and written, and goes when it is closed. */
+            HANDLE h = CreateFileW(w, keep ? GENERIC_READ | GENERIC_WRITE | DELETE : GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security, CREATE_NEW,
+                keep ? FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE : FILE_ATTRIBUTE_NORMAL, NULL);
             code = h != INVALID_HANDLE_VALUE ? 0 : sg_win_refine(w, sg_win_error());
-            if (!code) CloseHandle(h);
+            if (!code && keep) *keep = h;
+            else if (!code) CloseHandle(h);
             if (code == ERROR_FILE_EXISTS) code = ERROR_ALREADY_EXISTS;
         } else {
             code = CreateDirectoryW(w, &security) ? 0 : sg_win_refine(w, sg_win_error());
@@ -13223,6 +13226,22 @@ static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t*
     if (code) { free(name); return code; }
     *bytes = (uint8_t*)name;
     *len = template.len;
+    return 0;
+}
+static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t* len) {
+    return sg_fs_make_temp_kept(template, file, bytes, len, NULL);
+}
+/* `File.openTemp()` (2076): a file made from the template that only the user can read and write,
+   kept open to be read and written, which Windows deletes when its last handle is closed
+   (`FILE_FLAG_DELETE_ON_CLOSE`). Its name is seen in the folder until then. */
+static int sg_open_temp(sg_str template, sg_writer* out) {
+    uint8_t* bytes = NULL;
+    int64_t n = 0;
+    HANDLE h = NULL;
+    int code = sg_fs_make_temp_kept(template, true, &bytes, &n, &h);
+    if (code) return code;
+    free(bytes);
+    *out = (sg_writer){ (int)(intptr_t)h, 0, 0, { (uint8_t*)"", 0, 0 }, 0, 0, 1 };
     return 0;
 }
 /* The folder for files that do not have to stay, as `GetTempPath2W` gives it where Windows has
@@ -13444,15 +13463,10 @@ static int sg_fs_order(const void* x, const void* y) {
     int c = memcmp(a->name, b->name, (size_t)n);
     return c ? c : (a->len > b->len) - (a->len < b->len);
 }
-/* The names in the folder, without `.` and `..`, in the order of their bytes. */
-static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
+/* The names in the open folder, without `.` and `..`, in the order of their bytes; the folder is
+   closed. */
+static int sg_fs_list_of(DIR* folder, sg_fs_entry** out, int64_t* count) {
     int code = 0;
-    char* name = sg_path(path, &code);
-    if (!name) return code;
-    DIR* folder = opendir(name);
-    int error = sg_os_error();
-    free(name);
-    if (!folder) return error;
     sg_fs_entry* entries = NULL;
     int64_t n = 0, cap = 0;
     for (;;) {
@@ -13483,6 +13497,17 @@ static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
     *out = entries;
     *count = n;
     return 0;
+}
+/* The names in the folder at the path. */
+static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    DIR* folder = opendir(name);
+    int error = sg_os_error();
+    free(name);
+    if (!folder) return error;
+    return sg_fs_list_of(folder, out, count);
 }
 /* The kind, the size and the time of the last write in nanoseconds since 1970, of what the system
    said of a file. */
@@ -13649,6 +13674,32 @@ static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t*
     *len = (int64_t)strlen(name);
     return 0;
 }
+/* `File.openTemp()` (2076): a file with no name in the folder of the template, opened to be read
+   and written, which is gone when its last descriptor is closed. Linux makes it without a name
+   (`O_TMPFILE`) where the file system can; elsewhere it is made from the template as `mkstemp`
+   makes it, and its name taken away at once. */
+static int sg_open_temp(sg_str template, sg_writer* out) {
+    int code = 0;
+    char* name = sg_path(template, &code);
+    if (!name) return code;
+    int fd = -1;
+#if defined(__linux__) && defined(O_TMPFILE)
+    char* slash = strrchr(name, '/');
+    if (slash) {
+        *slash = 0;
+        do { fd = open(slash == name ? "/" : name, O_TMPFILE | O_RDWR | O_CLOEXEC, 0600); } while (fd < 0 && errno == EINTR);
+        *slash = '/';
+    }
+#endif
+    if (fd < 0) {
+        fd = mkostemp(name, O_CLOEXEC);
+        if (fd < 0) { code = sg_os_error(); free(name); return code; }
+        unlink(name);
+    }
+    free(name);
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0, 0, 1 };
+    return 0;
+}
 /* The bytes of a variable of the environment, or NULL when it is not set. A name with `=` or a
    zero byte in it is no variable's name. The program never sets one, so reading is safe on any
    thread. */
@@ -13663,6 +13714,848 @@ static const char* sg_env_variable(sg_str name, int64_t* len) {
     if (value) *len = (int64_t)strlen(value);
     return value;
 }
+#endif
+"#;
+
+/// `DirectoryRoot` (choices 2066 to 2071): a folder held open, and paths found under it so that
+/// none leads out. After `FILES_RUNTIME`; the interpreter does the same in `root.rs`.
+const ROOT_RUNTIME: &str = r#"
+/* A path under a root is not handed to the system as a text counted from the folder the program
+   works in: it is found from the handle of the root. Where the system can find it so itself and
+   refuse a way out, it does, in one call: `openat2` with `RESOLVE_BENEATH` on Linux; on macOS
+   `O_NOFOLLOW_ANY`, which refuses every link, for a path without `..`. Otherwise the path is
+   walked part by part (`sg_root_reach`): each folder on the way is opened by its name in the one
+   before it, a link not followed; a link is read and its parts put in front of what is left of
+   the path; `..` goes back to the folder the walk came through, and what the system says is above
+   a folder is taken only when it is that very folder. A link that starts at the root of the
+   system, and a `..` with no folder left to go back to, are SG_OUTSIDE_ROOT. The walk gives the folder that holds the last part and
+   the name of that part, and the call is made on the name without following a link, so a name
+   changed to a link in between is an error and not a way out. */
+#define SG_ROOT_LINKS 40
+/* The path is to be walked: the system has no quick way, or met a link. */
+#define SG_ROOT_WALK (-100)
+#if !defined(_WIN32)
+#include <dirent.h>
+/* A folder opened only to find names in it needs no right to list it. */
+#if defined(__linux__)
+#define SG_ROOT_LOOK (O_PATH | O_DIRECTORY)
+#elif defined(O_SEARCH)
+#define SG_ROOT_LOOK O_SEARCH
+#else
+#define SG_ROOT_LOOK (O_RDONLY | O_DIRECTORY)
+#endif
+static int sg_root_openat(int dir, const char* name, int flags) {
+    for (;;) {
+        int fd = openat(dir, name, flags | O_CLOEXEC, 0666);
+        if (fd >= 0 || errno != EINTR) {
+#if !defined(__linux__) && defined(O_SEARCH)
+            /* A macOS that does not know `O_SEARCH` opens the folder to be read. */
+            if (fd < 0 && errno == EINVAL && (flags & O_SEARCH) == O_SEARCH) { flags = (flags & ~O_SEARCH) | O_RDONLY | O_DIRECTORY; continue; }
+#endif
+            return fd;
+        }
+    }
+}
+static inline void sg_root_done(int root, int dir) { if (dir != root) close(dir); }
+/* Whether the path has no `..` part. */
+static bool sg_root_plain(const char* path) {
+    for (const char* p = path; *p;) {
+        const char* end = p;
+        while (*end && *end != '/') end++;
+        if (end - p == 2 && p[0] == '.' && p[1] == '.') return false;
+        p = *end ? end + 1 : end;
+    }
+    return true;
+}
+/* A folder the walk went into: where its name starts among the names, and, once a `..` may come,
+   which folder of the system it was. */
+typedef struct { size_t name; dev_t dev; ino_t ino; bool known; } sg_root_step;
+/* Walks the path, ended by a zero, under the root. Gives 0, the folder that holds its last part
+   in `*dir` (given back with `sg_root_done`) and the name of that part in `*leaf`, a block of
+   `malloc`: no link when `follow` is set and the name is there. An empty name: the path is the
+   folder `*dir` itself.
+   `..` goes back to the folder the walk came through. The system is asked for what is above the
+   folder at hand, and the answer is taken only when it is the very folder the walk went into
+   before (the same device and file number, kept for a path with a `..` in it): one step, however
+   deep the walk is. A folder moved in between makes the answer another; the names are then
+   walked again from the root. The system is never trusted to say what is above. */
+static int sg_root_reach(int root, const char* path, bool follow, int* dir, char** leaf) {
+    size_t len = strlen(path);
+    char* rest = malloc(len + 1);
+    if (!rest) abort();
+    memcpy(rest, path, len + 1);
+    size_t at = 0;
+    /* The names of the folders gone into, each ended by a zero, and what is kept of each. */
+    char* names = NULL;
+    size_t names_len = 0, names_cap = 0;
+    sg_root_step* steps = NULL;
+    size_t depth = 0, steps_cap = 0;
+    bool told = !sg_root_plain(path);
+    int cur = root, links = 0, code = 0;
+    char* name = NULL;
+    for (;;) {
+        while (rest[at] == '/') at++;
+        if (!rest[at]) { name = calloc(1, 1); if (!name) abort(); break; }
+        size_t end = at;
+        while (rest[end] && rest[end] != '/') end++;
+        size_t after = end;
+        while (rest[after] == '/') after++;
+        bool last = rest[after] == 0;
+        size_t n = end - at;
+        if (n == 1 && rest[at] == '.') { at = after; continue; }
+        if (n == 2 && rest[at] == '.' && rest[at + 1] == '.') {
+            if (depth == 0) { code = SG_OUTSIDE_ROOT; break; }
+            depth--;
+            names_len = steps[depth].name;
+            at = after;
+            if (depth == 0) { sg_root_done(root, cur); cur = root; continue; }
+            if (steps[depth - 1].known) {
+                int up = sg_root_openat(cur, "..", SG_ROOT_LOOK | O_NOFOLLOW);
+                struct stat seen;
+                if (up >= 0 && fstat(up, &seen) == 0 && seen.st_dev == steps[depth - 1].dev && seen.st_ino == steps[depth - 1].ino) {
+                    sg_root_done(root, cur);
+                    cur = up;
+                    continue;
+                }
+                if (up >= 0) close(up);
+            }
+            /* From the root again, by the names, and from here on each folder is kept. */
+            told = true;
+            sg_root_done(root, cur);
+            cur = root;
+            for (size_t i = 0; i < depth; i++) {
+                int fd = sg_root_openat(cur, names + steps[i].name, SG_ROOT_LOOK | O_NOFOLLOW);
+                if (fd < 0) { code = sg_os_error(); break; }
+                sg_root_done(root, cur);
+                cur = fd;
+                struct stat seen;
+                steps[i].known = fstat(fd, &seen) == 0;
+                if (steps[i].known) { steps[i].dev = seen.st_dev; steps[i].ino = seen.st_ino; }
+            }
+            if (code) break;
+            continue;
+        }
+        name = malloc(n + 1);
+        if (!name) abort();
+        memcpy(name, rest + at, n);
+        name[n] = 0;
+        if (last && !follow) break;
+        if (!last) {
+            /* Most parts on the way are folders: one call finds it out and opens it. */
+            int fd = sg_root_openat(cur, name, SG_ROOT_LOOK | O_NOFOLLOW);
+            if (fd >= 0) {
+                sg_root_done(root, cur);
+                cur = fd;
+                if (names_len + n + 1 > names_cap) {
+                    names_cap = (names_len + n + 1) * 2;
+                    names = realloc(names, names_cap);
+                    if (!names) abort();
+                }
+                if (depth == steps_cap) {
+                    steps_cap = steps_cap ? steps_cap * 2 : 16;
+                    steps = realloc(steps, steps_cap * sizeof *steps);
+                    if (!steps) abort();
+                }
+                steps[depth] = (sg_root_step){ .name = names_len };
+                if (told) {
+                    struct stat seen;
+                    steps[depth].known = fstat(fd, &seen) == 0;
+                    if (steps[depth].known) { steps[depth].dev = seen.st_dev; steps[depth].ino = seen.st_ino; }
+                }
+                depth++;
+                memcpy(names + names_len, name, n + 1);
+                names_len += n + 1;
+                free(name);
+                name = NULL;
+                at = after;
+                continue;
+            }
+            if (errno != ENOTDIR && errno != ELOOP && errno != EMLINK) { code = sg_os_error(); break; }
+        }
+        char target[4097];
+        ssize_t held = readlinkat(cur, name, target, sizeof target);
+        if (held >= 0) {
+            free(name);
+            name = NULL;
+            if (++links > SG_ROOT_LINKS) { code = ELOOP; break; }
+            if (held == 0) { code = ENOENT; break; }
+            if (held == (ssize_t)sizeof target) { code = ENAMETOOLONG; break; }
+            if (target[0] == '/') { code = SG_OUTSIDE_ROOT; break; }
+            size_t tail = strlen(rest + after);
+            char* next = malloc((size_t)held + 1 + tail + 1);
+            if (!next) abort();
+            memcpy(next, target, (size_t)held);
+            next[held] = '/';
+            memcpy(next + held + 1, rest + after, tail + 1);
+            free(rest);
+            rest = next;
+            at = 0;
+            continue;
+        }
+        /* There, and no link: the last part, or a file where a folder was to be. A last part
+           that is not there: the call says so, or makes it. */
+        if (errno == EINVAL && last) break;
+        if (errno == EINVAL) { code = ENOTDIR; break; }
+        if (errno == ENOENT && last) break;
+        code = sg_os_error();
+        break;
+    }
+    free(rest);
+    free(names);
+    free(steps);
+    if (code) {
+        free(name);
+        sg_root_done(root, cur);
+        return code;
+    }
+    *dir = cur;
+    *leaf = name;
+    return 0;
+}
+/* The path opened by the system itself where it can keep it under the root: 0 and the descriptor,
+   the code of the system, SG_OUTSIDE_ROOT, or SG_ROOT_WALK. A program built with
+   `-DSG_ROOT_WALK_ONLY` always walks, which is how the tests run the walk on every system. */
+#if defined(SG_ROOT_WALK_ONLY)
+static int sg_root_quick(int root, const char* path, int flags, int* fd) {
+    (void)root; (void)path; (void)flags; (void)fd;
+    return SG_ROOT_WALK;
+}
+#elif defined(__linux__) && defined(SYS_openat2)
+#ifndef RESOLVE_BENEATH
+#define RESOLVE_BENEATH 0x08
+#endif
+static int sg_root_no_openat2 = 0;
+static int sg_root_quick(int root, const char* path, int flags, int* fd) {
+    if (__atomic_load_n(&sg_root_no_openat2, __ATOMIC_RELAXED)) return SG_ROOT_WALK;
+    struct { uint64_t flags, mode, resolve; } how = { (uint64_t)(flags | O_CLOEXEC), (flags & O_CREAT) ? 0666 : 0, RESOLVE_BENEATH | (sg_nowait ? RESOLVE_CACHED : 0) };
+    for (int tries = 0; tries < 4;) {
+        int got = (int)syscall(SYS_openat2, root, path, &how, sizeof how);
+        if (got >= 0) { *fd = got; return 0; }
+        if (errno == EINTR) continue;
+        /* A folder renamed on the way while it was walked: asked again, then walked. */
+        if (errno == EAGAIN) {
+            if (sg_nowait) { sg_would_wait = true; return EAGAIN; }
+            tries++;
+            continue;
+        }
+        if (errno == EXDEV) return SG_OUTSIDE_ROOT;
+        if (errno == ENOSYS) { __atomic_store_n(&sg_root_no_openat2, 1, __ATOMIC_RELAXED); return SG_ROOT_WALK; }
+        /* A filter of system calls that refuses it: the walk gives the answer. */
+        if (errno == EPERM || errno == EINVAL || errno == E2BIG || errno == EOPNOTSUPP) return SG_ROOT_WALK;
+        /* A path longer than the system takes in one piece is walked, part by part. */
+        if (errno == ENAMETOOLONG) return SG_ROOT_WALK;
+        return sg_os_error();
+    }
+    return SG_ROOT_WALK;
+}
+#elif defined(O_NOFOLLOW_ANY)
+static int sg_root_quick(int root, const char* path, int flags, int* fd) {
+    if (!sg_root_plain(path)) return SG_ROOT_WALK;
+    int got = sg_root_openat(root, path, flags | O_NOFOLLOW_ANY);
+    if (got >= 0) { *fd = got; return 0; }
+    /* A link on the way, a system that does not know the flag, or a path longer than the system
+       takes in one piece. */
+    if (errno == ELOOP || errno == EINVAL || errno == ENAMETOOLONG) return SG_ROOT_WALK;
+    return sg_os_error();
+}
+#else
+static int sg_root_quick(int root, const char* path, int flags, int* fd) {
+    (void)root; (void)path; (void)flags; (void)fd;
+    return SG_ROOT_WALK;
+}
+#endif
+/* The walk waits for the disk: in a call tried on the task's own thread (1872) it is not made. */
+static inline bool sg_root_would_wait(void) {
+#if defined(__linux__)
+    if (sg_nowait) { sg_would_wait = true; return true; }
+#endif
+    return false;
+}
+/* The path under the root opened with `flags`, a link at its end followed inside the root. A path
+   that is the folder of the walk itself opens it when `folder` is set, and is EISDIR otherwise. */
+static int sg_root_fd(int root, const char* path, int flags, bool folder, int* fd) {
+    int code = sg_root_quick(root, path, flags, fd);
+    if (code != SG_ROOT_WALK) return code;
+    if (sg_root_would_wait()) return EAGAIN;
+    for (int tries = 0;; tries++) {
+        int dir = -1;
+        char* leaf = NULL;
+        code = sg_root_reach(root, path, true, &dir, &leaf);
+        if (code) return code;
+        if (!leaf[0] && !folder) code = EISDIR;
+        else {
+            int got = sg_root_openat(dir, leaf[0] ? leaf : ".", flags | O_NOFOLLOW);
+            if (got < 0) code = sg_os_error();
+            else *fd = got;
+        }
+        free(leaf);
+        sg_root_done(root, dir);
+        /* The name was changed to a link in between: walked again, a few times. */
+        if ((code == ELOOP || code == EMLINK) && tries < 3) continue;
+        return code;
+    }
+}
+/* What the system says of the path under the root, a link at its end followed or not. */
+static int sg_root_look(int root, const char* path, bool follow, struct stat* info) {
+#if defined(__linux__) && !defined(SG_ROOT_WALK_ONLY)
+    int fd = -1;
+    int code = sg_root_quick(root, path, O_PATH | (follow ? 0 : O_NOFOLLOW), &fd);
+    if (code == 0) {
+        code = fstat(fd, info) == 0 ? 0 : sg_os_error();
+        close(fd);
+        return code;
+    }
+    if (code != SG_ROOT_WALK) return code;
+    if (sg_root_would_wait()) return EAGAIN;
+#elif defined(AT_SYMLINK_NOFOLLOW_ANY) && !defined(SG_ROOT_WALK_ONLY)
+    if (follow && sg_root_plain(path)) {
+        /* No link on the way was followed; a link at the end is told as itself, and is walked. */
+        if (fstatat(root, path, info, AT_SYMLINK_NOFOLLOW_ANY) == 0) {
+            if (!S_ISLNK(info->st_mode)) return 0;
+        } else if (errno != ELOOP && errno != EINVAL && errno != ENAMETOOLONG) {
+            return sg_os_error();
+        }
+    }
+#endif
+    for (int tries = 0;; tries++) {
+        int dir = -1;
+        char* leaf = NULL;
+        int walked = sg_root_reach(root, path, follow, &dir, &leaf);
+        if (walked) return walked;
+        if (fstatat(dir, leaf[0] ? leaf : ".", info, AT_SYMLINK_NOFOLLOW) != 0) walked = sg_os_error();
+        free(leaf);
+        sg_root_done(root, dir);
+        /* The name was changed to a link after the walk found it none: walked again, a few
+           times, so that a link is never told as what it leads to. */
+        if (!walked && follow && S_ISLNK(info->st_mode)) {
+            if (tries < 3) continue;
+            return ELOOP;
+        }
+        return walked;
+    }
+}
+/* `System.rootOpen`: the folder as a root. With no root (-1) the path is found as any path is, a
+   link followed. */
+static int sg_root_open(int64_t root, sg_str path, int64_t* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = -1;
+    if (root < 0) {
+        fd = sg_root_openat(AT_FDCWD, name, SG_ROOT_LOOK);
+        if (fd < 0) code = sg_os_error();
+    } else {
+        code = sg_root_fd((int)root, name, SG_ROOT_LOOK, true, &fd);
+    }
+    free(name);
+    if (code) return code;
+    *out = fd;
+    return 0;
+}
+/* `System.rootReader`: with `regular`, only a regular file is opened, asked before it is, so that
+   a pipe is never opened and no writer that waits on it is let go; opened without waiting and
+   looked at again, as `File.openRegular` does (1873). In a call tried on the task's own thread
+   only a regular file is opened at all, as `File.openTextAsync` does. */
+static int sg_root_reader(int64_t root, sg_str path, bool regular, sg_reader* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    struct stat info;
+    bool asked = regular;
+#if defined(__linux__)
+    asked = asked || sg_nowait;
+#endif
+    if (asked) {
+        code = sg_root_look((int)root, name, true, &info);
+        if (!code && !S_ISREG(info.st_mode)) {
+            if (regular) code = S_ISDIR(info.st_mode) ? EISDIR : SG_NOT_A_FILE;
+            else if (S_ISDIR(info.st_mode)) code = EISDIR;
+            else { (void)sg_root_would_wait(); code = EAGAIN; }
+        }
+    }
+    int fd = -1;
+    if (!code) code = sg_root_fd((int)root, name, O_RDONLY | (asked ? O_NONBLOCK | O_NOCTTY : 0), false, &fd);
+    free(name);
+    if (code) return code;
+    if (fstat(fd, &info) != 0) { code = sg_os_error(); close(fd); return code; }
+    if (S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
+    if (asked && !S_ISREG(info.st_mode)) {
+        close(fd);
+        if (regular) return SG_NOT_A_FILE;
+        (void)sg_root_would_wait();
+        return EAGAIN;
+    }
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd };
+    return 0;
+}
+/* `System.rootWriter`: `how` as `sg_open_writer` takes it, 1 to 3. */
+static int sg_root_writer(int64_t root, sg_str path, int how, sg_writer* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = -1;
+    code = sg_root_fd((int)root, name, O_WRONLY | O_CREAT | (how == 1 ? O_TRUNC : how == 2 ? O_APPEND : 0), false, &fd);
+    free(name);
+    if (code) return code;
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0, how == 2, 0 };
+    return 0;
+}
+/* `System.rootStatus`: the fields of `sg_fs_status`, or of `sg_fs_link_status` without `follow`. */
+static int sg_root_status(int64_t root, sg_str path, bool follow, int64_t* fields) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    struct stat info;
+    code = sg_root_look((int)root, name, follow, &info);
+    free(name);
+    if (code) return code;
+    sg_fs_fields(&info, fields);
+    return 0;
+}
+/* `System.rootList`: the names in the folder under the root. */
+static int sg_root_list(int64_t root, sg_str path, sg_fs_entry** out, int64_t* count) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = -1;
+    code = sg_root_fd((int)root, name, O_RDONLY | O_DIRECTORY, true, &fd);
+    free(name);
+    if (code) return code;
+    DIR* folder = fdopendir(fd);
+    if (!folder) { code = sg_os_error(); close(fd); return code; }
+    return sg_fs_list_of(folder, out, count);
+}
+/* `System.rootMake` and `System.rootRemove`: made and removed by the name in the folder the walk
+   reached; a link at the end of the path is not followed. */
+static int sg_root_mkdir(int64_t root, sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int dir = -1;
+    char* leaf = NULL;
+    code = sg_root_reach((int)root, name, false, &dir, &leaf);
+    free(name);
+    if (code) return code;
+    if (!leaf[0]) code = EEXIST;
+    else if (mkdirat(dir, leaf, 0777) != 0) code = sg_os_error();
+    free(leaf);
+    sg_root_done((int)root, dir);
+    return code;
+}
+static int sg_root_remove(int64_t root, sg_str path, bool folder) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int dir = -1;
+    char* leaf = NULL;
+    code = sg_root_reach((int)root, name, false, &dir, &leaf);
+    free(name);
+    if (code) return code;
+    if (!leaf[0]) code = folder ? SG_INVALID_INPUT : EISDIR;
+    else if (unlinkat(dir, leaf, folder ? AT_REMOVEDIR : 0) != 0) {
+        code = sg_os_error();
+        /* A folder removed as a file is EISDIR on every system (macOS says EPERM). */
+        struct stat info;
+        if (!folder && (code == EPERM || code == EISDIR) && fstatat(dir, leaf, &info, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(info.st_mode)) code = EISDIR;
+    }
+    free(leaf);
+    sg_root_done((int)root, dir);
+    return code;
+}
+static void sg_root_close(int64_t root) { if (root >= 0) close((int)root); }
+#else
+/* On Windows every part is opened by its name in the folder before it (`NtCreateFile` with the
+   handle of that folder), without following a point that stands for another name
+   (`FILE_OPEN_REPARSE_POINT`). A symbolic link is read: one that says where it leads from its own
+   folder is walked on, one that names a place from a drive or from the root of the system is
+   SG_OUTSIDE_ROOT, and so is a junction, which always names such a place. A point that only marks
+   a file kept by a service is opened as the system opens it. */
+#include <winternl.h>
+#pragma comment(lib, "ntdll")
+#ifndef FILE_OPEN
+#define FILE_OPEN 0x00000001
+#define FILE_CREATE 0x00000002
+#define FILE_OPEN_IF 0x00000003
+#define FILE_OVERWRITE_IF 0x00000005
+#define FILE_DIRECTORY_FILE 0x00000001
+#define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#define FILE_NON_DIRECTORY_FILE 0x00000040
+#define FILE_OPEN_FOR_BACKUP_INTENT 0x00004000
+#define FILE_OPEN_REPARSE_POINT 0x00200000
+#endif
+#ifndef OBJ_CASE_INSENSITIVE
+#define OBJ_CASE_INSENSITIVE 0x00000040
+#endif
+#define SG_ROOT_SYNC (FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT)
+#define SG_ROOT_FOLDER (FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE)
+/* Links that never end, as Windows says it. */
+#define SG_ROOT_LOOP ERROR_CANT_RESOLVE_FILENAME
+static int sg_root_nt_code(NTSTATUS status) {
+    /* STATUS_FILE_IS_A_DIRECTORY, which Windows would tell as a right not held. */
+    if (status == (NTSTATUS)0xC00000BAL) return ERROR_DIRECTORY_NOT_SUPPORTED;
+    ULONG code = RtlNtStatusToDosError(status);
+    return code ? (int)code : ERROR_GEN_FAILURE;
+}
+/* The name of `chars` characters in the folder `dir` opened; an empty name opens the folder
+   itself once more. */
+static int sg_root_nt(HANDLE dir, const wchar_t* name, size_t chars, ACCESS_MASK access, ULONG disposition, ULONG options, HANDLE* out) {
+    if (chars > 32000) return ERROR_FILENAME_EXCED_RANGE;
+    UNICODE_STRING text;
+    text.Buffer = (PWSTR)name;
+    text.Length = (USHORT)(chars * sizeof(wchar_t));
+    text.MaximumLength = text.Length;
+    OBJECT_ATTRIBUTES at;
+    memset(&at, 0, sizeof at);
+    at.Length = sizeof at;
+    at.RootDirectory = dir;
+    at.ObjectName = &text;
+    at.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK io;
+    HANDLE h = NULL;
+    NTSTATUS status = NtCreateFile(&h, access, &at, &io, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, disposition, options, NULL, 0);
+    if (status < 0) return sg_root_nt_code(status);
+    *out = h;
+    return 0;
+}
+/* What a handle opened without following is: 0 no point, 1 a symbolic link, 2 a point that stands
+   for another name some other way (a junction), 3 a point that marks a file. */
+static int sg_root_point(HANDLE h) {
+    FILE_ATTRIBUTE_TAG_INFO tag;
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag)) return 0;
+    if (!(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
+    if (tag.ReparseTag == IO_REPARSE_TAG_SYMLINK) return 1;
+    if (tag.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT || (tag.ReparseTag & 0x20000000)) return 2;
+    return 3;
+}
+/* What the symbolic link holds, ended by a zero, when it leads from its own folder. */
+static int sg_root_target(HANDLE h, wchar_t** target) {
+    uint8_t* buffer = malloc(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+    if (!buffer) abort();
+    DWORD got = 0;
+    if (!DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, buffer, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &got, NULL)) {
+        int code = sg_win_error();
+        free(buffer);
+        return code;
+    }
+    uint16_t offset, length;
+    uint32_t flags;
+    memcpy(&offset, buffer + 8, 2);
+    memcpy(&length, buffer + 10, 2);
+    memcpy(&flags, buffer + 16, 4);
+    if (got < 20 || 20 + (DWORD)offset + length > got) { free(buffer); return SG_ROOT_LOOP; }
+    size_t n = length / 2;
+    wchar_t* w = malloc((n + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    memcpy(w, buffer + 20 + offset, n * sizeof(wchar_t));
+    w[n] = 0;
+    free(buffer);
+    /* `SYMLINK_FLAG_RELATIVE` is not set for a place named from a drive; one named from the root
+       of the drive (`\x`) leads out as well. */
+    if (!(flags & 1) || n == 0 || w[0] == L'\\' || w[0] == L'/' || (n > 1 && w[1] == L':')) {
+        int code = n == 0 ? ERROR_FILE_NOT_FOUND : SG_OUTSIDE_ROOT;
+        free(w);
+        return code;
+    }
+    *target = w;
+    return 0;
+}
+static inline void sg_root_done(HANDLE root, HANDLE dir) { if (dir != root) CloseHandle(dir); }
+static inline bool sg_root_sep(wchar_t c) { return c == L'/' || c == L'\\'; }
+/* As on Linux and macOS: the folder that holds the last part of the path in `*dir`, and the name
+   of that part in `*leaf`. `*marked`: the last part is a point that marks a file, which is opened
+   as the system opens it. */
+static int sg_root_reach(HANDLE root, const wchar_t* path, bool follow, HANDLE* dir, wchar_t** leaf, bool* marked) {
+    size_t len = wcslen(path);
+    wchar_t* rest = malloc((len + 1) * sizeof(wchar_t));
+    if (!rest) abort();
+    memcpy(rest, path, (len + 1) * sizeof(wchar_t));
+    size_t at = 0;
+    /* The folders gone into stay open until the walk ends, each above the next: `..` goes back
+       to the one before, and the system is never asked what is above a folder. */
+    HANDLE* above = NULL;
+    size_t depth = 0, above_cap = 0;
+    HANDLE cur = root;
+    int links = 0, code = 0;
+    wchar_t* name = NULL;
+    *marked = false;
+    for (;;) {
+        while (sg_root_sep(rest[at])) at++;
+        if (!rest[at]) { name = calloc(1, sizeof(wchar_t)); if (!name) abort(); break; }
+        size_t end = at;
+        while (rest[end] && !sg_root_sep(rest[end])) end++;
+        size_t after = end;
+        while (sg_root_sep(rest[after])) after++;
+        bool last = rest[after] == 0;
+        size_t n = end - at;
+        if (n == 1 && rest[at] == L'.') { at = after; continue; }
+        if (n == 2 && rest[at] == L'.' && rest[at + 1] == L'.') {
+            if (depth == 0) { code = SG_OUTSIDE_ROOT; break; }
+            CloseHandle(cur);
+            depth--;
+            cur = above[depth];
+            at = after;
+            continue;
+        }
+        name = malloc((n + 1) * sizeof(wchar_t));
+        if (!name) abort();
+        memcpy(name, rest + at, n * sizeof(wchar_t));
+        name[n] = 0;
+        if (last && !follow) break;
+        HANDLE h = NULL;
+        code = last ? sg_root_nt(cur, name, n, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, FILE_OPEN_REPARSE_POINT | SG_ROOT_SYNC, &h)
+                    : sg_root_nt(cur, name, n, SG_ROOT_FOLDER, FILE_OPEN, FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | SG_ROOT_SYNC, &h);
+        if (code) {
+            /* A last part that is not there: the call says so, or makes it. */
+            if (last && (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)) code = 0;
+            break;
+        }
+        int point = sg_root_point(h);
+        if (point == 2) { CloseHandle(h); code = SG_OUTSIDE_ROOT; break; }
+        if (point == 1) {
+            wchar_t* target = NULL;
+            code = sg_root_target(h, &target);
+            CloseHandle(h);
+            if (code) break;
+            free(name);
+            name = NULL;
+            if (++links > SG_ROOT_LINKS) { free(target); code = SG_ROOT_LOOP; break; }
+            size_t held = wcslen(target), tail = wcslen(rest + after);
+            wchar_t* next = malloc((held + 1 + tail + 1) * sizeof(wchar_t));
+            if (!next) abort();
+            memcpy(next, target, held * sizeof(wchar_t));
+            next[held] = L'\\';
+            memcpy(next + held + 1, rest + after, (tail + 1) * sizeof(wchar_t));
+            free(target);
+            free(rest);
+            rest = next;
+            at = 0;
+            continue;
+        }
+        if (last) {
+            CloseHandle(h);
+            *marked = point == 3;
+            break;
+        }
+        if (depth == above_cap) {
+            above_cap = above_cap ? above_cap * 2 : 16;
+            above = realloc(above, above_cap * sizeof *above);
+            if (!above) abort();
+        }
+        above[depth++] = cur;
+        cur = h;
+        free(name);
+        name = NULL;
+        at = after;
+    }
+    free(rest);
+    /* The folders above the one reached are given back; the first of them is the root's own. */
+    for (size_t i = 1; i < depth; i++) CloseHandle(above[i]);
+    free(above);
+    if (code) {
+        free(name);
+        sg_root_done(root, cur);
+        return code;
+    }
+    *dir = cur;
+    *leaf = name;
+    return 0;
+}
+/* The path under the root opened as the access, the disposition and the options say. A path that
+   is the folder of the walk itself opens it when `folder` is set, and is `IsDirectory` otherwise.
+   With `follow`, a name found changed to a link after the walk is walked again. */
+static int sg_root_final(HANDLE root, const wchar_t* path, bool follow, ACCESS_MASK access, ULONG disposition, ULONG options, bool folder, HANDLE* out) {
+    for (int tries = 0;; tries++) {
+        HANDLE dir = NULL;
+        wchar_t* leaf = NULL;
+        bool marked = false;
+        int code = sg_root_reach(root, path, follow, &dir, &leaf, &marked);
+        if (code) return code;
+        size_t n = wcslen(leaf);
+        HANDLE h = NULL;
+        if (n == 0 && !folder) code = ERROR_DIRECTORY_NOT_SUPPORTED;
+        else code = sg_root_nt(dir, leaf, n, access, disposition, options | (marked ? 0 : FILE_OPEN_REPARSE_POINT), &h);
+        free(leaf);
+        sg_root_done(root, dir);
+        if (code) return code;
+        int point = marked || !follow ? 0 : sg_root_point(h);
+        if (point == 1 || point == 2) {
+            CloseHandle(h);
+            if (tries < 3) continue;
+            return SG_ROOT_LOOP;
+        }
+        *out = h;
+        return 0;
+    }
+}
+/* The path as Windows writes it, ended by a zero; one with a zero byte in it is not found. */
+static wchar_t* sg_root_wide(sg_str path, int* code) {
+    if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ERROR_FILE_NOT_FOUND; return NULL; }
+    int64_t n;
+    return sg_name_wide(path.ptr, path.len, &n);
+}
+static int sg_root_open(int64_t root, sg_str path, int64_t* out) {
+    int code = 0;
+    HANDLE h = NULL;
+    if (root < 0) {
+        wchar_t* name = sg_wide(path, &code);
+        if (!name) return code;
+        h = CreateFileW(name, SG_ROOT_FOLDER, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h == INVALID_HANDLE_VALUE) code = sg_win_refine(name, sg_win_error());
+        free(name);
+        if (code) return code;
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(h, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { CloseHandle(h); return ERROR_DIRECTORY; }
+    } else {
+        wchar_t* name = sg_root_wide(path, &code);
+        if (!name) return code;
+        code = sg_root_final((HANDLE)(intptr_t)root, name, true, SG_ROOT_FOLDER, FILE_OPEN, FILE_DIRECTORY_FILE | SG_ROOT_SYNC, true, &h);
+        free(name);
+        if (code) return code;
+    }
+    *out = (int64_t)(intptr_t)h;
+    return 0;
+}
+static int sg_root_reader(int64_t root, sg_str path, bool regular, sg_reader* out) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = NULL;
+    code = sg_root_final((HANDLE)(intptr_t)root, name, true, FILE_GENERIC_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, false, &h);
+    free(name);
+    if (code) return code;
+    if (regular && GetFileType(h) != FILE_TYPE_DISK) { CloseHandle(h); return SG_NOT_A_FILE; }
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = (int)(intptr_t)h };
+    return 0;
+}
+static int sg_root_writer(int64_t root, sg_str path, int how, sg_writer* out) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = NULL;
+    code = sg_root_final((HANDLE)(intptr_t)root, name, true, how == 2 ? FILE_APPEND_DATA | SYNCHRONIZE : FILE_GENERIC_WRITE, how == 1 ? FILE_OVERWRITE_IF : FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, false, &h);
+    free(name);
+    if (code) return code;
+    *out = (sg_writer){ (int)(intptr_t)h, 0, 0, { (uint8_t*)"", 0, 0 }, 0, how == 2, 0 };
+    return 0;
+}
+static int sg_root_status(int64_t root, sg_str path, bool follow, int64_t* fields) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = NULL;
+    code = sg_root_final((HANDLE)(intptr_t)root, name, follow, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, SG_ROOT_SYNC, true, &h);
+    free(name);
+    if (code) return code;
+    code = sg_fs_status_of_handle(h, fields);
+    /* The path itself, as `sg_fs_link_status` tells it. */
+    if (!code && !follow) {
+        int point = sg_root_point(h);
+        if (point == 1) fields[0] = 2;
+        else if (point == 2) fields[0] = 3;
+    }
+    CloseHandle(h);
+    return code;
+}
+static int sg_root_list(int64_t root, sg_str path, sg_fs_entry** out, int64_t* count) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = NULL;
+    code = sg_root_final((HANDLE)(intptr_t)root, name, true, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, FILE_DIRECTORY_FILE | SG_ROOT_SYNC, true, &h);
+    free(name);
+    if (code) return code;
+    uint8_t* buffer = malloc(65536);
+    if (!buffer) abort();
+    sg_fs_entry* entries = NULL;
+    int64_t k = 0, cap = 0;
+    for (;;) {
+        if (!GetFileInformationByHandleEx(h, FileIdBothDirectoryInfo, buffer, 65536)) {
+            if (GetLastError() != ERROR_NO_MORE_FILES) code = sg_win_error();
+            break;
+        }
+        const FILE_ID_BOTH_DIR_INFO* e = (const FILE_ID_BOTH_DIR_INFO*)buffer;
+        for (;;) {
+            const wchar_t* d = e->FileName;
+            size_t chars = e->FileNameLength / sizeof(wchar_t);
+            if (!(chars == 1 && d[0] == L'.') && !(chars == 2 && d[0] == L'.' && d[1] == L'.')) {
+                DWORD a = e->FileAttributes;
+                /* The tag of a point lies where the size of the extended attributes does. */
+                bool link = (a & FILE_ATTRIBUTE_REPARSE_POINT) && (e->EaSize == IO_REPARSE_TAG_SYMLINK || e->EaSize == IO_REPARSE_TAG_MOUNT_POINT);
+                int kind = link ? 2 : (a & FILE_ATTRIBUTE_DIRECTORY) ? 1 : (a & FILE_ATTRIBUTE_DEVICE) ? 3 : 0;
+                if (k == cap) entries = sg_grow(entries, &cap, sizeof *entries, _Alignof(__typeof__(*entries)));
+                int64_t len = 0;
+                char* copy = sg_owned_from_wide(d, (int64_t)chars, &len);
+                entries[k++] = (sg_fs_entry){ copy, len, (uint8_t)kind };
+            }
+            if (!e->NextEntryOffset) break;
+            e = (const FILE_ID_BOTH_DIR_INFO*)((const uint8_t*)e + e->NextEntryOffset);
+        }
+    }
+    CloseHandle(h);
+    free(buffer);
+    if (code) {
+        for (int64_t i = 0; i < k; i++) free(entries[i].name);
+        free(entries);
+        return code;
+    }
+    if (k > 1) qsort(entries, (size_t)k, sizeof *entries, sg_fs_order);
+    *out = entries;
+    *count = k;
+    return 0;
+}
+static int sg_root_mkdir(int64_t root, sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE dir = NULL;
+    wchar_t* leaf = NULL;
+    bool marked = false;
+    code = sg_root_reach((HANDLE)(intptr_t)root, name, false, &dir, &leaf, &marked);
+    free(name);
+    if (code) return code;
+    HANDLE h = NULL;
+    if (!leaf[0]) code = ERROR_ALREADY_EXISTS;
+    else code = sg_root_nt(dir, leaf, wcslen(leaf), FILE_LIST_DIRECTORY | SYNCHRONIZE, FILE_CREATE, FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | SG_ROOT_SYNC, &h);
+    if (!code) CloseHandle(h);
+    free(leaf);
+    sg_root_done((HANDLE)(intptr_t)root, dir);
+    return code;
+}
+/* The file removed, or the link itself; with `folder`, the empty folder, and a link to a folder
+   is no folder, as on Linux and macOS. */
+static int sg_root_remove(int64_t root, sg_str path, bool folder) {
+    int code = 0;
+    wchar_t* name = sg_root_wide(path, &code);
+    if (!name) return code;
+    HANDLE dir = NULL;
+    wchar_t* leaf = NULL;
+    bool marked = false;
+    code = sg_root_reach((HANDLE)(intptr_t)root, name, false, &dir, &leaf, &marked);
+    free(name);
+    if (code) return code;
+    HANDLE h = NULL;
+    if (!leaf[0]) code = folder ? SG_INVALID_INPUT : ERROR_DIRECTORY_NOT_SUPPORTED;
+    else code = sg_root_nt(dir, leaf, wcslen(leaf), DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, FILE_OPEN_REPARSE_POINT | SG_ROOT_SYNC, &h);
+    free(leaf);
+    sg_root_done((HANDLE)(intptr_t)root, dir);
+    if (code) return code;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)) code = sg_win_error();
+    else {
+        bool plain_folder = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
+        if (folder && !plain_folder) code = ERROR_DIRECTORY;
+        else if (!folder && plain_folder) code = ERROR_DIRECTORY_NOT_SUPPORTED;
+        else code = sg_win_delete_handle(h);
+    }
+    CloseHandle(h);
+    return code;
+}
+static void sg_root_close(int64_t root) { if (root >= 0) CloseHandle((HANDLE)(intptr_t)root); }
 #endif
 "#;
 
@@ -13687,7 +14580,7 @@ const IO_RUNTIME: &str = r#"
    seek; 18 TooLong, `fill` on a reader whose block holds its limit already; 19 AddressNotAvailable,
    an address not of the machine or no local port left; 20 NotAFile, a pipe, a device or a socket
    that `File.openRegular` did not open (1873); 21 NotATerminal, no terminal where one was asked
-   for (ENOTTY, 2033). The runtime gives
+   for (ENOTTY, 2033); 22 OutsideRoot, a path that leads out of a `DirectoryRoot` (2068). The runtime gives
    these itself as codes of its own, as it gives a place before the start of a file to `seek` as
    `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
@@ -13697,6 +14590,7 @@ const IO_RUNTIME: &str = r#"
 #define SG_TOO_LONG (-18)
 #define SG_NOT_A_FILE (-20)
 #define SG_NOT_A_TERMINAL (-22)
+#define SG_OUTSIDE_ROOT (-23)
 #if defined(_WIN32)
 /* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
    too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
@@ -13714,6 +14608,7 @@ static int sg_io_kind(int code) {
     case SG_TOO_LONG: return 18;
     case SG_NOT_A_FILE: return 20;
     case SG_NOT_A_TERMINAL: return 21;
+    case SG_OUTSIDE_ROOT: return 22;
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
     case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
@@ -13817,14 +14712,14 @@ static int sg_win_refine(const wchar_t* path, int code) {
 }
 /* Opens the file for `how`: 0 to read, 1 to write it new (made or emptied), 2 to write after
    what it holds (made if missing), 3 to write from its start, keeping what it holds (made if
-   missing). Others may read, write, rename and delete it meanwhile, as on
+   missing), 4 to read and write one that is there. Others may read, write, rename and delete it meanwhile, as on
    Linux and macOS. A folder is `IsDirectory`. Gives 0 and the handle in `*fd`, or the code. */
 static int sg_sys_open(sg_str path, int how, int* fd) {
     int code = 0;
     wchar_t* name = sg_wide(path, &code);
     if (!name) return code;
-    DWORD access = how == 0 ? GENERIC_READ : how == 2 ? FILE_APPEND_DATA | SYNCHRONIZE : GENERIC_WRITE;
-    DWORD disposition = how == 0 ? OPEN_EXISTING : how == 1 ? CREATE_ALWAYS : OPEN_ALWAYS;
+    DWORD access = how == 0 ? GENERIC_READ : how == 2 ? FILE_APPEND_DATA | SYNCHRONIZE : how == 4 ? GENERIC_READ | GENERIC_WRITE : GENERIC_WRITE;
+    DWORD disposition = how == 0 || how == 4 ? OPEN_EXISTING : how == 1 ? CREATE_ALWAYS : OPEN_ALWAYS;
     HANDLE h = CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         code = sg_win_refine(name, sg_win_error());
@@ -13973,6 +14868,23 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
     *got = read;
     return 0;
 }
+/* Up to `n` bytes from the place `at` of a file of the disk: the read of a reader
+   `writer.openReader()` gave (2074), which keeps its place itself. */
+static int sg_sys_read_at(int fd, uint8_t* to, int64_t n, int64_t at, int64_t* got) {
+    OVERLAPPED o;
+    memset(&o, 0, sizeof o);
+    o.Offset = (DWORD)((uint64_t)at & 0xFFFFFFFFu);
+    o.OffsetHigh = (DWORD)((uint64_t)at >> 32);
+    DWORD read = 0;
+    *got = 0;
+    if (!ReadFile(sg_handle(fd), to, n > 0x40000000 ? 0x40000000 : (DWORD)n, &read, &o)) {
+        DWORD code = GetLastError();
+        if (code == ERROR_HANDLE_EOF) return 0;
+        return code ? (int)code : ERROR_GEN_FAILURE;
+    }
+    *got = read;
+    return 0;
+}
 static int sg_sys_close(int fd) { return CloseHandle(sg_handle(fd)) ? 0 : sg_win_error(); }
 /* Whether the input is a console, where what was printed goes out before the program waits. */
 static bool sg_sys_terminal(int fd) { DWORD mode; return GetConsoleMode(sg_handle(fd), &mode) != 0; }
@@ -14047,6 +14959,30 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
         return 0;
     }
 }
+/* Up to `n` bytes from the place `at` of the file, which leaves where the file itself stands
+   alone (`pread`): the read of a reader that shares the open file of a writer (2074). */
+static int sg_sys_read_at(int fd, uint8_t* to, int64_t n, int64_t at, int64_t* got) {
+    for (;;) {
+#if defined(__linux__)
+        if (sg_nowait) {
+            struct iovec v = { to, (size_t)n };
+            long r = syscall(SYS_preadv2, fd, &v, 1, (long)at, 0L, RWF_NOWAIT);
+            if (r < 0 && errno == EINTR) continue;
+            if (r < 0) {
+                *got = 0;
+                if (sg_wait_told(errno)) { sg_would_wait = true; return EAGAIN; }
+                return sg_os_error();
+            }
+            *got = r;
+            return 0;
+        }
+#endif
+        ssize_t read_n = pread(fd, to, (size_t)n, (off_t)at);
+        if (read_n < 0) { if (errno == EINTR) continue; *got = 0; return sg_os_error(); }
+        *got = read_n;
+        return 0;
+    }
+}
 static inline int sg_sys_close(int fd) { return close(fd) == 0 ? 0 : sg_os_error(); }
 static inline bool sg_sys_terminal(int fd) { return isatty(fd); }
 static inline bool sg_sys_colour(void) { return isatty(2); }
@@ -14115,6 +15051,7 @@ static int sg_io_kind(int code) {
     case SG_TOO_LONG: return 18;
     case SG_NOT_A_FILE: return 20;
     case ENOTTY: return 21;
+    case SG_OUTSIDE_ROOT: return 22;
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
     case EMSGSIZE: return 16;
@@ -14253,7 +15190,12 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
    `sg_block_bad`).
    The reader of a pipe from another program (`Process`, see `PROCESS_PIPES_RUNTIME`) is read as
    a connection is, so that an async read waits on the loop and a cancel ends the wait; it owns
-   its `sock` (`own`), and has no longest line. */
+   its `sock` (`own`), and has no longest line.
+   `placed`: the reader `writer.openReader()` gave (2074). On Linux and macOS it shares the open
+   file of its writer, where the file stands with it, so it reads at the place it stands at
+   itself, `done` and what the block holds beyond it, and leaves the file's own alone; on
+   Windows it reads its own handle the same way. A seek of it always lets its block go, so that
+   it reads again what its writer has written since. */
 struct sg_socket_s;
 #if defined(_WIN32)
 /* An async read of the pipe of another program out on a thread of input and output, into the
@@ -14264,7 +15206,7 @@ typedef struct sg_lap_got { int code; int64_t got; int over; int stop; } sg_lap_
 #endif
 /* The fields lie so that none leaves room after it: a reader of a connection is in the frame of
    every task that serves one. */
-typedef struct { uint8_t* block; struct sg_socket_s* sock; int64_t at, len, done, cap, limit, checked; int fd; bool ended, too_long, own;
+typedef struct { uint8_t* block; struct sg_socket_s* sock; int64_t at, len, done, cap, limit, checked; int fd; bool ended, too_long, own, placed;
 #if defined(_WIN32)
     sg_lap_got* fill;
 #endif
@@ -14461,6 +15403,12 @@ static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad,
     return 0;
 }
 #endif
+/* One read of the system for the reader, behind what its block holds. A reader with a place of
+   its own reads there: every read counts what it gives out in `done` as it gives it. */
+static inline int sg_reader_read(sg_reader* r, uint8_t* to, int64_t n, int64_t* got) {
+    if (r->placed) return sg_sys_read_at(r->fd, to, n, r->done + (r->len - r->at), got);
+    return sg_sys_read(r->fd, to, n, got);
+}
 static int sg_reader_fill(sg_reader* r) {
     if (sg_in_after_fill(r)) return 0;
 #if defined(_WIN32)
@@ -14471,7 +15419,7 @@ static int sg_reader_fill(sg_reader* r) {
         if (sg_in_terminal) sg_out_flush();
     }
     int64_t got = 0;
-    int code = sg_sys_read(r->fd, r->block, 65536, &got);
+    int code = sg_reader_read(r, r->block, 65536, &got);
     if (code) return code;
     r->at = 0;
     r->len = got;
@@ -14579,6 +15527,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             int64_t take = r->len - r->at < len - n ? r->len - r->at : len - n;
             memcpy(to + n, r->block + r->at, (size_t)take);
             r->at += take;
+            r->done += take;
             n += take;
             continue;
         }
@@ -14595,11 +15544,11 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             if (sg_in_terminal) sg_out_flush();
         }
         int64_t put = 0;
-        if ((code = sg_sys_read(r->fd, to + n, len - n, &put))) break;
+        if ((code = sg_reader_read(r, to + n, len - n, &put))) break;
         if (put == 0) { r->ended = true; break; }
+        r->done += put;
         n += put;
     }
-    r->done += n;
     *got = n;
     return code;
 }
@@ -14627,7 +15576,7 @@ static int sg_read_some(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
        does: one read of it gives at most 64 KB in both. */
     if (r != &sg_stdin && r->at == r->len && !r->ended && len >= r->cap && !SG_FILL_OUT(r)) {
         int64_t n = 0;
-        int code = sg_sys_read(r->fd, to, len > 0x40000000 ? 0x40000000 : len, &n);
+        int code = sg_reader_read(r, to, len > 0x40000000 ? 0x40000000 : len, &n);
         if (code) return code;
         if (n == 0) r->ended = true;
         r->done += n;
@@ -14688,7 +15637,7 @@ static int sg_reader_more(sg_reader* r, bool* more) {
         if (sg_in_terminal) sg_out_flush();
     }
     int64_t got = 0;
-    if ((code = sg_sys_read(r->fd, r->block + r->len, r->cap - r->len, &got))) return code;
+    if ((code = sg_reader_read(r, r->block + r->len, r->cap - r->len, &got))) return code;
     if (got == 0) r->ended = true;
     r->len += got;
     *more = got > 0;
@@ -14848,10 +15797,11 @@ typedef struct { sg_reader* r; bool done; const char* loc; } sg_read_lines;
    `failed`: the first error, which every later call gives again. A writer that was moved or
    closed has `fd` -1. `pipe`: the input of another program, written without the signal of a
    pipe nobody reads (see `sg_write_pipe`). `append`: `File.openAppend` opened it, so every write
-   goes to the end, and it cannot seek. */
-typedef struct { int fd; int std; int failed; sg_string buf; int pipe; int append; } sg_writer;
-static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
-static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
+   goes to the end, and it cannot seek. `both`: a file opened to be read too (`File.openUpdate`,
+   `File.openTemp`), which `openReader` gives a reader of (2074). */
+typedef struct { int fd; int std; int failed; sg_string buf; int pipe; int append; int both; } sg_writer;
+static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0, 0, 0 };
+static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0, 0, 0 };
 /* `isTerminal()` (choice 1901): whether the stream is a terminal, or on Windows a console. A
    connection and the pipe of another program are not; the input is fd 0. On Windows the output
    and the standard error are asked through their handles, which their `fd` does not name. */
@@ -15157,7 +16107,8 @@ static int sg_writer_pieces(sg_writer* w, const sg_wpiece* p, int64_t count) {
 }
 /* `File.createText` (`how` 1) makes or empties the file; `File.openAppend` (2) makes a missing one
    and writes after what it holds; `File.openWrite` (3) makes a missing one and writes from its
-   start over what it holds. */
+   start over what it holds; `File.openUpdate` (4) opens one that is there, to be read too, and
+   writes from its start over what it holds (2073). */
 static int sg_open_writer(sg_str path, int how, sg_writer* out) {
 #if defined(_WIN32)
     int fd = 0;
@@ -15167,11 +16118,31 @@ static int sg_open_writer(sg_str path, int how, sg_writer* out) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (how == 1 ? O_TRUNC : how == 2 ? O_APPEND : 0), 0666);
+    int fd = how == 4 ? open(name, O_RDWR | O_CLOEXEC) : open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (how == 1 ? O_TRUNC : how == 2 ? O_APPEND : 0), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
 #endif
-    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0, how == 2 };
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0, how == 2, how == 4 };
+    return 0;
+}
+/* `writer.openReader()` (2074): a reader of the file the writer writes, for a writer whose file
+   was opened to be read too; any other is `InvalidInput`. On Linux and macOS it is one more
+   descriptor of the same open file; on Windows the file is opened once more through its handle,
+   so that a read does not move where the writer writes. It reads at a place of its own
+   (`placed`). */
+static int sg_writer_reader(sg_writer* w, sg_reader* out) {
+    if (!w->both || w->fd < 0) return SG_INVALID_INPUT;
+#if defined(_WIN32)
+    HANDLE again = ReOpenFile(sg_handle(w->fd), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
+    if (again == INVALID_HANDLE_VALUE) return sg_win_error();
+    int fd = (int)(intptr_t)again;
+#else
+    int fd = fcntl(w->fd, F_DUPFD_CLOEXEC, 3);
+    if (fd < 0) return sg_os_error();
+#endif
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ .block = block, .cap = 65536, .fd = fd, .placed = true };
     return 0;
 }
 /* Where `seek` goes: `kind` is the variant of `SeekFrom` (0 `Start`, 1 `End`, 2 `Current`), and
@@ -15196,16 +16167,27 @@ static int sg_reader_seek(sg_reader* r, int kind, int64_t offset, int64_t* at) {
     int code = sg_seek_place(base, offset, &to);
     if (code) return code;
     int64_t first = r->done - r->at;
-    if (to >= first && to - first <= r->len) {
+    if (!r->placed && to >= first && to - first <= r->len) {
         r->at = to - first;
     } else {
-        code = sg_sys_seek(r->fd, to);
+        code = r->placed ? 0 : sg_sys_seek(r->fd, to);
         if (code) return code;
         r->at = r->len = 0;
     }
     r->ended = false;
     r->done = r->checked = to;
     *at = to;
+    return 0;
+}
+/* `reader.position()` (2075): where the file stands, less what the block still holds. Nothing
+   moves. What `seek` cannot move has no place. */
+static int sg_reader_position(sg_reader* r, int64_t* at) {
+    if (r == &sg_stdin || r->sock) return SG_NOT_SEEKABLE;
+    if (r->placed) { *at = r->done; return 0; }
+    int64_t file = 0;
+    int code = sg_sys_where(r->fd, &file);
+    if (code) return code;
+    *at = file - (r->len - r->at);
     return 0;
 }
 /* `writer.seek(from)`: what the block holds is written first. `Stdout`, `Stderr`, the input of
@@ -15225,6 +16207,17 @@ static int sg_writer_seek(sg_writer* w, int kind, int64_t offset, int64_t* at) {
     code = sg_sys_seek(w->fd, to);
     if (code) return code;
     *at = to;
+    return 0;
+}
+/* `writer.position()` (2075): where the file stands, and what the block holds beyond it. Nothing
+   is written. */
+static int sg_writer_position(sg_writer* w, int64_t* at) {
+    if (w->std || w->pipe || w->append) return SG_NOT_SEEKABLE;
+    if (w->failed) return w->failed;
+    int64_t file = 0;
+    int code = sg_sys_where(w->fd, &file);
+    if (code) return code;
+    *at = file + w->buf.len;
     return 0;
 }
 /* `writer.syncData()` (`data`) and `writer.sync()`: the block is written, then the system puts the
@@ -16426,6 +17419,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("files") {
         out.push_str(FILES_RUNTIME);
+    }
+    if emitter.made.contains("root") {
+        out.push_str(ROOT_RUNTIME);
     }
     if emitter.made.contains("process") {
         out.push_str(PROCESS_RUNTIME);
@@ -23843,6 +24839,57 @@ impl<'a> Emitter<'a> {
                     format!("int64_t id = 0; int code = sg_fw_start(a0, a1, &id); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ id }} }};", failed("sg_io_error(code)")),
                 )
             }
+            SystemCall::RootOpen | SystemCall::RootReader | SystemCall::RootWriter | SystemCall::RootStatus | SystemCall::RootList | SystemCall::RootMake | SystemCall::RootRemove | SystemCall::RootClose => {
+                self.made.insert("root".to_string());
+                let long = || Ty::Int(IntTy::Long);
+                match call {
+                    SystemCall::RootOpen => (
+                        "sg_system_root_open",
+                        vec![long(), text()],
+                        format!("int64_t handle = 0; int code = sg_root_open(a0, a1, &handle); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ handle }} }};", failed("sg_io_error(code)")),
+                    ),
+                    SystemCall::RootReader => (
+                        "sg_system_root_reader",
+                        vec![long(), text(), Ty::Bool],
+                        format!("sg_reader s; int code = sg_root_reader(a0, a1, a2, &s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")),
+                    ),
+                    SystemCall::RootWriter => (
+                        "sg_system_root_writer",
+                        vec![long(), text(), Ty::Int(IntTy::Int)],
+                        format!("sg_writer s; int code = sg_root_writer(a0, a1, a2, &s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")),
+                    ),
+                    SystemCall::RootStatus => (
+                        "sg_system_root_status",
+                        vec![long(), text(), Ty::Bool, Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                        format!(
+                            "int64_t f[4]; int code = sg_root_status(a0, a1, a2, f); if (code) {} \
+                             for (int64_t i = 0; i < 4 && i < a3.len; i++) a3.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                    SystemCall::RootList => (
+                        "sg_system_root_list",
+                        vec![long(), text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), bytes()],
+                        format!(
+                            "sg_fs_entry* e = NULL; int64_t n = 0; int code = sg_root_list(a0, a1, &e, &n); if (code) {} \
+                             for (int64_t i = 0; i < n; i++) sg_name_own((uint8_t**)&e[i].name, &e[i].len); \
+                             if (n > 0) {{ if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr, _Alignof(__typeof__(*a2->ptr))); \
+                             if (a3->len + n > a3->cap) a3->ptr = sg_reserve(a3->ptr, &a3->cap, a3->len + n, sizeof *a3->ptr, _Alignof(__typeof__(*a3->ptr))); }} \
+                             for (int64_t i = 0; i < n; i++) {{ a2->ptr[a2->len++] = (sg_string){{ (uint8_t*)e[i].name, e[i].len, e[i].len + 1 }}; a3->ptr[a3->len++] = e[i].kind; }} \
+                             free(e); return ({gives}){{ .tag = 0 }};",
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                    SystemCall::RootMake => ("sg_system_root_make", vec![long(), text()], plain("sg_root_mkdir(a0, a1)")),
+                    SystemCall::RootRemove => ("sg_system_root_remove", vec![long(), text(), Ty::Bool], plain("sg_root_remove(a0, a1, a2)")),
+                    _ => ("sg_system_root_close", vec![long()], "sg_root_close(a0);".to_string()),
+                }
+            }
+            SystemCall::OpenTemp => (
+                "sg_system_open_temp",
+                vec![text()],
+                format!("sg_writer s; int code = sg_open_temp(a0, &s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")),
+            ),
             SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
             SystemCall::Run => {
                 self.made.extend(["process".to_string(), "io".to_string()]);
@@ -24257,8 +25304,9 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
+            IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite | IoCall::OpenUpdate => {
                 let (fname, open, ctype) = match call {
+                    IoCall::OpenUpdate => ("sg_file_open_update", "sg_open_writer(a0, 4, ", "sg_writer"),
                     IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
                     IoCall::OpenRegular => ("sg_file_open_regular", "sg_open_regular(a0, ", "sg_reader"),
                     IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, 1, ", "sg_writer"),
@@ -24306,6 +25354,26 @@ impl<'a> Emitter<'a> {
                     _ => "sg_writer_terminal",
                 };
                 Ok(format!("{ask}({})", self.list_address(recv)?))
+            }
+            StreamCall::Position => {
+                let temp = self.temp();
+                let ask = match recv.ty.strip_borrow() {
+                    Ty::Reader(_) => "sg_reader_position",
+                    _ => "sg_writer_position",
+                };
+                let stream = self.list_address(recv)?;
+                Ok(format!(
+                    "({{ int64_t {temp}a = 0; int c_ = {ask}({stream}, &{temp}a); \
+                     c_ ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(c_) }} }} : ({gives}){{ .tag = 0, .u.v0 = {{ {temp}a }} }}; }})"
+                ))
+            }
+            StreamCall::OpenReader => {
+                let temp = self.temp();
+                let stream = self.list_address(recv)?;
+                Ok(format!(
+                    "({{ sg_reader {temp}r; int c_ = sg_writer_reader({stream}, &{temp}r); \
+                     c_ ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(c_) }} }} : ({gives}){{ .tag = 0, .u.v0 = {{ {temp}r }} }}; }})"
+                ))
             }
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
             StreamCall::SyncData | StreamCall::Sync => {
@@ -25162,7 +26230,15 @@ impl<'a> Emitter<'a> {
                 return Ok(self.writer_result(&c, &gives));
             }
             StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill => unreachable!("a reader is read by `await_io`"),
-            StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal | StreamCall::Lock | StreamCall::LockShared | StreamCall::TryLock | StreamCall::TryLockShared => {
+            StreamCall::Buffered
+            | StreamCall::Consume
+            | StreamCall::IsTerminal
+            | StreamCall::Position
+            | StreamCall::OpenReader
+            | StreamCall::Lock
+            | StreamCall::LockShared
+            | StreamCall::TryLock
+            | StreamCall::TryLockShared => {
                 unreachable!("the checker gives these no async form, or does them in the language's own module")
             }
             // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
@@ -25297,7 +26373,7 @@ impl<'a> Emitter<'a> {
             // output only when it would wait (1872; `sg_nowait` in `IO_RUNTIME`). Not the input,
             // which a thread of its own may be filling, nor a connection, read on the loop.
             let tried = match (fname, &reader) {
-                ("sg_system_status" | "sg_file_open_text" | "sg_file_open_regular", _) => format!(
+                ("sg_system_status" | "sg_file_open_text" | "sg_file_open_regular" | "sg_system_root_status" | "sg_system_root_reader", _) => format!(
                     "\n#if defined(__linux__)\n {{ sg_nowait = true; sg_would_wait = false; x->r = {fname}({gets}); sg_nowait = false; \
                      if (!sg_would_wait) {{ x->io.done = 1; return; }} }}\n#endif\n"
                 ),

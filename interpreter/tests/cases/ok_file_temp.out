@@ -1,0 +1,12 @@
+starts at 0
+read back: first
+written over: FIRST|second|
+cut: FIRST
+a file of 5 bytes, File
+wrote 4194304 bytes
+read them back: 0 wrong, 0 beyond the end
+after the writer is closed, the first byte of the last piece: 63
+a second one is empty: 0
+a folder of its own is empty: 0
+async: async temp
+a token cancelled before: cancelled

@@ -13,6 +13,10 @@ use crate::interp::Value;
 type Handle = *mut c_void;
 type Bool = i32;
 
+/// `DirectoryRoot` on Windows (see `root.rs`).
+#[path = "root_windows.rs"]
+pub(crate) mod root;
+
 const INVALID_HANDLE: Handle = -1isize as Handle;
 
 #[repr(C)]
@@ -736,6 +740,11 @@ pub(crate) fn io_kind(code: i32) -> usize {
         87 | 123 => 15,
         MESSAGE_TOO_LONG => 16,
         NOT_A_TERMINAL => 21,
+        // Codes of the runtime's own: a path that leads out of a root, what is not a regular
+        // file, and what cannot be handed to the system.
+        crate::root::OUTSIDE_ROOT => 22,
+        crate::root::NOT_A_FILE => 20,
+        crate::root::INVALID_INPUT => 15,
         _ => 5,
     }
 }
@@ -779,30 +788,35 @@ const REPARSE_POINT: u32 = 0x400;
 /// POSIX semantics (FAT) deletes it the old way.
 pub(crate) fn remove_file(path: &str) -> std::io::Result<()> {
     const DELETE: u32 = 0x0001_0000;
-    const DISPOSITION_EX: i32 = 21;
-    const DISPOSITION: i32 = 4;
-    // FILE_DISPOSITION_FLAG_DELETE, _POSIX_SEMANTICS, _IGNORE_READONLY_ATTRIBUTE
-    const FLAGS: u32 = 0x1 | 0x2 | 0x10;
     let handle = open_itself(path, DELETE)?;
     let result = (|| {
         let info = info_of(handle)?;
         if info.attributes & DIRECTORY != 0 && info.attributes & REPARSE_POINT == 0 {
             return Err(std::io::Error::from_raw_os_error(IS_DIR));
         }
-        // SAFETY: the flags live across the call, with the size given.
-        if unsafe { SetFileInformationByHandle(handle, DISPOSITION_EX, (&FLAGS as *const u32).cast(), 4) } != 0 {
-            return Ok(());
-        }
-        let delete: u8 = 1;
-        // SAFETY: as above.
-        match unsafe { SetFileInformationByHandle(handle, DISPOSITION, (&delete as *const u8).cast(), 1) } {
-            0 => Err(last_error()),
-            _ => Ok(()),
-        }
+        delete_handle(handle)
     })();
     // SAFETY: the handle is this function's.
     unsafe { CloseHandle(handle) };
     result
+}
+
+/// Deletes what the handle, opened with the right to delete, is of.
+fn delete_handle(handle: Handle) -> std::io::Result<()> {
+    const DISPOSITION_EX: i32 = 21;
+    const DISPOSITION: i32 = 4;
+    // FILE_DISPOSITION_FLAG_DELETE, _POSIX_SEMANTICS, _IGNORE_READONLY_ATTRIBUTE
+    const FLAGS: u32 = 0x1 | 0x2 | 0x10;
+    // SAFETY: the flags live across the call, with the size given.
+    if unsafe { SetFileInformationByHandle(handle, DISPOSITION_EX, (&FLAGS as *const u32).cast(), 4) } != 0 {
+        return Ok(());
+    }
+    let delete: u8 = 1;
+    // SAFETY: as above.
+    match unsafe { SetFileInformationByHandle(handle, DISPOSITION, (&delete as *const u8).cast(), 1) } {
+        0 => Err(last_error()),
+        _ => Ok(()),
+    }
 }
 
 /// The volume and the number of the file the path names, a link not followed.
@@ -924,6 +938,41 @@ pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
 /// random, that only its owner may open: its list of access has one entry, full access for the
 /// owner, and inherits none.
 pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
+    make_temp_kept(template, file, None)
+}
+
+/// `File.openTemp()` (2076): a file made from the template as `make_temp` makes one, kept open to
+/// be read and written, which Windows deletes when its last handle is closed
+/// (`FILE_FLAG_DELETE_ON_CLOSE`). Its name is seen in the folder until then.
+pub(crate) fn open_temp(template: &str) -> std::io::Result<std::fs::File> {
+    let mut kept = INVALID_HANDLE;
+    make_temp_kept(template, true, Some(&mut kept))?;
+    // SAFETY: the handle was just opened and is nobody else's.
+    Ok(unsafe { std::os::windows::io::FromRawHandle::from_raw_handle(kept) })
+}
+
+/// `writer.openReader()` (2074): the file of the writer opened once more through its handle, so
+/// that a read does not move where the writer writes.
+pub(crate) fn reader_of(file: &std::fs::File) -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    const GENERIC_READ: u32 = 0x8000_0000;
+    // SAFETY: the handle is open; the new one is this value's own.
+    let handle = unsafe { ReOpenFile(file.as_raw_handle(), GENERIC_READ, 7, 0) };
+    match handle == INVALID_HANDLE {
+        true => Err(last_error()),
+        false => Ok(unsafe { std::fs::File::from_raw_handle(handle) }),
+    }
+}
+
+/// A read at a place of the file: the read of a reader `writer.openReader()` gave, which keeps
+/// its place itself.
+pub(crate) fn read_at(file: &std::fs::File, into: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, into, at)
+}
+
+/// `make_temp`; with `keep`, the file stays open in it, to be read and written, and goes when it
+/// is closed.
+fn make_temp_kept(template: &str, file: bool, mut keep: Option<&mut Handle>) -> std::io::Result<String> {
     const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let Some(stem) = template.strip_suffix("XXXXXX") else {
         return Err(std::io::Error::from_raw_os_error(87));
@@ -949,11 +998,21 @@ pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
                 const CREATE_NEW: u32 = 1;
                 const NORMAL: u32 = 0x80;
                 const SHARE_ALL: u32 = 0x7;
+                // GENERIC_READ | GENERIC_WRITE | DELETE; FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE
+                let (access, flags) = match keep.is_some() {
+                    true => (0x8000_0000 | GENERIC_WRITE | 0x0001_0000, 0x100 | 0x0400_0000),
+                    false => (GENERIC_WRITE, NORMAL),
+                };
                 // SAFETY: the name ends with a zero; `security` lives across the call.
-                let handle = unsafe { CreateFileW(wide_name.as_ptr(), GENERIC_WRITE, SHARE_ALL, (&security as *const SecurityAttributes).cast(), CREATE_NEW, NORMAL, std::ptr::null_mut()) };
+                let handle = unsafe { CreateFileW(wide_name.as_ptr(), access, SHARE_ALL, (&security as *const SecurityAttributes).cast(), CREATE_NEW, flags, std::ptr::null_mut()) };
                 if handle != INVALID_HANDLE {
-                    // SAFETY: the handle was just opened and is closed once.
-                    unsafe { CloseHandle(handle) };
+                    match keep.as_mut() {
+                        Some(kept) => **kept = handle,
+                        // SAFETY: the handle was just opened and is closed once.
+                        None => unsafe {
+                            CloseHandle(handle);
+                        },
+                    }
                     return Ok(path);
                 }
             // SAFETY: the name ends with a zero; `security` lives across the call.

@@ -1,0 +1,5 @@
+error: `File` has no function `tmpfile`
+  --> error_file_tmpfile.sg:3:24
+ 3 |     var out = try File.tmpfile()
+   |                        ^^^^^^^
+  hint: `openTemp`

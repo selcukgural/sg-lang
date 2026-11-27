@@ -1034,6 +1034,9 @@ pub enum IoCall {
     /// `File.openWrite(path)`: a `StreamWriter` from the start of the file, which keeps what it
     /// holds; a missing file is made.
     OpenWrite,
+    /// `File.openUpdate(path)`: a `StreamWriter` from the start of a file that is there, opened
+    /// to be read too (C's `"r+"`): `writer.openReader()` gives a reader of it (choice 2073).
+    OpenUpdate,
 }
 
 /// The calls of the file system and of the environment beyond reading and writing a file. Those
@@ -1230,6 +1233,33 @@ pub enum SystemCall {
     WatchWaitAsync,
     /// `System.watchStop(watcher)`: the watcher ends.
     WatchStop,
+    /// `System.rootOpen(root, path)`: the folder at `path` opened to be the root of the paths
+    /// given to the calls below (choices 2066-2071); gives its handle. With `root` -1 the path
+    /// is found as any path is; otherwise under that root, as the others are: a link is
+    /// followed while it stays inside, and a path that leads out is `OutsideRoot`.
+    RootOpen,
+    /// `System.rootReader(root, path, regular)`: a reader of the file under the root; with
+    /// `regular`, only of a regular file, as `File.openRegular`.
+    RootReader,
+    /// `System.rootWriter(root, path, how)`: a writer of the file under the root: `how` 1 makes
+    /// or empties it, 2 writes after what it holds, 3 from its start over what it holds.
+    RootWriter,
+    /// `System.rootStatus(root, path, follow, ref fields)`: `System.status` of the path under
+    /// the root, or `System.linkStatus` without `follow`.
+    RootStatus,
+    /// `System.rootList(root, path, ref names, ref kinds)`: `System.list` of the folder under
+    /// the root.
+    RootList,
+    /// `System.rootMake(root, path)`: makes the folder under the root.
+    RootMake,
+    /// `System.rootRemove(root, path, folder)`: removes the file under the root, or with
+    /// `folder` the empty folder. A link is removed itself.
+    RootRemove,
+    /// `System.rootClose(root)`: the handle of the root is given back.
+    RootClose,
+    /// `System.openTemp(template)`: a writer of a new file with no name in the folder of the
+    /// template, opened to be read too, which is gone when its last stream is closed (2076).
+    OpenTemp,
     /// `System.reader(end)`: the reader of the end of a pipe made by `start`, which it owns.
     PipeReader,
     /// `System.writer(end)`: the writer of the end of a pipe made by `start`, which it owns.
@@ -1320,8 +1350,25 @@ impl SystemCall {
             SystemCall::MakeTemp => "makeTemp",
             SystemCall::MakeTempFile => "makeTempFile",
             SystemCall::WatchStart => "watchStart",
+            SystemCall::RootOpen => "rootOpen",
+            SystemCall::RootReader => "rootReader",
+            SystemCall::RootWriter => "rootWriter",
+            SystemCall::RootStatus => "rootStatus",
+            SystemCall::RootList => "rootList",
+            SystemCall::RootMake => "rootMake",
+            SystemCall::RootRemove => "rootRemove",
+            SystemCall::OpenTemp => "openTemp",
             _ => return None,
         })
+    }
+
+    /// The calls under a `DirectoryRoot`: the first argument is the handle of the root, the
+    /// second the path under it.
+    pub fn rooted(self) -> bool {
+        matches!(
+            self,
+            SystemCall::RootOpen | SystemCall::RootReader | SystemCall::RootWriter | SystemCall::RootStatus | SystemCall::RootList | SystemCall::RootMake | SystemCall::RootRemove | SystemCall::RootClose
+        )
     }
 }
 
@@ -1339,6 +1386,7 @@ impl IoCall {
             IoCall::CreateText => "createText",
             IoCall::OpenAppend => "openAppend",
             IoCall::OpenWrite => "openWrite",
+            IoCall::OpenUpdate => "openUpdate",
         }
     }
 }
@@ -1413,6 +1461,12 @@ pub enum StreamCall {
     TryLockShared,
     /// `stream.unlock()`: the lock let go; a writer writes what its block holds first (1985).
     Unlock,
+    /// `writer.openReader()`: a reader of the file the writer writes, with a place of its own,
+    /// for a writer of `File.openUpdate` or `File.openTemp` (choice 2074).
+    OpenReader,
+    /// `reader.position()`, `writer.position()`: where the next read or write starts, counted
+    /// from the start of the file; nothing moves and nothing is written (choice 2075).
+    Position,
 }
 
 impl StreamCall {

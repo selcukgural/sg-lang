@@ -12,6 +12,8 @@ Not measured yet: `atomic`, `files`, `process`, `regex`, `signals`, `terminal`.
 `process` and `terminal` were measured against C where they were built
 ([196](../design/decisions/2026-11-26.md#slice-196), [198](../design/decisions/2026-11-27.md#slice-198)), and
 watching a folder (`files`) against `inotifywait` and `fswatch` ([199](../design/decisions/2026-11-27.md#slice-199)).
+A `DirectoryRoot` was measured against SG without one, a file opened by its joined path, and in the file server
+of the server lane ([200](../design/decisions/2026-11-27.md#slice-200)).
 
 The trial `grep` measures `Regex.isMatch` already ([Programs against Rust and Zig](programs.md#grep)); `regex` gets a table of its own,
 with `findAll`, captures and replacing, in a later slice, as do `atomic`, `files`, `process` and `signals`,

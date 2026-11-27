@@ -367,7 +367,7 @@ fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
 
 /// The methods of the language's own module that hold the thread and have an async version,
 /// named with `Async` after them.
-const ASYNC_METHODS: [&str; 10] = [
+const ASYNC_METHODS: [&str; 23] = [
     "std.Command.run",
     "std.Command.output",
     "std.Command.status",
@@ -378,10 +378,23 @@ const ASYNC_METHODS: [&str; 10] = [
     "std.UdpSocket.receive",
     "std.SignalListener.next",
     "std.DirectoryWatcher.next",
+    "std.DirectoryRoot.openText",
+    "std.DirectoryRoot.openRegular",
+    "std.DirectoryRoot.createText",
+    "std.DirectoryRoot.openAppend",
+    "std.DirectoryRoot.openWrite",
+    "std.DirectoryRoot.info",
+    "std.DirectoryRoot.linkInfo",
+    "std.DirectoryRoot.exists",
+    "std.DirectoryRoot.list",
+    "std.DirectoryRoot.createDirectory",
+    "std.DirectoryRoot.delete",
+    "std.DirectoryRoot.deleteDirectory",
+    "std.DirectoryRoot.openRoot",
 ];
 
 /// The functions of the language's own module that hold the thread and have an async version.
-const ASYNC_FUNCTIONS: [&str; 11] = [
+const ASYNC_FUNCTIONS: [&str; 12] = [
     "std.SocketAddress.lookup",
     "std.Directory.create",
     "std.Directory.createAll",
@@ -393,10 +406,31 @@ const ASYNC_FUNCTIONS: [&str; 11] = [
     "std.Directory.createTemp",
     "std.Directory.watch",
     "std.Directory.watchAll",
+    "std.Directory.openRoot",
 ];
 
 /// The calls of the file system the language's own module makes, which wait for the disk (1871).
-const DISK: [&str; 11] = ["status", "linkStatus", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile", "mapRead", "watchStart"];
+const DISK: [&str; 19] = [
+    "status",
+    "linkStatus",
+    "list",
+    "createDirectory",
+    "removeDirectory",
+    "removeAll",
+    "syncDirectory",
+    "makeTemp",
+    "makeTempFile",
+    "mapRead",
+    "watchStart",
+    "rootOpen",
+    "rootReader",
+    "rootWriter",
+    "rootStatus",
+    "rootList",
+    "rootMake",
+    "rootRemove",
+    "openTemp",
+];
 
 /// A function as a message names it: as the program writes it, `Directory.list` and `File.info`
 /// for those of the language's own module, the name alone for the program's own.
@@ -415,6 +449,7 @@ fn file_alias(full: &str) -> Option<&'static str> {
         "std.FileInfo.of" => Some("info"),
         "std.FileInfo.isFile" => Some("exists"),
         "std.FileInfo.makeTemp" => Some("createTemp"),
+        "std.FileInfo.openTemp" => Some("openTemp"),
         "std.FileInfo.ofLink" => Some("linkInfo"),
         "std.MappedFile.open" => Some("mapRead"),
         _ => None,
@@ -478,7 +513,8 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Seek), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
         // Looking at the block of a reader, and giving out of it, do not read; nor does asking
         // whether a stream is a terminal (`isatty`), `Stdin`'s too.
-        ExprKind::Method { callee: Callee::Stream(StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal), .. } => None,
+        // Nor does asking where a stream stands, or for one more handle of an open file (2074, 2075).
+        ExprKind::Method { callee: Callee::Stream(StreamCall::Buffered | StreamCall::Consume | StreamCall::IsTerminal | StreamCall::Position | StreamCall::OpenReader), .. } => None,
         // A lock tried, and the lock of a reader let go, wait for nothing (1979).
         ExprKind::Method { callee: Callee::Stream(StreamCall::TryLock | StreamCall::TryLockShared), .. } => None,
         ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Unlock), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,

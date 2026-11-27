@@ -1,0 +1,116 @@
+// A path far longer than the system takes in one piece is found under a root, part by part: a
+// thousand folders one in another are made, written into, listed and removed through roots, and
+// `..` goes back up through all of them, each step once. The system's own limit of a path does
+// not apply under a root.
+Result<string, IoError> textOf(read DirectoryRoot root, read string path) {
+    var reader = try root.openText(path)
+    return reader.readText()
+}
+
+// `top`, and under it `d` in `d` until there are `depth` folders, each made through a root of the
+// folder above it.
+Result<void, IoError> dig(read DirectoryRoot root, nint depth) {
+    try root.createDirectory("top")
+    var at = try root.openRoot("top")
+    for _ in 1..depth {
+        try at.createDirectory("d")
+        var below = try at.openRoot("d")
+        at = below
+    }
+    return Ok()
+}
+
+// The path of the folder `depth` folders down.
+string pathOf(nint depth) {
+    var path = "top"
+    for _ in 1..depth {
+        path.write("/d")
+    }
+    return path
+}
+
+// `d/d/.../d`, `count` of them.
+string below(nint count) {
+    var path = "d"
+    for _ in 1..count {
+        path.write("/d")
+    }
+    return path
+}
+
+// What a root opened at the bottom sees.
+Result<void, IoError> atTheBottom(read DirectoryRoot root, read string path) {
+    var bottom = try root.openRoot(path)
+    var text = try textOf(read bottom, "bottom.txt")
+    print($"a root at the bottom: {text}")
+    print($"which the folders above are outside of: {bottom.info("..") is Error(OutsideRoot)}")
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var base = try Directory.createTemp()
+    var root = try Directory.openRoot(read base)
+    var depth = 1000
+    try dig(read root, depth)
+    var path = pathOf(depth)
+    print($"a path of {path.length()} bytes")
+
+    // A file at the bottom, by the whole path.
+    var file = $"{path}/bottom.txt".toString()
+    var out = try root.createText(read file)
+    try out.write("bottom")
+    try out.close()
+    var text = try textOf(read root, read file)
+    print($"read at the bottom: {text}")
+    var info = try root.info(read file)
+    print($"{info.kind} of {info.size} bytes")
+    var entries = try root.list(read path)
+    print($"the last folder holds {entries.length()} name(s)")
+
+    // Down to the bottom and back up to the top, and one step more.
+    var back = path.clone()
+    for _ in 1..depth {
+        back.write("/..")
+    }
+    var top = try root.list(read back)
+    print($"back at the top: {top.length()} name(s), {top[0].name}")
+    back.write("/..")
+    var above = try root.list(read back)
+    print($"one more is the root: {above[0].name}")
+    back.write("/..")
+    print($"and one more is outside: {root.list(read back) is Error(OutsideRoot)}")
+    back.write("/top/d/d/../../d/d/d")
+    print($"and it stays so whatever comes after: {root.list(read back) is Error(OutsideRoot)}")
+
+    // Down, up half the way and down again, to the file.
+    var wander = path.clone()
+    for _ in 0..500 {
+        wander.write("/..")
+    }
+    wander.write("/")
+    wander.write(below(500))
+    wander.write("/bottom.txt")
+    var found = try textOf(read root, read wander)
+    print($"down, half the way up and down again: {found}")
+
+    try atTheBottom(read root, read path)
+
+    // Removed from the bottom up, a hundred folders at a time through a root opened above them.
+    try root.delete(read file)
+    var left = depth
+    while left > 1 {
+        var round = left - 1 < 100 ? left - 1 : 100
+        var holder = try root.openRoot(read pathOf(left - round))
+        var count = round
+        while count > 0 {
+            try holder.deleteDirectory(read below(count))
+            count -= 1
+        }
+        left -= round
+    }
+    try root.deleteDirectory("top")
+    var rest = try root.list(".")
+    print($"all removed: {rest.length()} left")
+    try Directory.delete(read base)
+    return Ok()
+}

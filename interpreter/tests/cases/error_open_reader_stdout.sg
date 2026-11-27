@@ -1,0 +1,6 @@
+// Only a file opened to be read too gives a reader of itself.
+Result<void, IoError> main() {
+    var reader = try Stdout.openReader()
+    print(try reader.readText())
+    return Ok()
+}

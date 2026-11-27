@@ -1,0 +1,6 @@
+error: `StreamReader` has no method `openReader`
+  methods: readLine, readLineBytes, readText, lines, readBytes, readSome, fill, buffered, consume, seek, position, info, isTerminal, lock, lockShared, tryLock, tryLockShared, unlock
+  the writer of a file gives a reader of it: one of `File.openUpdate(path)` or `File.openTemp()`
+  --> error_open_reader_of_reader.sg:4:29
+ 4 |     var second = try reader.openReader()
+   |                             ^^^^^^^^^^

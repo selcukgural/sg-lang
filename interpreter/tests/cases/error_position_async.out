@@ -1,0 +1,5 @@
+error: a `StreamWriter` has no `positionAsync`: `position` does not wait
+  --> error_position_async.sg:4:25
+ 4 |     print(try await out.positionAsync())
+   |                         ^^^^^^^^^^^^^
+  hint: `out.position()`, in an async function too

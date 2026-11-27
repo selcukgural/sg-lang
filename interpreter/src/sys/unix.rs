@@ -780,6 +780,39 @@ pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
     Ok(crate::names::text_of(&name))
 }
 
+/// `File.openTemp()` (2076): a new file made from the template, opened to be read and written, and
+/// its name taken away at once, so it is gone when its last descriptor is closed.
+pub(crate) fn open_temp(template: &str) -> std::io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    extern "C" {
+        fn mkostemp(template: *mut std::ffi::c_char, flags: std::ffi::c_int) -> std::ffi::c_int;
+        fn unlink(path: *const std::ffi::c_char) -> std::ffi::c_int;
+    }
+    const O_CLOEXEC: std::ffi::c_int = if cfg!(target_os = "linux") { 0o2000000 } else { 0x1000000 };
+    let mut name = c_path(template).into_bytes_with_nul();
+    // SAFETY: the name ends with a zero, and the system writes only over its `XXXXXX`.
+    let fd = unsafe { mkostemp(name.as_mut_ptr().cast(), O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the name is the one just made; the descriptor is nobody else's.
+    unsafe {
+        unlink(name.as_ptr().cast());
+        Ok(std::fs::File::from_raw_fd(fd))
+    }
+}
+
+/// `writer.openReader()` (2074): one more descriptor of the open file of the writer. The two
+/// share where the file stands, so the reader reads at a place of its own (`read_at`).
+pub(crate) fn reader_of(file: &std::fs::File) -> std::io::Result<std::fs::File> {
+    file.try_clone()
+}
+
+/// A read at a place of the file, which leaves where the file stands alone (`pread`).
+pub(crate) fn read_at(file: &std::fs::File, into: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, into, at)
+}
+
 /// `File.createLink(target, path)`: `symlink`, the target written into the link as it is given
 /// (choice 1973).
 pub(crate) fn create_link(target: &str, path: &str) -> std::io::Result<()> {
@@ -887,6 +920,11 @@ pub(crate) fn io_kind(code: i32) -> usize {
         28 => 3,
         _ if code == QUOTA => 3,
         ENOTTY => 21,
+        // Codes of the runtime's own: a path that leads out of a root, what is not a regular
+        // file, and what cannot be handed to the system.
+        crate::root::OUTSIDE_ROOT => 22,
+        crate::root::NOT_A_FILE => 20,
+        crate::root::INVALID_INPUT => 15,
         _ => 5,
     }
 }

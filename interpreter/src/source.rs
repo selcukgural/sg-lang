@@ -25,7 +25,7 @@ pub const STD_MODULE: &str = "std";
 const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
-    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "DirectoryWatcher", "FileChange", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
+    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "DirectoryRoot", "DirectoryWatcher", "FileChange", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "Pipeline", "ExitStatus", "ProcessError", "ProcessChange"]),
@@ -49,7 +49,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
 /// The functions of the built-in `File` that the language's own module does the work of
 /// (`File.info(path)` and `File.createTemp()` are `FileInfo`'s, and their async versions): a program
 /// that names `File` and one of them gets the file of `FileInfo`.
-pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync", "linkInfo", "linkInfoAsync", "mapRead", "mapReadAsync"];
+pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp", "infoAsync", "existsAsync", "createTempAsync", "linkInfo", "linkInfoAsync", "mapRead", "mapReadAsync", "openTemp", "openTempAsync"];
 
 /// `reader.info()` gives a `FileInfo` (1873), and `stream.lockAsync()` is done by `FileLock` (1983): a
 /// program that names one and a stream (`File`, which opens one, or `StreamReader` and `StreamWriter`,

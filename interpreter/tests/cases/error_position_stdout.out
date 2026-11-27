@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program, which goes only forward
+  a file opened with `File.createText(path)` or `File.openWrite(path)` has a place
+  --> error_position_stdout.sg:3:15
+ 3 |     print(try Stdout.position())
+   |               ^^^^^^

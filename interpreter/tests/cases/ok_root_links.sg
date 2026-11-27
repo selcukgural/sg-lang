@@ -1,0 +1,69 @@
+// Links under a root (choice 2067): a chain of links is followed as far as forty, a longer one
+// and a ring are errors, and a link is followed by what it says from the folder it lies in.
+Result<string, IoError> textOf(read DirectoryRoot root, read string path) {
+    var reader = try root.openText(path)
+    return reader.readText()
+}
+
+void shown(read string what, Result<string, IoError> result) {
+    match result {
+        Ok(text) => print($"{what}: {text}")
+        Error(Other(_)) => print($"{what}: (too many links)")
+        Error(cause) => print($"{what}: ({cause})")
+    }
+}
+
+Result<void, IoError> main() {
+    var base = try Directory.createTemp()
+    var site = Path.join(read base, "site")
+    try Directory.createAll(read Path.join(read site, "a/b/c"))
+    try Directory.create(read Path.join(read site, "chain"))
+    try File.writeText(read Path.join(read site, "end.txt"), "the end")
+    try File.writeText(read Path.join(read site, "a/b/c/deep.txt"), "deep")
+    try File.writeText(read Path.join(read base, "outside.txt"), "outside")
+
+    // l0 is the file's nearest link; each link after it points at the one before.
+    try File.createLink("../end.txt", read Path.join(read site, "chain/l1"))
+    for i in 2..43 {
+        var target = $"l{i - 1}".toString()
+        var name = $"chain/l{i}".toString()
+        try File.createLink(read target, read Path.join(read site, read name))
+    }
+    var root = try Directory.openRoot(read site)
+    shown("one link", textOf(read root, "chain/l1"))
+    shown("ten links", textOf(read root, "chain/l10"))
+    shown("forty links", textOf(read root, "chain/l40"))
+    shown("forty-one links", textOf(read root, "chain/l41"))
+    shown("forty-two links", textOf(read root, "chain/l42"))
+    print($"info through forty: {root.info("chain/l40") is Ok(_)}, through forty-one: {root.info("chain/l41") is Ok(_)}")
+    print($"the link itself is always seen: {root.linkInfo("chain/l42") is Ok(_)}")
+
+    // A link is followed from the folder it lies in, not from the root.
+    try File.createLink("c/deep.txt", read Path.join(read site, "a/b/near"))
+    try File.createLink("../../end.txt", read Path.join(read site, "a/b/up2"))
+    try File.createLink("../../../outside.txt", read Path.join(read site, "a/b/up3"))
+    try File.createLink("b/near", read Path.join(read site, "a/twice"))
+    try File.createLink("./b/../b/./c", read Path.join(read site, "a/dots"))
+    shown("from its own folder", textOf(read root, "a/b/near"))
+    shown("up two, still inside", textOf(read root, "a/b/up2"))
+    shown("up three, outside", textOf(read root, "a/b/up3"))
+    shown("a link to a link", textOf(read root, "a/twice"))
+    shown("a link with dots", textOf(read root, "a/dots/deep.txt"))
+    shown("up out of what a link leads into", textOf(read root, "a/dots/../../../end.txt"))
+    shown("up past the root after a link", textOf(read root, "a/dots/../../../../outside.txt"))
+
+    // A ring. (A link that leads into itself, `ring -> ring/b`, is one too on Linux and macOS;
+    // Windows makes it a link to a file, which it does not go through: `NotDirectory`.)
+    try File.createLink("self", read Path.join(read site, "self"))
+    shown("a link to itself", textOf(read root, "self"))
+    print($"a ring is not there: {root.exists("self")}")
+    print($"but is listed and removed: {root.linkInfo("self") is Ok(_)} {root.delete("self") is Ok} {root.linkInfo("self") is Error(NotFound)}")
+
+    // A link to nothing.
+    try File.createLink("nowhere/x.txt", read Path.join(read site, "dangling"))
+    shown("a link to nothing", textOf(read root, "dangling"))
+    print($"is not there: {root.exists("dangling")}, but is a name: {root.linkInfo("dangling") is Ok(_)}")
+
+    try Directory.deleteAll(read base)
+    return Ok()
+}

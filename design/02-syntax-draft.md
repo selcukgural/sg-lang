@@ -1452,6 +1452,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     AddressNotAvailable                          // not an address of the machine, or no local port left
     NotAFile                                     // File.openRegular met a pipe, a device or a socket
     NotATerminal                                 // no terminal where one was asked for
+    OutsideRoot                                  // a path given to a DirectoryRoot leads out of its folder
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name
@@ -2219,6 +2220,18 @@ match try watcher.next() {                     // await watcher.nextAsync(read t
     Changed(path) => print($"written {path}")  // a file; a folder is never changed
     Lost(path) => print($"list {path} again")  // more changes than were kept
 }
+
+var site = try Directory.openRoot("/srv/site") // the folder held open: its paths stay inside it
+match site.openRegular(name) {                 // name came from outside: "css/main.css", "../etc/passwd"
+    Ok(reader) => send(ref reader)             // a link inside is followed while it stays inside
+    Error(OutsideRoot) => forbidden()          // `..` past the folder, `/etc`, or a link that leads out
+    Error(cause) => missing(cause)
+}
+
+var out = try File.openUpdate(read store)      // read and written; must be there, is not emptied
+var reader = try out.openReader()              // the same open file, from a place of its own
+var at = try out.position()                    // where the next write starts; nothing moves
+var temp = try File.openTemp()                 // no name; gone when closed, and when the program ends
 ```
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target

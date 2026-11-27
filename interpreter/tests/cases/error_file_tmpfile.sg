@@ -1,0 +1,5 @@
+// The name C gives a file with no name.
+Result<void, IoError> main() {
+    var out = try File.tmpfile()
+    return out.close()
+}

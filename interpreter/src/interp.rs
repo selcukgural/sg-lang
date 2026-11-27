@@ -987,7 +987,7 @@ fn c_stdio_flush() {
 
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
-    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false, pipe: false }))));
+    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false, pipe: false, both: false }))));
     let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, pipe: None, done: 0, seekable: false }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
@@ -1240,11 +1240,14 @@ pub struct FileBlock {
     block: Vec<u8>,
     /// Where what has not been given out starts in `block`.
     at: usize,
+    /// The reader `writer.openReader()` gave (2074): on Linux and macOS it shares the open file
+    /// of its writer, so it reads at a place it keeps itself and leaves the file's own alone.
+    place: Option<u64>,
 }
 
 impl FileBlock {
     fn new(file: std::fs::File) -> FileBlock {
-        FileBlock { file, block: Vec::new(), at: 0 }
+        FileBlock { file, block: Vec::new(), at: 0, place: None }
     }
 
     /// One read into the block from `held` on.
@@ -1257,7 +1260,14 @@ impl FileBlock {
 
     /// One read of the system.
     fn take(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
-        self.file.read(into)
+        match self.place {
+            Some(at) => {
+                let count = crate::sys::read_at(&self.file, into, at)?;
+                self.place = Some(at + count as u64);
+                Ok(count)
+            }
+            None => self.file.read(into),
+        }
     }
 
     fn get_ref(&self) -> &std::fs::File {
@@ -1334,7 +1344,13 @@ impl std::io::Seek for FileBlock {
     fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
         self.block.clear();
         self.at = 0;
-        self.file.seek(to)
+        match (&mut self.place, to) {
+            (Some(place), std::io::SeekFrom::Start(at)) => {
+                *place = at;
+                Ok(at)
+            }
+            _ => self.file.seek(to),
+        }
     }
 }
 
@@ -1403,6 +1419,9 @@ pub struct Writer {
     seekable: bool,
     /// The input of another program: it cannot be put on the disk, nor given a length.
     pipe: bool,
+    /// A file opened to be read too (`File.openUpdate`, `File.openTemp`): `openReader` gives a
+    /// reader of it (2074).
+    both: bool,
 }
 
 /// A writer that ends without `close` (in a field, a list, after an exit through `try`)
@@ -6589,7 +6608,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             Callee::IoAsync(call) => {
                 let mut values = self.values(args, frame)?;
                 let params = match call {
-                    IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
+                    IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::OpenRegular | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite | IoCall::OpenUpdate => 1,
                     IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
                 };
                 let source = match values.len() > params {
@@ -6619,8 +6638,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     | SystemCall::CreateHardLink
                     | SystemCall::SetPermissions
                     | SystemCall::MapRead
-                    | SystemCall::WatchStart => 2,
-                    SystemCall::List => 3,
+                    | SystemCall::WatchStart
+                    | SystemCall::RootOpen
+                    | SystemCall::RootMake => 2,
+                    SystemCall::List | SystemCall::RootReader | SystemCall::RootWriter | SystemCall::RootRemove => 3,
+                    SystemCall::RootStatus | SystemCall::RootList => 4,
                     _ => 1,
                 };
                 let source = match args.get(params) {
@@ -8044,14 +8066,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(None) => failed(io_not_a_file()),
                 Err(error) => done(Err(error)),
             },
-            IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
+            IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite | IoCall::OpenUpdate => {
                 let opened = match call {
                     IoCall::CreateText => std::fs::File::create(&name),
+                    // The file must be there, and is read as well as written (2073).
+                    IoCall::OpenUpdate => std::fs::OpenOptions::new().read(true).write(true).open(&name),
                     IoCall::OpenWrite => std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&name),
                     _ => std::fs::OpenOptions::new().append(true).create(true).open(&name),
                 };
                 let seekable = call != IoCall::OpenAppend;
-                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable, pipe: false })))))
+                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable, pipe: false, both: call == IoCall::OpenUpdate })))))
             }
         })
     }
@@ -8071,6 +8095,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         if matches!(call, SystemCall::WatchNext | SystemCall::WatchWaitAsync | SystemCall::WatchStop) {
             return self.watching(call, args, frame);
+        }
+        if call.rooted() || call == SystemCall::OpenTemp {
+            return self.rooted(call, args, frame);
         }
         if matches!(
             call,
@@ -8295,7 +8322,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable: false, pipe: true }))));
+                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable: false, pipe: true, both: false }))));
             }
             _ => {}
         }
@@ -8461,6 +8488,15 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::WatchNext
             | SystemCall::WatchWaitAsync
             | SystemCall::WatchStop
+            | SystemCall::RootOpen
+            | SystemCall::RootReader
+            | SystemCall::RootWriter
+            | SystemCall::RootStatus
+            | SystemCall::RootList
+            | SystemCall::RootMake
+            | SystemCall::RootRemove
+            | SystemCall::RootClose
+            | SystemCall::OpenTemp
             | SystemCall::ColourTerminal
             | SystemCall::StackLow
             | SystemCall::CharCategory
@@ -8844,6 +8880,59 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// The calls of the system under `DirectoryRoot` (see `root.rs`), and `System.openTemp`: a
+    /// path is walked under the handle of the root, and what is opened is a reader or a writer
+    /// as `File` gives them.
+    fn rooted(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(owned(self.expr(arg, frame)?));
+        }
+        let number = |at: usize| match &values[at] {
+            Value::Int(_, number) => *number as i64,
+            _ => unreachable!("the checker makes it a number"),
+        };
+        let text = |at: usize| match &values[at] {
+            Value::Str(text) => text.to_string(),
+            _ => unreachable!("the checker makes it text"),
+        };
+        let flag = |at: usize| matches!(values[at], Value::Bool(true));
+        let done = |result: std::io::Result<Value>| match result {
+            Ok(value) => ok(value),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        };
+        let reader = |file: std::fs::File| Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, pipe: None, done: 0, seekable: true })));
+        let writer = |file: std::fs::File, seekable: bool, both: bool| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable, pipe: false, both })));
+        Ok(match call {
+            SystemCall::RootClose => {
+                crate::root::close(number(0));
+                Value::Void
+            }
+            SystemCall::OpenTemp => match text(0).contains('\0') {
+                true => failed(io_cause(None, Some(crate::sys::NOT_FOUND))),
+                false => done(crate::sys::open_temp(&text(0)).map(|file| writer(file, true, true))),
+            },
+            SystemCall::RootOpen => done(crate::root::open(number(0), &text(1)).map(|handle| Value::Int(IntTy::Long, i128::from(handle)))),
+            SystemCall::RootReader => done(crate::root::reader(number(0), &text(1), flag(2)).map(reader)),
+            SystemCall::RootWriter => done(crate::root::writer(number(0), &text(1), number(2)).map(|file| writer(file, number(2) != 2, false))),
+            SystemCall::RootStatus => done(crate::root::status(number(0), &text(1), flag(2)).map(|fields| {
+                for (slot, value) in cells_of(&values[3]).iter().zip(fields) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+                }
+                Value::Void
+            })),
+            SystemCall::RootList => done(crate::root::list(number(0), &text(1)).map(|mut found| {
+                found.sort();
+                let (Value::List(into), Value::List(kinds)) = (&values[2], &values[3]) else { unreachable!("the checker makes them lists") };
+                into.borrow_mut().extend(found.iter().map(|(name, _)| cell(Value::Str(Rc::new(crate::names::text_of(name))))));
+                kinds.borrow_mut().extend(found.iter().map(|(_, kind)| cell(Value::Int(IntTy::Byte, i128::from(*kind)))));
+                Value::Void
+            })),
+            SystemCall::RootMake => done(crate::root::make(number(0), &text(1)).map(|()| Value::Void)),
+            _ => done(crate::root::remove(number(0), &text(1), flag(2)).map(|()| Value::Void)),
+        })
+    }
+
     /// The calls of the system under `DirectoryWatcher` (see `watch.rs`). A wait for a change is a
     /// piece of work the side of the system tells the scheduler of, so the other tasks run
     /// meanwhile, with `next` as with `nextAsync`; a cancel ends the wait of `nextAsync`, and a
@@ -9218,6 +9307,25 @@ impl<'a, 'e> Interp<'a, 'e> {
             };
             return Ok(Value::Bool(terminal));
         }
+        if call == StreamCall::Position {
+            return Ok(self.position(&stream));
+        }
+        if call == StreamCall::OpenReader {
+            let Value::Writer(writer) = &stream else { unreachable!("the checker makes it a writer") };
+            let writer = writer.borrow();
+            return Ok(match (&writer.sink, writer.both) {
+                (Sink::File(Some(file)), true) => match crate::sys::reader_of(file) {
+                    Ok(file) => {
+                        let mut block = FileBlock::new(file);
+                        block.place = Some(0);
+                        ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(block), net: None, pipe: None, done: 0, seekable: true }))))
+                    }
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                },
+                // Not a file opened to be read too.
+                _ => failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new()))),
+            });
+        }
         if let Value::Reader(reader) = &stream {
             if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines | StreamCall::Fill | StreamCall::Buffered) {
                 self.input_held(reader, matches!(call, StreamCall::Fill | StreamCall::Buffered), at)?;
@@ -9529,6 +9637,45 @@ impl<'a, 'e> Interp<'a, 'e> {
         })
     }
 
+    /// `stream.position()`: where the next read or write starts (2075). A reader stands where
+    /// its file does less what its block still holds, a writer where its file does and what its
+    /// buffer holds further; nothing is moved or written. What `seek` cannot move has no place.
+    fn position(&self, stream: &Value) -> Value {
+        use std::io::Seek;
+        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        let place = |at: std::io::Result<u64>, ahead: i128| match at {
+            Ok(at) => ok(Value::Int(IntTy::Long, (i128::from(at) + ahead).clamp(0, i128::from(i64::MAX)))),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        };
+        match stream {
+            Value::Reader(reader) => {
+                let mut reader = reader.borrow_mut();
+                if !reader.seekable {
+                    return io_variant(17);
+                }
+                let file = reader.file.as_mut().expect("a reader of a file");
+                let held = file.buffer().len() as i128;
+                match file.place {
+                    Some(at) => place(Ok(at), -held),
+                    None => place(file.file.stream_position(), -held),
+                }
+            }
+            Value::Writer(writer) => {
+                let mut writer = writer.borrow_mut();
+                if !writer.seekable {
+                    return io_variant(17);
+                }
+                if let Some(cause) = &writer.failed {
+                    return failed(cause.clone());
+                }
+                let held = writer.buffer.len() as i128;
+                let Sink::File(Some(file)) = &mut writer.sink else { unreachable!("a writer of a file") };
+                place(file.stream_position(), held)
+            }
+            _ => unreachable!("the checker lets only a stream be asked"),
+        }
+    }
+
     /// `stream.seek(from)`: `kind` is the variant of `SeekFrom` (0 `Start`, 1 `End`, 2 `Current`).
     /// A writer writes what it holds first. A place before the start, or one past what a `long`
     /// holds, is `InvalidInput`; a stream that is not a file opened to seek is `NotSeekable`.
@@ -9561,8 +9708,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(value) => return Ok(value),
                 };
                 // Within the block, nothing is asked of the system, as compiled code does.
+                // A reader `openReader` gave lets its block go each time, to read again what its
+                // writer has written since (2074).
                 let ahead = file.buffer().len() as u64;
-                if at >= reader.done && at - reader.done <= ahead {
+                if file.place.is_none() && at >= reader.done && at - reader.done <= ahead {
                     file.consume((at - reader.done) as usize);
                 } else if let Err(error) = file.seek(std::io::SeekFrom::Start(at)) {
                     return Ok(io_failed(error));

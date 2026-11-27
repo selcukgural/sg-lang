@@ -1,0 +1,5 @@
+error: the reader of a connection has no place in a file: what has come over the network goes only forward
+  a file opened with `File.openText(path)` has a place
+  --> error_position_connection.sg:6:15
+ 6 |     print(try reader.position())
+   |               ^^^^^^

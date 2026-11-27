@@ -1,6 +1,7 @@
 // Folders, and what the system knows of a file: `Directory`, `DirectoryEntry`, `FileInfo` and
-// `FileKind`; `File.info(path)`, `File.linkInfo(path)`, `File.exists(path)`, `File.createTemp()` and
-// `File.mapRead(path)` (`MappedFile`) are done here too, and `SeekFrom`, which `seek` takes, is here.
+// `FileKind`; `File.info(path)`, `File.linkInfo(path)`, `File.exists(path)`, `File.createTemp()`,
+// `File.openTemp()` and `File.mapRead(path)` (`MappedFile`) are done here too, and `SeekFrom`, which
+// `seek` takes, is here; `DirectoryRoot` is a folder that paths from outside do not lead out of.
 // Written in SG and brought
 // along by the language; only the calls of the system (`System.list`, `System.status` and the
 // others) are the compiler's own, and only this module can call them.
@@ -83,6 +84,16 @@ public struct FileInfo : Copyable, Equatable, Formattable {
         return System.makeTempFile(read template)
     }
 
+    // `File.openTemp()`: a writer of a new file that has no name, inside `Directory.temp()`, opened
+    // to be read too: `writer.openReader()` gives a reader of it (choices 2074 and 2076). The file
+    // is gone when its last stream is closed, also when the program is ended from outside before
+    // that. On Windows a name is seen in the folder while it is open.
+    Result<StreamWriter, IoError> openTemp() {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return System.openTemp(read template)
+    }
+
     // `File.exists(path)`: whether the path names a file, a link followed. A folder is not a file, and
     // a path that cannot be looked at (the permission of a folder on the way) is not there either.
     bool isFile(read string path) {
@@ -111,6 +122,12 @@ public struct FileInfo : Copyable, Equatable, Formattable {
         var folder = Directory.temp()
         var template = Path.join(read folder, "sg-XXXXXX")
         return await System.makeTempFileAsync(read template, read token)
+    }
+
+    async Result<StreamWriter, IoError> openTempAsync(read CancellationToken token = CancellationToken.None) {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return await System.openTempAsync(read template, read token)
     }
 }
 
@@ -478,6 +495,286 @@ public struct Directory {
         var id = try await System.watchStartAsync(path, true, read token)
         return Ok(DirectoryWatcher.of(path, id))
     }
+
+    // Opens the folder to be the root of paths that come from outside the program (choices 2066 to
+    // 2071): what the `DirectoryRoot` it gives opens, lists, makes and removes lies inside the
+    // folder, whatever the path says and whatever links the folder holds. The path of the folder
+    // itself is found as any path is, a link followed. A file is `NotDirectory`.
+    public Result<DirectoryRoot, IoError> openRoot(read string path) {
+        var handle = try System.rootOpen(-1, path)
+        return Ok(DirectoryRoot { handle = handle })
+    }
+
+    public async Result<DirectoryRoot, IoError> openRootAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var handle = try await System.rootOpenAsync(-1, path, read token)
+        return Ok(DirectoryRoot { handle = handle })
+    }
+}
+
+// A folder held open, and the only place its paths lead to (`Directory.openRoot`, choices 2066 to
+// 2071). A path is written with `/` and counted from the folder: `2026/report.txt`. A link on the
+// way is followed while what it points at stays inside the folder; a path that leads out of it
+// is `OutsideRoot`: one that starts at the root of the system (`/etc`), one that climbs past the
+// folder with `..`, and one that goes through a link that does either. `.` and `..` that stay
+// inside are parts as any other. A name that one of the systems cannot keep inside a folder is
+// `InvalidInput` on all of them, as for `Path.joinInside`: an empty path or an empty part
+// (`a//b`, `a/`), a `\` or a `:`, a control character, a part that ends with `.` or a space, and
+// the name of a device of Windows (`CON`, `nul.txt`).
+// The folder is held, not its path: when it is renamed or moved the root is still that folder,
+// and a folder put where it was is another. Other programs that change the folder while a path
+// is walked cannot lead the walk out. Several tasks may use one root at once.
+public struct DirectoryRoot : Disposable {
+    // The handle of the folder.
+    long handle
+
+    // What no system may be given as a path under a folder (choice 2070): `InvalidInput` for a `\\`
+    // or a `:` anywhere, then `OutsideRoot` for a path that starts at the root of the system, then
+    // `InvalidInput` for a part that is no name on every system. One pass over the bytes: this is
+    // asked before every call of a root.
+    Result<void, IoError> named(read string path) {
+        var bytes = path.asBytes()
+        var count = bytes.length()
+        if count == 0 {
+            return Error(IoError.InvalidInput)
+        }
+        var outside = (int)bytes[0] == (int)'/'
+        var bad = false
+        nint start = 0
+        for at in 0..count {
+            var b = (int)bytes[at]
+            if b == (int)'\\' || b == (int)':' {
+                return Error(IoError.InvalidInput)
+            }
+            if b == (int)'/' {
+                if !DirectoryRoot.isPart(path, start, at) {
+                    bad = true
+                }
+                start = at + 1
+            } else if b < 32 || b == 127 || (b == 0xC2 && at + 1 < count && (int)bytes[at + 1] >= 0x80 && (int)bytes[at + 1] < 0xA0) {
+                // A control character: C0, DEL, and C1, which UTF-8 writes as C2 80 to C2 9F.
+                bad = true
+            }
+        }
+        if outside {
+            return Error(IoError.OutsideRoot)
+        }
+        if bad || !DirectoryRoot.isPart(path, start, count) {
+            return Error(IoError.InvalidInput)
+        }
+        return Ok()
+    }
+
+    // Whether the bytes of the path from `start` to `end` are a part every system keeps inside a
+    // folder, as `Path.staysInside` says of a part, but for `.` and `..`, which are parts here: not
+    // empty, not ended by `.` or a space, and not the name of a device of Windows, which all start
+    // with one of five letters.
+    bool isPart(read string path, nint start, nint end) {
+        var bytes = path.asBytes()
+        var n = end - start
+        if n == 0 {
+            return false
+        }
+        var last = (int)bytes[end - 1]
+        if last == (int)' ' {
+            return false
+        }
+        if last == (int)'.' {
+            return n == 1 || (n == 2 && (int)bytes[start] == (int)'.')
+        }
+        // Lower case of an ASCII letter.
+        var first = (int)bytes[start] | 32
+        if first == (int)'c' || first == (int)'p' || first == (int)'a' || first == (int)'n' || first == (int)'l' {
+            return !Path.isDevice(path[start..end])
+        }
+        return true
+    }
+
+    // A reader of the file, as `File.openText` gives.
+    public Result<StreamReader, IoError> openText(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootReader(this.handle, path, false)
+    }
+
+    // The same, but only of a regular file, as `File.openRegular`: a folder is `IsDirectory`, and
+    // a pipe, a device or a socket `NotAFile`, refused before it is opened.
+    public Result<StreamReader, IoError> openRegular(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootReader(this.handle, path, true)
+    }
+
+    // A writer of the file, which is made or emptied, as `File.createText` gives.
+    public Result<StreamWriter, IoError> createText(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootWriter(this.handle, path, 1)
+    }
+
+    // A writer that writes after what the file holds, as `File.openAppend` gives.
+    public Result<StreamWriter, IoError> openAppend(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootWriter(this.handle, path, 2)
+    }
+
+    // A writer from the start of the file over what it holds, as `File.openWrite` gives.
+    public Result<StreamWriter, IoError> openWrite(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootWriter(this.handle, path, 3)
+    }
+
+    // What the system knows of the path, a link followed, as `File.info`.
+    public Result<FileInfo, IoError> info(read this, read string path) {
+        try DirectoryRoot.named(path)
+        var fields = long[4]
+        try System.rootStatus(this.handle, path, true, ref fields)
+        return Ok(infoOf(read fields))
+    }
+
+    // What the system knows of the path itself, a link at its end not followed, as
+    // `File.linkInfo`. A link that points out of the folder can be looked at so, and removed.
+    public Result<FileInfo, IoError> linkInfo(read this, read string path) {
+        try DirectoryRoot.named(path)
+        var fields = long[4]
+        try System.rootStatus(this.handle, path, false, ref fields)
+        return Ok(infoOf(read fields))
+    }
+
+    // Whether the path names something inside the folder, a file or a folder, a link followed.
+    // What cannot be looked at, or lies outside, is not there.
+    public bool exists(read this, read string path) {
+        return this.info(path) is Ok(_)
+    }
+
+    // The names in the folder at the path, as `Directory.list`; `.` is the root itself.
+    public Result<List<DirectoryEntry>, IoError> list(read this, read string path) {
+        try DirectoryRoot.named(path)
+        var names = List<string>()
+        var kinds = List<byte>()
+        try System.rootList(this.handle, path, ref names, ref kinds)
+        return Ok(entriesOf(read names, read kinds))
+    }
+
+    // Makes the folder; the one it is in must be there, as for `Directory.create`.
+    public Result<void, IoError> createDirectory(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootMake(this.handle, path)
+    }
+
+    // Removes the file, or the link itself when the path ends at one. A folder is `IsDirectory`.
+    public Result<void, IoError> delete(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootRemove(this.handle, path, false)
+    }
+
+    // Removes the folder, which must be empty (`DirectoryNotEmpty`). The root itself is not
+    // removed through itself (`InvalidInput`).
+    public Result<void, IoError> deleteDirectory(read this, read string path) {
+        try DirectoryRoot.named(path)
+        return System.rootRemove(this.handle, path, true)
+    }
+
+    // A folder inside this one opened as a root of its own: what it gives stays inside that
+    // folder.
+    public Result<DirectoryRoot, IoError> openRoot(read this, read string path) {
+        try DirectoryRoot.named(path)
+        var handle = try System.rootOpen(this.handle, path)
+        return Ok(DirectoryRoot { handle = handle })
+    }
+
+    // The same for an async function: the system is asked on a thread of input and output
+    // while the task waits, and a token cancelled before gives `IoError.Cancelled`.
+
+    public async Result<StreamReader, IoError> openTextAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootReaderAsync(this.handle, path, false, read token)
+    }
+
+    public async Result<StreamReader, IoError> openRegularAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootReaderAsync(this.handle, path, true, read token)
+    }
+
+    public async Result<StreamWriter, IoError> createTextAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootWriterAsync(this.handle, path, 1, read token)
+    }
+
+    public async Result<StreamWriter, IoError> openAppendAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootWriterAsync(this.handle, path, 2, read token)
+    }
+
+    public async Result<StreamWriter, IoError> openWriteAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootWriterAsync(this.handle, path, 3, read token)
+    }
+
+    public async Result<FileInfo, IoError> infoAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        var fields = long[4]
+        try await System.rootStatusAsync(this.handle, path, true, ref fields, read token)
+        return Ok(infoOf(read fields))
+    }
+
+    public async Result<FileInfo, IoError> linkInfoAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        var fields = long[4]
+        try await System.rootStatusAsync(this.handle, path, false, ref fields, read token)
+        return Ok(infoOf(read fields))
+    }
+
+    public async bool existsAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        if DirectoryRoot.named(path) is Error(_) {
+            return false
+        }
+        var fields = long[4]
+        if await System.rootStatusAsync(this.handle, path, true, ref fields, read token) is Error(_) {
+            return false
+        }
+        return true
+    }
+
+    public async Result<List<DirectoryEntry>, IoError> listAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        var names = List<string>()
+        var kinds = List<byte>()
+        try await System.rootListAsync(this.handle, path, ref names, ref kinds, read token)
+        return Ok(entriesOf(read names, read kinds))
+    }
+
+    public async Result<void, IoError> createDirectoryAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootMakeAsync(this.handle, path, read token)
+    }
+
+    public async Result<void, IoError> deleteAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootRemoveAsync(this.handle, path, false, read token)
+    }
+
+    public async Result<void, IoError> deleteDirectoryAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        return await System.rootRemoveAsync(this.handle, path, true, read token)
+    }
+
+    public async Result<DirectoryRoot, IoError> openRootAsync(read this, read string path, read CancellationToken token = CancellationToken.None) {
+        try DirectoryRoot.named(path)
+        var handle = try await System.rootOpenAsync(this.handle, path, read token)
+        return Ok(DirectoryRoot { handle = handle })
+    }
+
+    void dispose(ref this) {
+        System.rootClose(this.handle)
+    }
+}
+
+// The entries of a listing, as `System.list` and `System.rootList` give them.
+List<DirectoryEntry> entriesOf(read List<string> names, read List<byte> kinds) {
+    var entries = List<DirectoryEntry>()
+    var at = 0
+    for name in names {
+        entries.add(DirectoryEntry { name = name.clone(), kind = kindOf((long)kinds[at]) })
+        at += 1
+    }
+    return entries
 }
 
 // What a `DirectoryWatcher` was told of a name under its folder. The path is the folder as it was

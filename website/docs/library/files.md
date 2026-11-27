@@ -33,6 +33,7 @@ The programs on this page write into the folder they run in and remove what they
 | `Result<FileInfo, IoError> File.info(read string path)` | What the system knows of it, a link followed |
 | `bool File.exists(read string path)` | Whether the path names a file (a folder is not one) |
 | `Result<string, IoError> File.createTemp()` | A new empty file in `Directory.temp()` that only the user can read and write, and its path |
+| `Result<StreamWriter, IoError> File.openTemp()` | A writer of a new file with no name, gone when it is closed (see [A file with no name](#a-file-with-no-name)) |
 | `Result<void, IoError> File.createLink(read string target, read string path)` | A symbolic link at `path` that holds `target` as it is given (see [Links and permissions](#links-and-permissions)) |
 | `Result<void, IoError> File.createHardLink(read string existing, read string path)` | One more name of the file |
 | `Result<string, IoError> File.readLink(read string path)` | What a symbolic link holds; a path that is no link is `InvalidInput` |
@@ -176,12 +177,15 @@ It prints:
 | `Result<StreamWriter, IoError> File.createText(read string path)` | A writer of a new or emptied file |
 | `Result<StreamWriter, IoError> File.openAppend(read string path)` | One that writes after what the file holds |
 | `Result<StreamWriter, IoError> File.openWrite(read string path)` | One that writes from the start over what the file holds; a missing file is made |
+| `Result<StreamWriter, IoError> File.openUpdate(read string path)` | The same of a file that is there, opened to be read too (see [One file, read and written](#one-file-read-and-written)) |
 | `Result<void, IoError> write(ref this, x)`, `writeLine(ref this, x)` | Writes whatever `print` takes, with or without a line end |
 | `Result<void, IoError> writeBytes(ref this, read byte[] bytes)` | Writes the bytes as they are |
 | `Result<void, IoError> writePieces(ref this, read List<read byte[]> pieces)` | Writes every piece in turn, as `writeBytes` of each would; what the block has no room for goes to the file with one call of the system (`writev`) on Linux and macOS |
 | `Result<void, IoError> flush(ref this)` | Hands what the block holds to the system |
 | `Result<void, IoError> close(this)` | Writes what is left and closes the file |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Writes what it holds, then moves; gives the new place |
+| `Result<long, IoError> position(read this)` | Where the next write starts: where the file stands and what the writer holds beyond it; nothing is written |
+| `Result<StreamReader, IoError> openReader(read this)` | A reader of the file it writes, for a writer of `File.openUpdate` or `File.openTemp` |
 | `Result<void, IoError> syncData(ref this)` | Writes what it holds, then waits until the system has put the file's bytes on the disk, with what is needed to read them back |
 | `Result<void, IoError> sync(ref this)` | The same, and the rest of what the system keeps of the file, its times among it |
 | `Result<void, IoError> setLength(ref this, long length)` | Writes what it holds, then cuts the file to `length` bytes or makes it longer with zeros; where the writer stands does not move |
@@ -254,6 +258,104 @@ error: `out` is not closed at this `return`, so an error writing its buffer woul
 
 An exit with an error (`try`) lets the writer go: it writes its block as it ends.
 
+### One file, read and written
+
+`File.openUpdate(path)` opens a file that is there to be written and read (choices 2073 to 2075): it is not
+emptied, a missing one is `NotFound`, and the writer starts at its beginning. `writer.openReader()` gives a
+`StreamReader` of the same open file. The reader has a place of its own, so reading does not move where the writer
+writes, and there may be several.
+
+The two keep to the rule of a stream of C opened with `"r+"`: the reader sees what the writer has **flushed**, and
+what the reader's own block holds stays until it **seeks**. A seek of such a reader, also one to where it stands
+(`SeekFrom.Current(0)`), lets its block go, so the next read asks the file again. The reader lives on after its
+writer is closed.
+
+`position()` on a reader or a writer says where the next read or write starts, counted from the start of the
+file. Nothing moves, and a writer writes nothing: what it still holds is counted in. `Stdin`, `Stdout`, `Stderr` and
+the reader of a connection have no place (a compile error, as for `seek`); a pipe and a writer of
+`File.openAppend` are `NotSeekable`. Neither call waits, so neither has an async form.
+
+Only a writer of `File.openUpdate` or `File.openTemp` gives a reader: of `createText`, `openWrite` and `openAppend`,
+whose files are opened to be written alone, `openReader` is `InvalidInput`.
+
+```sg
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "notes.txt")
+    try File.writeText(read path, "one\ntwo\n")
+
+    var out = try File.openUpdate(read path)
+    var reader = try out.openReader()
+    var line = ""
+    _ = try reader.readLine(ref line)
+    print(line)
+
+    try out.write("ONE")
+    var held = try out.position()
+    print($"the writer stands at {held}")
+    try out.flush()
+
+    _ = try reader.seek(SeekFrom.Start(0))
+    _ = try reader.readLine(ref line)
+    print(line)
+    var place = try reader.position()
+    print($"the reader stands at {place}")
+
+    try out.close()
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+one
+the writer stands at 3
+ONE
+the reader stands at 4
+```
+
+The first `readLine` gives `one`, as the file was. `write("ONE")` stays in the writer's block; its `position()` is
+3 all the same. After `flush` the file starts with `ONE`, and the reader, moved back to the start, reads it: the
+seek let go of the block that still held `one`.
+
+### A file with no name
+
+`File.openTemp()` makes a new file in `Directory.temp()` that has **no name** (choice 2076), and gives its writer;
+`openTempAsync()` in an async function. What was written is read back through `writer.openReader()`. The file is
+gone when its last stream is closed, also when the program fails or is ended from outside, so there is nothing to
+remove and nothing another program can find by name. `File.createTemp()` is for a file that needs a name.
+
+Linux makes the file without a name (`O_TMPFILE`); where the file system has none of that, and on macOS, it is made
+as `mkstemp` makes one and its name is taken away at once. On Windows the file has a name in the folder while it is
+open, and Windows deletes it when the last handle is closed (`FILE_FLAG_DELETE_ON_CLOSE`).
+
+```sg
+Result<void, IoError> main() {
+    var out = try File.openTemp()
+    for i in 0..3 {
+        try out.writeLine($"line {i}")
+    }
+    try out.flush()
+
+    var reader = try out.openReader()
+    for line in reader.lines() {
+        print(try line)
+    }
+    try out.close()
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+line 0
+line 1
+line 2
+```
+
 ## `StreamReader`
 
 | Signature | What it does |
@@ -270,6 +372,7 @@ An exit with an error (`try`) lets the writer go: it writes its block as it ends
 | `read byte[] buffered(read this)` | What the block holds and has not been given out, lent where it lies |
 | `consume(ref this, nint n)` | Gives out the first `n` bytes of the block; more than it holds is a panic |
 | `Result<long, IoError> seek(ref this, SeekFrom to)` | Moves, inside its block when it can; gives the new place |
+| `Result<long, IoError> position(read this)` | Where the next read starts; nothing moves (see [One file, read and written](#one-file-read-and-written)) |
 | `Result<FileInfo, IoError> info(read this)` | What the system knows of the file it reads, asked of the open file |
 | `bool isTerminal(read this)` | Whether it reads from a terminal (see [below](#stdin-stdout-and-stderr)) |
 
@@ -556,6 +659,7 @@ to the output
 | `Result<string, IoError> Directory.current()` | The folder the program works in; it is never changed from inside |
 | `string Directory.temp()` | The folder for files that do not have to stay: `TMPDIR` or `/tmp`, on Windows the one Windows gives |
 | `Result<string, IoError> Directory.createTemp()` | A new folder in it that only the user can go into, and its path |
+| `Result<DirectoryRoot, IoError> Directory.openRoot(read string path)` | The folder held open, and the only place its paths lead to (see [A folder as a root](#a-folder-as-a-root)) |
 
 A `DirectoryEntry` has `name` (without the folder) and `kind`; a name that is not UTF-8 comes as
 [below](#names-that-are-not-text), and opens the same file. A `FileInfo` has `kind`, `size` (in bytes, a
@@ -665,6 +769,116 @@ made old
 written notes.txt
 ```
 
+### A folder as a root
+
+A server that sends the files of a folder, a program that unpacks an archive, a tool that is given a name on its
+command line: each joins a name that came from **outside** to a folder it trusts. `Path.joinInside` checks the
+text of such a name, but a text cannot show a link: `uploads/latest` may be a link to `/etc`, and may become one
+between the check and the opening.
+
+`Directory.openRoot(path)` holds the folder open and gives a `DirectoryRoot` (choices 2066 to 2071). A path given
+to it is written with `/` and counted from the folder, and what it names is found from the folder's handle, part
+by part, so that it **stays inside**:
+
+- a link on the way is followed while what it points at is inside the folder;
+- a path that leads out is `IoError.OutsideRoot`: one that starts at the root of the system (`/etc/passwd`), one
+  that climbs past the folder with `..`, and one that goes through a link that does either. A link whose text
+  starts at the root of the system is refused wherever it points;
+- `.` and `..` that stay inside are parts as any other: `css/../index.html` is `index.html`;
+- a name that one of the systems cannot keep inside a folder is `InvalidInput` on all of them, as for
+  `Path.joinInside`: an empty path or part (`a//b`, `a/`), a `\` or a `:`, a control character, a part that ends
+  with `.` or a space, the name of a device of Windows (`CON`, `nul.txt`).
+
+| Signature | What it does |
+|---|---|
+| `Result<StreamReader, IoError> openText(read this, read string path)` | A reader of the file, as `File.openText` |
+| `Result<StreamReader, IoError> openRegular(read this, read string path)` | Only of a regular file, as `File.openRegular` |
+| `Result<StreamWriter, IoError> createText(read this, read string path)` | A writer of the file, made or emptied |
+| `Result<StreamWriter, IoError> openWrite(read this, read string path)` | A writer from its start over what it holds; a missing file is made |
+| `Result<StreamWriter, IoError> openAppend(read this, read string path)` | A writer after what it holds; a missing file is made |
+| `Result<FileInfo, IoError> info(read this, read string path)` | What the system knows of it, a link followed |
+| `Result<FileInfo, IoError> linkInfo(read this, read string path)` | The same of the path itself: a link at its end is not followed, so one that leads out can be looked at |
+| `bool exists(read this, read string path)` | Whether the path names anything inside, a file or a folder, a link followed |
+| `Result<List<DirectoryEntry>, IoError> list(read this, read string path)` | The names in the folder, as `Directory.list`; `.` is the root itself |
+| `Result<void, IoError> createDirectory(read this, read string path)` | Makes the folder; the one it is in must be there |
+| `Result<void, IoError> delete(read this, read string path)` | Removes the file, or the link itself; a folder is `IsDirectory` |
+| `Result<void, IoError> deleteDirectory(read this, read string path)` | Removes an empty folder; the root itself is `InvalidInput` |
+| `Result<DirectoryRoot, IoError> openRoot(read this, read string path)` | A folder inside as a root of its own |
+
+Each has an `Async` form for an async function, with a token last if it is given one, and so has
+`Directory.openRootAsync`. Moving, copying, links, permissions, a whole tree made or removed and the calls that
+read or write a whole file are not under a root yet.
+
+The root is the **folder**, not its path: when the folder is renamed or moved the root is still that folder, and a
+folder put where it was is another. Several tasks may use one root at once. A ring of links, and more than 40 links
+in a row, is an error (`Other`). A path far longer than the system takes in one piece works under a root, since it
+is walked part by part.
+
+```sg
+string shown(Result<StreamReader, IoError> opened) {
+    match opened {
+        Ok(file) => {
+            var reader = file
+            return reader.readText() ?? "(not text)"
+        }
+        Error(cause) => return $"({cause})".toString()
+    }
+}
+
+Result<void, IoError> main() {
+    var base = try Directory.createTemp()
+    var site = Path.join(read base, "site")
+    try Directory.createAll(read Path.join(read site, "css"))
+    try File.writeText(read Path.join(read site, "index.html"), "home")
+    try File.writeText(read Path.join(read site, "css/main.css"), "styles")
+    try File.writeText(read Path.join(read base, "secret.txt"), "secret")
+    try File.createLink("css/main.css", read Path.join(read site, "styles.css"))
+    try File.createLink("../secret.txt", read Path.join(read site, "notes.txt"))
+
+    var root = try Directory.openRoot(read site)
+    print(shown(root.openText("index.html")))
+    print(shown(root.openText("css/../index.html")))
+    print(shown(root.openText("styles.css")))
+    print(shown(root.openText("../secret.txt")))
+    print(shown(root.openText("notes.txt")))
+    print(shown(root.openText("/etc/passwd")))
+    print(shown(root.openText("missing.html")))
+    print(shown(root.openText("css\\main.css")))
+
+    try Directory.deleteAll(read base)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+home
+home
+styles
+(outside the root)
+(outside the root)
+(outside the root)
+(not found)
+(invalid input)
+```
+
+Line by line: `index.html` is opened; `css/../index.html` goes into `css` and back, and never leaves the folder;
+`styles.css` is a link to `css/main.css`, which is inside, so it is followed. `../secret.txt` climbs out, `notes.txt`
+is a link that climbs out, and `/etc/passwd` starts at the root of the system: all three are `OutsideRoot`, and the
+file beside the folder is not read. `missing.html` is not there. A `\` is no part of a name under a root on any
+system.
+
+Under it: Linux asks the kernel to keep the path under the folder (`openat2` with `RESOLVE_BENEATH`), one call. On
+macOS a path without `..` is opened in one call that refuses every link (`O_NOFOLLOW_ANY`), and walked when a link is
+met. On Windows, and wherever the system has no such call, the path is walked: each folder on the way is opened by
+its name in the folder before it, a link is read and never followed by the system, and `..` goes back one step,
+taken only when what the system says is above is the very folder the walk came through. A name swapped for a link
+by another program while the path is walked is an error, never a way out.
+
+On Windows a folder that holds an open file or folder is not renamed by anyone, and a link made to something that is
+not there yet is a link to a file, which Windows does not go through as a folder.
+
 ## `Path`
 
 These functions look only at the separators in the text and never ask the system: `/` on Linux and macOS, `/`
@@ -680,6 +894,9 @@ and `\` on Windows, where a path may also start with a drive (`C:\`) or a share 
 | `read string Path.parent(read string path)` | What comes before the last separator; a root stays whole |
 | `List<byte> Path.systemBytes(read string name)` | The bytes the system is given for a name (below) |
 | `string Path.fromSystemBytes(read byte[] bytes)` | The name the bytes are, as the program writes it; it never fails |
+
+`joinInside` looks at the text alone: a link in the folder that leads out of it is beyond it. A program that opens
+what the name names does it through [a folder as a root](#a-folder-as-a-root).
 
 `joinInside` refuses an empty name or part, a root, `\`, `:`, `..`, a part that ends in `.` or a space, a
 control character (C0, DEL and C1), and Windows' device names (`CON`, `NUL`, `COM1`, also `nul.txt`). A name from a request, an
@@ -765,6 +982,7 @@ A built-in enum, `Copyable`, `Equatable` and `Formattable`:
 | `Other(int code)` | Any other error of the system, by its number |
 | `Cancelled(Cancelled cancelled)` | A token was cancelled |
 | `NotAFile` | `File.openRegular` or `File.mapRead` met a pipe, a device or a socket, and did not open it; a lock of a stream that is no file |
+| `OutsideRoot` | A path given to a `DirectoryRoot` leads out of its folder: by `..`, by starting at the root of the system, or through a link |
 | `NotATerminal` | No terminal where one was asked for: `Terminal.giveTo` or `takeBack` in a program without one, a program put in front (`Command.foreground`), `Terminal.rawMode` of an input or `Terminal.size` of an output that is none |
 | `ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `AddressNotAvailable`, `HostNotFound`, `LineTooLong`, `MessageTooLong` | The network's |
 

@@ -1,0 +1,8 @@
+// A file opened under a root waits for the disk as any other: an async function awaits
+// `openTextAsync`.
+async Result<void, IoError> main() {
+    var root = try await Directory.openRootAsync(".")
+    var reader = try root.openText("a.txt")
+    print(try await reader.readTextAsync())
+    return Ok()
+}

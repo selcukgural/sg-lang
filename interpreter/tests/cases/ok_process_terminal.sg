@@ -100,8 +100,11 @@ Result<void, IoError> main() {
     var got = try until(ref shown, "got:")
     print($"typed shown back: {got.contains("hi there\n")}")
     print($"read: {got.contains("got: hi there")}")
-    try keys.close()
+    // The program ends by itself once it has read its line. It is waited for before its keys are
+    // closed: on Windows a pseudoconsole whose input is closed ends a program still at it, and
+    // one that has printed and not yet ended would end with 0xC000013A instead of 0.
     var typed = try typing.wait()
+    _ = keys.close()
     print($"ended: {typed}")
 
     // Ctrl-C (the byte 3) is `Signal.Interrupt` to the program in front at its terminal.
