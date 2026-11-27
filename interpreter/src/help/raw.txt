@@ -1,0 +1,329 @@
+NAME
+     raw - an address of C, which owns nothing, may be null, and is not
+     checked by the compiler
+
+SYNOPSIS
+     raw T  the address of a T, C's T*: it owns nothing and may be null
+
+     raw void
+            the address of memory of no known type, C's void*
+
+     raw raw byte
+            the address of an address, C's char
+
+     Memory.allocate<T>(n)
+            room for n items, all zero, as a raw T
+
+     unsafe p[i], unsafe (p + n)
+            an item, and the address n items further
+
+     unsafe (raw U)p
+            the same address, read as another type
+
+     (nuint)p, unsafe (raw T)n
+            the address as a number, and a number as an address
+
+     ref raw T
+            in a function of C, a variable C writes an address into: C's T
+
+     unsafe Memory.view(p, n)
+            the n items at p lent as a read T[], with the checks of a slice
+
+     unsafe Memory.viewRef(p, n)
+            the same as a ref T[], to change them
+
+DESCRIPTION
+     A raw T is an address, as C has it: compiled, it is a T* of C and costs
+     what C costs. It owns nothing. Nothing frees what it points at when it
+     ends, nothing stops two copies of it, and nothing stops a use after the
+     memory is gone. Memory from Memory.allocate is given back with
+     Memory.free; memory C gave is given back the way C says, and Memory.free
+     also takes what C's malloc gave.
+
+     It differs from the other ways to reach a value. A T* owns its value, is
+     freed where its owner ends, is moved and not copied, and is never null
+     unless it is a T*?. A borrow, read T or ref T, is followed by the checker
+     and does not outlive what it borrows. A raw T is copied freely, kept in a
+     field, given back from a function and compared with null; it is already
+     nullable, so raw T? is not written.
+
+     A raw pointer points at plain data only: numbers, bool, char, raw
+     pointers, and arrays and structs of them, laid out as C lays them out. A
+     string or a List owns memory of its own, so it never lies in raw memory.
+
+     Making room, keeping a pointer, copying it, comparing two (p == null, p <
+     q) and counting the items between them (q - p) need no unsafe. What
+     touches the memory does: an item, p + n, a cast, Memory.free,
+     Memory.view. The page of [unsafe](unsafe.md) lists them all. A raw
+     pointer has no fields of its own (p[0].x, not p.x), no +=, and is not
+     printed, since an address differs from one run to the next.
+
+     raw T is how functions of C are declared: a parameter or a result of an
+     extern function, ref raw T where C writes an address back, and raw
+     sqlite3 for a type that C keeps to itself, declared as struct sqlite3
+     with no body in the extern block.
+
+     The interpreter checks each item against its block, and stops the program
+     outside it, after Memory.free and through null. Compiled code checks none
+     of this. Memory.view and Memory.viewRef are the way back to checked code:
+     they lend the items as a slice, which the usual checks of an index guard
+     in every build.
+
+EXAMPLES
+   Room for numbers
+         void main() {
+             raw int nothing = null
+             var temperatures = Memory.allocate<int>(3)
+             print(nothing == null)
+             print(temperatures == null)
+             unsafe {
+                 temperatures[0] = 18
+                 temperatures[1] = 21
+                 temperatures[2] = temperatures[0] + temperatures[1]
+             }
+             var copy = temperatures
+             print(unsafe copy[2])
+             unsafe Memory.free(temperatures)
+         }
+
+         true
+         false
+         39
+
+     copy is a second address of the same block, not a second block, so it
+     reads what temperatures wrote. The block is freed once, by hand.
+
+   What C gives back
+         extern {
+             raw byte strchr(read CString text, int c)
+             CLong strtol(read CString text, ref raw byte end, int base)
+         }
+
+         void main() {
+             var name = CString.from("report.final.gif") ?? panic("a zero byte inside")
+             var dot = unsafe strchr(read name, (int)'.')
+             if dot != null {
+                 print(unsafe string.fromCString(dot) ?? "not UTF-8")
+             }
+             var none = unsafe strchr(read name, (int)'x')
+             print(none == null)
+
+             var line = CString.from("42 apples") ?? panic("a zero byte inside")
+             raw byte rest = null
+             var count = unsafe strtol(read line, ref rest, 10)
+             print(count)
+             print(unsafe string.fromCString(rest) ?? "not UTF-8")
+         }
+
+         .final.gif
+         true
+         42
+          apples
+
+     strchr gives an address inside the text, or null when the character is
+     not there. strtol writes the address where the number ended into rest,
+     which it is lent as ref raw byte: C's char**.
+
+   Memory of no known type
+         extern {
+             raw void malloc(nuint size)
+             raw void memset(raw void target, int value, nuint count)
+         }
+
+         void main() {
+             var size = (nuint)(4 * Memory.sizeOf<uint>())
+             var block = unsafe malloc(size)
+             if block == null {
+                 panic("out of memory")
+             }
+             _ = unsafe memset(block, 0xff, size)
+             var words = unsafe (raw uint)block
+             var bytes = unsafe (raw byte)block
+             print(unsafe words[3])
+             print(unsafe bytes[0])
+             unsafe Memory.free(words)
+         }
+
+         4294967295
+         255
+
+     A raw void has no items; a cast says what lies there. words and bytes are
+     the same address read as two types, and Memory.free gives back what
+     malloc gave.
+
+   A checked slice over raw memory
+         void main() {
+             var latencies = Memory.allocate<int>(5)
+             var view = unsafe Memory.viewRef(latencies, 5)
+             view[0] = 120
+             view[1] = 45
+             view[2] = 300
+             view[3] = 45
+             view[4] = 90
+             view.sort()
+             print(view)
+             print(view.length())
+             unsafe Memory.free(latencies)
+         }
+
+         [45, 45, 90, 120, 300]
+         5
+
+     After the one unsafe that makes it, view is a ref int[] like any other:
+     each index is checked against its length, in compiled code too, and the
+     methods of a slice work on it.
+
+   A struct that holds one
+         struct Canvas : Disposable {
+             raw byte cells
+             nint width
+             nint height
+
+             Canvas create(nint width, nint height) {
+                 var cells = Memory.allocate<byte>(width * height)
+                 var all = unsafe Memory.viewRef(cells, width * height)
+                 for i in 0..all.length() {
+                     all[i] = (byte)'.'
+                 }
+                 return Canvas { cells = cells, width = width, height = height }
+             }
+
+             void plot(ref this, nint x, nint y) {
+                 if x < 0 || x >= this.width || y < 0 || y >= this.height {
+                     return
+                 }
+                 unsafe {
+                     this.cells[y * this.width + x] = (byte)'#'
+                 }
+             }
+
+             void show(read this) {
+                 var all = unsafe Memory.view(this.cells, this.width * this.height)
+                 for y in 0..this.height {
+                     var row = all[y * this.width..(y + 1) * this.width]
+                     print(string.fromUtf8(row) ?? "not UTF-8")
+                 }
+             }
+
+             void dispose(ref this) {
+                 unsafe Memory.free(this.cells)
+             }
+         }
+
+         void main() {
+             var canvas = Canvas(6, 3)
+             for i in 0..6 {
+                 canvas.plot(i, i / 2)
+             }
+             canvas.plot(9, 9)
+             canvas.show()
+         }
+
+         ##....
+         ..##..
+         ....##
+
+     The struct owns the block: dispose frees it once, when canvas ends, and
+     plot checks a point before the one write that is not checked. show reads
+     through a view, so a row is a plain slice of bytes. main sees no pointer.
+
+WHAT STOPS THE PROGRAM
+   Freed twice
+         void main() {
+             var scores = Memory.allocate<int>(3)
+             var other = scores
+             unsafe Memory.free(scores)
+             unsafe Memory.free(other)
+         }
+
+         panic: `Memory.free` is given memory that was given back already
+           --> example.sg:5:5
+          5 |     unsafe Memory.free(other)
+            |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+     Copying a pointer copies the address, and nothing keeps track of which
+     copy frees it. The interpreter stops here; a compiled build frees the
+     block twice, as C would.
+
+   An index outside a view
+         void main() {
+             var readings = Memory.allocate<int>(3)
+             var view = unsafe Memory.viewRef(readings, 3)
+             view[3] = 1
+             unsafe Memory.free(readings)
+         }
+
+         panic: index 3 is out of range: the length is 3
+           --> example.sg:4:5
+          4 |     view[3] = 1
+            |     ^^^^^^^
+
+     Through a view the index is checked in every build, compiled ones too.
+     unsafe readings[3] would be checked only by the interpreter.
+
+WHAT THE COMPILER REFUSES
+   A pointer to what owns memory
+         void main() {
+             var names = Memory.allocate<string>(3)
+             unsafe Memory.free(names)
+         }
+
+         error: a raw pointer points at plain data, and `string` is not
+           plain data is numbers, `bool`, `char`, raw pointers, and arrays and structs of them: what owns nothing and can be copied byte by byte
+           --> example.sg:2:33
+          2 |     var names = Memory.allocate<string>(3)
+            |                                 ^^^^^^
+
+   A ? on a raw pointer
+         void main() {
+             raw int? missing = null
+             print(missing is null)
+         }
+
+         error: a raw pointer can be `null` already, so it is not written with `?`
+           --> example.sg:2:5
+          2 |     raw int? missing = null
+            |     ^^^^^^^^
+           hint: compare it: `p == null`
+
+   An item of raw memory lent
+         struct Point {
+             int x
+             int y
+         }
+
+         void main() {
+             var points = Memory.allocate<Point>(2)
+             var first = unsafe read points[0]
+             print(first.x)
+             unsafe Memory.free(points)
+         }
+
+         error: a place in raw memory is not lent yet: the checker cannot follow how long it lives
+           --> example.sg:8:24
+          8 |     var first = unsafe read points[0]
+            |                        ^^^^^^^^^^^^^^
+           hint: copy it out: `var item = unsafe points[0]`
+
+   An item of raw void
+         extern {
+             raw void malloc(nuint size)
+         }
+
+         void main() {
+             var block = unsafe malloc(16)
+             var first = unsafe block[0]
+             print(first)
+             unsafe Memory.free(block)
+         }
+
+         error: a `raw void` points at memory of no known type, so it has no items
+           --> example.sg:7:24
+          7 |     var first = unsafe block[0]
+            |                        ^^^^^^^^
+           hint: say what lies there with a cast: `unsafe ((raw byte)block)[0]`
+
+SEE ALSO
+     sg help unsafe, sg help read
+
+     https://sg-lang.org/reference/raw.html

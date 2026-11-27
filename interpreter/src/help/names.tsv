@@ -1,8 +1,8 @@
 # Made by website/plain/build.mjs for `sg help`; change website/words/ and build the site.
 alias	keyword	Keywords	gives a type a second name: alias Scores = List<int>		https://sg-lang.org/reference/#n-alias
 align	keyword	Keywords	align(N) keeps a type at a multiple of N bytes		https://sg-lang.org/reference/#n-align
-as	keyword	Keywords	names a lent value for a block: read mine as account { }		https://sg-lang.org/reference/#n-as
-assert	keyword	Keywords	stops the program, or fails the test, when a condition is false		https://sg-lang.org/reference/#n-assert
+as	keyword	Keywords	names a value lent for a block: a shared value opened, a locked value taken, an item a select receives	as	https://sg-lang.org/reference/as
+assert	keyword	Keywords	stops the program, or fails the test, when a condition is false	assert	https://sg-lang.org/reference/assert
 async	keyword	Keywords	a function that runs as a light task and may await		https://sg-lang.org/reference/#n-async
 atomic	keyword	Keywords	a number or a bool that tasks change without a lock, one step at a time	atomic	https://sg-lang.org/reference/atomic
 await	keyword	Keywords	waits for the result of an async call		https://sg-lang.org/reference/#n-await
@@ -27,8 +27,8 @@ new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it
 not	keyword	Keywords	is not: the test of is, the other way round		https://sg-lang.org/reference/#n-not
 or	keyword	Keywords	joins patterns in a match		https://sg-lang.org/reference/#n-or
 packed	keyword	Keywords	a struct with no padding between its fields		https://sg-lang.org/reference/#n-packed
-public	keyword	Keywords	shows a name to other modules		https://sg-lang.org/reference/#n-public
-raw	keyword	Keywords	raw T: a pointer of C, which the compiler does not check		https://sg-lang.org/reference/#n-raw
+public	keyword	Keywords	shows a name to other modules; without it, a name stays inside its own module	public	https://sg-lang.org/reference/public
+raw	keyword	Keywords	an address of C, which owns nothing, may be null, and is not checked by the compiler	raw	https://sg-lang.org/reference/raw
 read	keyword	Keywords	lends a value to be looked at, not changed	read	https://sg-lang.org/reference/read
 readonly	keyword	Keywords	a field given when the value is built and never changed		https://sg-lang.org/reference/#n-readonly
 ref	keyword	Keywords	lends a value to be changed in place; the only borrow of it while it lasts	ref	https://sg-lang.org/reference/ref
@@ -37,11 +37,11 @@ share	keyword	Keywords	makes one more owner of a shared value, or an owner from 
 shared	keyword	Keywords	shared T: a value on the heap with several owners, only read	shared	https://sg-lang.org/reference/shared
 static	keyword	Keywords	a value made once, the first time the program uses it		https://sg-lang.org/reference/#n-static
 struct	keyword	Keywords	declares a type made of named fields, with the methods that work on them	struct	https://sg-lang.org/reference/struct
-test	keyword	Keywords	a block of checks that sg test runs		https://sg-lang.org/reference/#n-test
+test	keyword	Keywords	a block of checks written next to the code, which only sg test compiles and runs	test	https://sg-lang.org/reference/test
 try	keyword	Keywords	opens a Result: its value, or the error handed to the caller	try	https://sg-lang.org/reference/try
 union	keyword	Keywords	holds one of its fields at a time in the same bytes		https://sg-lang.org/reference/#n-union
 unsafe	keyword	Keywords	marks code the checker cannot follow: raw memory, calls of C, the fields of a union	unsafe	https://sg-lang.org/reference/unsafe
-use	keyword	Keywords	brings in a module		https://sg-lang.org/reference/#n-use
+use	keyword	Keywords	brings the public names of a module into a file, to be written without the module in front	use	https://sg-lang.org/reference/use
 var	keyword	Keywords	declares a variable; its type comes from its value	var	https://sg-lang.org/reference/var
 weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang.org/reference/#n-weak
 when	keyword	Keywords	adds a condition to an arm of a match		https://sg-lang.org/reference/#n-when

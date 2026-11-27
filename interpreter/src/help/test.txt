@@ -1,0 +1,356 @@
+NAME
+     test - a block of checks written next to the code, which only sg test
+     compiles and runs
+
+SYNOPSIS
+     test "name" { ... }
+            a test, written at the top level of a file; the name is any text
+
+     sg test file.sg
+            runs the tests of the file and of the modules it uses
+
+     sg test folder
+            runs the tests of the folder and of every module under it
+
+     sg test file.sg --compiled
+            the same tests, built as a debug build and run
+
+     try in a test
+            an error of any type ends the test, which fails and writes the
+            error
+
+DESCRIPTION
+     A test is a block with a name, written at the top level of a file, beside
+     the functions it checks. Only sg test compiles and runs it: sg file.sg
+     and sg build leave the tests out, so they cost the program nothing. A
+     file that holds only tests needs no main. test is a keyword only at the
+     top level and in front of a text, so it can still be a name elsewhere.
+
+     Inside the block, assert checks what should hold. A test fails when an
+     assert is false, when it panics, when a try meets an error, or when it
+     ends with shared values still alive. The other tests still run, each with
+     variables of its own, and sg test ends with exit code 1 if any failed.
+     Integer overflow is checked in tests, as in a debug build.
+
+     In a function, try hands an error to the caller. A test has no caller, so
+     try takes an error of any type, writes it and fails the test; the error
+     type must be Formattable. try on a T? is refused there: there is no
+     caller to give null to, so ?? panic("...") says what was expected. There
+     is no test that expects a panic; a failure that is to be tested is
+     returned as a Result, and the test looks at the error.
+
+     A test belongs to the module of its folder. It sees every name of that
+     module, public or not, and only the public names of other modules, as a
+     real user would. sg test writes one line for each test, ok or FAIL and
+     the name, with the name of the module in front for a test of a module
+     below. What a test prints comes before its line. Two tests of one module
+     cannot have the same name. Compiled with --compiled, each test runs in a
+     process of its own, and the report is the same, letter for letter.
+
+EXAMPLES
+   Tests next to the code
+         int shippingCents(int grams) {
+             if grams <= 500 {
+                 return 450
+             }
+             return 450 + (grams - 500) / 100 * 50
+         }
+
+         test "a small parcel costs the base price" {
+             assert(shippingCents(120) == 450)
+             assert(shippingCents(500) == 450)
+         }
+
+         test "each full 100 grams over 500 adds 50 cents" {
+             assert(shippingCents(600) == 500)
+             assert(shippingCents(1250) == 800)
+         }
+
+         void main() {
+             print(shippingCents(2000))
+         }
+
+         ok    a small parcel costs the base price
+         ok    each full 100 grams over 500 adds 50 cents
+         2 test(s) passed
+
+     This is what sg test example.sg prints, and sg test example.sg --compiled
+     prints the same. sg example.sg leaves the tests out and prints 1200.
+
+   Setup is a function
+         struct Cart {
+             List<string> items
+             long totalCents
+
+             Cart create() {
+                 return Cart { items = List<string>(), totalCents = 0 }
+             }
+
+             void add(ref this, string item, long cents) {
+                 this.items.add(item)
+                 this.totalCents += cents
+             }
+
+             void clear(ref this) {
+                 this.items.clear()
+                 this.totalCents = 0
+             }
+         }
+
+         Cart cartWithTea() {
+             var cart = Cart()
+             cart.add("tea", 450)
+             cart.add("cups", 1200)
+             return cart
+         }
+
+         test "adding counts the price" {
+             var cart = cartWithTea()
+             assert(cart.items.length() == 2)
+             assert(cart.totalCents == 1650)
+         }
+
+         test "clearing empties the cart" {
+             var cart = cartWithTea()
+             cart.clear()
+             assert(cart.items.length() == 0)
+             assert(cart.totalCents == 0)
+         }
+
+         test "each test starts from its own cart" {
+             var cart = cartWithTea()
+             cart.add("pot", 2500)
+             print($"{cart.items.length()} items")
+             assert(cart.totalCents == 4150)
+         }
+
+         ok    adding counts the price
+         ok    clearing empties the cart
+         3 items
+         ok    each test starts from its own cart
+         3 test(s) passed
+
+     There is no setup block: cartWithTea is an ordinary function, and each
+     test calls it for a cart of its own. The file has no main, since it holds
+     only tests. The line the third test prints comes before its ok.
+
+   Testing an error
+         enum PortError : Formattable, Equatable {
+             Empty
+             NotANumber(string text)
+             OutOfRange(int value)
+         }
+
+         Result<int, PortError> parsePort(read string text) {
+             if text.length() == 0 {
+                 return Error(PortError.Empty)
+             }
+             var value = int.parse(text) ?? return Error(PortError.NotANumber(text.clone()))
+             if value < 1 || value > 65535 {
+                 return Error(PortError.OutOfRange(value))
+             }
+             return Ok(value)
+         }
+
+         test "a port is read" {
+             var port = try parsePort("8080")
+             assert(port == 8080)
+         }
+
+         test "each wrong text gives its own error" {
+             assert(parsePort("") is Error(Empty))
+             assert(parsePort("http") is Error(NotANumber(_)))
+             match parsePort("70000") {
+                 Error(e) => assert(e == PortError.OutOfRange(70000))
+                 Ok(port) => panic($"read {port} from 70000")
+             }
+         }
+
+         void main() {
+             print(parsePort("443") ?? 80)
+         }
+
+         ok    a port is read
+         ok    each wrong text gives its own error
+         2 test(s) passed
+
+     try keeps the path that works short: an error there would fail the test.
+     Where the test is about the error, is checks its variant and match takes
+     it out to compare it whole.
+
+   What a failing test prints
+         enum PortError : Formattable {
+             Empty
+             NotANumber(string text)
+         }
+
+         Result<int, PortError> parsePort(read string text) {
+             if text.length() == 0 {
+                 return Error(PortError.Empty)
+             }
+             var value = int.parse(text) ?? return Error(PortError.NotANumber(text.clone()))
+             return Ok(value)
+         }
+
+         test "a port is read" {
+             var port = try parsePort("8080")
+             assert(port == 8080)
+         }
+
+         test "the usual ports" {
+             var http = try parsePort("80")
+             var https = try parsePort("443")
+             var ports = List<int> { http, https }
+             assert(ports == List<int> { 80, 8443 })
+         }
+
+         test "a port with a scheme" {
+             var port = try parsePort("http:80")
+             print(port)
+         }
+
+         test "the first of no ports" {
+             var ports = List<int>()
+             print("looking")
+             print(ports[0])
+         }
+
+         test "the tests after a failure still run" {
+             var port = try parsePort("22")
+             assert(port == 22)
+         }
+
+         ok    a port is read
+         FAIL  the usual ports
+         panic: assert failed: ports == List<int> { 80, 8443 }
+           left: [80, 443]
+           right: [80, 8443]
+           --> example.sg:23:5
+          23 |     assert(ports == List<int> { 80, 8443 })
+             |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         FAIL  a port with a scheme
+         error: NotANumber("http:80")
+         looking
+         FAIL  the first of no ports
+         panic: index 0 is out of range: the length is 0
+           --> example.sg:34:11
+          34 |     print(ports[0])
+             |           ^^^^^^^^
+           hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
+         ok    the tests after a failure still run
+         3 of 5 test(s) failed
+
+     A failed assert writes its condition and both sides; a try that meets an
+     error writes the error; a panic writes its message and where it happened.
+     The command ends with exit code 1, so a script or a CI job sees it.
+
+   Tests in a folder of modules
+         int daysLate(int dueDay, int returnedDay) {
+             if returnedDay <= dueDay {
+                 return 0
+             }
+             return returnedDay - dueDay
+         }
+
+         public int fineCents(int dueDay, int returnedDay) {
+             return daysLate(dueDay, returnedDay) * 25
+         }
+
+         test "a book back early is not late" {
+             assert(daysLate(10, 8) == 0)
+         }
+
+         test "each late day costs 25 cents" {
+             assert(daysLate(10, 14) == 4)
+             assert(fineCents(10, 14) == 100)
+         }
+
+         use loans
+
+         void main() {
+             print(fineCents(3, 10))
+         }
+
+         test "a fine seen from outside the module" {
+             assert(fineCents(1, 2) == 25)
+         }
+
+         $ sg test library
+         ok    a fine seen from outside the module
+         ok    loans: a book back early is not late
+         ok    loans: each late day costs 25 cents
+         3 test(s) passed
+
+     The tests in loans reach daysLate, which is not public, since they are in
+     its module. The test in main.sg sees only fineCents; daysLate there is an
+     error. sg test library/loans runs the tests of that module alone.
+
+WHAT THE COMPILER REFUSES
+   A test inside a function
+         int shippingCents(int grams) {
+             return grams <= 500 ? 450 : 450 + (grams - 500) / 100 * 50
+         }
+
+         void main() {
+             test "a small parcel" {
+                 assert(shippingCents(120) == 450)
+             }
+             print(shippingCents(120))
+         }
+
+         error: a test is written at the top level of the file, not inside a function
+           --> example.sg:6:5
+          6 |     test "a small parcel" {
+            |     ^^^^
+
+   Tests run as a program
+         int shippingCents(int grams) {
+             return grams <= 500 ? 450 : 450 + (grams - 500) / 100 * 50
+         }
+
+         test "a small parcel costs the base price" {
+             assert(shippingCents(120) == 450)
+         }
+
+         error: there is no `main` function
+           --> example.sg:7:2
+          7 | }
+            |  ^
+           hint: this file holds tests; they are run by the test command: `sg test <file>`
+
+     sg example.sg runs a program, which starts at main. sg test example.sg
+     runs this file as it is.
+
+   A name that is not a text
+         int shippingCents(int grams) {
+             return grams <= 500 ? 450 : 450 + (grams - 500) / 100 * 50
+         }
+
+         test smallParcel {
+             assert(shippingCents(120) == 450)
+         }
+
+         void main() {
+             print(shippingCents(120))
+         }
+
+         error: expected `(`, found `{`
+           --> example.sg:5:18
+          5 | test smallParcel {
+            |                  ^
+
+     Without a text after it, test is not a keyword: the line reads as a
+     function named smallParcel that returns a type test, and a function needs
+     its parameters. The name of a test is written in quotes: test "a small
+     parcel" { }.
+
+     sg test refuses two more things, which sg example.sg does not see, since
+     it leaves the tests out: two tests of one module with the same name
+     (error: there are two tests named "..."), and try on a T? in a test (
+     error: try on int? returns null to the caller, and a test has no caller
+     ).
+
+SEE ALSO
+     sg help assert, sg help try, sg help public, sg help use
+
+     https://sg-lang.org/reference/test.html

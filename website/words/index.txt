@@ -6,8 +6,6 @@
 
 keyword | alias | gives a type a second name: alias Scores = List<int>
 keyword | align | align(N) keeps a type at a multiple of N bytes
-keyword | as | names a lent value for a block: read mine as account { }
-keyword | assert | stops the program, or fails the test, when a condition is false
 keyword | async | a function that runs as a light task and may await
 keyword | await | waits for the result of an async call
 keyword | break | leaves the loop
@@ -27,14 +25,10 @@ keyword | locked | shared locked T: a value that tasks reach only inside a lock
 keyword | not | is not: the test of is, the other way round
 keyword | or | joins patterns in a match
 keyword | packed | a struct with no padding between its fields
-keyword | public | shows a name to other modules
-keyword | raw | raw T: a pointer of C, which the compiler does not check
 keyword | readonly | a field given when the value is built and never changed
 keyword | return | ends the function, with its value
 keyword | static | a value made once, the first time the program uses it
-keyword | test | a block of checks that sg test runs
 keyword | union | holds one of its fields at a time in the same bytes
-keyword | use | brings in a module
 keyword | weak | a link that does not keep its value alive
 keyword | when | adds a condition to an arm of a match
 keyword | while | repeats a block as long as a condition holds

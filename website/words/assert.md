@@ -1,0 +1,327 @@
+---
+name: assert
+kind: keyword
+summary: Stops the program, or fails the test, when a condition is false.
+see: test, sg test, const, is
+learn: ../docs/learn/book/13-testing.md#when-a-test-fails
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `assert(condition)` | panics when the `bool` is false; the text of the condition is the message |
+| `assert(a == b)`, `!=`, `<`, `<=`, `>`, `>=` | the same; a failed comparison writes the value of each side too |
+| `const assert(condition)` | checked when the program is compiled; a false one is a compile error |
+| `const assert(condition, "message")` | the same, with a message for the error |
+
+## What it means
+
+`assert` takes one `bool`. When it is true, nothing happens. When it is false, `assert` panics: in a program, the
+program stops with exit code 1; in a test, that test fails and the other tests still run. The message is
+`assert failed:` and the condition as it is written in the source. When the condition is one comparison, the
+value of each side follows, as `left:` and `right:`; a list, a struct or an enum is written whole, field by
+field. A condition joined with `&&` or `||` is written with no values.
+
+`assert` is on in every build, a release build too; there is no switch that leaves it out. It has one form:
+there is no `assertEqual`, and no message, since the condition written is the message. A check that needs a
+message of its own is an `if` with a `panic("...")`. `assert` only looks at what it is given: a value in the
+condition is not moved, and can be used after it.
+
+`assert` does not narrow. After `assert(name is not null)`, `name` is still a `T?`, and after
+`assert(result is Ok(n))`, `n` is not seen. To check and keep the value in one step, write
+`name ?? panic("...")`.
+
+`const assert` is checked by the compiler, not when the program runs. It goes at the top of a file or in a
+function, and its condition is made as a const is, with no call; `Memory.sizeOf<T>()` and `Memory.alignOf<T>()`
+are allowed there, and are measured for the machine the program is compiled for. A false one stops the build
+with the message, or the condition, and the two sides of a comparison.
+
+## Examples
+
+### In a program
+
+```sg
+void main() {
+    var totalCents = 1000
+    var people = 3
+    var each = totalCents / people
+    var left = totalCents % people
+    assert(each * people + left == totalCents)
+    print($"{each} each, {left} left over")
+}
+```
+
+```text
+333 each, 1 left over
+```
+
+The condition holds, so `assert` does nothing and the program goes on. Had the split lost a cent, the program
+would stop at that line.
+
+### In a test
+
+```sg test
+string initials(read string name) {
+    var result = ""
+    var next = true
+    for c in name.chars() {
+        if c == ' ' {
+            next = true
+        } else if next {
+            result.write(c)
+            next = false
+        }
+    }
+    return result
+}
+
+test "one letter for each word" {
+    assert(initials("Ada Lovelace") == "AL")
+    assert(initials("Grace Brewster Hopper") == "GBH")
+}
+
+test "spaces in a row are passed over" {
+    var text = initials("  Alan   Turing ")
+    assert(text.length() == 2)
+    assert(text != "")
+}
+```
+
+```text
+ok    one letter for each word
+ok    spaces in a row are passed over
+2 test(s) passed
+```
+
+This is what `sg test example.sg` prints. A false `assert` would print `FAIL` and the test's name, then the same
+message it writes in a program; see [`test`](test.md).
+
+### Comparing structs
+
+```sg
+struct Money : Copyable, Equatable, Formattable {
+    long cents
+    char currency
+}
+
+Money total(read List<Money> prices) {
+    long sum = 0
+    for price in read prices {
+        assert(price.currency == prices[0].currency)
+        sum += price.cents
+    }
+    return Money { cents = sum, currency = prices[0].currency }
+}
+
+void main() {
+    var prices = List<Money> { Money { cents = 450, currency = 'E' }, Money { cents = 1200, currency = 'E' } }
+    var sum = total(read prices)
+    assert(sum == Money { cents = 1650, currency = 'E' })
+    print(sum)
+}
+```
+
+```text
+Money { cents = 1650, currency = 'E' }
+```
+
+`==` on a struct needs `Equatable`. The first `assert` keeps `total` from adding cents of two currencies; it
+checks each price as the loop reaches it.
+
+### An `is` in the condition
+
+```sg
+void main() {
+    var port = int.parse("8080")
+    assert(port is Ok(n) && n > 0 && n < 65536)
+    var value = port ?? panic("checked above")
+    print(value + 1)
+}
+```
+
+```text
+8081
+```
+
+`n` is seen only inside the condition. After the `assert`, `port` is still a `Result`, so `??` takes the value
+out; its `panic` would run only if the `assert` above had not.
+
+### Checked when the program is compiled
+
+```sg
+packed struct Header {
+    byte kind
+    uint length
+}
+
+const assert(Memory.sizeOf<Header>() == 5, "a header is five bytes on the disk")
+
+void main() {
+    var header = Header { kind = 1, length = 300 }
+    print(header.length)
+}
+```
+
+```text
+300
+```
+
+The size of `Header` is known before the program runs, so the check costs nothing when it runs. Without
+`packed`, the struct takes eight bytes and the build stops; see the last case below.
+
+## What stops the program
+
+### A comparison of two structs
+
+```sg panic
+struct Money : Copyable, Equatable {
+    long cents
+    char currency
+}
+
+struct Line : Equatable {
+    string item
+    int count
+    Money price
+}
+
+Line lineOf(string item, int count, long cents) {
+    return Line { item = item, count = count, price = Money { cents = cents * count, currency = 'E' } }
+}
+
+void main() {
+    var line = lineOf("tea", 2, 450)
+    var expected = Line { item = "tea", count = 2, price = Money { cents = 950, currency = 'E' } }
+    assert(line == expected)
+}
+```
+
+```text
+panic: assert failed: line == expected
+  left: Line { item = "tea", count = 2, price = Money { cents = 900, currency = 'E' } }
+  right: Line { item = "tea", count = 2, price = Money { cents = 950, currency = 'E' } }
+  --> example.sg:19:5
+ 19 |     assert(line == expected)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+Each side is written field by field, the struct inside it too, so the field that differs can be found:
+`cents` is `900` on the left. A compiled program writes the same lines.
+
+### A condition that is not one comparison
+
+```sg panic
+void main() {
+    var stock = 3
+    var wanted = 5
+    assert(wanted > 0 && stock >= wanted)
+    print("shipped")
+}
+```
+
+```text
+panic: assert failed: wanted > 0 && stock >= wanted
+  --> example.sg:4:5
+ 4 |     assert(wanted > 0 && stock >= wanted)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+With `&&`, only the condition is written. Two `assert`s, `assert(wanted > 0)` and `assert(stock >= wanted)`,
+would each write their two sides.
+
+## What the compiler refuses
+
+### A message
+
+```sg error
+void main() {
+    var stock = 3
+    assert(stock >= 5, "not enough in stock")
+}
+```
+
+```text
+error: `assert` takes 1 argument(s), 2 given
+  --> example.sg:3:5
+ 3 |     assert(stock >= 5, "not enough in stock")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+The condition is the message. For a text of your own, write `if stock < 5 { panic("not enough in stock") }`.
+Only `const assert` takes a message.
+
+### A number for a condition
+
+```sg error
+int stockOf(read string code) {
+    return code == "K-1" ? 3 : 0
+}
+
+void main() {
+    var stock = stockOf("K-1")
+    assert(stock)
+}
+```
+
+```text
+error: expected `bool`, found `int`
+  --> example.sg:7:12
+ 7 |     assert(stock)
+   |            ^^^^^
+  hint: a number is not a condition; compare it: `stock != 0`
+```
+
+### A value used as if `assert` had narrowed it
+
+```sg error
+string? homeOf(read string user) {
+    if user == "ada" {
+        return "/home/ada"
+    }
+    return null
+}
+
+void main() {
+    var home = homeOf("ada")
+    assert(home is not null)
+    print(home.length())
+}
+```
+
+```text
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> example.sg:11:11
+ 11 |     print(home.length())
+    |           ^^^^
+  hint: test it first: `if home is not null { ... }`
+```
+
+`var home = homeOf("ada") ?? panic("ada has a home")` checks the same and gives a `string`.
+
+### A `const assert` that is false
+
+```sg error
+struct Header {
+    byte kind
+    uint length
+}
+
+const assert(Memory.sizeOf<Header>() == 5, "a header is five bytes on the disk")
+
+void main() {
+    var header = Header { kind = 1, length = 300 }
+    print(header.length)
+}
+```
+
+```text
+error: const assert failed: a header is five bytes on the disk
+  left:  8
+  right: 5
+  --> example.sg:6:14
+ 6 | const assert(Memory.sizeOf<Header>() == 5, "a header is five bytes on the disk")
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+Without `packed`, three bytes of padding keep `length` at a multiple of four.

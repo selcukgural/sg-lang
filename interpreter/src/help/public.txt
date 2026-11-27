@@ -1,0 +1,304 @@
+NAME
+     public - shows a name to other modules; without it, a name stays inside
+     its own module
+
+SYNOPSIS
+     public struct Name, public enum Name
+            a type other modules can name; the variants of an enum come with
+            it
+
+     public T name(...) { }
+            a function other modules can call
+
+     public T field
+            a field other modules can read and write
+
+     public readonly T field
+            a field other modules can only read
+
+     public T m(read this), public Name create(...)
+            a method, or a constructor, other modules can call
+
+     public const T Name = value, public static T Name = value
+            a const, a static
+
+     public alias Name = T
+            a second name of a type
+
+     extern { public int f(...) }
+            a function of C that other modules can call
+
+     no public
+            the name is seen by the files of its own module only
+
+DESCRIPTION
+     A module is a folder: every .sg file in it. A name written without public
+     is seen by every file of its own module and by no other. With public it
+     is seen by the modules that bring it in with use, or write it in full
+     (accounts.Account). The rule is the same for types, functions, fields,
+     methods, consts, statics and aliases, and there are only these two
+     levels. The variants of an enum are seen wherever the enum is.
+
+     A type and its fields are shown one by one. A public struct can keep some
+     fields to itself: outside the module such a field cannot be read or
+     written, and the struct cannot be built field by field, since the outside
+     could not give that field a value. It is built by a public function,
+     usually create. This is how a module keeps a rule true: only its own code
+     can change the field. A public field can be written from outside; public
+     readonly lets the outside read it and nothing more.
+
+     A public name cannot show a type that is not public: a public function
+     that takes or gives a private struct, or a public field of a private
+     type, is an error that points at both.
+
+     The root of a program, the file given to sg or the files of the folder
+     given, has no module name, so no module can use it. public is allowed
+     there and changes nothing: a program of one file does not need it. In a
+     package the public names of its modules are what a program sees, and a
+     module in a folder named internal is seen only from inside the folder
+     that holds it. The library is a module too, std, and a program sees only
+     its public names. public costs nothing when the program runs.
+
+EXAMPLES
+   A module and what it shows
+         bank/
+           main.sg
+           accounts/
+             account.sg
+             fees.sg
+
+         public struct Account {
+             public readonly string owner
+             public string? note
+             long cents
+
+             public Account create(string owner) {
+                 return Account { owner = owner, note = null, cents = 0 }
+             }
+
+             public void deposit(ref this, long cents) {
+                 this.cents += cents - fee(cents)
+             }
+
+             public long balance(read this) {
+                 return this.cents
+             }
+         }
+
+         long fee(long cents) {
+             if cents < 10000 {
+                 return 25
+             }
+             return 0
+         }
+
+         use accounts
+
+         void main() {
+             var account = Account("Ada")
+             account.deposit(5000)
+             account.deposit(20000)
+             account.note = "rent"
+             print($"{account.owner}: {account.balance()} cents")
+             print(account.note ?? "")
+         }
+
+         $ cd bank
+         $ sg main.sg
+         Ada: 24975 cents
+         rent
+
+     main.sg reads owner and writes note, both public. cents has no public, so
+     only the accounts module changes it, through deposit. fee is in another
+     file of the same folder, so deposit calls it with nothing written;
+     main.sg cannot call it.
+
+   The library shows its public names
+         void main() {
+             var options = JsonOptions { indent = 2 }
+             options.maxDepth = 16
+             print($"{options.maxDepth} {options.indent ?? 0}")
+             var timeout = Duration.fromSeconds(90)
+             print(timeout.milliseconds())
+         }
+
+         16 2
+         90000
+
+     The fields of JsonOptions are public, so a program builds it field by
+     field and changes it. A Duration keeps its count of nanoseconds to
+     itself: it is made by its functions and read through its methods.
+
+   An enum, a const and an alias
+         public const int MaxPercent = 5
+
+         public enum Plan : Formattable {
+             Easy
+             Fixed(int years)
+
+             public int percent(read this) {
+                 return match this {
+                     Easy => 1
+                     Fixed(years) => capped(years + 1)
+                 }
+             }
+         }
+
+         int capped(int percent) {
+             return percent.min(MaxPercent)
+         }
+
+         public alias Plans = List<Plan>
+
+         use rates
+
+         void main() {
+             Plans plans = List<Plan> { Plan.Easy, Plan.Fixed(2), Plan.Fixed(9) }
+             for plan in read plans {
+                 print($"{plan}: {plan.percent()}%")
+             }
+             print($"at most {MaxPercent}%")
+         }
+
+         $ sg savings
+         Easy: 1%
+         Fixed(2): 3%
+         Fixed(9): 5%
+         at most 5%
+
+     Plan.Easy and Plan.Fixed are seen because Plan is. A method of an enum is
+     public the same way as one of a struct. capped stays inside rates, though
+     the public percent calls it.
+
+   public in a package
+     A package is a library with an sg.project of its own. Here the program
+     shop takes the package money from the folder beside it:
+
+         shop/
+           sg.project
+           main.sg
+         money/
+           sg.project
+           format.sg
+           internal/
+             group.sg
+
+         // shop/sg.project
+         require money example.com/ada/money 1.0.0
+         local money ../money
+
+         // money/sg.project
+         package example.com/ada/money
+
+         use internal
+
+         public string euros(long cents) {
+             return $"{grouped(cents / 100)}.{cents % 100:d2} EUR".toString()
+         }
+
+         public string grouped(long whole) {
+             if whole < 1000 {
+                 return $"{whole}".toString()
+             }
+             return $"{grouped(whole / 1000)},{whole % 1000:d3}".toString()
+         }
+
+         use money
+
+         void main() {
+             print(euros(123456789))
+             print(money.euros(5))
+         }
+
+         $ cd shop
+         $ sg main.sg
+         1,234,567.89 EUR
+         0.05 EUR
+
+     The program sees the public names of the package's modules, here euros.
+     grouped is public too, but its module is in a folder named internal, so
+     only money and its folders name it: use money.internal in shop/main.sg is
+     refused with  money.internal is in a folder internal: only the modules
+     inside money name it .
+
+WHAT THE COMPILER REFUSES
+   A field that is not public
+     With the accounts module of the first example:
+
+         use accounts
+
+         void main() {
+             var account = Account("Ada")
+             account.cents = 1000000
+             print(account.balance())
+         }
+
+         $ sg main.sg
+         error: `cents` is not public: it stays inside the `accounts` module
+           --> main.sg:5:13
+          5 |     account.cents = 1000000
+            |             ^^^^^
+
+     A function gets its own message, which shows where it is:
+     print(fee(5000)) gives  fee exists in the accounts module but is not
+     public , with the line of fee in accounts/fees.sg. Building the struct
+     field by field, Account { owner = "Ada", note = null, cents = 1000000 },
+     gives  cents is not public, so an Account cannot be built field by field
+     outside the accounts module , with the hint  Account(owner) .
+
+   A public function that shows a private type
+     A file added to bank/accounts/:
+
+         struct Line {
+             string text
+             long cents
+         }
+
+         public Line opening(read Account account) {
+             return Line { text = "opening balance", cents = account.cents }
+         }
+
+         $ sg main.sg
+         error: `opening` is public, but it shows `Line`, which is not
+           --> accounts/statement.sg:6:13
+          6 | public Line opening(read Account account) {
+            |             ^^^^^^^
+           `Line` is defined here, without `public`:
+           --> accounts/statement.sg:1:8
+          1 | struct Line {
+            |        ^^^^
+           hint: write `public` in front of `Line`, or take it off `opening`
+
+     Other modules could call opening but could not name what it gives. The
+     check is made in modules only, since nothing can use the root.
+
+   A type of the library built field by field
+         void main() {
+             var timeout = Duration { ns = 90000000000 }
+             print(timeout)
+         }
+
+         error: a `Duration` is made by its functions, not field by field
+           --> example.sg:2:19
+          2 |     var timeout = Duration { ns = 90000000000 }
+            |                   ^^^^^^^^
+           hint: `Duration.fromMilliseconds(n)`, `Duration.fromSeconds(n)`
+
+   public on a test
+         public test "a deposit is counted" {
+             assert(25000 - 25 == 24975)
+         }
+
+         void main() {
+             print("bank")
+         }
+
+         error: a test is not `public`: only the test command runs it
+           --> example.sg:1:1
+          1 | public test "a deposit is counted" {
+            | ^^^^^^
+
+SEE ALSO
+     sg help use, sg help struct, sg help enum
+
+     https://sg-lang.org/reference/public.html
