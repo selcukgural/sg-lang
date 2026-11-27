@@ -29,8 +29,8 @@ DESCRIPTION
      the same one, so values pass between the two names freely: a function
      that takes a read Scores is given a List<int>. The alias is gone at
      compile time: a value prints as what its type prints, and a type the
-     compiler names in a message is the type itself (expected List<int>, found
-     string ).
+     compiler names in a message is the type itself (expected `List<int>`,
+     found `string` ).
 
      An alias builds what its type builds. For a struct that is P { ... },
      P(args) when the struct has a create function, and its other functions,

@@ -1,0 +1,439 @@
+---
+name: readonly
+kind: keyword
+summary: Marks a field that is given when the value is built and never changed afterwards, nor anything behind it.
+see: struct, public, with, ref, this, const
+learn: ../docs/learn/book/09-modules.md#readonly
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `readonly T field` | a field given when the value is built, and never changed after that |
+| `readonly T field = value` | the same, with a default that a literal may leave out |
+| `public readonly T field` | a field other modules can read and not write |
+| `Name { field = value }`, `Name(...)` | where the field gets its value: a literal, or a constructor that builds one |
+| `value with { field = x }` | a new value, with the field given again |
+| `value = Name { ... }`, `this = Name { ... }` | the whole value replaced, also through `ref` |
+
+## What it means
+
+A `readonly` field gets its value when the value it belongs to is built, by a literal or by a `create` that
+writes one, and keeps it. It is read like any other field. It cannot be assigned, with `=` or `+=`, from
+inside the module or outside, in a function or in a method of its own type.
+
+The rule goes all the way down: nothing behind a `readonly` field changes either. A `readonly List` cannot be
+added to or sorted, a `readonly string` cannot be written to, a field of a `readonly` struct cannot be assigned,
+and an item of a `readonly` array cannot be set. The field cannot be lent as `ref`, a range of it neither, and
+a method that takes `ref this` cannot be called on it, since any of these could change it. `take()` and
+`replace` leave another value in the field, so they are refused too. A `read` borrow, `.clone()` and the methods
+that only look are all allowed. The owner of a value may still move a field's value out, as from any field:
+the value is then not used as a whole again until it is replaced.
+
+The value that holds the field can still be replaced as a whole: a variable given a new value, a `ref`
+parameter given one, `this = ...` in a method that takes `ref this`, an item of a list set again. That builds a
+new value, which gives the field its value again. So does `with`, which makes a new value from an old one. A
+`Copyable` value copies its `readonly` fields, and they stay `readonly` in the copy.
+
+`readonly` is not `read`. `read` lends a value for a while; a `readonly` field owns its value, for as long as
+the value it belongs to lives. It goes on fields of structs only: a value of the program that never changes is
+a `const` or a `static`, and a local variable that never changes is simply not assigned again. An `atomic` field
+cannot be `readonly`, since its methods change it through a `read` borrow.
+
+`public readonly` is how a module shows a field and keeps it from being written outside. A struct whose
+fields are all `public` can still be built, and copied with `with`, by another module, with any value in its
+`readonly` fields; a field kept to the module makes it built only by the module's own functions. The check
+is made by the compiler and costs nothing when the program runs.
+
+## Examples
+
+### A field given once
+
+```sg
+struct Ticket : Formattable {
+    readonly long number
+    readonly string event
+    string seat
+
+    Ticket create(long number, string event) {
+        return Ticket { number = number, event = event, seat = "standing" }
+    }
+}
+
+void main() {
+    var ticket = Ticket(1041, "Concert")
+    ticket.seat = "B12"
+    print(ticket.number)
+    print(ticket)
+}
+```
+
+```text
+1041
+Ticket { number = 1041, event = "Concert", seat = "B12" }
+```
+
+`create` gives `number` and `event` their values when the ticket is built. After that, only `seat` changes.
+
+### A new value in place of the old
+
+```sg
+struct Reading : Formattable {
+    readonly string sensor
+    double celsius
+
+    void recalibrate(ref this, string sensor) {
+        this = Reading { sensor = sensor, celsius = this.celsius }
+    }
+
+    Reading movedTo(this, string sensor) {
+        return this with { sensor = sensor }
+    }
+}
+
+void reset(ref Reading reading) {
+    reading = Reading { sensor = "spare", celsius = 0.0 }
+}
+
+void main() {
+    var a = Reading { sensor = "kitchen", celsius = 21.5 }
+    a.recalibrate("hall")
+    print(a)
+    var b = a.movedTo("garden")
+    print(b)
+    reset(ref b)
+    print(b)
+}
+```
+
+```text
+Reading { sensor = "hall", celsius = 21.5 }
+Reading { sensor = "garden", celsius = 21.5 }
+Reading { sensor = "spare", celsius = 0 }
+```
+
+`this.sensor = sensor` would be refused, but `recalibrate` builds a whole new reading and puts it in place of
+the old one. `movedTo` takes the reading and gives back a new one made with `with`. `reset` replaces the
+caller's reading through `ref`. Each time the field gets its value where a value is built.
+
+### What lies behind the field
+
+```sg
+struct Recipe {
+    readonly string name
+    readonly List<string> steps
+}
+
+void main() {
+    var soup = Recipe { name = "Soup", steps = List<string> { "chop", "boil", "stir" } }
+    print(soup.steps.length())
+    for step in read soup.steps {
+        print($"{soup.name}: {step}")
+    }
+    var mine = soup.steps.clone()
+    mine.add("serve")
+    print(mine)
+    print(soup.steps)
+}
+```
+
+```text
+3
+Soup: chop
+Soup: boil
+Soup: stir
+["chop", "boil", "stir", "serve"]
+["chop", "boil", "stir"]
+```
+
+The list in `steps` is read, gone over and cloned. `soup.steps.add("serve")` would be refused: the list itself
+is behind the `readonly` field. The clone is a list of its own, and changes freely.
+
+### A value that is never changed, only replaced
+
+```sg
+struct Point : Copyable, Formattable {
+    readonly int x
+    readonly int y
+
+    Point shifted(this, int dx) {
+        return this with { x = this.x + dx }
+    }
+}
+
+void main() {
+    var points = List<Point> { Point { x = 1, y = 1 }, Point { x = 5, y = 2 } }
+    for p in ref points {
+        p = p.shifted(10)
+    }
+    points[0] = Point { x = 0, y = 0 }
+    var first = points[0]
+    print($"{first} {points}")
+}
+```
+
+```text
+Point { x = 0, y = 0 } [Point { x = 0, y = 0 }, Point { x = 15, y = 2 }]
+```
+
+With every field `readonly`, a point is never changed in place. `shifted` gets a copy, since `Point` is
+`Copyable`, and gives back a new point. Through `ref`, and in a list, a whole point takes the place of another;
+`p.x = 0` or `points[1].x = 0` would be refused.
+
+### Read outside the module, not written
+
+```sg file title="library/catalog/book.sg"
+public struct Book : Formattable {
+    public readonly string isbn
+    public string shelf
+    int loans
+
+    public Book create(string isbn, string shelf) {
+        return Book { isbn = isbn, shelf = shelf, loans = 0 }
+    }
+
+    public void lend(ref this) {
+        this.loans += 1
+    }
+}
+```
+
+```sg file title="library/main.sg"
+use catalog
+
+void main() {
+    var book = Book("978-0441013593", "A3")
+    book.shelf = "C1"
+    book.lend()
+    print(book.isbn)
+    print(book)
+}
+```
+
+```sg file title="library/relabel.sg"
+use catalog
+
+void main() {
+    var book = Book("978-0441013593", "A3")
+    book.isbn = "978-0000000000"
+}
+```
+
+```sg file title="library/copy.sg"
+use catalog
+
+void main() {
+    var book = Book("978-0441013593", "A3")
+    var other = book with { isbn = "978-0000000000" }
+}
+```
+
+```text
+$ cd library
+$ sg main.sg
+978-0441013593
+Book { isbn = "978-0441013593", shelf = "C1", loans = 1 }
+$ sg relabel.sg
+error: `isbn` is `readonly`: it is given when the value is built and not changed afterwards
+  --> relabel.sg:5:10
+ 5 |     book.isbn = "978-0000000000"
+   |          ^^^^
+$ sg copy.sg
+error: `loans` is not public, so a `Book` cannot be copied with `with` outside the `catalog` module
+  --> copy.sg:5:17
+ 5 |     var other = book with { isbn = "978-0000000000" }
+   |                 ^^^^
+```
+
+`main.sg` reads `isbn` and writes `shelf`. `relabel.sg` cannot write `isbn`. `copy.sg` cannot make a book
+with another `isbn` either: `loans` is not public, so outside `catalog` a book is built only by `create`, and
+copied with `with` not at all. Without such a field, `Book { ... }` and `with` would work there.
+
+## What the compiler refuses
+
+### Assigning the field
+
+```sg error
+struct Ticket {
+    readonly long number
+    string seat
+}
+
+void main() {
+    var ticket = Ticket { number = 1041, seat = "B12" }
+    ticket.number += 1
+}
+```
+
+```text
+error: `number` is `readonly`: it is given when the value is built and not changed afterwards
+  --> example.sg:8:12
+ 8 |     ticket.number += 1
+   |            ^^^^^^
+```
+
+### Assigning it in a method of its own type
+
+```sg error
+struct Reading {
+    readonly string sensor
+    double celsius
+
+    void rename(ref this, string sensor) {
+        this.sensor = sensor
+    }
+}
+
+void main() {
+    var a = Reading { sensor = "kitchen", celsius = 21.5 }
+    a.rename("hall")
+}
+```
+
+```text
+error: `sensor` is `readonly`: it is given when the value is built and not changed afterwards
+  --> example.sg:6:14
+ 6 |         this.sensor = sensor
+   |              ^^^^^^
+```
+
+`this = Reading { sensor = sensor, celsius = this.celsius }` replaces the whole reading, and is allowed.
+
+### Changing what lies behind it
+
+```sg error
+struct Recipe {
+    readonly string name
+    readonly List<string> steps
+}
+
+void main() {
+    var soup = Recipe { name = "Soup", steps = List<string> { "chop", "boil" } }
+    soup.steps.add("serve")
+}
+```
+
+```text
+error: `steps` is `readonly`: it is given when the value is built and not changed afterwards
+  `add` changes the list
+  --> example.sg:8:10
+ 8 |     soup.steps.add("serve")
+   |          ^^^^^
+```
+
+### A `ref this` method on it
+
+```sg error
+struct Clock {
+    int ticks
+
+    void tick(ref this) {
+        this.ticks += 1
+    }
+}
+
+struct Station {
+    readonly Clock clock
+}
+
+void main() {
+    var station = Station { clock = Clock { ticks = 0 } }
+    station.clock.tick()
+}
+```
+
+```text
+error: `clock` is `readonly`: it is given when the value is built and not changed afterwards
+  `tick` takes `ref this` and may change it
+  --> example.sg:15:13
+ 15 |     station.clock.tick()
+    |             ^^^^^
+```
+
+### Lending it as `ref`
+
+```sg error
+struct Recipe {
+    readonly string name
+}
+
+void shout(ref string text) {
+    text.write("!")
+}
+
+void main() {
+    var soup = Recipe { name = "Soup" }
+    shout(ref soup.name)
+}
+```
+
+```text
+error: `name` is `readonly`: it is given when the value is built and not changed afterwards
+  so it cannot be lent as `ref` either
+  --> example.sg:11:20
+ 11 |     shout(ref soup.name)
+    |                    ^^^^
+```
+
+### Taking its value
+
+```sg error
+struct Order {
+    readonly string? coupon
+}
+
+void main() {
+    var order = Order { coupon = "SPRING" }
+    var code = order.coupon.take()
+    print(code ?? "none")
+}
+```
+
+```text
+error: `coupon` is `readonly`: it is given when the value is built and not changed afterwards
+  --> example.sg:7:22
+ 7 |     var code = order.coupon.take()
+   |                      ^^^^^^
+```
+
+`take()` leaves `null` in the field, which changes it. The owner of the order may move the text out,
+`var code = order.coupon`; the order is then not used as a whole again until it is replaced.
+
+### `readonly` on a local variable
+
+```sg error
+void main() {
+    readonly int limit = 3
+    print(limit)
+}
+```
+
+```text
+error: expected an expression, found `readonly`
+  --> example.sg:2:5
+ 2 |     readonly int limit = 3
+   |     ^^^^^^^^
+```
+
+`readonly` goes on a field of a struct. A local that never changes is a `var` not assigned again, or a
+`const int Limit = 3`.
+
+### An `atomic` field
+
+```sg error
+struct Server {
+    readonly atomic long requests
+}
+
+void main() {
+}
+```
+
+```text
+error: an `atomic long` field is not `readonly`: its methods change it through a `read` borrow
+  --> example.sg:2:26
+ 2 |     readonly atomic long requests
+   |                          ^^^^^^^^
+  hint: keep the field to its module and give a method that reads it: `long requests(read this) { return this.requests.load() }`
+```

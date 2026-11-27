@@ -1,6 +1,6 @@
 # Made by website/plain/build.mjs for `sg help`; change website/words/ and build the site.
 alias	keyword	Keywords	gives a type a second name: the same type, which builds what it builds	alias	https://sg-lang.org/reference/alias
-align	keyword	Keywords	align(N) keeps a type at a multiple of N bytes		https://sg-lang.org/reference/#n-align
+align	keyword	Keywords	align(N) struct keeps every value of the type at a multiple of N bytes, wherever it is kept	align	https://sg-lang.org/reference/align
 as	keyword	Keywords	names a value lent for a block: a shared value opened, a locked value taken, an item a select receives	as	https://sg-lang.org/reference/as
 assert	keyword	Keywords	stops the program, or fails the test, when a condition is false	assert	https://sg-lang.org/reference/assert
 async	keyword	Keywords	makes a function a light task, which may await and never holds its thread	async	https://sg-lang.org/reference/async
@@ -11,14 +11,14 @@ checked	keyword	Keywords	shared checked T: a shared value changed through any ow
 const	keyword	Keywords	a value fixed when the program is compiled	const	https://sg-lang.org/reference/const
 continue	keyword	Keywords	ends this round of the loop and goes on with the next	continue	https://sg-lang.org/reference/continue
 else	keyword	Keywords	the block that runs when the condition of an if is false	else	https://sg-lang.org/reference/else
-embed	keyword	Keywords	embed("logo.gif"): the bytes of a file, put into the program		https://sg-lang.org/reference/#n-embed
+embed	keyword	Keywords	embed("logo.gif"): the bytes of a file beside the source, read when the program is compiled and kept in it	embed	https://sg-lang.org/reference/embed
 enum	keyword	Keywords	declares a type whose value is one of several variants, each with values of its own	enum	https://sg-lang.org/reference/enum
-export	keyword	Keywords	makes a function that C calls		https://sg-lang.org/reference/#n-export
-extern	keyword	Keywords	declares the functions of a C library		https://sg-lang.org/reference/#n-extern
+export	keyword	Keywords	makes a function of SG that C calls by its name, or through a CFunc, a pointer to a function as C has it	export	https://sg-lang.org/reference/export
+extern	keyword	Keywords	declares the functions of a C library, or of a C file beside the program, to call inside unsafe	extern	https://sg-lang.org/reference/extern
 for	keyword	Keywords	goes over the numbers of a range or the items of a collection, one round for each	for	https://sg-lang.org/reference/for
 if	keyword	Keywords	runs a block when a condition holds	if	https://sg-lang.org/reference/if
 in	keyword	Keywords	stands between the name and the items in a for	in	https://sg-lang.org/reference/in
-interface	keyword	Keywords	what a type can do: Clonable, Formattable, Equatable, Comparable		https://sg-lang.org/reference/#n-interface
+interface	keyword	Keywords	what a type can do; eight are built in and named after the colon, and a program cannot write its own yet	interface	https://sg-lang.org/reference/interface
 is	keyword	Keywords	tests whether a value is one variant, or null, and names what it carries	is	https://sg-lang.org/reference/is
 lock	keyword	Keywords	a short block that alone touches a locked value; it never waits, so locks cannot deadlock	lock	https://sg-lang.org/reference/lock
 locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock	locked	https://sg-lang.org/reference/locked
@@ -30,7 +30,7 @@ packed	keyword	Keywords	a struct with no padding between its fields and an align
 public	keyword	Keywords	shows a name to other modules; without it, a name stays inside its own module	public	https://sg-lang.org/reference/public
 raw	keyword	Keywords	an address of C, which owns nothing, may be null, and is not checked by the compiler	raw	https://sg-lang.org/reference/raw
 read	keyword	Keywords	lends a value to be looked at, not changed	read	https://sg-lang.org/reference/read
-readonly	keyword	Keywords	a field given when the value is built and never changed		https://sg-lang.org/reference/#n-readonly
+readonly	keyword	Keywords	marks a field that is given when the value is built and never changed afterwards, nor anything behind it	readonly	https://sg-lang.org/reference/readonly
 ref	keyword	Keywords	lends a value to be changed in place; the only borrow of it while it lasts	ref	https://sg-lang.org/reference/ref
 return	keyword	Keywords	ends the function, with its value	return	https://sg-lang.org/reference/return
 share	keyword	Keywords	makes one more owner of a shared value, or an owner from a weak look	share	https://sg-lang.org/reference/share
@@ -51,31 +51,31 @@ bool	type	Primitive types	true or false; the only type a condition can be	bool	h
 byte	type	Primitive types	an integer of 8 bits, 0 to 255: one byte of a text, a file or a buffer	byte	https://sg-lang.org/reference/byte
 char	type	Primitive types	one character of Unicode, in 32 bits; not a number	char	https://sg-lang.org/reference/char
 double	type	Primitive types	a fraction of 64 bits (IEEE 754); its arithmetic is the hardware's and never panics	double	https://sg-lang.org/reference/double
-float	type	Primitive types	a fraction of 32 bits		https://sg-lang.org/reference/#n-float
+float	type	Primitive types	a fraction of 32 bits (IEEE 754), about 7 digits; half the size of a double, for large arrays and for C	float	https://sg-lang.org/reference/float
 int	type	Primitive types	an integer of 32 bits, with a sign; a whole number is one when nothing else is asked for	int	https://sg-lang.org/reference/int
 long	type	Primitive types	an integer of 64 bits, with a sign; for sums, sizes of files and time in milliseconds	long	https://sg-lang.org/reference/long
-nint	type	Primitive types	an integer as wide as an address: what length() gives		https://sg-lang.org/reference/#n-nint
-nuint	type	Primitive types	nint without a sign		https://sg-lang.org/reference/#n-nuint
-sbyte	type	Primitive types	an integer of 8 bits, -128 to 127		https://sg-lang.org/reference/#n-sbyte
-short	type	Primitive types	an integer of 16 bits		https://sg-lang.org/reference/#n-short
+nint	type	Primitive types	an integer with a sign, as wide as an address; every length, index and position is one	nint	https://sg-lang.org/reference/nint
+nuint	type	Primitive types	an integer without a sign, as wide as an address; C's size_t, and an address as a number	nuint	https://sg-lang.org/reference/nuint
+sbyte	type	Primitive types	an integer of 8 bits, with a sign, from -128 to 127: a small step, a reading, a signed byte of a file	sbyte	https://sg-lang.org/reference/sbyte
+short	type	Primitive types	an integer of 16 bits, with a sign, from -32 768 to 32 767: a sample of sound, a field of two bytes	short	https://sg-lang.org/reference/short
 string	type	Primitive types	text in UTF-8 that owns its memory; read string is a borrow of it	string	https://sg-lang.org/reference/string
-uint	type	Primitive types	an integer of 32 bits without a sign		https://sg-lang.org/reference/#n-uint
-ulong	type	Primitive types	an integer of 64 bits without a sign		https://sg-lang.org/reference/#n-ulong
-ushort	type	Primitive types	an integer of 16 bits without a sign		https://sg-lang.org/reference/#n-ushort
-void	type	Primitive types	the type of a function that gives nothing back		https://sg-lang.org/reference/#n-void
-false	value	Values with a name	the bool that is not true		https://sg-lang.org/reference/#n-false
+uint	type	Primitive types	an integer of 32 bits without a sign, 0 to 4 294 967 295: for bits, masks, colors and hashes	uint	https://sg-lang.org/reference/uint
+ulong	type	Primitive types	an integer of 64 bits without a sign, 0 to 18 446 744 073 709 551 615: for hashes, random numbers and sets of 64 bits	ulong	https://sg-lang.org/reference/ulong
+ushort	type	Primitive types	an integer of 16 bits without a sign, from 0 to 65 535: a port, a field of a packet, a counter that wraps	ushort	https://sg-lang.org/reference/ushort
+void	type	Primitive types	the return type of a function that gives nothing back	void	https://sg-lang.org/reference/void
+false	value	Values with a name	the bool that is not true; what a comparison gives when it does not hold, and the zero value of a bool	false	https://sg-lang.org/reference/false
 null	value	Values with a name	no value; only a type written T? may hold it, and it is tested with is null	null	https://sg-lang.org/reference/null
 this	value	Values with a name	the value a method was called on; read this looks, ref this changes, this alone takes it	this	https://sg-lang.org/reference/this
-true	value	Values with a name	the bool that is not false		https://sg-lang.org/reference/#n-true
-$"{x}"	sign	Signs	text with values written into it		https://sg-lang.org/reference/#n--24227b-x-7d22
-a..b	sign	Signs	a range: from a up to, not with, b		https://sg-lang.org/reference/#n-a-2e2e-b
+true	value	Values with a name	the bool that is not false; what a comparison gives when it holds	true	https://sg-lang.org/reference/true
+$"{x}"	sign	Signs	text with values written into it, checked when the program is compiled; .toString() makes it a string	interpolation	https://sg-lang.org/reference/interpolation
+a..b	sign	Signs	a range: the numbers from a up to b, without b; in a pattern, a..=b takes b too	range	https://sg-lang.org/reference/range
 c ? a : b	sign	Signs	a when c is true, b when it is false		https://sg-lang.org/reference/#n-c-203f20-a-203a20-b
 T?	sign	Signs	a T that may be null; it is tested before it is used as a T	nullable	https://sg-lang.org/reference/nullable
 T[]	sign	Signs	a slice: a window onto items that something else owns	slice	https://sg-lang.org/reference/slice
 T*	sign	Signs	a pointer that owns a value on the heap	pointer	https://sg-lang.org/reference/pointer
 x ?? y	sign	Signs	the value of x, or y when x is null or an error	null-coalescing	https://sg-lang.org/reference/null-coalescing
 x?.y	sign	Signs	a field or a method of x, or null when x is null	null-conditional	https://sg-lang.org/reference/null-conditional
-xs[^1]	sign	Signs	an index counted from the end		https://sg-lang.org/reference/#n-xs-5b5e-1-5d
+xs[^1]	sign	Signs	an index counted from the end: xs[^1] is the last item, xs[^n] is xs[xs.length() - n]	index-from-end	https://sg-lang.org/reference/index-from-end
 Base64	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#base64
 CancellationSource	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#cancellationsource-and-cancellationtoken
 Channel	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#channelt-and-sendert

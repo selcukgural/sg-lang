@@ -1,0 +1,397 @@
+NAME
+     uint - an integer of 32 bits without a sign, 0 to 4 294 967 295: for
+     bits, masks, colors and hashes
+
+SYNOPSIS
+     uint   an integer of 32 bits, from 0 to 4 294 967 295
+
+     uint mask = 0xff00_ff00
+            a number written in the program, a uint where the place says so
+
+     uint.MinValue, uint.MaxValue
+            the two ends, 0 and 4 294 967 295
+
+     a & b, a | b, a ^ b, ~a
+            the bits, and, or, exclusive or, not
+
+     a << n, a >> n
+            the bits moved; >> brings in zeros, and n goes from 0 to 31
+
+     x.wrappingAdd(y), x.wrappingMultiply(y), x.wrappingNegate()
+            arithmetic that wraps around in every build, as a hash wants
+
+     x.trySubtract(y), x.saturatingSubtract(y)
+            a subtraction that says what going below 0 does
+
+     (uint)n, n.tryToUint(), n.wrappingToUint()
+            a value of another number type, as a uint
+
+     uint.parse(text), uint.parseHex(text)
+            the number a text writes, as a Result<uint, NumberError>
+
+DESCRIPTION
+     A uint is an integer of 32 bits without a sign, on every machine. It
+     holds what is a pattern of bits more than an amount: a mask, a set of
+     flags, a color of four bytes, a hash or a checksum. A number written in
+     the program is a uint only where the place says so, uint mask = 0xff00,
+     or where the other side of an operator is one: with uint count, count + 1
+     and 10 - count are uints. With no type where it goes, a number is never
+     unsigned: var n = 5 is an int.
+
+     A uint becomes a wider type on its own where that type holds every one of
+     its values: ulong, long, nuint and double. A byte or a ushort becomes a
+     uint on its own. A signed type never does, since a negative number has no
+     place in a uint: an int and a uint do not mix, and the hint names long,
+     which holds both. Every other way is a cast, (uint)n or (int)u, which
+     stops the program when the value does not fit (a release build keeps the
+     low 32 bits instead), or a method, tryToUint(), saturatingToUint() or
+     wrappingToUint(), which does the same in every build.
+
+     Going below 0 is an overflow like going past the top: 0 - 1 stops the
+     program in the interpreter, in tests and in a debug build, and wraps to 4
+     294 967 295 in a release build. -x on a uint and a negative number where
+     a uint goes are refused. wrappingSubtract and wrappingMultiply wrap in
+     every build; a hash or a checksum, which means to wrap, says so with
+     them.
+
+     The bit operators work on a uint and give a uint. >> brings in zeros from
+     the top, where on an int it carries the sign. A shift count is from 0 to
+     31: a larger one written in the program is refused, and one found while
+     running follows the rule of overflow. rotateLeft, countOnes, reverseBytes
+     and their kin are in Numbers, with isPowerOfTwo, nextPowerOfTwo and log2,
+     which only the unsigned types have. In compiled code a uint is C's
+     uint32_t.
+
+EXAMPLES
+   Numbers as written
+         void main() {
+             uint color = 0xff_80_00
+             uint flags = 0b1010
+             var top = uint.MaxValue
+             print($"{color} {flags} {top}")
+             print($"{color:x6} {top:X} {flags:b8}")
+             uint count = 7
+             var next = count + 1
+             var left = 10 - count
+             print($"{next} {left}")
+         }
+
+         16744448 10 4294967295
+         ff8000 FFFFFFFF 00001010
+         8 3
+
+     Each number takes the type of its place, or of the other side of the
+     operator: count + 1 and 10 - count are uints. x and X write hex, b
+     binary, each with at least so many digits.
+
+   Below zero
+         void main() {
+             uint stock = 3
+             uint sold = 5
+             print(stock.trySubtract(sold) ?? 0)
+             print(stock.saturatingSubtract(sold))
+             print(stock.wrappingSubtract(sold))
+             if sold <= stock {
+                 print(stock - sold)
+             } else {
+                 print($"short by {sold - stock}")
+             }
+             long difference = (long)stock - sold
+             print(difference)
+         }
+
+         0
+         0
+         4294967294
+         short by 2
+         -2
+
+     stock - sold alone would stop the program here. trySubtract gives null,
+     saturatingSubtract stops at 0 and wrappingSubtract wraps around to the
+     top. Comparing first keeps the subtraction above 0, and a long, which
+     holds every uint, gives the difference with its sign.
+
+   Bits, masks and shifts
+         void main() {
+             uint color = 0x11_22_33_44
+             var red = color >> 24
+             var green = color >> 16 & 0xff
+             var blue = color >> 8 & 0xff
+             var alpha = color & 0xff
+             print($"{red} {green} {blue} {alpha}")
+             uint swapped = alpha << 24 | blue << 16 | green << 8 | red
+             print($"{swapped:x8} {color.reverseBytes():x8}")
+             print($"{color.rotateLeft(8):x8} {~color:x8} {color << 4:x8}")
+             int signed = -16
+             var bits = signed.wrappingToUint()
+             print($"{signed >> 2} {bits >> 2} {bits:x8}")
+         }
+
+         17 34 51 68
+         44332211 44332211
+         22334411 eeddccbb 12233440
+         -4 1073741820 fffffff0
+
+     A shift binds tighter than &, and & tighter than |, so no parentheses are
+     needed. The bits that << pushes out at the top are gone, in every build.
+     The same 32 bits shifted right give -4 as an int, whose >> carries the
+     sign, and a large number as a uint, whose >> brings in zeros.
+
+   A checksum: CRC-32
+         uint crc32(read byte[] data) {
+             uint crc = 0xffff_ffff
+             for b in data {
+                 crc ^= b
+                 for _ in 0..8 {
+                     var mask = (crc & 1).wrappingNegate()
+                     crc = crc >> 1 ^ 0xedb8_8320 & mask
+                 }
+             }
+             return ~crc
+         }
+
+         void main() {
+             var text = "123456789"
+             print($"{crc32(text.asBytes()):x8}")
+             print($"{Crc32.of(text.asBytes()):x8}")
+         }
+
+         cbf43926
+         cbf43926
+
+     Each byte widens to a uint in crc ^= b. wrappingNegate() turns the low
+     bit into a mask of all zeros or all ones; 0 - (crc & 1) would stop the
+     program the first time the bit is 1. The library's Crc32 gives the same
+     value, faster.
+
+   Into a uint and out of one
+         void main() {
+             uint big = 4_000_000_000
+             long wide = big
+             double fraction = big
+             print($"{wide + 1} {fraction / 8}")
+             int offset = -5
+             print((long)big + offset)
+             print($"{big.tryToInt() ?? -1} {big.saturatingToInt()} {big.wrappingToInt()}")
+             int minus = -1
+             print($"{minus.tryToUint() ?? 0} {minus.saturatingToUint()} {minus.wrappingToUint()}")
+             print($"{(uint)3.99e9} {(uint)-0.5}")
+         }
+
+         4000000001 500000000
+         3999999995
+         -1 2147483647 -294967296
+         0 0 4294967295
+         3990000000 0
+
+     A uint goes into a long or a double on its own; with an int beside it,
+     (long) is written first. tryToInt gives null for a value an int does not
+     hold, saturatingToInt the nearest end and wrappingToInt the same 32 bits
+     read with a sign. A cast from a fraction drops what is after the point,
+     so -0.5 becomes 0.
+
+   Read from text
+         void main() {
+             var texts = List<string> { "4294967295", "+7", "-1", "4294967296", " 7" }
+             for text in read texts {
+                 match uint.parse(text) {
+                     Ok(n) => print($"{text}: {n}")
+                     Error(Invalid(at)) => print($"{text}: not a uint from byte {at}")
+                     Error(OutOfRange) => print($"{text}: too large for a uint")
+                 }
+             }
+             print(uint.parseHex("DEADbeef") ?? 0)
+         }
+
+         4294967295: 4294967295
+         +7: 7
+         -1: not a uint from byte 0
+         4294967296: too large for a uint
+          7: not a uint from byte 0
+         3735928559
+
+     parse reads a sign and digits; a - is not a uint's, so -1 stops at its
+     first byte. parseHex reads hex digits in either case, without 0x.
+
+   A release build wraps
+     The file below/main.sg:
+
+         uint left(uint stock, uint sold) {
+             return stock - sold
+         }
+
+         void main() {
+             print(left(3, 5))
+         }
+
+         $ cd below
+         $ sg main.sg
+         panic: overflow: 3 - 5 does not fit in uint
+           --> main.sg:2:12
+          2 |     return stock - sold
+            |            ^^^^^^^^^^^^
+           hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
+         $ sg build --release main.sg -o left
+         $ ./left
+         4294967294
+
+     A release build leaves the check out, and the number wraps around below 0
+     to the top. Where going below 0 is a real case, trySubtract says so in
+     every build.
+
+WHAT STOPS THE PROGRAM
+   Counting down past 0
+         void main() {
+             uint n = 3
+             uint steps = 0
+             while n >= 0 {
+                 steps += 1
+                 n -= 1
+             }
+             print(steps)
+         }
+
+         panic: overflow: 0 - 1 does not fit in uint
+           --> example.sg:6:9
+          6 |         n -= 1
+            |         ^^^^^^
+           hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
+
+     A uint is never below 0, so n >= 0 is always true. In a release build n
+     wraps to the top and the loop never ends. while n > 0 stops at 0.
+
+   A negative value cast
+         uint toUint(int value) {
+             return (uint)value
+         }
+
+         void main() {
+             print(toUint(-1))
+         }
+
+         panic: value -1 does not fit in uint
+           --> example.sg:2:12
+          2 |     return (uint)value
+            |            ^^^^^^^^^^^
+           hint: `tryToUint()` gives `null` when the value does not fit, and `wrappingToUint()` cuts it to size
+
+     In a release build the cast keeps the 32 bits, and gives 4294967295.
+
+   A shift by 32
+         uint rotate(uint value, int by) {
+             return value << by | value >> (32 - by)
+         }
+
+         void main() {
+             print($"{rotate(0x12345678, 8):x8}")
+             print($"{rotate(0x12345678, 0):x8}")
+         }
+
+         34567812
+         panic: shift by 32 is out of range: uint has 32 bits
+           --> example.sg:2:26
+          2 |     return value << by | value >> (32 - by)
+            |                          ^^^^^^^^^^^^^^^^^^
+
+     With by 0 the right half shifts by 32, past the last bit. A release build
+     cuts the count to 0 to 31 and the line happens to give the right value.
+     value.rotateLeft(by) takes any count, in every build.
+
+WHAT THE COMPILER REFUSES
+   A negative number
+         void main() {
+             uint n = 3
+             print(n > -1)
+         }
+
+         error: -1 does not fit in uint
+           a `uint` is never negative
+           --> example.sg:3:15
+          3 |     print(n > -1)
+            |               ^^
+
+     The number takes the type of the other side, and no uint is -1. n >= 0,
+     which is always true, is taken.
+
+   A minus
+         void main() {
+             uint n = 3
+             print(-n)
+         }
+
+         error: operator `-` is not defined for `uint`: a `uint` is never negative
+           --> example.sg:3:11
+          3 |     print(-n)
+            |           ^^
+           hint: convert first: `-(long)n`
+
+   An int and a uint
+         uint next(uint hash, int step) {
+             return hash + step
+         }
+
+         void main() {
+             print(next(10, 1))
+         }
+
+         error: `uint` and `int` do not mix: neither holds every value of the other
+           --> example.sg:2:12
+          2 |     return hash + step
+            |            ^^^^^^^^^^^
+           hint: `long` holds both: `(long)step`
+
+     uint step is the fix here; long holds both where the sum may be negative.
+
+   A uint where an int goes
+         void main() {
+             uint size = 64
+             int half = size / 2
+             print(half)
+         }
+
+         error: expected `int`, found `uint`
+           --> example.sg:3:16
+          3 |     int half = size / 2
+            |                ^^^^^^^^
+           hint: convert with `(int)`; it panics if the value does not fit
+
+   A number past the top
+         void main() {
+             uint mask = 0x1_0000_0000
+             print(mask)
+         }
+
+         error: `0x1_0000_0000` is 4294967296, which does not fit in uint
+           --> example.sg:2:17
+          2 |     uint mask = 0x1_0000_0000
+            |                 ^^^^^^^^^^^^^
+
+     ulong mask holds it.
+
+   A shift past 31
+         void main() {
+             uint bit = 1 << 32
+             print(bit)
+         }
+
+         error: a shift by 32 is out of range: `uint` has 32 bits
+           --> example.sg:2:21
+          2 |     uint bit = 1 << 32
+            |                     ^^
+           hint: the count goes from 0 to 31
+
+   abs
+         void main() {
+             uint n = 5
+             print(n.abs())
+         }
+
+         error: a `uint` is never negative: `abs` would give it back as it is
+           --> example.sg:3:13
+          3 |     print(n.abs())
+            |             ^^^
+
+SEE ALSO
+     sg help int, sg help ulong, sg help long, sg help byte, sg help ushort
+
+     https://sg-lang.org/reference/uint.html

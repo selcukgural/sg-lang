@@ -376,6 +376,7 @@ WHAT THE COMPILER REFUSES
            hint: read the field it holds inside `unsafe` and compare that
 
 SEE ALSO
-     sg help unsafe, sg help packed, sg help struct, sg help enum, sg help raw
+     sg help unsafe, sg help packed, sg help struct, sg help enum, sg help
+     raw, sg help align
 
      https://sg-lang.org/reference/union.html

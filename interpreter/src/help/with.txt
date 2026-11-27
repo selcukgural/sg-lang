@@ -411,6 +411,7 @@ WHAT THE COMPILER REFUSES
      literal could.
 
 SEE ALSO
-     sg help struct, sg help this, sg help public, sg help read
+     sg help struct, sg help this, sg help readonly, sg help public, sg help
+     read
 
      https://sg-lang.org/reference/with.html

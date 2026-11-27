@@ -1,0 +1,283 @@
+NAME
+     embed - embed("logo.gif"): the bytes of a file beside the source, read
+     when the program is compiled and kept in it
+
+SYNOPSIS
+     const byte[] Logo = embed("logo.gif")
+            the bytes of a file, as a byte[N] counted from the file
+
+     const byte[14] Logo = embed("logo.gif")
+            the same, with the count written: it must be the size of the file
+
+     embed("images/logo.gif")
+            a file in a folder below the source file
+
+     public const byte[] Logo = embed("logo.gif")
+            bytes other modules can read
+
+     Logo.length(), Logo[i]
+            in another const or a const assert, found when the program is
+            compiled
+
+DESCRIPTION
+     embed("logo.gif") reads a file when the program is compiled and gives its
+     bytes as a byte[N], where N is the size of the file. It is written only
+     where a const is given its value, so the bytes are a const array like any
+     other: byte[] after const takes the count from the file, other consts and
+     a const assert can read its length and its items, read Logo lends it
+     where it lies, and var copy = Logo makes a copy of it. A string is not
+     given this way; string.fromUtf8(Logo) makes a text of the bytes when the
+     program runs, and checks that they are UTF-8.
+
+     The path is a text written out in the call: not a const, and not a text
+     with values in it, since it is needed when the program is compiled. It is
+     written from the folder of the source file that names it (in a module,
+     that file's folder, not the folder of the program), with / between the
+     folders. It has no .., no ., no empty part, no \ or :, and does not start
+     with /. The file lies in that folder or below it, also where a link
+     leads, so a module of someone else's takes in only the files it carries.
+
+     The file holds 1 byte to 64 MB. A file that is missing, empty, larger, or
+     that cannot be read is an error when the program is compiled.
+
+     A built program keeps the bytes in the data it only reads, and needs the
+     file no more. The interpreter reads the file each time it checks the
+     program, before it runs.
+
+EXAMPLES
+   A text the program carries
+     The file tool/usage.txt:
+
+         Usage: tool [options] file
+           -n  number the lines
+           -q  say nothing
+
+     The file tool/main.sg:
+
+         const byte[] Usage = embed("usage.txt")
+
+         void main() {
+             var text = string.fromUtf8(Usage) ?? "not UTF-8"
+             print(text.trimEnd())
+             print($"{Usage.length()} bytes")
+         }
+
+         $ cd tool
+         $ sg build main.sg -o tool
+         $ rm usage.txt
+         $ ./tool
+         Usage: tool [options] file
+           -n  number the lines
+           -q  say nothing
+         68 bytes
+
+     The file is read when sg build compiles the program, so the program still
+     prints it after the file is gone. string.fromUtf8 turns the bytes into a
+     text when the program runs; const string Usage = embed(...) is an error,
+     expected `string`, found `byte[68]`.
+
+   Checked when the program is compiled
+     The file gif/main.sg:
+
+         const byte[] Image = embed("dot.gif")
+         const nint Size = Image.length()
+         const assert(Size >= 13, "a GIF starts with 13 bytes")
+         const assert(Image[0] == 0x47 && Image[1] == 0x49 && Image[2] == 0x46, "not a GIF")
+         const ushort Width = (ushort)Image[6] | (ushort)Image[7] << 8
+
+         void main() {
+             print($"{Size} bytes, {Width} pixels wide")
+         }
+
+         $ cd gif
+         $ printf 'GIF89a\002\001\001\000\200\000\000;' > dot.gif
+         $ sg main.sg
+         14 bytes, 258 pixels wide
+         $ printf 'Not a picture.' > dot.gif
+         $ sg main.sg
+         error: const assert failed: not a GIF
+           --> main.sg:4:14
+          4 | const assert(Image[0] == 0x47 && Image[1] == 0x49 && Image[2] == 0x46, "not a GIF")
+            |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+     printf writes a small GIF, byte by byte. Its length and its items are
+     known when the program is compiled, so other consts are made of them, and
+     a file that is not a GIF stops the compiler, not the program.
+
+   Read into a struct
+     The file screen/main.sg:
+
+         packed struct Screen : Formattable {
+             byte[6] signature
+             ushort width
+             ushort height
+             byte flags
+             byte background
+             byte aspect
+         }
+
+         const byte[] Image = embed("dot.gif")
+         const assert(Image.length() >= 13, "a GIF starts with 13 bytes")
+
+         void main() {
+             var screen = Screen.fromBytes(Image[0..13])
+             print(screen)
+             print(string.fromUtf8(screen.signature[0..6]) ?? "not UTF-8")
+             print($"{screen.width} x {screen.height}")
+         }
+
+         $ cd screen
+         $ printf 'GIF89a\002\001\001\000\200\000\000;' > dot.gif
+         $ sg main.sg
+         Screen { signature = [71, 73, 70, 56, 57, 97], width = 258, height = 1, flags = 128, background = 0, aspect = 0 }
+         GIF89a
+         258 x 1
+
+     A GIF starts with thirteen bytes whose numbers of 16 bits lie at bytes 6
+     and 8, little-endian, so a [packed](packed.md) struct lays them out as
+     the file does. fromBytes takes exactly as many bytes as the struct has;
+     the const assert makes sure the file has them.
+
+   From a module
+     The file shop/assets/files/banner.txt:
+
+         Welcome to the shop.
+
+     The file shop/assets/texts.sg:
+
+         public const byte[] Banner = embed("files/banner.txt")
+
+     The file shop/main.sg:
+
+         use assets
+
+         void main() {
+             print(string.fromUtf8(Banner) ?? "not UTF-8")
+             print(assets.Banner.length())
+         }
+
+         $ cd shop
+         $ sg main.sg
+         Welcome to the shop.
+
+         21
+
+     The path is written from the folder of texts.sg, the file that names it:
+     files/banner.txt is below assets/. The module carries its own file, and a
+     program that uses it reads the bytes as any public const. The empty line
+     is the end of the line of the file, which print writes before its own.
+
+WHAT THE COMPILER REFUSES
+   Outside a const
+         void main() {
+             var bytes = embed("logo.gif")
+             print(bytes.length())
+         }
+
+         error: `embed` is written where a const is given its value
+           --> example.sg:2:17
+          2 |     var bytes = embed("logo.gif")
+            |                 ^^^^^^^^^^^^^^^^^
+           hint: `const byte[] Logo = embed("logo.gif")`, then `Logo` where the bytes are needed
+
+     A static is refused the same way.
+
+   A path that is not written out
+         const string Name = "logo.gif"
+         const byte[] Logo = embed(Name)
+
+         void main() {
+             print(Logo.length())
+         }
+
+         error: `embed` takes the path of a file, written out as a text
+           the file is read when the program is compiled, so its path is known then
+           --> example.sg:2:21
+          2 | const byte[] Logo = embed(Name)
+            |                     ^^^^^^^^^^^
+           hint: `const byte[] Logo = embed("logo.gif")`
+
+   A file above the folder
+         const byte[] Secret = embed("../keys/secret.txt")
+
+         void main() {
+             print(Secret.length())
+         }
+
+         error: `../keys/secret.txt` is not a file beside this one
+           a file of `embed` lies in the folder of the file it is written in or below it, and its path is written from there with `/`, without `..`
+           --> example.sg:1:23
+          1 | const byte[] Secret = embed("../keys/secret.txt")
+            |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           hint: `embed("logo.gif")`, `embed("images/logo.gif")`
+
+     A path from the root (embed("/etc/hosts")), one with a drive or \, and
+     ./logo.gif are refused the same way. A link beside the file that leads
+     outside its folder is refused with where it leads.
+
+   A file that is not there
+         const byte[] Logo = embed("logo.gif")
+
+         void main() {
+             print(Logo.length())
+         }
+
+         error: there is no file `logo.gif` beside this file
+           it is looked for at logo.gif
+           --> example.sg:1:21
+          1 | const byte[] Logo = embed("logo.gif")
+            |                     ^^^^^^^^^^^^^^^^^
+
+   An empty file, a file too large, and a count that differs
+     The file sizes/empty.sg:
+
+         const byte[] Nothing = embed("empty.bin")
+
+         void main() {
+             print(Nothing.length())
+         }
+
+     The file sizes/large.sg:
+
+         const byte[] Movie = embed("large.bin")
+
+         void main() {
+             print(Movie.length())
+         }
+
+     The file sizes/count.sg:
+
+         const byte[4] Head = embed("five.bin")
+
+         void main() {
+             print(Head)
+         }
+
+         $ cd sizes
+         $ : > empty.bin
+         $ sg empty.sg
+         error: the file is empty, and an array has at least one item
+           --> empty.sg:1:24
+          1 | const byte[] Nothing = embed("empty.bin")
+            |                        ^^^^^^^^^^^^^^^^^^
+         $ dd if=/dev/zero of=large.bin bs=1048576 count=65 2> /dev/null
+         $ sg large.sg
+         error: `large.bin` has 68157440 bytes, and `embed` takes a file of at most 64 MB
+           the program carries the bytes, and so does the C it is compiled from
+           --> large.sg:1:22
+          1 | const byte[] Movie = embed("large.bin")
+            |                      ^^^^^^^^^^^^^^^^^^
+         $ printf 'abcde' > five.bin
+         $ sg count.sg
+         error: expected `byte[4]`, found `byte[5]`
+           --> count.sg:1:22
+          1 | const byte[4] Head = embed("five.bin")
+            |                      ^^^^^^^^^^^^^^^^^
+
+     : > makes an empty file, and dd one of 65 MB.
+
+SEE ALSO
+     sg help const, sg help byte, sg help assert, sg help packed, sg help
+     string
+
+     https://sg-lang.org/reference/embed.html

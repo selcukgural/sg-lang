@@ -271,7 +271,7 @@ WHAT THE COMPILER REFUSES
           2 |     byte b = 256
             |              ^^^
 
-     byte b = -1 is refused the same way, with  a byte is never negative , and
+     byte b = -1 is refused the same way, with a `byte` is never negative, and
      so is (byte)300.
 
    A minus

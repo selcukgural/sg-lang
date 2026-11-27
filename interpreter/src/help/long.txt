@@ -340,6 +340,6 @@ WHAT THE COMPILER REFUSES
      A number is never unsigned on its own; a ulong is written.
 
 SEE ALSO
-     sg help int, sg help double
+     sg help int, sg help ulong, sg help nint, sg help double
 
      https://sg-lang.org/reference/long.html

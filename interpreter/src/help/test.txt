@@ -355,9 +355,9 @@ WHAT THE COMPILER REFUSES
 
      sg test refuses two more things, which sg example.sg does not see, since
      it leaves the tests out: two tests of one module with the same name
-     (error: there are two tests named "..."), and try on a T? in a test (
-     error: try on int? returns null to the caller, and a test has no caller
-     ).
+     (error: there are two tests named "..."), and try on a T? in a test
+     (error: `try` on `int?` returns `null` to the caller, and a test has no
+     caller).
 
 SEE ALSO
      sg help assert, sg help try, sg help public, sg help use

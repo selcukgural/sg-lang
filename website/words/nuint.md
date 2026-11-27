@@ -1,0 +1,368 @@
+---
+name: nuint
+kind: type
+summary: An integer without a sign, as wide as an address; C's size_t, and an address as a number.
+see: nint, uint, ulong, raw, extern, unsafe
+learn: ../docs/learn/book/11-c.md#cs-types
+library: ../docs/library/numbers.md
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `nuint` | an integer without a sign, as wide as an address: 64 bits on today's computers |
+| `nuint.MinValue`, `nuint.MaxValue` | 0 and the machine's largest address |
+| `nuint strlen(read CString text)` | in an `extern` block, C's `size_t` |
+| `(nuint)xs.length()`, `(nuint)Memory.sizeOf<T>()` | a length or a size, for C |
+| `(nint)n` | a `nuint` as an index or a length |
+| `(nuint)p` | the address a raw pointer holds, as a number |
+| `unsafe (raw T)n` | a number as an address |
+| `n.tryMultiply(size)`, `n.tryToNuint()` | arithmetic and conversions that never panic |
+
+## What it means
+
+A `nuint` is an integer without a sign, as wide as an address on the machine: 64 bits on today's computers,
+from 0 to 18 446 744 073 709 551 615. It is C's `size_t` and `uintptr_t`: the count and the size that
+functions of C take and give, and an address read as a number.
+
+SG itself counts with [`nint`](nint.md): a length, an index and `Memory.sizeOf<T>()` are `nint`s, so they can go
+below zero in arithmetic and say so. A `nuint` is for the edge with C and for addresses. On the way to C a
+length is written `(nuint)xs.length()`; on the way back a count is written `(nint)n`, which also makes it an
+index. An index never takes a `nuint` on its own.
+
+A `byte`, a `ushort` and a `uint` become a `nuint` on its own, and a `nuint` becomes a `ulong`. Nothing with a
+sign does: a `nint` or an `int` goes to a `nuint` with `(nuint)`, which stops the program on a negative value,
+and the two do not mix in arithmetic. A `nuint` has no `-x`, since it is never negative.
+
+`(nuint)p` reads the address of a raw pointer as a number, with no `unsafe`: it reads no memory. The way back,
+`unsafe (raw T)n`, makes a pointer of a number, which may be no address of anything. An address is printed only
+as such a number, and it differs from one run to the next.
+
+Overflow follows the rule of every integer: `0 - 1` stops the program in the interpreter, in tests and in a
+debug build, and wraps to `nuint.MaxValue` in a release build. A size computed for C, `count * size`, is
+computed with `tryMultiply` where it can be large, so a huge count gives `null` and not a small block. Like
+`nint`, a `nuint` has no `toLittleEndian` or `fromBigEndian`.
+
+## Examples
+
+### Sizes, and back to an index
+
+```sg
+void main() {
+    nuint size = 4096
+    uint pages = 3
+    size *= pages
+    print(size)
+    ulong wide = size
+    print(wide + 1)
+    print(nuint.MaxValue)
+    var xs = List<int> { 4, 5, 6 }
+    nuint at = 2
+    print(xs[(nint)at])
+    var length = (nuint)xs.length()
+    print(length)
+}
+```
+
+```text
+12288
+12289
+18446744073709551615
+6
+3
+```
+
+`pages`, a `uint`, becomes a `nuint` on its own, and `size` becomes a `ulong`. An index is an `nint`, so `at`
+is written `(nint)at`; a length goes the other way with `(nuint)`.
+
+### C's `size_t`
+
+```sg
+extern {
+    nuint strlen(read CString text)
+    int snprintf(raw byte target, nuint size, read CString format, ...)
+}
+
+void main() {
+    var name = CString.from("Pasha") ?? panic("a zero byte inside")
+    nuint length = unsafe strlen(read name)
+    print(length)
+    nuint room = 8
+    var buffer = Memory.allocate<byte>((nint)room)
+    var format = CString.from("%s is %d") ?? panic("a zero byte inside")
+    var wanted = unsafe snprintf(buffer, room, read format, read name, (int)7)
+    print(wanted)
+    print(unsafe string.fromCString(buffer) ?? "not UTF-8")
+    unsafe Memory.free(buffer)
+}
+```
+
+```text
+5
+10
+Pasha i
+```
+
+`strlen` gives a `size_t`, so it is declared to give a `nuint`. `snprintf` writes at most `room` bytes, the last
+of them a zero, and gives the length it wanted, 10. `Memory.allocate` counts items as an `nint`, so the room
+is written `(nint)room` there.
+
+### A count and a size for C
+
+```sg
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+}
+
+struct Point : Formattable {
+    int x
+    int y
+}
+
+export int byX(raw void a, raw void b) {
+    var p = unsafe ((raw Point)a)[0]
+    var q = unsafe ((raw Point)b)[0]
+    return p.x - q.x
+}
+
+void main() {
+    var points = List<Point> { Point { x = 3, y = 0 }, Point { x = -1, y = 5 }, Point { x = 2, y = 2 } }
+    var count = (nuint)points.length()
+    var size = (nuint)Memory.sizeOf<Point>()
+    print($"{count} items of {size} bytes")
+    unsafe qsort((raw void)points.pointer(), count, size, byX)
+    print(points)
+}
+```
+
+```text
+3 items of 8 bytes
+[Point { x = -1, y = 5 }, Point { x = 2, y = 2 }, Point { x = 3, y = 0 }]
+```
+
+`qsort` takes the count of items and the size of one as `size_t`. Both are `nint`s in SG, and `(nuint)` hands
+them to C.
+
+### A size that does not fit
+
+```sg
+nuint? bytesFor(nuint count, nuint size) {
+    return count.tryMultiply(size)
+}
+
+void main() {
+    print(bytesFor(1000, 8) ?? 0)
+    print(bytesFor(nuint.MaxValue / 4, 8) ?? 0)
+    nuint big = nuint.MaxValue / 4
+    print(big.wrappingMultiply(8))
+    print(big.saturatingMultiply(8))
+    nint below = -3
+    print(below.tryToNuint() ?? 0)
+    print(below.wrappingToNuint())
+}
+```
+
+```text
+8000
+0
+18446744073709551608
+18446744073709551615
+0
+18446744073709551613
+```
+
+`tryMultiply` gives `null` where `count * size` would not fit; `wrappingMultiply` keeps the low bits, a block
+far too small. `tryToNuint` gives `null` for a negative number, and `wrappingToNuint` its bits.
+
+### An address as a number
+
+```sg
+nuint alignUp(nuint at, nuint align) {
+    return (at + align - 1) / align * align
+}
+
+void main() {
+    print(alignUp(13, 8))
+    print(alignUp(16, 8))
+    var block = Memory.allocate<byte>(64)
+    nuint start = (nuint)block
+    var align = (nuint)Memory.alignOf<long>()
+    print(start % align)
+    nuint next = alignUp(start + 3, align)
+    print(next - start)
+    var slot = unsafe (raw long)next
+    unsafe {
+        slot[0] = 1234567890123
+    }
+    var same = unsafe (raw long)(block + 8)
+    print(unsafe same[0])
+    unsafe Memory.free(block)
+}
+```
+
+```text
+16
+16
+0
+8
+1234567890123
+```
+
+`(nuint)block` reads the address with no `unsafe`. The block starts at a multiple of 8, so the next place for a
+`long` after byte 3 is byte 8. `unsafe (raw long)next` makes that number a pointer again, the same as
+`block + 8` read as a `long`.
+
+## What stops the program
+
+### A negative number as a `nuint`
+
+```sg panic
+nuint sizeOf(nint count) {
+    return (nuint)count
+}
+
+void main() {
+    print(sizeOf(-1))
+}
+```
+
+```text
+panic: value -1 does not fit in nuint
+  --> example.sg:2:12
+ 2 |     return (nuint)count
+   |            ^^^^^^^^^^^^
+  hint: `tryToNuint()` gives `null` when the value does not fit, and `wrappingToNuint()` cuts it to size
+```
+
+### Below zero
+
+```sg panic
+nuint left(nuint room, nuint used) {
+    return room - used
+}
+
+void main() {
+    print(left(8, 10))
+}
+```
+
+```text
+panic: overflow: 8 - 10 does not fit in nuint
+  --> example.sg:2:12
+ 2 |     return room - used
+   |            ^^^^^^^^^^^
+  hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
+```
+
+In a release build it wraps to 18 446 744 073 709 551 614.
+
+## What the compiler refuses
+
+### A `nuint` as an index
+
+```sg error
+void main() {
+    var xs = List<int> { 4, 5, 6 }
+    nuint at = 2
+    print(xs[at])
+}
+```
+
+```text
+error: expected `nint`, found `nuint`
+  --> example.sg:4:14
+ 4 |     print(xs[at])
+   |              ^^
+  hint: convert with `(nint)`; it panics if the value does not fit
+```
+
+### A `nuint` and an `int`
+
+```sg error
+void main() {
+    nuint size = 16
+    int extra = 4
+    print(size + extra)
+}
+```
+
+```text
+error: `nuint` and `int` do not mix: neither holds every value of the other
+  --> example.sg:4:11
+ 4 |     print(size + extra)
+   |           ^^^^^^^^^^^^
+  hint: convert one side to the type of the other: `(nuint)extra`; it panics if the value does not fit
+```
+
+### A length as a `nuint`
+
+```sg error
+void main() {
+    var xs = List<int> { 4, 5, 6 }
+    nuint count = xs.length()
+    print(count)
+}
+```
+
+```text
+error: expected `nuint`, found `nint`
+  --> example.sg:3:19
+ 3 |     nuint count = xs.length()
+   |                   ^^^^^^^^^^^
+  hint: convert with `(nuint)`; it panics if the value does not fit
+```
+
+### A negative `nuint`
+
+```sg error
+void main() {
+    nuint size = 16
+    print(-size)
+}
+```
+
+```text
+error: operator `-` is not defined for `nuint`: a `nuint` is never negative
+  --> example.sg:3:11
+ 3 |     print(-size)
+   |           ^^^^^
+  hint: convert first: `-(long)size`
+```
+
+### An address in a `long`
+
+```sg error
+void main() {
+    var block = Memory.allocate<int>(4)
+    long at = (long)block
+    print(at > 0)
+    unsafe Memory.free(block)
+}
+```
+
+```text
+error: an address is read as a number as wide as an address, and `long` is not one
+  --> example.sg:3:15
+ 3 |     long at = (long)block
+   |               ^^^^^^^^^^^
+  hint: `(nuint)block`, or `(nint)block`
+```
+
+### A pointer made from a `long`
+
+```sg error
+void main() {
+    long at = 4096
+    var p = unsafe (raw int)at
+    print(p == null)
+}
+```
+
+```text
+error: a cast to `raw int` reads a raw pointer as another, or an address as a pointer, and this is `long`
+  --> example.sg:3:29
+ 3 |     var p = unsafe (raw int)at
+   |                             ^^
+  hint: an address is a `nint` or a `nuint`: `(raw int)(nuint)at`
+```

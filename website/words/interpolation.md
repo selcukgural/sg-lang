@@ -1,0 +1,376 @@
+---
+name: $"{x}"
+kind: sign
+summary: Text with values written into it, checked when the program is compiled; .toString() makes it a string.
+see: string, char, double, bool, c ? a : b, x ?? y, interface
+learn: ../docs/learn/book/03-text.md#formatted-text
+library: ../docs/library/string.md#writing-values-into-text
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `$"{name} is {age}"` | values written into a text |
+| `$"{age + 2}"`, `$"{xs.length()}"` | any expression in the braces |
+| `$"{(c ? a : b)}"` | `?:` in parentheses, since a `:` starts the format |
+| `{x,8}`, `{x,-8}` | a width: spaces in front, or after |
+| `{n:x}`, `{n:X4}`, `{n:b8}`, `{n:D3}` | an integer in hex, in binary, with at least so many digits |
+| `{d:F2}`, `{d:e3}`, `{d:g}` | a fractional number: digits after the point, with an exponent, the shorter of the two |
+| `{d,10:F2}` | a width and a letter |
+| `{{`, `}}` | a brace |
+| `$"""..."""` | raw text with values: no escapes |
+| `$"...".toString()` | the text as a new `string` |
+
+## What it means
+
+`$"..."` writes values into a text. Each `{ }` holds an expression, and its value is written where the braces
+are. The values are computed from left to right, all of them before the text is written. A value can be
+anything `print` takes: a number, a `bool`, a `char`, a text, a list, a struct or an enum that is `Formattable`.
+A `T?` is not one: it is given a fallback with `??` first.
+
+It is part of the language and checked when the program is compiled: the format, and that each letter fits its
+value. Nothing of it is read while the program runs.
+
+A `$"..."` is not a `string`. `print`, `panic`, a text's `write`, a `Formatter`'s `f.write` and the writers of
+files take it as it is and write it without making one. Where a `string` is needed, `.toString()` makes it, and
+that is where the allocation shows. Texts are joined this way too: `a + b` is refused, `$"{a}{b}"` is the join.
+
+A width follows a comma: `{x,8}` takes at least eight characters, with spaces in front; `{x,-8}` puts the spaces
+after. It counts characters, not bytes, and a longer value is not cut. The width is a number written in the
+text, at most 999.
+
+A letter follows a colon. `x` and `X` write an integer in hex, `b` in binary, `D` in decimal; the number after
+the letter is the digits there are at least, zeros in front and the sign before them. A negative number in hex
+or binary is written as the bits of its type, with no `0x`. `F` writes a fractional number with so many digits
+after the point, and needs the number. `e` writes it with an exponent and so many digits after the point, `g`
+with so many significant digits in the shorter of the two ways, zeros at the end left out; without a number
+both take 6, and `E` and `G` write a capital `E`. The number is at most 999. A letter that does not fit the
+value is an error. There is no `N`, whose separators change from one country to another: a program writes the
+same text everywhere.
+
+`F` rounds the exact value to the nearest, and a tie goes to the even digit: `{2.5:F0}` is `2`. That is not what
+`round()` does, which takes a half away from zero; `roundToEven()` gives the digits of `F`. `NaN` and the
+infinities are written as `print` writes them, and a small negative number keeps its minus.
+
+Inside the braces a `:` outside the value's own brackets starts the letter, and a `,` starts the width when a
+number follows it; otherwise it stays part of a type, as in `HashMap<string, int>`. Text in quotes may be
+written in the braces. Outside them, the escapes are those of `"..."`. `$"""..."""` is raw text, with values put
+in the same way and `{{` for a brace.
+
+## Examples
+
+### Values in a text
+
+```sg
+struct Point : Formattable {
+    int x
+    int y
+}
+
+void main() {
+    var name = "Pasha"
+    var age = 4
+    var toys = List<string> { "ball", "mouse" }
+    print($"{name} is {age}")
+    print($"in two years: {age + 2}, toys: {toys.length()}")
+    print($"{toys} {toys.contains("ball")} {'P'} {1.5}")
+    print($"at {Point { x = 3, y = -4 }}")
+    print($"{age} {(age == 1 ? "year" : "years")}")
+}
+```
+
+```text
+Pasha is 4
+in two years: 6, toys: 2
+["ball", "mouse"] true P 1.5
+at Point { x = 3, y = -4 }
+4 years
+```
+
+A list writes its texts in quotes, and a struct its fields. `toys.contains("ball")` has quotes of its own
+inside the braces.
+
+### Letters
+
+```sg
+void main() {
+    int n = 255
+    int day = 7
+    double price = 3.14159
+    print($"{n:x} {n:X4} {n:b} {n:b12}")
+    print($"{day:D3} {-day:D3} {price:F2} {price:F0}")
+    print($"{price:e2} {price:g3} {1234567.0:g} {0.0001:G}")
+    print($"{(sbyte)-1:x} {-1:x} {(long)-1:X}")
+}
+```
+
+```text
+ff 00FF 11111111 000011111111
+007 -007 3.14 3
+3.14e+00 3.14 1.23457e+06 0.0001
+ff ffffffff FFFFFFFFFFFFFFFF
+```
+
+`-1` is written as the bits of its type: two digits for an `sbyte`, eight for an `int`, sixteen for a `long`.
+
+### Columns
+
+```sg
+struct Item {
+    string name
+    int count
+    double price
+}
+
+void main() {
+    var items = List<Item> {
+        Item { name = "tea", count = 3, price = 4.5 },
+        Item { name = "Zürich map", count = 12, price = 12.25 },
+        Item { name = "pen", count = 140, price = 0.8 },
+    }
+    print($"[{"name",-12}] [{"count",5}] [{"price",8}]")
+    for item in read items {
+        print($"[{item.name,-12}] [{item.count,5}] [{item.price,8:F2}]")
+    }
+    print($"[{"longer than the width",4}]")
+}
+```
+
+```text
+[name        ] [count] [   price]
+[tea         ] [    3] [    4.50]
+[Zürich map  ] [   12] [   12.25]
+[pen         ] [  140] [    0.80]
+[longer than the width]
+```
+
+`Zürich map` has eleven bytes and ten characters, and gets two spaces. The last value is longer than its width
+and is written whole.
+
+### How `F` rounds
+
+```sg
+void main() {
+    var prices = List<double> { 0.5, 1.5, 2.5, -2.5, 0.125, 2.675 }
+    for p in prices {
+        print($"{p,6} {p,4:F0} {p.round(),4} {p.roundToEven(),4} {p,6:F2}")
+    }
+    print($"{-0.001:F2} {1.0 / 0.0:F2} {0.0 / 0.0:F2}")
+}
+```
+
+```text
+   0.5    0    1    0   0.50
+   1.5    2    2    2   1.50
+   2.5    2    3    2   2.50
+  -2.5   -2   -3   -2  -2.50
+ 0.125    0    0    0   0.12
+ 2.675    3    3    3   2.67
+-0.00 Infinity NaN
+```
+
+A half goes to the even digit, as `roundToEven()` does, not away from zero, as `round()` does. `2.675` is
+written `2.67`: the `double` nearest to it is a little below it, and `F` rounds that exact value.
+
+### Braces, quotes and raw text
+
+```sg
+void main() {
+    var name = "Pasha"
+    string? nickname = null
+    print($"{{name}} is written {name}")
+    print($"a set: {{ {name} }}")
+    print($"{"quoted"} and {nickname ?? "no nickname"}")
+    print($"""{name} said "meow" in C:\cats\{name}""")
+    print($"""
+        name: "{name}"
+          size: {name.length(),3}
+        """)
+}
+```
+
+```text
+{name} is written Pasha
+a set: { Pasha }
+quoted and no nickname
+Pasha said "meow" in C:\cats\Pasha
+name: "Pasha"
+  size:   5
+```
+
+In raw text a backslash is a backslash and a quote is a quote. On lines, the indentation of the closing quotes
+is taken off every line, as in `"""..."""`.
+
+### A `string`, a builder and a `Formatter`
+
+```sg
+struct Money : Formattable {
+    long cents
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.cents / 100}.{this.cents % 100:D2} EUR")
+    }
+}
+
+int noisy(int n) {
+    print($"  computing {n}")
+    return n * 10
+}
+
+void main() {
+    var price = Money { cents = 1905 }
+    print($"[{price}] [{price,14}]")
+    string label = $"total: {price}".toString()
+    print($"{label} ({label.length()} bytes)")
+    var line = string.withCapacity(32)
+    for i in 1..4 {
+        line.write($"{i}:{i * i};")
+    }
+    print(line)
+    print($"first {noisy(1)}, then {noisy(2)}")
+}
+```
+
+```text
+[19.05 EUR] [     19.05 EUR]
+total: 19.05 EUR (16 bytes)
+1:1;2:4;3:9;
+  computing 1
+  computing 2
+first 10, then 20
+```
+
+`Money` writes itself with a `$"..."`, and a width works on it as on a number. `.toString()` makes the one
+`string` of the program; `write` adds each `$"..."` to `line` without making another. Both calls of `noisy` run
+before the line is written.
+
+## What the compiler refuses
+
+### A `string` without `.toString()`
+
+```sg error
+string label(int count) {
+    return $"{count} items"
+}
+
+void main() {
+    print(label(3))
+}
+```
+
+```text
+error: expected `string`; `$"..."` does not become a `string` on its own
+  --> example.sg:2:12
+ 2 |     return $"{count} items"
+   |            ^^^^^^^^^^^^^^^^
+  hint: add `.toString()` at the end; that is where the allocation shows
+```
+
+### `?:` without parentheses
+
+```sg error
+void main() {
+    var count = 1
+    print($"{count} {count == 1 ? "file" : "files"}")
+}
+```
+
+```text
+error: `c ? a : b` inside `{ }` is written in parentheses
+  a `:` there starts the format, as in `{x:X}`
+  --> example.sg:3:33
+ 3 |     print($"{count} {count == 1 ? "file" : "files"}")
+   |                                 ^^^^^^^^^^
+  hint: write `{(c ? a : b)}`
+```
+
+### A letter that does not fit
+
+```sg error
+void main() {
+    int total = 19
+    print($"{total:F2}")
+}
+```
+
+```text
+error: `F` writes a fractional number with so many digits after the point, and `total` is an `int`
+  --> example.sg:3:19
+ 3 |     print($"{total:F2}")
+   |                   ^^^
+  hint: make it a `double` first: `{(double)total:F2}`
+```
+
+`x`, `X`, `b` and `D` are refused the same way on a `double`, a `char` or a text.
+
+### A value that may be `null`
+
+```sg error
+void main() {
+    var scores = List<int> { 7, 9 }
+    print($"third: {scores.get(2)}")
+}
+```
+
+```text
+error: this is `read int?` and may be `null`; there is no text for `null`
+  --> example.sg:3:21
+ 3 |     print($"third: {scores.get(2)}")
+   |                     ^^^^^^^^^^^^^
+  hint: give a fallback with `??`, or test with `is null`
+```
+
+`{scores.get(2) ?? 0}` writes `0`.
+
+### A width in a variable
+
+```sg error
+void main() {
+    var width = 8
+    print($"[{"tea",width}]")
+}
+```
+
+```text
+error: expected `}`, found `,`
+  a width after `,` is a number written in the text: `{n,8}`
+  --> example.sg:3:20
+ 3 |     print($"[{"tea",width}]")
+   |                    ^
+```
+
+### A brace alone
+
+```sg error
+void main() {
+    var name = "Pasha"
+    print($"{name} }")
+}
+```
+
+```text
+error: unmatched `}`
+  --> example.sg:3:20
+ 3 |     print($"{name} }")
+   |                    ^
+  hint: write `}}` for a literal brace
+```
+
+### A letter that is not there
+
+```sg error
+void main() {
+    double total = 1234567.891
+    print($"{total:N2}")
+}
+```
+
+```text
+error: `N` is not a format here
+  `N` would put separators between groups of digits, which change from one country to another
+  --> example.sg:3:20
+ 3 |     print($"{total:N2}")
+   |                    ^^
+  hint: `F2` writes the digits after the point
+```

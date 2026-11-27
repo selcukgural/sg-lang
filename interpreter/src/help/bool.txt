@@ -291,6 +291,7 @@ WHAT THE COMPILER REFUSES
      The two values are written true and false.
 
 SEE ALSO
-     sg help if, sg help while, sg help is, sg help match
+     sg help true, sg help false, sg help if, sg help while, sg help is, sg
+     help match
 
      https://sg-lang.org/reference/bool.html

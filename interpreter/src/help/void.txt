@@ -1,0 +1,343 @@
+NAME
+     void - the return type of a function that gives nothing back
+
+SYNOPSIS
+     void f()
+            a function that gives nothing back; a call of it is a statement
+
+     return ends a void function early
+
+     void main(), void main(List<string> args)
+            a program that ends with code 0, or with exit(code)
+
+     Result<void, E>
+            success with nothing in it, written return Ok()
+
+     async void f()
+            an async function whose call gives a Task<void>
+
+     Func<int, void>, Func<void>
+            a function that takes an int, or nothing, and gives nothing
+
+     void srand(uint seed)
+            in an extern block, a function of C that gives nothing
+
+     CFunc<int, void>
+            a pointer to such a function, as C calls it
+
+     raw void
+            an address of memory of no known type, C's void*
+
+DESCRIPTION
+     void in front of a function says it gives nothing back. Its body ends at
+     its last line, or earlier with a bare return; a return with a value is an
+     error, and the compiler asks for no return on any path. A call of it is a
+     statement of its own. It has no value, so it is not kept in a variable,
+     passed on, compared or dropped with _ =.
+
+     void is not a type of a value. No variable, parameter, field or item of a
+     list has it. It stands where a function's result is named: in front of
+     the function, as the last type of a Func or a CFunc, and inside
+     Result<void, E> and Task<void>, the result of a function that can fail or
+     that runs as a task, with nothing to give on success. raw void is the one
+     other place: the address of memory whose type is not known.
+
+     main is void main(), or void main(List<string> args) to see the command
+     line. A program whose main ends normally exits with code 0; exit(code)
+     ends it with any other. main does not return a number: a program that can
+     fail is written Result<void, E> main(), and an error it returns is
+     printed and gives code 1.
+
+     async void f() is a function that runs as a task: its call gives a
+     Task<void>, which is awaited like any other and ends when the body does.
+
+EXAMPLES
+   A function that gives nothing back
+         struct Counter {
+             int count
+
+             void add(ref this, int n) {
+                 if n <= 0 {
+                     return
+                 }
+                 this.count += n
+             }
+         }
+
+         void report(read Counter c) {
+             print($"{c.count} so far")
+         }
+
+         void main() {
+             var c = Counter { count = 0 }
+             c.add(5)
+             c.add(-2)
+             c.add(3)
+             report(read c)
+         }
+
+         8 so far
+
+     add leaves early with a bare return when there is nothing to add, so -2
+     changes nothing. Each call of a void function is a line of its own.
+
+   Success with nothing in it
+         Result<void, string> check(read string name) {
+             if name.length() == 0 {
+                 return Error("the name is empty".clone())
+             }
+             if name.length() > 8 {
+                 return Error($"`{name}` is too long".toString())
+             }
+             return Ok()
+         }
+
+         Result<void, string> checkAll(read List<string> names) {
+             for name in read names {
+                 try check(name)
+             }
+             return Ok()
+         }
+
+         void main() {
+             var good = List<string> { "Ada", "Grace" }
+             var bad = List<string> { "Ada", "Montgomery" }
+             print(checkAll(read good) is Ok)
+             match checkAll(read bad) {
+                 Ok => print("all fine")
+                 Error(why) => print(why)
+             }
+         }
+
+         true
+         `Montgomery` is too long
+
+     A check that only says yes or no returns a Result<void, string>: Ok()
+     carries nothing. try passes an error on. As a pattern, in is and in
+     match, it is written Ok, with no parentheses, since there is nothing in
+     it to name.
+
+   main and the exit code
+     The file greet/main.sg:
+
+         void main(List<string> args) {
+             if args.length() == 0 {
+                 printError("give a name")
+                 exit(2)
+             }
+             print($"hello, {args[0]}")
+         }
+
+         $ cd greet
+         $ sg main.sg; echo "exit code $?"
+         give a name
+         exit code 2
+         $ sg main.sg Ada; echo "exit code $?"
+         hello, Ada
+         exit code 0
+
+     A void main that reaches its end gives code 0. exit(2) ends the program
+     at once with code 2.
+
+   Functions as values
+         void twice(Func<int, void> action, int value) {
+             action(value)
+             action(value * 2)
+         }
+
+         void shout(int n) {
+             print($"{n}!")
+         }
+
+         void whisper(int n) {
+             print($"({n})")
+         }
+
+         void sayDone() {
+             print("done")
+         }
+
+         void main() {
+             var actions = List<Func<int, void>> { shout, whisper }
+             for action in read actions {
+                 twice(action, 21)
+             }
+             Func<void> done = sayDone
+             done()
+         }
+
+         21!
+         42!
+         (21)
+         (42)
+         done
+
+     The last type of a Func is what the function gives, and void says
+     nothing; Func<void> takes nothing and gives nothing. Both are values that
+     can go into a list.
+
+   An async function
+         async void brew(string drink, int ms) {
+             await Task.delay(ms)
+             print($"{drink} is ready")
+         }
+
+         async void main() {
+             var tea = brew("tea".clone(), 30)
+             Task<void> coffee = brew("coffee".clone(), 10)
+             await coffee
+             await tea
+             print("both done")
+         }
+
+         coffee is ready
+         tea is ready
+         both done
+
+     A call of brew without await starts it as a task and gives a Task<void>.
+     await waits for its end, and gives nothing.
+
+   A function of C that gives nothing
+     The file each/native.c:
+
+         #include <stddef.h>
+         #include <stdint.h>
+
+         void each(const int32_t *items, size_t count, void (*visit)(int32_t, void *), void *state) {
+             for (size_t i = 0; i < count; i++) {
+                 visit(items[i], state);
+             }
+         }
+
+     The file each/main.sg:
+
+         extern "./native.c" {
+             void each(raw int items, nuint count, CFunc<int, raw void, void> visit, raw void state)
+         }
+
+         export void add(int value, raw void state) {
+             var total = unsafe (ref long)state
+             total += value
+             print($"C gave {value}")
+         }
+
+         void main() {
+             var numbers = List<int> { 4, 8, 15 }
+             long total = 0
+             var state = unsafe Memory.addressOf(ref total)
+             unsafe each(numbers.pointer(), (nuint)numbers.length(), add, state)
+             print(total)
+         }
+
+         $ cd each
+         $ sg main.sg
+         C gave 4
+         C gave 8
+         C gave 15
+         27
+         $ sg build main.sg -o each && ./each
+         C gave 4
+         C gave 8
+         C gave 15
+         27
+
+     C's void is SG's void, and C's void* is raw void. each gives nothing, and
+     calls back add, an export void function, through a CFunc<int, raw void,
+     void>. The state goes to C as a raw void, and unsafe (ref long)state
+     lends it again inside the callback.
+
+WHAT THE COMPILER REFUSES
+   The value of a void call
+         void greet(read string name) {
+             print($"hello, {name}")
+         }
+
+         void main() {
+             var said = greet("Ada")
+             print(said)
+         }
+
+         error: this call does not return a value
+           --> example.sg:6:16
+          6 |     var said = greet("Ada")
+            |                ^^^^^^^^^^^^
+
+   A void call where a value is needed
+         void greet(read string name) {
+             print($"hello, {name}")
+         }
+
+         void main() {
+             print(greet("Ada"))
+         }
+
+         error: this call does not return a value, and one is needed here
+           --> example.sg:6:11
+          6 |     print(greet("Ada"))
+            |           ^^^^^^^^^^^^
+
+   Dropping what is not there
+         void greet(read string name) {
+             print($"hello, {name}")
+         }
+
+         void main() {
+             _ = greet("Ada")
+         }
+
+         error: this call does not return a value, so there is nothing to discard
+           --> example.sg:6:9
+          6 |     _ = greet("Ada")
+            |         ^^^^^^^^^^^^
+           hint: write the call alone, without `_ =`
+
+   A list of void
+         void main() {
+             var nothing = List<void>()
+             print(nothing.length())
+         }
+
+         error: `void` can only be a return type
+           --> example.sg:2:24
+          2 |     var nothing = List<void>()
+            |                        ^^^^
+
+     A variable, a parameter and a field of type void are refused the same
+     way.
+
+   void as the parameters
+         int answer(void) {
+             return 42
+         }
+
+         void main() {
+             print(answer())
+         }
+
+         error: expected a parameter name, found `)`
+           --> example.sg:1:16
+          1 | int answer(void) {
+            |                ^
+
+     A function with no parameters is written with empty parentheses: int
+     answer().
+
+   A main that returns a number
+         int main() {
+             return 0
+         }
+
+         error: `main` is written `void main()` or `Result<void, E> main()`
+           to see the command line: `void main(List<string> args)`; to await, `async` in front
+           --> example.sg:1:5
+          1 | int main() {
+            |     ^^^^
+
+     The code a program ends with is given by exit(code), or by an error main
+     returns.
+
+SEE ALSO
+     sg help return, sg help async, sg help raw, sg help extern, sg help
+     export
+
+     https://sg-lang.org/reference/void.html

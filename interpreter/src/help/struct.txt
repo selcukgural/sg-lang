@@ -330,6 +330,7 @@ WHAT THE COMPILER REFUSES
            hint: give `mix.songs` a value again, or use the other fields one by one
 
 SEE ALSO
-     sg help with, sg help this, sg help enum, sg help packed
+     sg help with, sg help readonly, sg help this, sg help enum, sg help
+     interface, sg help packed
 
      https://sg-lang.org/reference/struct.html

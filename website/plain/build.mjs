@@ -507,13 +507,26 @@ function blocksOf(body) {
 const roffText = (text) => text.replaceAll('\\', '\\e').replace(/^([.'])/gm, '\\&$1');
 // An argument of a macro in quotes: a quote inside it is written twice.
 const roffArg = (text) => `"${roffText(text).replaceAll('"', '""')}"`;
-function roffInline(md) {
-  return md
-    .split(/(`[^`]*`)/)
-    .map((part) => (part.startsWith('`') ? `\\fB${roffText(part.slice(1, -1)).replaceAll('-', '\\-')}\\fR` : roffText(plainText(part))))
+// The parts of a line of Markdown, each `{ code, text }`. A code span is a run of backticks, the code, and a
+// run of as many, so ``a `b` c`` holds backticks of its own; one space inside each end is taken off.
+function inlineParts(md) {
+  const parts = [];
+  const span = /(`+)([\s\S]*?[^`])\1(?!`)/g;
+  let last = 0;
+  for (let m; (m = span.exec(md)); last = span.lastIndex) {
+    parts.push({ code: false, text: md.slice(last, m.index) });
+    let code = m[2];
+    if (code.length > 2 && code.startsWith(' ') && code.endsWith(' ') && code.trim()) code = code.slice(1, -1);
+    parts.push({ code: true, text: code });
+  }
+  parts.push({ code: false, text: md.slice(last) });
+  return parts;
+}
+const roffInline = (md) =>
+  inlineParts(md)
+    .map((p) => (p.code ? `\\fB${roffText(p.text).replaceAll('-', '\\-')}\\fR` : roffText(plainText(p.text))))
     .join('')
     .replace(/\n/g, ' ');
-}
 const SECTION_NAME = { Forms: 'SYNOPSIS', 'What it means': 'DESCRIPTION', Examples: 'EXAMPLES' };
 
 function roffOf(page) {
@@ -567,7 +580,7 @@ function wrap(text, indent, width = 78) {
   return lines.join('\n');
 }
 // \u0001 and \u0002 open and close bold; made <b> in HTML and dropped in plain text.
-const textInline = (md) => md.split(/(`[^`]*`)/).map((part) => (part.startsWith('`') ? `\u0001${part.slice(1, -1)}\u0002` : plainText(part))).join('').replace(/\n/g, ' ');
+const textInline = (md) => inlineParts(md).map((p) => (p.code ? `\u0001${p.text}\u0002` : plainText(p.text))).join('').replace(/\n/g, ' ');
 
 function manText(page) {
   const head = `${page.manName.toUpperCase()}(7)`;

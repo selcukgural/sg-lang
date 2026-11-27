@@ -370,6 +370,6 @@ WHAT THE COMPILER REFUSES
             |     ^^^^^^
 
 SEE ALSO
-     sg help struct, sg help union, sg help raw, sg help unsafe
+     sg help struct, sg help union, sg help align, sg help raw, sg help unsafe
 
      https://sg-lang.org/reference/packed.html

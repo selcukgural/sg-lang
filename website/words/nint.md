@@ -1,0 +1,357 @@
+---
+name: nint
+kind: type
+summary: An integer with a sign, as wide as an address; every length, index and position is one.
+see: int, long, nuint, List, string, raw, a..b, xs[^1]
+learn: ../docs/learn/book/02-values.md#the-integer-types
+library: ../docs/library/numbers.md
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `nint` | a signed integer as wide as an address: 64 bits on today's computers |
+| `xs.length()`, `text.length()` | a length, as an `nint` |
+| `xs[i]`, `xs[a..b]`, `xs[^k]` | an index and the ends of a range: an `nint`, or an integer that becomes one on its own (`byte`, `short`, `int`) |
+| `for i in 0..xs.length()` | every place of a list; `i` is an `nint` |
+| `text.indexOf(x)`, `xs.indexOf(v)`, `xs.binarySearch(v)` | a place, as an `nint?` |
+| `nint.MinValue`, `nint.MaxValue` | the two ends, the machine's |
+| `(nint)x` | a `long`, a `uint`, a `ulong` or a `nuint` as an index |
+| `(int)n`, `n.tryToInt()`, `(double)n` | a length as an `int`, or as a fraction |
+| `q - p` | the count of items between two raw pointers |
+| `Memory.sizeOf<T>()`, `Memory.alignOf<T>()` | the bytes a type takes, and its alignment |
+
+## What it means
+
+An `nint` is a signed integer as wide as an address on the machine: 64 bits on today's computers, from
+-9 223 372 036 854 775 808 to 9 223 372 036 854 775 807. It is the type of every length and every place:
+`length()` of a list, an array, a slice or a text gives an `nint`, and so do `indexOf` and the other searches.
+A list is not held to two billion items, as it would be if its places were `int`s.
+
+An index takes an `nint`, or a type that becomes one on its own: `byte`, `sbyte`, `short`, `ushort` and `int`.
+So `xs[i]` with an `int i` is written as it is. A `long`, a `uint`, a `ulong` and a `nuint` are written
+`(nint)x`: a `uint` does not fit in the `nint` of a 32-bit machine, and the unsigned types have values no
+`nint` holds. The same holds for the ends of a range and for the count after `^`.
+
+An `nint` becomes a `long` on its own, and next to an `int` in arithmetic the result is an `nint`: `total /
+xs.length()` is an `nint`. Nothing goes back on its own. A length becomes an `int` with `(int)`, which stops the
+program when it does not fit, or with `tryToInt()` and `saturatingToInt()`; it becomes a `double` with
+`(double)`, since a `double` holds whole numbers exactly only up to 2^53. An `nint` and a `nuint` do not mix.
+
+An `nint` has a sign, so a length minus one is -1 for an empty list, not a huge number, and a loop that counts
+down stops at `i >= 0`. A negative index stops the program, as one past the end does.
+
+Overflow follows the rule of every integer: a panic in the interpreter, in tests and in a debug build, wrapping
+in a release build, and `tryAdd`, `wrappingAdd` and `saturatingAdd` for one behaviour in every build. An `nint`
+has no `toLittleEndian` or `fromBigEndian`: its size depends on the machine, and a number kept in bytes has a
+size of its own, so it goes through a `long`.
+
+In raw memory, `q - p` counts the items of one type between two pointers as an `nint`, and `Memory.sizeOf<T>()`
+gives the bytes of a type as one. `(nint)p` is an address as a number with a sign; [`nuint`](nuint.md) is the
+usual one.
+
+## Examples
+
+### Lengths and places
+
+```sg
+void main() {
+    var scores = List<int> { 70, 85, 92, 64 }
+    var count = scores.length()
+    print(count)
+    for i in 0..count {
+        print($"{i}: {scores[i]}")
+    }
+    int first = 0
+    byte last = 3
+    print(scores[first] + scores[last])
+    print(scores[^1])
+}
+```
+
+```text
+4
+0: 70
+1: 85
+2: 92
+3: 64
+134
+64
+```
+
+`count` is an `nint`, and so is `i`, which runs from 0 to 3. An `int` and a `byte` are indexes as they are,
+since both become an `nint` on their own.
+
+### Places in a text are bytes
+
+```sg
+void main() {
+    var text = "naïve café"
+    print(text.length())
+    var at = text.indexOf("café") ?? -1
+    print(at)
+    print(text[at..text.length()])
+    print(text.indexOf('z') ?? -1)
+}
+```
+
+```text
+12
+7
+café
+-1
+```
+
+`ï` and `é` take two bytes each, so the text has 12 bytes, and `café` starts at byte 7. `indexOf` gives an
+`nint?`, `null` when nothing is found.
+
+### Counting down
+
+```sg
+void main() {
+    var xs = List<int> { 5, 8, 13 }
+    var i = xs.length() - 1
+    while i >= 0 {
+        print(xs[i])
+        i -= 1
+    }
+    var empty = List<int>()
+    print(empty.length() - 1)
+}
+```
+
+```text
+13
+8
+5
+-1
+```
+
+An `nint` has a sign, so `i` goes down to -1 and the loop ends there. A length minus one of an empty list is -1.
+
+### Into an `int` and a `double`
+
+```sg
+void main() {
+    var temperatures = List<int> { 18, 21, 25, 19 }
+    int total = 0
+    for t in read temperatures {
+        total += t
+    }
+    var whole = total / temperatures.length()
+    double exact = total / (double)temperatures.length()
+    int count = (int)temperatures.length()
+    print($"{whole} {exact} {count}")
+    long day = 2
+    print(temperatures[(nint)day])
+    print(temperatures.length().tryToInt() ?? -1)
+}
+```
+
+```text
+20 20.75 4
+25
+4
+```
+
+`total / temperatures.length()` divides an `int` by an `nint` and gives an `nint`, `20`. For a fraction the
+length is written `(double)`, and the `int` then becomes a `double` on its own. `(int)` makes the length an
+`int`, and a `long` is an index only with `(nint)`. `tryToInt()` gives `null` for a length past
+`int.MaxValue`, which a cast would stop the program on.
+
+### The ends, and overflow
+
+```sg
+void main() {
+    print(nint.MinValue)
+    print(nint.MaxValue)
+    nint big = nint.MaxValue
+    print(big.tryAdd(1) ?? -1)
+    print(big.wrappingAdd(1))
+    print(big.saturatingAdd(1))
+    long wide = big
+    print(wide)
+}
+```
+
+```text
+-9223372036854775808
+9223372036854775807
+-1
+-9223372036854775808
+9223372036854775807
+9223372036854775807
+```
+
+`nint.MaxValue` is the machine's. An `nint` becomes a `long` on its own.
+
+### Counting in raw memory
+
+```sg
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    var points = Memory.allocate<Point>(5)
+    var fourth = unsafe (points + 3)
+    print(fourth - points)
+    print(points - fourth)
+    var bytes = (fourth - points) * Memory.sizeOf<Point>()
+    print(bytes)
+    print((nint)fourth - (nint)points)
+    unsafe Memory.free(points)
+}
+```
+
+```text
+3
+-3
+24
+24
+```
+
+`fourth - points` counts `Point`s, three of them, and has a sign. `Memory.sizeOf<Point>()` is an `nint` too,
+8 bytes, so the product is one. `(nint)p` reads the address as a number, and two of them differ by the bytes.
+
+## What stops the program
+
+### An index below zero
+
+```sg panic
+int last(read List<int> xs) {
+    return xs[xs.length() - 1]
+}
+
+void main() {
+    var empty = List<int>()
+    print(last(read empty))
+}
+```
+
+```text
+panic: index -1 is out of range: the length is 0
+  --> example.sg:2:12
+ 2 |     return xs[xs.length() - 1]
+   |            ^^^^^^^^^^^^^^^^^^^
+  hint: `.get(i)` reads with `null` instead; before a write, compare the index with `.length()`
+```
+
+`xs.get(xs.length() - 1)`, or `xs[^1]` behind a test of the length, says what an empty list gives.
+
+### A cast that does not fit
+
+```sg panic
+nint place(ulong at) {
+    return (nint)at
+}
+
+void main() {
+    print(place(ulong.MaxValue))
+}
+```
+
+```text
+panic: value 18446744073709551615 does not fit in nint
+  --> example.sg:2:12
+ 2 |     return (nint)at
+   |            ^^^^^^^^
+  hint: `tryToNint()` gives `null` when the value does not fit, and `wrappingToNint()` cuts it to size
+```
+
+## What the compiler refuses
+
+### A length as an `int`
+
+```sg error
+void main() {
+    var names = List<string> { "Ada", "Grace" }
+    int count = names.length()
+    print(count)
+}
+```
+
+```text
+error: expected `int`, found `nint`
+  --> example.sg:3:17
+ 3 |     int count = names.length()
+   |                 ^^^^^^^^^^^^^^
+  hint: convert with `(int)`; it panics if the value does not fit
+```
+
+`var count = names.length()` keeps it an `nint`.
+
+### A `long` as an index
+
+```sg error
+void main() {
+    long at = 1
+    var names = List<string> { "Ada", "Grace" }
+    print(names[at])
+}
+```
+
+```text
+error: expected `nint`, found `long`
+  --> example.sg:4:17
+ 4 |     print(names[at])
+   |                 ^^
+  hint: convert with `(nint)`; it panics if the value does not fit
+```
+
+A `uint`, a `ulong` and a `nuint` are refused the same way.
+
+### An `nint` and a `nuint`
+
+```sg error
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    nuint extra = 2
+    print(xs.length() + extra)
+}
+```
+
+```text
+error: `nint` and `nuint` do not mix: neither holds every value of the other
+  --> example.sg:4:11
+ 4 |     print(xs.length() + extra)
+   |           ^^^^^^^^^^^^^^^^^^^
+  hint: convert one side to the type of the other: `(nint)extra`; it panics if the value does not fit
+```
+
+### A length in a fraction
+
+```sg error
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    double part = 1.0 / xs.length()
+    print(part)
+}
+```
+
+```text
+error: `nint` and `double` do not mix: a `double` does not hold every `nint` exactly
+  --> example.sg:3:25
+ 3 |     double part = 1.0 / xs.length()
+   |                         ^^^^^^^^^^^
+  hint: convert it: `(double)xs.length()`, which rounds past 2^53
+```
+
+### An `nint` written as bytes
+
+```sg error
+void main() {
+    nint size = 4096
+    print(size.toLittleEndian())
+}
+```
+
+```text
+error: `nint` has the size of an address, which depends on the machine; a number kept in bytes has a size of its own
+  --> example.sg:3:16
+ 3 |     print(size.toLittleEndian())
+   |                ^^^^^^^^^^^^^^
+  hint: make it a `long` first: `((long)size).toLittleEndian()` gives 8 bytes
+```

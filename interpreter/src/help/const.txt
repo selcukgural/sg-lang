@@ -236,8 +236,8 @@ EXAMPLES
          ----
 
      public lets other modules read a const, by its bare name after use or by
-     its full name. Hidden stays inside limits: main.sg naming it gets  Hidden
-     exists in the limits module but is not public .
+     its full name. Hidden stays inside limits: main.sg naming it gets
+     `Hidden` exists in the `limits` module but is not public.
 
    The bytes of a file
      The file motd/motd.txt:
@@ -304,8 +304,8 @@ WHAT THE COMPILER REFUSES
           3 |     const int Size = n * 2
             |                      ^
 
-     A static cannot be read either:  Base is a static, and a const cannot
-     read it .
+     A static cannot be read either: `Base` is a static, and a const cannot
+     read it.
 
    Writing into it
          const int[] Primes = { 2, 3, 5 }

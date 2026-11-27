@@ -330,6 +330,6 @@ WHAT THE COMPILER REFUSES
      what a file or a protocol stored keeps its meaning.
 
 SEE ALSO
-     sg help match, sg help is, sg help struct, sg help new
+     sg help match, sg help is, sg help struct, sg help new, sg help interface
 
      https://sg-lang.org/reference/enum.html

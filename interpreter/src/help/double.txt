@@ -446,6 +446,6 @@ WHAT THE COMPILER REFUSES
      with nothing lost.
 
 SEE ALSO
-     sg help int, sg help long, sg help const, sg help string
+     sg help float, sg help int, sg help long, sg help const, sg help string
 
      https://sg-lang.org/reference/double.html

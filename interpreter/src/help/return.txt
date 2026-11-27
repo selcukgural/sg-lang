@@ -366,6 +366,6 @@ WHAT THE COMPILER REFUSES
      main returns.
 
 SEE ALSO
-     sg help try, sg help match, sg help while, sg help read
+     sg help void, sg help try, sg help match, sg help while, sg help read
 
      https://sg-lang.org/reference/return.html

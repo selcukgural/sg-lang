@@ -385,6 +385,6 @@ WHAT THE COMPILER REFUSES
            hint: it becomes one on its own: `long x = value`
 
 SEE ALSO
-     sg help long, sg help byte, sg help double
+     sg help long, sg help nint, sg help uint, sg help byte, sg help double
 
      https://sg-lang.org/reference/int.html

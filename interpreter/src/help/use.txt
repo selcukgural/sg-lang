@@ -258,7 +258,7 @@ WHAT THE COMPILER REFUSES
             | ^^^
 
      Comments may stand above the use lines; nothing else may. The same use
-     line twice is refused too:  use calendar is written twice .
+     line twice is refused too: `use calendar` is written twice.
 
    A module that is not there
          use stock
@@ -274,7 +274,7 @@ WHAT THE COMPILER REFUSES
             |     ^^^^^
 
      When a module of that name is further down, the hint gives its whole
-     path: use wind in a file of units/ gets the hint  use units.wind .
+     path: use wind in a file of units/ gets the hint `use units.wind`.
 
    use std
          use std

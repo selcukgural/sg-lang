@@ -1,0 +1,323 @@
+NAME
+     sbyte - an integer of 8 bits, with a sign, from -128 to 127: a small
+     step, a reading, a signed byte of a file
+
+SYNOPSIS
+     sbyte  an integer of 8 bits, from -128 to 127
+
+     sbyte t = -40, 0x7f, 0b0101
+            a number written in the program, where an sbyte goes
+
+     sbyte.MinValue, sbyte.MaxValue
+            the two ends
+
+     short x = t, int x = t, double x = t
+            an sbyte becomes a wider signed type, or a fraction, on its own
+
+     (sbyte)n, n.tryToSbyte(), n.saturatingToSbyte()
+            a wider number made an sbyte: a panic, null, or the nearest end
+            when it does not fit
+
+     b.wrappingToSbyte(), t.wrappingToByte()
+            the bits of a byte read with a sign, and back
+
+     raw sbyte
+            a pointer to C's signed char
+
+     sbyte.parse(text)
+            the number a text writes, as a Result<sbyte, NumberError>
+
+DESCRIPTION
+     An sbyte is a whole number from -128 to 127 in 8 bits, two's complement,
+     on every machine. It is for a small value with a sign where the space
+     counts: the step between two readings, a temperature, an offset, a signed
+     byte of a file format or of a device. A number written in the program is
+     an sbyte where an sbyte goes, and one that does not fit is refused when
+     the program is compiled.
+
+     Arithmetic happens in the type of its operands, so sbyte + sbyte is an
+     sbyte, and a result past an end is an overflow: a panic in the
+     interpreter, in tests and in a debug build, and a wrap in a release
+     build. A number written beside an sbyte takes its type too, so t + 200
+     and t < 200 are refused: 200 is not an sbyte. wrappingAdd, tryAdd and
+     saturatingAdd say one behaviour for every build, and so do the methods
+     for -, * and abs. sbyte.MinValue / -1 stops the program in every build.
+
+     An sbyte becomes a short, an int, a long, an nint, a float or a double on
+     its own, since each holds every one of its values. It never becomes an
+     unsigned type on its own, not even a byte: an sbyte and a byte do not
+     mix, and a short holds both. The way back from a wider type is a cast,
+     (sbyte)n, which stops the program when the value does not fit (a release
+     build keeps the low 8 bits), or a method that does the same in every
+     build.
+
+     A byte and an sbyte have the same bits for 0 to 127. b.wrappingToSbyte()
+     reads all 8 bits of a byte as an sbyte, so 0xfb is -5, and
+     t.wrappingToByte() goes back; (sbyte)b stops the program for a byte above
+     127. One byte has no order, so an sbyte has no toLittleEndian or
+     fromBigEndian. After ... in a call of C, an sbyte is refused with the
+     hint (int)t, since C reads an int there.
+
+     The methods are in Numbers.
+
+EXAMPLES
+   A number from -128 to 127
+         void main() {
+             sbyte low = -40
+             sbyte high = 45
+             print($"{low} {high} {high - low}")
+             print($"{sbyte.MinValue} {sbyte.MaxValue}")
+             int wide = low
+             double fraction = low
+             print($"{wide * 1000} {fraction / 3}")
+             print($"{low:x2} {low:b8} {high:x2}")
+         }
+
+         -40 45 85
+         -128 127
+         -40000 -13.333333333333334
+         d8 11011000 2d
+
+     high - low is an sbyte, and 85 fits. wide * 1000 is an int, since low
+     widened on its way into wide. In hex and in binary a negative sbyte is
+     written as its 8 bits.
+
+   Small steps between readings
+         List<sbyte>? steps(read List<short> readings) {
+             var out = List<sbyte>()
+             for i in 1..readings.length() {
+                 int step = (int)readings[i] - readings[i - 1]
+                 var small = step.tryToSbyte() ?? return null
+                 out.add(small)
+             }
+             return out
+         }
+
+         List<short> undo(short first, read List<sbyte> steps) {
+             var readings = List<short> { first }
+             short value = first
+             for step in steps {
+                 value += step
+                 readings.add(value)
+             }
+             return readings
+         }
+
+         void main() {
+             var tenths = List<short> { 215, 218, 221, 219, 190, 185 }
+             var small = steps(read tenths) ?? panic("a step too large")
+             print(small)
+             print(undo(tenths[0], read small))
+             var wide = List<short> { 30000, -30000 }
+             print(steps(read wide) is null)
+         }
+
+         [3, 3, -2, -29, -5]
+         [215, 218, 221, 219, 190, 185]
+         true
+
+     Readings of a temperature in tenths of a degree change little from one to
+     the next, so each step is kept in one byte instead of two.
+     (int)readings[i] makes the difference an int: two shorts would give a
+     short, and 30000 - (-30000) would overflow before it is tested.
+     tryToSbyte gives null for a step that does not fit. In value += step the
+     sbyte widens to a short.
+
+   The bits of a byte, with a sign
+         void main() {
+             var record = List<byte> { 0x05, 0xfb, 0x80, 0x7f }
+             var axes = List<sbyte>()
+             for b in read record {
+                 axes.add(b.wrappingToSbyte())
+             }
+             print(axes)
+             print(record[1].tryToSbyte() ?? 0)
+             var back = List<byte>()
+             for a in read axes {
+                 back.add(a.wrappingToByte())
+             }
+             print(back == record)
+             print($"{axes[1]:x2} {record[1]:x2}")
+         }
+
+         [5, -5, -128, 127]
+         0
+         true
+         fb fb
+
+     A sensor that sends signed bytes, such as an accelerometer, gives them as
+     bytes. wrappingToSbyte reads each as two's complement: 0xfb is -5 and
+     0x80 is -128. tryToSbyte asks a different question, whether the value 251
+     fits, and it does not. The bits are the same both ways, so the hex is
+     too.
+
+   One behaviour in every build
+         void main() {
+             sbyte gain = 100
+             print($"{gain.saturatingAdd(50)} {gain.wrappingAdd(50)} {gain.tryAdd(50) ?? 0}")
+             sbyte cold = -100
+             print($"{cold.saturatingSubtract(50)} {cold.saturatingMultiply(2)}")
+             print($"{sbyte.MinValue.unsignedAbs()} {sbyte.MinValue.tryNegate() ?? 0} {sbyte.MinValue.wrappingNegate()}")
+             print($"{(300).saturatingToSbyte()} {(-300).saturatingToSbyte()} {(-2.7).saturatingToSbyte()}")
+         }
+
+         127 -106 0
+         -128 -128
+         128 0 -128
+         127 -128 -2
+
+     saturatingAdd stops at 127, wrappingAdd goes round to -106, and tryAdd
+     gives null. -128 has no positive sbyte: unsignedAbs gives 128 as a byte,
+     tryNegate gives null and wrappingNegate gives -128 again.
+     saturatingToSbyte takes any wider number, a fraction too, and cuts a
+     fraction toward zero.
+
+   A signed char of C
+         extern {
+             raw sbyte strrchr(read CString text, int c)
+         }
+
+         void main() {
+             var path = CString.from("/tmp/notes.txt") ?? panic("a zero byte inside")
+             var dot = unsafe strrchr(read path, (int)'.')
+             if dot != null {
+                 sbyte first = unsafe dot[0]
+                 print(first)
+                 print(unsafe string.fromCString(dot) ?? "not UTF-8")
+             }
+         }
+
+         46
+         .txt
+
+     C's char has a sign on many machines, and a function that gives a char*
+     can be declared with raw sbyte. Reading through the pointer gives an
+     sbyte, here the code of .. string.fromCString takes a raw sbyte as well
+     as a raw byte, copies the bytes up to the zero and checks that they are
+     UTF-8.
+
+   Read from text
+         void main() {
+             for text in (List<string> { "-12", "127", "128", "+5", "1_0" }) {
+                 match sbyte.parse(read text) {
+                     Ok(n) => print($"{text}: {n}")
+                     Error(e) => print($"{text}: {e}")
+                 }
+             }
+             print(sbyte.parseHex("7f") ?? 0)
+         }
+
+         -12: -12
+         127: 127
+         128: OutOfRange
+         +5: 5
+         1_0: Invalid(1)
+         127
+
+     parse reads a sign and digits; a number past an end is OutOfRange, and
+     anything else is Invalid with the place where the text stops being a
+     number.
+
+WHAT STOPS THE PROGRAM
+   A sum past 127
+         sbyte total(read List<sbyte> steps) {
+             sbyte sum = 0
+             for s in steps {
+                 sum += s
+             }
+             return sum
+         }
+
+         void main() {
+             var steps = List<sbyte> { 100, 20, 10 }
+             print(total(read steps))
+         }
+
+         panic: overflow: 120 + 10 does not fit in sbyte
+           --> example.sg:4:9
+          4 |         sum += s
+            |         ^^^^^^^^
+           hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+
+     In a release build the sum wraps to -126. A sum of many sbytes is kept in
+     a wider type: with int sum = 0, each sbyte widens as it is added.
+
+   A byte above 127, cast
+         void main() {
+             var record = List<byte> { 0x05, 0xfb }
+             for b in read record {
+                 print((sbyte)b)
+             }
+         }
+
+         5
+         panic: value 251 does not fit in sbyte
+           --> example.sg:4:15
+          4 |         print((sbyte)b)
+            |               ^^^^^^^^
+           hint: `tryToSbyte()` gives `null` when the value does not fit, and `wrappingToSbyte()` cuts it to size
+
+     A cast keeps the value, and 251 is not an sbyte. To read the bits with a
+     sign, b.wrappingToSbyte() gives -5 in every build.
+
+WHAT THE COMPILER REFUSES
+   A number that does not fit
+         void main() {
+             sbyte temperature = 130
+             print(temperature)
+         }
+
+         error: 130 does not fit in sbyte
+           --> example.sg:2:25
+          2 |     sbyte temperature = 130
+            |                         ^^^
+
+     sbyte t = -129 and (sbyte)200 are refused the same way.
+
+   An sbyte and a byte
+         void main() {
+             sbyte offset = -3
+             byte level = 200
+             print(level + offset)
+         }
+
+         error: `byte` and `sbyte` do not mix: neither holds every value of the other
+           --> example.sg:4:11
+          4 |     print(level + offset)
+            |           ^^^^^^^^^^^^^^
+           hint: `short` holds both: `(short)offset`
+
+   A byte where an sbyte goes
+         void main() {
+             var data = List<byte> { 0x05, 0xfb }
+             sbyte s = data[1]
+             print(s)
+         }
+
+         error: expected `sbyte`, found `byte`
+           --> example.sg:3:15
+          3 |     sbyte s = data[1]
+            |               ^^^^^^^
+           hint: convert with `(sbyte)`; it panics if the value does not fit
+
+     Where the byte holds a signed value, data[1].wrappingToSbyte() reads its
+     bits.
+
+   A number past the ends, beside an sbyte
+         void main() {
+             sbyte reading = -5
+             print(reading < 200)
+         }
+
+         error: 200 does not fit in sbyte
+           --> example.sg:3:21
+          3 |     print(reading < 200)
+            |                     ^^^
+
+     The number takes the type of the other side, and 200 is not an sbyte.
+     (int)reading < 200 compares two ints.
+
+SEE ALSO
+     sg help byte, sg help short, sg help int, sg help char, sg help raw
+
+     https://sg-lang.org/reference/sbyte.html

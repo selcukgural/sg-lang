@@ -4,30 +4,10 @@
 # docs/library/, the modules from the pages there. A line here is a draft until its page is written: each is
 # checked against design/rules/ then.
 
-keyword | align | align(N) keeps a type at a multiple of N bytes
-keyword | embed | embed("logo.gif"): the bytes of a file, put into the program
-keyword | export | makes a function that C calls
-keyword | extern | declares the functions of a C library
-keyword | interface | what a type can do: Clonable, Formattable, Equatable, Comparable
-keyword | readonly | a field given when the value is built and never changed
 
-type | float | a fraction of 32 bits
-type | nint | an integer as wide as an address: what length() gives
-type | nuint | nint without a sign
-type | sbyte | an integer of 8 bits, -128 to 127
-type | short | an integer of 16 bits
-type | uint | an integer of 32 bits without a sign
-type | ulong | an integer of 64 bits without a sign
-type | ushort | an integer of 16 bits without a sign
-type | void | the type of a function that gives nothing back
 
-value | false | the bool that is not true
-value | true | the bool that is not false
 
-sign | a..b | a range: from a up to, not with, b
-sign | xs[^1] | an index counted from the end
 sign | c ? a : b | a when c is true, b when it is false
-sign | $"{x}" | text with values written into it
 
 command | sg | runs a program: sg hello.sg, or a folder
 command | sg test | runs the tests of a file or of every module in a folder
