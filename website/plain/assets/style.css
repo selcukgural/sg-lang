@@ -194,8 +194,12 @@ a.code-link:hover code { background: var(--accent-soft); }
 table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
 th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.75rem 0.5rem 0; border-bottom: 1px solid var(--line); }
 th { font-weight: 600; font-size: 0.82rem; color: var(--soft); }
-td code { white-space: nowrap; }
-td:last-child code { white-space: normal; }
+/* A long signature wraps at its spaces, and in a table of two columns (a signature and what it does) each keeps
+   room to be read; on a phone such a table scrolls rather than squeeze either. A table of more columns shares
+   its width as the browser lays it out. */
+td code { overflow-wrap: break-word; }
+td:first-child:nth-last-child(2) { min-width: 13rem; }
+td:nth-child(2):last-child { min-width: 14rem; }
 
 /* The index of names. */
 table.idx td { border: 0; padding: 0.4rem 0.6rem; color: var(--soft); }
