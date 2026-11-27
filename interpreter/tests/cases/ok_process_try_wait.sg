@@ -23,6 +23,9 @@ Result<void, ProcessError> main() {
     shown("before", process.tryWait())
     shown("again", process.tryWait())
     var input = process.takeInput() ?? panic("asked for with pipeInput")
+    // What was printed is written out before the other program is let go: it writes its line to the
+    // same output, and the two lines above would come after it when it is the quicker one.
+    try Stdout.flush()
     try input.writeLine("go")
     try input.close()
     // Until it has ended, looked at again and again; another program's run is the pause.
