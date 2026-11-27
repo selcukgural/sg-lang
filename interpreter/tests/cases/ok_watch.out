@@ -1,0 +1,30 @@
+-- nothing yet
+-- written
+changed ROOT/renamed before.txt
+changed ROOT/w.txt
+-- made and deleted deep
+deleted ROOT/old/kept.txt
+made ROOT/old/new.txt
+-- renamed
+deleted ROOT/w.txt
+made ROOT/old/w2.txt
+-- a folder moved in
+made ROOT/moved
+made ROOT/moved/deep
+made ROOT/moved/deep/x.txt
+made ROOT/moved/in.txt
+-- written in the folder moved in
+made ROOT/moved/deep/y.txt
+-- the folder moved away
+deleted ROOT/moved
+-- a folder is never changed
+waited: cancelled
+cancelled before: cancelled
+-- the change stays
+made ROOT/kept.txt
+-- flat
+made ROOT/top.txt
+a file: not a folder
+nothing: not found
+the folder deleted: not found
+and again: not found

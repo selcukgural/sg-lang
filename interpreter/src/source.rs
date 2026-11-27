@@ -25,7 +25,7 @@ pub const STD_MODULE: &str = "std";
 const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
-    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
+    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "DirectoryWatcher", "FileChange", "FileInfo", "FileKind", "MappedFile", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "Pipeline", "ExitStatus", "ProcessError", "ProcessChange"]),

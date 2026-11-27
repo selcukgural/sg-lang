@@ -677,6 +677,14 @@ of another program, no longer holds the other tasks while it waits ([issue
 10](https://github.com/selcukgural/sg-lang/issues/10)), and `Stdout` and `Stderr` written into a pipe no one reads end
 the program as `print` and `printError` do, every time (2055, [issue 7](https://github.com/selcukgural/sg-lang/issues/7)).
 
+Slice 199 (2056-2065) watches folders. `Directory.watch(path)` and `Directory.watchAll(path)` give a
+`DirectoryWatcher` whose `next` and `nextAsync` give each change after the call: `Created`, `Deleted`, `Changed` or
+`Lost`, the same on Linux (inotify), macOS (FSEvents) and Windows (`ReadDirectoryChangesExW`): a rename is two
+changes, a folder is never changed, what comes into the tree is told whole, at most 16,384 changes wait. On Linux
+it is as quick as `inotifywait` and keeps less; on macOS its delay is FSEvents' as `fswatch`'s is, and the names it
+keeps, which take the place of FSEvents' flags that hold what happened seconds before, cost about 6.5 MB at 100,000
+names.
+
 ## Next
 
 Next come the heavy level of the stand and the whole table of the file server, run at night, and the time clang

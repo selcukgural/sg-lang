@@ -1,0 +1,71 @@
+// `watchAll` of a deep tree, and a deep tree made while it watches: each folder made at once
+// after the one it is in, and a file at the bottom, all told as made, though on Linux each new
+// folder is watched only after it is seen (choice 2057: what is in a folder that comes in is
+// read when it is watched). A `Lost` says the system kept no more, and what is there is then
+// listed instead.
+async Result<void, IoError> main() {
+    var root = try await Directory.createTempAsync()
+    // 200 folders deep before the watch (on Windows a path has at most 32767 characters).
+    var deep = root.clone()
+    for _ in 0..200 {
+        deep = Path.join(read deep, "d")
+    }
+    try await Directory.createAllAsync(read deep)
+    var watcher = try await Directory.watchAllAsync(read root)
+    try await File.writeTextAsync(read Path.join(read deep, "bottom.txt"), "x")
+    var first = CancellationSource.after(10000)
+    var change = try await watcher.nextAsync(read first.token())
+    print($"at the bottom: {change == FileChange.Created(Path.join(read deep, "bottom.txt"))}")
+
+    // 200 more made one after another, and a file in the last.
+    var fresh = Path.join(read root, "n")
+    var made = List<string>()
+    made.add(fresh.clone())
+    try await Directory.createAsync(read fresh)
+    for _ in 0..199 {
+        fresh = Path.join(read fresh, "n")
+        made.add(fresh.clone())
+        try await Directory.createAsync(read fresh)
+    }
+    var last = Path.join(read fresh, "last.txt")
+    try await File.writeTextAsync(read last, "x")
+    made.add(last.clone())
+    try await Directory.createAsync(read Path.join(read root, "end"))
+    var seen = List<string>()
+    var lost = false
+    var soon = CancellationSource.after(20000)
+    while true {
+        match await watcher.nextAsync(read soon.token()) {
+            Ok(Created(path)) => {
+                if path == Path.join(read root, "end") {
+                    break
+                }
+                seen.add(path)
+            }
+            // The system kept no more (Windows keeps 64 KB of names): what is there is listed.
+            Ok(Lost(_)) => {
+                lost = true
+                break
+            }
+            Ok(_) => {}
+            Error(cause) => {
+                print($"stopped: {cause}")
+                break
+            }
+        }
+    }
+    var missing = 0
+    for path in read made {
+        if seen.contains(read path) {
+            continue
+        }
+        var file = await File.existsAsync(read path)
+        var folder = await Directory.existsAsync(read path)
+        if !lost || !(file || folder) {
+            missing += 1
+        }
+    }
+    print($"made {made.length()}, told {missing == 0}")
+    try await Directory.deleteAllAsync(read root)
+    return Ok()
+}

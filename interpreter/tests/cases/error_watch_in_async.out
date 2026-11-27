@@ -1,0 +1,7 @@
+error: `Directory.watchAll` holds the thread until it is done, and an async function does not hold its thread
+  `Directory.watchAll` waits for the disk
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_watch_in_async.sg:4:33
+ 4 |     var watcher = try Directory.watchAll(".")
+   |                                 ^^^^^^^^
+  hint: `await Directory.watchAllAsync(".")` does the same work without holding the thread

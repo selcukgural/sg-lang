@@ -1,6 +1,6 @@
 ---
 title: Files and folders
-description: File, StreamReader and StreamWriter, the standard streams, Directory, Path, FileInfo and IoError.
+description: File, StreamReader and StreamWriter, the standard streams, Directory and watching a folder, Path, FileInfo and IoError.
 sidebar_position: 4
 ---
 
@@ -8,7 +8,7 @@ sidebar_position: 4
 
 `File` reads and writes whole files and opens them as streams. A `StreamReader` reads a file, the input of the
 program or a connection through a block of its own; a `StreamWriter` writes through one. `Directory` makes,
-lists and removes folders, and `Path` joins paths and takes them apart. Every call that asks the system gives a
+lists, removes and watches folders, and `Path` joins paths and takes them apart. Every call that asks the system gives a
 `Result` whose error is an `IoError`.
 
 A path is a `read string`: a literal goes in as it is, and a `string` variable is lent with `read path`. To use
@@ -600,6 +600,69 @@ folder not empty
 already exists
 a
 false
+```
+
+### Watching a folder
+
+| Signature | What it does |
+|---|---|
+| `Result<DirectoryWatcher, IoError> Directory.watch(read string path)` | Watches what is in the folder; a file is `NotDirectory` |
+| `Result<DirectoryWatcher, IoError> Directory.watchAll(read string path)` | Watches the whole tree, folders made or moved in later too |
+| `Result<FileChange, IoError> watcher.next()` | Waits for the next change and gives it |
+| `async Result<FileChange, IoError> watcher.nextAsync(read token)` | The same without holding the thread; a cancel ends the wait (`Cancelled`) |
+
+Every change after the call returns comes, in the order it came; nothing is told of what was there before. A
+`FileChange` is `Created(path)`, `Deleted(path)`, `Changed(path)` or `Lost(path)`, the path being the folder as
+it was given joined with the name. The same on Linux, macOS and Windows:
+
+- A rename is the old name deleted and the new one made: not every system can tell which two go together.
+- `Changed` is a file written or its attributes changed; a folder is never changed.
+- Under `watchAll`, what is in a folder that comes in is told as made, name by name; a link is a name, and what it
+  points at is not watched.
+- A file made and written may come as made and changed, or only as made (macOS gathers what happens to a file).
+- The same change twice in a row before it is taken is one, and at most 16,384 wait: beyond that they are dropped,
+  and one `Lost` of the folder says so. `Lost` is also the system keeping no more; list that folder again.
+- Once the folder itself is deleted or moved away, `next` gives what came before, then `NotFound`.
+
+`watchAsync` and `watchAllAsync` start a watcher from an async function. Under it are inotify on Linux, FSEvents on
+macOS and `ReadDirectoryChangesExW` on Windows; a watcher ends, and stops watching, where its owner ends.
+
+```sg
+void show(read FileChange change) {
+    match change {
+        Created(path) => print($"made {Path.fileName(read path)}")
+        Deleted(path) => print($"deleted {Path.fileName(read path)}")
+        Changed(path) => print($"written {Path.fileName(read path)}")
+        Lost(path) => print($"lost, list {path} again")
+    }
+}
+
+Result<void, IoError> main() {
+    var root = "watched"
+    try Directory.create(read root)
+    var watcher = try Directory.watchAll(read root)
+    try File.writeText(read Path.join(read root, "notes.txt"), "")
+    try Directory.create(read Path.join(read root, "logs"))
+    show(read try watcher.next())
+    show(read try watcher.next())
+    try File.move(read Path.join(read root, "logs"), read Path.join(read root, "old"))
+    show(read try watcher.next())
+    show(read try watcher.next())
+    try File.appendText(read Path.join(read root, "notes.txt"), "a line")
+    show(read try watcher.next())
+    try Directory.deleteAll(read root)
+    return Ok()
+}
+```
+
+It prints:
+
+```text
+made notes.txt
+made logs
+deleted logs
+made old
+written notes.txt
 ```
 
 ## `Path`

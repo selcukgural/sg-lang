@@ -1216,6 +1216,20 @@ pub enum SystemCall {
     SignalRaise,
     /// `System.signalNumber(kind)`: the number of the signal on this system.
     SignalNumber,
+    /// `System.watchStart(path, all)`: a watcher of the folder, of all the folders under it too
+    /// with `all` (choices 2056-2065); gives its number. It waits for the disk while it finds
+    /// the folders under it, so it has an async version.
+    WatchStart,
+    /// `System.watchNext(watcher, block, ref names, ref kinds)`: the changes the watcher keeps,
+    /// all of them, each a name under the folder and a kind (0 made, 1 deleted, 2 changed, 3
+    /// lost); with `block`, waits for one first. Once the folder itself is gone and nothing is
+    /// left, `NotFound`.
+    WatchNext,
+    /// `System.watchWaitAsync(watcher, read token)`: waits without holding the thread until the
+    /// watcher keeps a change or its folder is gone. A cancel ends the wait.
+    WatchWaitAsync,
+    /// `System.watchStop(watcher)`: the watcher ends.
+    WatchStop,
     /// `System.reader(end)`: the reader of the end of a pipe made by `start`, which it owns.
     PipeReader,
     /// `System.writer(end)`: the writer of the end of a pipe made by `start`, which it owns.
@@ -1305,6 +1319,7 @@ impl SystemCall {
             SystemCall::Status => "status",
             SystemCall::MakeTemp => "makeTemp",
             SystemCall::MakeTempFile => "makeTempFile",
+            SystemCall::WatchStart => "watchStart",
             _ => return None,
         })
     }

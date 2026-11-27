@@ -451,4 +451,110 @@ public struct Directory {
         var template = Path.join(read folder, "sg-XXXXXX")
         return await System.makeTempAsync(read template, read token)
     }
+
+    // Watches the folder: from when it returns, each name made in it, deleted from it or written
+    // comes to the `DirectoryWatcher` it gives (choices 2056-2065). What is in the folders in it
+    // is not watched; `watchAll` watches that too. What is there already is not told. A file
+    // is `NotDirectory`.
+    public Result<DirectoryWatcher, IoError> watch(read string path) {
+        var id = try System.watchStart(path, false)
+        return Ok(DirectoryWatcher.of(path, id))
+    }
+
+    // `watch` of the folder and of every folder in it, however deep, and of those made or moved
+    // into it later: what is in a folder that comes in is told as made, each name. A link to a
+    // folder is a name, and what it points at is not watched.
+    public Result<DirectoryWatcher, IoError> watchAll(read string path) {
+        var id = try System.watchStart(path, true)
+        return Ok(DirectoryWatcher.of(path, id))
+    }
+
+    public async Result<DirectoryWatcher, IoError> watchAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var id = try await System.watchStartAsync(path, false, read token)
+        return Ok(DirectoryWatcher.of(path, id))
+    }
+
+    public async Result<DirectoryWatcher, IoError> watchAllAsync(read string path, read CancellationToken token = CancellationToken.None) {
+        var id = try await System.watchStartAsync(path, true, read token)
+        return Ok(DirectoryWatcher.of(path, id))
+    }
+}
+
+// What a `DirectoryWatcher` was told of a name under its folder. The path is the folder as it was
+// given joined with the name: `Path.join("logs", "today.txt")`. A name renamed or moved is
+// `Deleted` at the old path and `Created` at the new one, on every system, since not every
+// system can tell which two go together. `Changed` is a file written or its attributes changed;
+// a folder is never `Changed`. `Lost`: the system, or the watcher, kept no more changes because
+// they came faster than the program took them; what changed under that path is to be found by
+// listing it again. A file made and at once written may come as made and changed, or only as
+// made; one made as its folder came in may come twice as made.
+public enum FileChange : Equatable, Formattable {
+    Created(string path)
+    Deleted(string path)
+    Changed(string path)
+    Lost(string path)
+}
+
+// What `Directory.watch` and `Directory.watchAll` give: the changes under the folder that came and
+// were not taken yet, in the order they came. The same change twice in a row before it is taken is
+// one. At most 16384 wait; beyond that they are dropped, and one `Lost` of the folder says so. When
+// the folder itself is deleted or moved away, `next` gives what came before, then `NotFound`. Ending
+// the watcher stops the watching.
+public struct DirectoryWatcher : Disposable {
+    // The watcher of the system.
+    long id
+    // The folder as it was given.
+    string folder
+    // Changes taken from the system and not given yet, from `at` on.
+    List<string> names
+    List<byte> kinds
+    nint at
+
+    DirectoryWatcher of(read string folder, long id) {
+        return DirectoryWatcher { id = id, folder = folder.clone(), names = List<string>(), kinds = List<byte>(), at = 0 }
+    }
+
+    // Waits for the next change and gives it; one that came before is given at once.
+    public Result<FileChange, IoError> next(ref this) {
+        if this.at == this.names.length() {
+            this.names.clear()
+            this.kinds.clear()
+            this.at = 0
+            try System.watchNext(this.id, true, ref this.names, ref this.kinds)
+        }
+        return Ok(this.take())
+    }
+
+    // `next` without holding the thread, for an async function. A cancel ends the wait
+    // (`IoError.Cancelled`); a change that comes later stays for the next call, and a token
+    // cancelled already takes nothing.
+    public async Result<FileChange, IoError> nextAsync(ref this, read CancellationToken token = CancellationToken.None) {
+        try token.check()
+        while this.at == this.names.length() {
+            this.names.clear()
+            this.kinds.clear()
+            this.at = 0
+            try System.watchNext(this.id, false, ref this.names, ref this.kinds)
+            if this.names.length() == 0 {
+                try await System.watchWaitAsync(this.id, read token)
+            }
+        }
+        return Ok(this.take())
+    }
+
+    FileChange take(ref this) {
+        var path = Path.join(read this.folder, read this.names[this.at])
+        var kind = this.kinds[this.at]
+        this.at += 1
+        match kind {
+            0 => return FileChange.Created(path)
+            1 => return FileChange.Deleted(path)
+            2 => return FileChange.Changed(path)
+            _ => return FileChange.Lost(path)
+        }
+    }
+
+    void dispose(ref this) {
+        System.watchStop(this.id)
+    }
 }

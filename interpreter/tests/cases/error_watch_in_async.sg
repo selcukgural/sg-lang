@@ -1,0 +1,7 @@
+// `Directory.watchAll` waits for the disk while it finds the folders under the folder; an async
+// function awaits `watchAllAsync` instead.
+async Result<void, IoError> main() {
+    var watcher = try Directory.watchAll(".")
+    print(try await watcher.nextAsync())
+    return Ok()
+}

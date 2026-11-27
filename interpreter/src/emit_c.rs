@@ -8712,6 +8712,983 @@ static bool sg_sig_wait_ready(sg_sig_wait* x) {
 #endif
 "#;
 
+/// `Directory.watch`, `Directory.watchAll` and a `DirectoryWatcher` (choices 2056-2065): each
+/// watcher has a queue of changes, each a kind (0 made, 1 deleted, 2 changed, 3 lost) and the
+/// bytes of a name under the folder, which the side of the system fills: on Linux a thread of its
+/// own that reads inotify, with a watch of each folder; on macOS FSEvents on a dispatch queue of
+/// its own, the program linked with CoreServices; on Windows a thread of
+/// its own that waits for `ReadDirectoryChangesExW`. `next` waits on the condition of the
+/// watcher, and an awaiting task (with `SG_WATCH_ASYNC`) is woken as one waiting for a signal is.
+/// What every system is made to agree on is said in `watch.rs`, which does the same for the
+/// interpreter. After the signals.
+const WATCH_RUNTIME: &str = r#"
+#if defined(__linux__)
+#include <dirent.h>
+#include <poll.h>
+#include <sys/inotify.h>
+#include <sys/stat.h>
+#elif defined(__APPLE__)
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
+/* The most changes a watcher keeps for the program (2061). */
+#define SG_FW_MOST 16384
+typedef struct { char* name; int64_t len; uint8_t kind; } sg_fw_item;
+#if SG_FW_ASYNC
+struct sg_fw_wait;
+#endif
+typedef struct sg_fw {
+    sg_mtx lock;
+    sg_cnd came;
+    /* The changes not taken yet; `ended` once the folder itself is gone. */
+    sg_fw_item* items;
+    int64_t count, cap;
+    bool ended;
+    bool all;
+#if SG_FW_ASYNC
+    /* The task that awaits a change: under the clock's lock. */
+    struct sg_fw_wait* waiter;
+#endif
+#if defined(_WIN32)
+    /* The folder as a whole path with `\\?\` in front, so a long name under it opens too. */
+    wchar_t* root;
+    /* `armed` is set once the first call waits for changes: the watch starts there. */
+    HANDLE dir, stop, done, armed;
+    sg_thread thread;
+    wchar_t* first;
+    void* block;
+    void* read;
+#else
+    /* The folder as it was given, as the system takes it. */
+    char* root;
+    int64_t root_len;
+#endif
+#if defined(__linux__)
+    int fd, stop[2], root_wd;
+    sg_thread thread;
+    /* The watches: an open table from each to the folder under the watched one it is of. A key
+       of 0 is a free slot, of -1 a slot let go. */
+    int* wds;
+    char** rels;
+    int64_t* rel_lens;
+    int64_t slots, used;
+#elif defined(__APPLE__)
+    void* stream;
+    void* queue;
+    /* The folder as FSEvents names it, its real path; its device and node, to tell it gone. */
+    char* real;
+    int64_t real_len;
+    dev_t dev;
+    ino_t ino;
+    bool stopped;
+    /* The names under the folder as the watcher last knew them, each with its node: FSEvents
+       gathers the flags of a file over several seconds, before the watch too, so what changed is
+       told by these and the disk, and the flags only tell a file written. Used on the queue of
+       the stream alone. */
+    struct sg_fse_known** known;
+    int64_t known_slots, known_count;
+#endif
+} sg_fw;
+#if SG_FW_ASYNC
+static void sg_fw_tell(sg_fw* w);
+#endif
+/* The lock of the watcher is held: whoever waits for a change goes on. */
+static void sg_fw_wake(sg_fw* w) {
+    sg_cnd_broadcast(&w->came);
+#if SG_FW_ASYNC
+    sg_fw_tell(w);
+#endif
+}
+/* A change, kept unless it is the last one again; beyond `SG_FW_MOST`, dropped, and a lost
+   change of the folder says so once. */
+static void sg_fw_push(sg_fw* w, uint8_t kind, const char* name, int64_t len) {
+    sg_mtx_lock(&w->lock);
+    sg_fw_item* last = w->count > 0 ? &w->items[w->count - 1] : NULL;
+    if (w->ended || (last && last->kind == kind && last->len == len && memcmp(last->name, name, (size_t)len) == 0)) {
+        sg_mtx_unlock(&w->lock);
+        return;
+    }
+    if (w->count >= SG_FW_MOST) {
+        if (last->kind == 3 && last->len == 0) {
+            sg_mtx_unlock(&w->lock);
+            return;
+        }
+        kind = 3;
+        len = 0;
+    }
+    char* copy = malloc((size_t)len + 1);
+    if (!copy) abort();
+    memcpy(copy, name, (size_t)len);
+    copy[len] = 0;
+    if (w->count == w->cap) w->items = sg_grow(w->items, &w->cap, sizeof *w->items, _Alignof(sg_fw_item));
+    w->items[w->count++] = (sg_fw_item){ copy, len, kind };
+    sg_fw_wake(w);
+    sg_mtx_unlock(&w->lock);
+}
+/* The folder itself is gone. */
+static void sg_fw_end(sg_fw* w) {
+    sg_mtx_lock(&w->lock);
+    w->ended = true;
+    sg_fw_wake(w);
+    sg_mtx_unlock(&w->lock);
+}
+/* `System.watchNext(watcher, block, ...)`: every change kept, taken (`*out` is then the
+   program's to free), waited for first with `block`; once none is left of a folder that is gone,
+   not found. */
+static int sg_fw_next(int64_t id, bool block, sg_fw_item** out, int64_t* n) {
+    sg_fw* w = (sg_fw*)(intptr_t)id;
+    sg_mtx_lock(&w->lock);
+    while (block && w->count == 0 && !w->ended) sg_cnd_wait(&w->came, &w->lock);
+    if (w->count == 0 && w->ended) {
+        sg_mtx_unlock(&w->lock);
+        *out = NULL;
+        *n = 0;
+#if defined(_WIN32)
+        return ERROR_FILE_NOT_FOUND;
+#else
+        return ENOENT;
+#endif
+    }
+    *out = w->items;
+    *n = w->count;
+    w->items = NULL;
+    w->count = w->cap = 0;
+    sg_mtx_unlock(&w->lock);
+    return 0;
+}
+#if !defined(_WIN32)
+/* A name under the folder, `dir` and `name` joined, in a block of its own; its length in `*len`. */
+static char* sg_fw_join(const char* dir, int64_t dir_len, const char* name, int64_t name_len, int64_t* len) {
+    char* out = malloc((size_t)(dir_len + 1 + name_len + 1));
+    if (!out) abort();
+    int64_t n = 0;
+    if (dir_len > 0) {
+        memcpy(out, dir, (size_t)dir_len);
+        out[dir_len] = '/';
+        n = dir_len + 1;
+    }
+    memcpy(out + n, name, (size_t)name_len);
+    n += name_len;
+    out[n] = 0;
+    *len = n;
+    return out;
+}
+/* The bytes of a name, in a block of their own ended by a zero. */
+static char* sg_fw_copy(const char* name, int64_t len) {
+    char* out = malloc((size_t)len + 1);
+    if (!out) abort();
+    memcpy(out, name, (size_t)len);
+    out[len] = 0;
+    return out;
+}
+/* The path of a name under the folder, for the system. */
+static char* sg_fw_full(sg_fw* w, const char* rel, int64_t len) {
+    int64_t n;
+    return len == 0 ? sg_fw_join(w->root, w->root_len, "", 0, &n) : sg_fw_join(w->root, w->root_len, rel, len, &n);
+}
+typedef struct { char* name; int64_t len; uint64_t node; bool folder; } sg_fw_found;
+static int sg_fw_order(const void* x, const void* y) {
+    const sg_fw_found* a = x;
+    const sg_fw_found* b = y;
+    int64_t n = a->len < b->len ? a->len : b->len;
+    int c = memcmp(a->name, b->name, (size_t)n);
+    return c ? c : (a->len > b->len) - (a->len < b->len);
+}
+/* What is in the folder `rel` and in every folder in it, each name with its node handed to
+   `on_item` when there is one, in the order of the bytes of the names in each folder. `on_folder`
+   is called for each folder found before what is in it is read, and gives 0 to go into it, -1 to
+   pass it over, or a code that ends the scan with it. A link is not followed. */
+static int sg_fw_scan(sg_fw* w, const char* rel, int64_t rel_len, void (*on_item)(sg_fw*, const char*, int64_t, uint64_t, bool), int (*on_folder)(sg_fw*, const char*, int64_t)) {
+    sg_fw_found* stack = NULL;
+    int64_t depth = 0, room = 0;
+    stack = sg_grow(stack, &room, sizeof *stack, _Alignof(sg_fw_found));
+    stack[depth++] = (sg_fw_found){ sg_fw_copy(rel, rel_len), rel_len, 0, true };
+    int code = 0;
+    while (depth > 0 && !code) {
+        sg_fw_found dir = stack[--depth];
+        char* path = sg_fw_full(w, dir.name, dir.len);
+        DIR* folder = opendir(path);
+        free(path);
+        if (!folder) { free(dir.name); continue; }
+        sg_fw_found* found = NULL;
+        int64_t n = 0, cap = 0;
+        for (struct dirent* e; (e = readdir(folder));) {
+            const char* d = e->d_name;
+            if (d[0] == '.' && (d[1] == 0 || (d[1] == '.' && d[2] == 0))) continue;
+            bool is_folder = e->d_type == DT_DIR;
+            if (e->d_type == DT_UNKNOWN) {
+                struct stat info;
+                is_folder = fstatat(dirfd(folder), d, &info, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(info.st_mode);
+            }
+            if (n == cap) found = sg_grow(found, &cap, sizeof *found, _Alignof(sg_fw_found));
+            int64_t len;
+            found[n].name = sg_fw_join(dir.name, dir.len, d, (int64_t)strlen(d), &len);
+            found[n].len = len;
+            found[n].node = (uint64_t)e->d_ino;
+            found[n++].folder = is_folder;
+        }
+        closedir(folder);
+        free(dir.name);
+        if (n > 1) qsort(found, (size_t)n, sizeof *found, sg_fw_order);
+        for (int64_t i = 0; i < n; i++) {
+            if (on_item && !code) on_item(w, found[i].name, found[i].len, found[i].node, found[i].folder);
+            int go = -1;
+            if (found[i].folder && !code) {
+                go = on_folder(w, found[i].name, found[i].len);
+                if (go > 0) code = go;
+            }
+            if (go == 0) {
+                if (depth == room) stack = sg_grow(stack, &room, sizeof *stack, _Alignof(sg_fw_found));
+                stack[depth++] = found[i];
+            } else {
+                free(found[i].name);
+            }
+        }
+        free(found);
+    }
+    while (depth > 0) free(stack[--depth].name);
+    free(stack);
+    return code;
+}
+static int sg_fw_go_in(sg_fw* w, const char* rel, int64_t len) { (void)w; (void)rel; (void)len; return 0; }
+static int sg_fw_stay(sg_fw* w, const char* rel, int64_t len) { (void)w; (void)rel; (void)len; return -1; }
+static void sg_fw_made(sg_fw* w, const char* rel, int64_t len, uint64_t node, bool folder) { (void)node; (void)folder; sg_fw_push(w, 0, rel, len); }
+#endif
+#if defined(__linux__)
+#define SG_FW_MASK (IN_MODIFY | IN_ATTRIB | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF | IN_ONLYDIR | IN_EXCL_UNLINK)
+static int64_t sg_fw_slot(sg_fw* w, int wd) {
+    if (w->slots == 0) return -1;
+    for (int64_t at = (int64_t)((uint32_t)wd * 2654435761u) & (w->slots - 1);; at = (at + 1) & (w->slots - 1)) {
+        if (w->wds[at] == wd) return at;
+        if (w->wds[at] == 0) return -1;
+    }
+}
+static void sg_fw_put(sg_fw* w, int wd, char* rel, int64_t len);
+static void sg_fw_rehash(sg_fw* w) {
+    int* wds = w->wds;
+    char** rels = w->rels;
+    int64_t* lens = w->rel_lens;
+    int64_t slots = w->slots;
+    w->slots = slots ? slots * 2 : 64;
+    int64_t live = 0;
+    for (int64_t i = 0; i < slots; i++) live += wds[i] > 0;
+    while (live * 4 >= w->slots) w->slots *= 2;
+    w->wds = calloc((size_t)w->slots, sizeof *w->wds);
+    w->rels = calloc((size_t)w->slots, sizeof *w->rels);
+    w->rel_lens = calloc((size_t)w->slots, sizeof *w->rel_lens);
+    if (!w->wds || !w->rels || !w->rel_lens) abort();
+    w->used = 0;
+    for (int64_t i = 0; i < slots; i++) if (wds[i] > 0) sg_fw_put(w, wds[i], rels[i], lens[i]);
+    free(wds);
+    free(rels);
+    free(lens);
+}
+/* The watch is of the folder `rel`, a block the table takes. */
+static void sg_fw_put(sg_fw* w, int wd, char* rel, int64_t len) {
+    int64_t found = sg_fw_slot(w, wd);
+    if (found >= 0) {
+        free(w->rels[found]);
+        w->rels[found] = rel;
+        w->rel_lens[found] = len;
+        return;
+    }
+    if ((w->used + 1) * 2 > w->slots) sg_fw_rehash(w);
+    int64_t at = (int64_t)((uint32_t)wd * 2654435761u) & (w->slots - 1);
+    while (w->wds[at] > 0) at = (at + 1) & (w->slots - 1);
+    if (w->wds[at] == 0) w->used++;
+    w->wds[at] = wd;
+    w->rels[at] = rel;
+    w->rel_lens[at] = len;
+}
+static void sg_fw_drop(sg_fw* w, int64_t slot) {
+    free(w->rels[slot]);
+    w->rels[slot] = NULL;
+    w->wds[slot] = -1;
+}
+/* A watch of the folder under the watched one, a link not followed: 0, or the code of the system. */
+static int sg_fw_add(sg_fw* w, const char* rel, int64_t len) {
+    char* path = sg_fw_full(w, rel, len);
+    int wd = inotify_add_watch(w->fd, path, SG_FW_MASK | IN_DONT_FOLLOW);
+    int code = wd < 0 ? sg_os_error() : 0;
+    free(path);
+    if (code) return code;
+    sg_fw_put(w, wd, sg_fw_copy(rel, len), len);
+    return 0;
+}
+/* While the watch starts: a folder the system has no room for is an error of the call. */
+static int sg_fw_first(sg_fw* w, const char* rel, int64_t len) {
+    int code = sg_fw_add(w, rel, len);
+    return code == 0 ? 0 : code == ENOSPC ? code : -1;
+}
+/* After: one is a lost change of that folder. */
+static int sg_fw_later(sg_fw* w, const char* rel, int64_t len) {
+    int code = sg_fw_add(w, rel, len);
+    if (code == ENOSPC) sg_fw_push(w, 3, rel, len);
+    return code == 0 ? 0 : -1;
+}
+/* A folder came in: watched, and what is in it told as made. */
+static void sg_fw_came_in(sg_fw* w, const char* rel, int64_t len) {
+    if (sg_fw_later(w, rel, len) != 0) return;
+    (void)sg_fw_scan(w, rel, len, sg_fw_made, sg_fw_later);
+}
+/* The watches of the folder and of those under it go: it was moved away. */
+static void sg_fw_forget(sg_fw* w, const char* rel, int64_t len) {
+    for (int64_t i = 0; i < w->slots; i++) {
+        if (w->wds[i] <= 0) continue;
+        int64_t n = w->rel_lens[i];
+        if ((n == len || (n > len && w->rels[i][len] == '/')) && memcmp(w->rels[i], rel, (size_t)len) == 0) {
+            inotify_rm_watch(w->fd, w->wds[i]);
+            sg_fw_drop(w, i);
+        }
+    }
+}
+/* One event; true when the folder itself is gone. */
+static bool sg_fw_event(sg_fw* w, const struct inotify_event* e) {
+    if (e->mask & IN_Q_OVERFLOW) { sg_fw_push(w, 3, "", 0); return false; }
+    int64_t slot = sg_fw_slot(w, e->wd);
+    if (e->mask & IN_IGNORED) {
+        if (slot >= 0) sg_fw_drop(w, slot);
+        return e->wd == w->root_wd;
+    }
+    if (e->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT)) return e->wd == w->root_wd;
+    if (slot < 0 || e->len == 0 || e->name[0] == 0) return false;
+    int64_t len;
+    char* rel = sg_fw_join(w->rels[slot], w->rel_lens[slot], e->name, (int64_t)strlen(e->name), &len);
+    bool folder = e->mask & IN_ISDIR;
+    if (e->mask & (IN_CREATE | IN_MOVED_TO)) {
+        sg_fw_push(w, 0, rel, len);
+        if (folder && w->all) sg_fw_came_in(w, rel, len);
+    } else if (e->mask & (IN_DELETE | IN_MOVED_FROM)) {
+        sg_fw_push(w, 1, rel, len);
+        if (folder && w->all && (e->mask & IN_MOVED_FROM)) sg_fw_forget(w, rel, len);
+    } else if ((e->mask & (IN_MODIFY | IN_ATTRIB)) && !folder) {
+        sg_fw_push(w, 2, rel, len);
+    }
+    free(rel);
+    return false;
+}
+/* The thread: it reads what inotify tells until the pipe says stop, or the folder is gone. */
+static SG_THREAD_MAIN(sg_fw_run, arg) {
+    sg_fw* w = arg;
+    char* block = malloc(65536);
+    if (!block) abort();
+    struct pollfd p[2] = { { w->fd, POLLIN, 0 }, { w->stop[0], POLLIN, 0 } };
+    for (;;) {
+        if (poll(p, 2, -1) < 0) continue;
+        if (p[1].revents) break;
+        ssize_t got = read(w->fd, block, 65536);
+        if (got <= 0) continue;
+        bool gone = false;
+        for (ssize_t at = 0; at + (ssize_t)sizeof(struct inotify_event) <= got;) {
+            struct inotify_event e;
+            memcpy(&e, block + at, sizeof e);
+            /* The event with its name, copied where it may be read as one. */
+            struct inotify_event* whole = malloc(sizeof e + e.len + 1);
+            if (!whole) abort();
+            memcpy(whole, block + at, sizeof e + e.len);
+            ((char*)whole)[sizeof e + e.len] = 0;
+            gone = sg_fw_event(w, whole) || gone;
+            free(whole);
+            at += (ssize_t)sizeof e + e.len;
+        }
+        if (gone) { sg_fw_end(w); break; }
+    }
+    free(block);
+    return SG_THREAD_END;
+}
+static int sg_fw_system(sg_fw* w) {
+    w->fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (w->fd < 0) return sg_os_error();
+    int wd = inotify_add_watch(w->fd, w->root, SG_FW_MASK);
+    int code = wd < 0 ? sg_os_error() : 0;
+    if (!code) {
+        w->root_wd = wd;
+        sg_fw_put(w, wd, sg_fw_copy("", 0), 0);
+        if (w->all) code = sg_fw_scan(w, "", 0, NULL, sg_fw_first);
+    }
+    if (!code && pipe2(w->stop, O_NONBLOCK | O_CLOEXEC) != 0) code = sg_os_error();
+    if (!code) {
+        code = sg_thread_start(&w->thread, sg_fw_run, w, false);
+        if (code) { close(w->stop[0]); close(w->stop[1]); }
+    }
+    if (code) close(w->fd);
+    return code;
+}
+static void sg_fw_system_stop(sg_fw* w) {
+    char one = 1;
+    ssize_t written = write(w->stop[1], &one, 1);
+    (void)written;
+    sg_thread_join(w->thread);
+    close(w->stop[0]);
+    close(w->stop[1]);
+    close(w->fd);
+    for (int64_t i = 0; i < w->slots; i++) if (w->wds[i] > 0) free(w->rels[i]);
+    free(w->wds);
+    free(w->rels);
+    free(w->rel_lens);
+}
+#elif defined(__APPLE__)
+typedef void (*sg_fse_callback)(const void*, void*, size_t, void*, const uint32_t*, const uint64_t*);
+typedef struct { long version; void* info; const void* retain; const void* release; const void* describe; } sg_fse_context;
+/* FSEvents and the CoreFoundation values it takes, declared here as they are called: the program
+   is linked with CoreServices (`-framework CoreServices`, only a program that watches), which
+   costs less memory than loading it when the first watch starts. */
+struct sg_cf_array_callbacks;
+extern const struct sg_cf_array_callbacks kCFTypeArrayCallBacks;
+extern void* FSEventStreamCreate(const void* allocator, sg_fse_callback callback, const sg_fse_context* context, const void* paths, uint64_t since, double latency, uint32_t flags);
+extern void FSEventStreamSetDispatchQueue(void* stream, void* queue);
+extern unsigned char FSEventStreamStart(void* stream);
+extern void FSEventStreamStop(void* stream);
+extern void FSEventStreamInvalidate(void* stream);
+extern void FSEventStreamRelease(void* stream);
+extern const void* CFStringCreateWithFileSystemRepresentation(const void* allocator, const char* path);
+extern const void* CFArrayCreate(const void* allocator, const void** values, long count, const struct sg_cf_array_callbacks* callbacks);
+extern void CFRelease(const void* value);
+extern void* dispatch_queue_create(const char* label, void* attr);
+extern void dispatch_sync_f(void* queue, void* context, void (*work)(void*));
+extern void dispatch_release(void* object);
+#define SG_FSE_MUST_SCAN 0x01u
+#define SG_FSE_DROPPED 0x06u
+#define SG_FSE_ROOT_CHANGED 0x20u
+#define SG_FSE_CREATED 0x100u
+#define SG_FSE_REMOVED 0x200u
+#define SG_FSE_RENAMED 0x800u
+/* Written: the data, the node, the information of the Finder, the owner, the extended attributes. */
+#define SG_FSE_WRITTEN 0xF400u
+/* A name the watcher knows, in a list of its slot. */
+typedef struct sg_fse_known { struct sg_fse_known* next; uint64_t node; int64_t len; bool folder; char name[]; } sg_fse_known;
+static uint64_t sg_fse_hash(const char* name, int64_t len) {
+    uint64_t h = UINT64_C(1469598103934665603);
+    for (int64_t i = 0; i < len; i++) h = (h ^ (uint8_t)name[i]) * UINT64_C(1099511628211);
+    return h;
+}
+/* The link that holds the name, or the empty one at the end of its slot. */
+static sg_fse_known** sg_fse_link(sg_fw* w, const char* name, int64_t len) {
+    if (w->known_slots == 0) return NULL;
+    sg_fse_known** at = &w->known[sg_fse_hash(name, len) & (uint64_t)(w->known_slots - 1)];
+    while (*at && !((*at)->len == len && memcmp((*at)->name, name, (size_t)len) == 0)) at = &(*at)->next;
+    return at;
+}
+static void sg_fse_know(sg_fw* w, const char* name, int64_t len, uint64_t node, bool folder) {
+    if (w->known_count >= w->known_slots) {
+        int64_t old = w->known_slots;
+        sg_fse_known** table = w->known;
+        w->known_slots = old ? old * 2 : 256;
+        w->known = calloc((size_t)w->known_slots, sizeof *w->known);
+        if (!w->known) abort();
+        for (int64_t i = 0; i < old; i++) {
+            for (sg_fse_known* k = table[i]; k;) {
+                sg_fse_known* next = k->next;
+                uint64_t slot = sg_fse_hash(k->name, k->len) & (uint64_t)(w->known_slots - 1);
+                k->next = w->known[slot];
+                w->known[slot] = k;
+                k = next;
+            }
+        }
+        free(table);
+    }
+    sg_fse_known** at = sg_fse_link(w, name, len);
+    if (*at) {
+        (*at)->node = node;
+        (*at)->folder = folder;
+        return;
+    }
+    sg_fse_known* k = malloc(sizeof *k + (size_t)len + 1);
+    if (!k) abort();
+    k->next = NULL;
+    k->node = node;
+    k->len = len;
+    k->folder = folder;
+    memcpy(k->name, name, (size_t)len);
+    k->name[len] = 0;
+    *at = k;
+    w->known_count++;
+}
+/* The name is no longer known; with `under`, nor any under it (`""`: every name). */
+static void sg_fse_forget(sg_fw* w, const char* name, int64_t len, bool under) {
+    sg_fse_known** at = sg_fse_link(w, name, len);
+    if (at && *at) {
+        sg_fse_known* k = *at;
+        *at = k->next;
+        free(k);
+        w->known_count--;
+    }
+    if (!under) return;
+    for (int64_t i = 0; i < w->known_slots; i++) {
+        for (sg_fse_known** link = &w->known[i]; *link;) {
+            sg_fse_known* k = *link;
+            if (len == 0 || (k->len > len && k->name[len] == '/' && memcmp(k->name, name, (size_t)len) == 0)) {
+                *link = k->next;
+                free(k);
+                w->known_count--;
+            } else {
+                link = &k->next;
+            }
+        }
+    }
+}
+static void sg_fse_learn(sg_fw* w, const char* rel, int64_t len, uint64_t node, bool folder) { sg_fse_know(w, rel, len, node, folder); }
+/* A name that came in with a folder: told as made unless it is known already. */
+static void sg_fse_made(sg_fw* w, const char* rel, int64_t len, uint64_t node, bool folder) {
+    sg_fse_known** at = sg_fse_link(w, rel, len);
+    if (at && *at && (*at)->node == node) return;
+    sg_fw_push(w, 0, rel, len);
+    sg_fse_know(w, rel, len, node, folder);
+}
+static void sg_fse_event(sg_fw* w, const char* path, uint32_t flags) {
+    if (flags & SG_FSE_ROOT_CHANGED) {
+        struct stat info;
+        if (stat(w->root, &info) != 0 || info.st_dev != w->dev || info.st_ino != w->ino) sg_fw_end(w);
+        return;
+    }
+    int64_t n = (int64_t)strlen(path);
+    while (n > 1 && path[n - 1] == '/') n--;
+    const char* rel = NULL;
+    int64_t len = 0;
+    if (n >= w->real_len && memcmp(path, w->real, (size_t)w->real_len) == 0 && (n == w->real_len || path[w->real_len] == '/')) {
+        rel = n == w->real_len ? "" : path + w->real_len + 1;
+        len = n == w->real_len ? 0 : n - w->real_len - 1;
+    }
+    if (flags & (SG_FSE_MUST_SCAN | SG_FSE_DROPPED)) {
+        if (!rel) { rel = ""; len = 0; }
+        sg_fw_push(w, 3, rel, len);
+        /* What is under it is learnt again, as the program will list it. */
+        sg_fse_forget(w, rel, len, true);
+        (void)sg_fw_scan(w, rel, len, sg_fse_learn, w->all ? sg_fw_go_in : sg_fw_stay);
+        return;
+    }
+    if (!rel || len == 0 || (!w->all && memchr(rel, '/', (size_t)len))) return;
+    sg_fse_known** at = sg_fse_link(w, rel, len);
+    sg_fse_known* k = at ? *at : NULL;
+    struct stat info;
+    if (lstat(path, &info) != 0) {
+        if (k) {
+            bool folder = k->folder;
+            sg_fw_push(w, 1, rel, len);
+            sg_fse_forget(w, rel, len, folder);
+        }
+        return;
+    }
+    bool folder = S_ISDIR(info.st_mode);
+    if (k && k->node == (uint64_t)info.st_ino) {
+        if (!folder && (flags & SG_FSE_WRITTEN)) sg_fw_push(w, 2, rel, len);
+        return;
+    }
+    /* Another file at the name: the one before went. */
+    if (k) {
+        bool was = k->folder;
+        sg_fw_push(w, 1, rel, len);
+        sg_fse_forget(w, rel, len, was);
+    }
+    sg_fw_push(w, 0, rel, len);
+    sg_fse_know(w, rel, len, (uint64_t)info.st_ino, folder);
+    if (folder && w->all) (void)sg_fw_scan(w, rel, len, sg_fse_made, sg_fw_go_in);
+}
+static void sg_fse_told(const void* stream, void* info, size_t count, void* paths, const uint32_t* flags, const uint64_t* ids) {
+    (void)stream;
+    (void)ids;
+    sg_fw* w = info;
+    sg_mtx_lock(&w->lock);
+    bool stopped = w->stopped;
+    sg_mtx_unlock(&w->lock);
+    if (stopped) return;
+    for (size_t i = 0; i < count; i++) sg_fse_event(w, ((const char**)paths)[i], flags[i]);
+}
+static void sg_fse_nothing(void* unused) { (void)unused; }
+static int sg_fw_system(sg_fw* w) {
+    int code = 0;
+    char* real = realpath(w->root, NULL);
+    if (!real) return sg_os_error();
+    w->real_len = (int64_t)strlen(real);
+    w->real = malloc((size_t)w->real_len + 1);
+    if (!w->real) abort();
+    memcpy(w->real, real, (size_t)w->real_len + 1);
+    (free)(real);
+    struct stat info;
+    if (stat(w->root, &info) != 0) { code = sg_os_error(); free(w->real); return code; }
+    w->dev = info.st_dev;
+    w->ino = info.st_ino;
+    /* What is there now is known before the stream starts: an event of it is no change. */
+    (void)sg_fw_scan(w, "", 0, sg_fse_learn, w->all ? sg_fw_go_in : sg_fw_stay);
+    const void* name = CFStringCreateWithFileSystemRepresentation(NULL, w->real);
+    const void* paths = CFArrayCreate(NULL, &name, 1, &kCFTypeArrayCallBacks);
+    sg_fse_context context = { 0, w, NULL, NULL, NULL };
+    /* 10 ms of gathering, the first event after a quiet time told at once (`NoDefer`); the folder
+       itself watched (`WatchRoot`); an event of each file (`FileEvents`). */
+    w->stream = FSEventStreamCreate(NULL, sg_fse_told, &context, paths, UINT64_MAX, 0.01, 0x02 | 0x04 | 0x10);
+    CFRelease(paths);
+    CFRelease(name);
+    if (!w->stream) { sg_fse_forget(w, "", 0, true); free(w->known); free(w->real); return ENOMEM; }
+    w->queue = dispatch_queue_create("sg.watch", NULL);
+    FSEventStreamSetDispatchQueue(w->stream, w->queue);
+    if (!FSEventStreamStart(w->stream)) {
+        FSEventStreamInvalidate(w->stream);
+        FSEventStreamRelease(w->stream);
+        dispatch_release(w->queue);
+        sg_fse_forget(w, "", 0, true);
+        free(w->known);
+        free(w->real);
+        return EIO;
+    }
+    return 0;
+}
+static void sg_fw_system_stop(sg_fw* w) {
+    sg_mtx_lock(&w->lock);
+    w->stopped = true;
+    sg_mtx_unlock(&w->lock);
+    FSEventStreamStop(w->stream);
+    FSEventStreamInvalidate(w->stream);
+    /* Once the queue has run what it had, the callback runs no more. */
+    dispatch_sync_f(w->queue, NULL, sg_fse_nothing);
+    FSEventStreamRelease(w->stream);
+    dispatch_release(w->queue);
+    sg_fse_forget(w, "", 0, true);
+    free(w->known);
+    free(w->real);
+}
+#elif defined(_WIN32)
+typedef BOOL (WINAPI* sg_read_changes)(HANDLE, void*, DWORD, BOOL, DWORD, DWORD*, OVERLAPPED*, void*, int);
+/* A path under the folder, `dir` and `name` joined, in a block of its own. */
+static wchar_t* sg_fw_wjoin(const wchar_t* dir, size_t dir_len, const wchar_t* name, size_t name_len) {
+    wchar_t* out = malloc((dir_len + 1 + name_len + 1) * sizeof(wchar_t));
+    if (!out) abort();
+    size_t n = 0;
+    if (dir_len > 0) {
+        memcpy(out, dir, dir_len * sizeof(wchar_t));
+        n = dir_len;
+        if (dir[dir_len - 1] != L'\\') out[n++] = L'\\';
+    }
+    memcpy(out + n, name, name_len * sizeof(wchar_t));
+    out[n + name_len] = 0;
+    return out;
+}
+/* The bytes of a name of Windows, as the program's names are (WTF-8), told as `kind`. */
+static void sg_fw_wpush(sg_fw* w, uint8_t kind, const wchar_t* name, size_t len) {
+    int64_t n = 0;
+    char* bytes = sg_owned_from_wide(name, (int64_t)len, &n);
+    sg_fw_push(w, kind, bytes, n);
+    free(bytes);
+}
+typedef struct { wchar_t* name; size_t len; } sg_fw_wfound;
+static int sg_fw_worder(const void* x, const void* y) {
+    const sg_fw_wfound* a = x;
+    const sg_fw_wfound* b = y;
+    return wcscmp(a->name, b->name);
+}
+/* What is in the folder `rel` and in every folder in it, told as made; a link is not followed. */
+static void sg_fw_wscan(sg_fw* w, const wchar_t* rel, size_t rel_len) {
+    sg_fw_wfound* stack = NULL;
+    int64_t depth = 0, room = 0;
+    stack = sg_grow(stack, &room, sizeof *stack, _Alignof(sg_fw_wfound));
+    stack[depth++] = (sg_fw_wfound){ sg_fw_wjoin(L"", 0, rel, rel_len), rel_len };
+    /* A link made as a folder is told before it is a link: what it is now decides. */
+    wchar_t* start = sg_fw_wjoin(w->root, wcslen(w->root), rel, rel_len);
+    DWORD now = GetFileAttributesW(start);
+    free(start);
+    if (now == INVALID_FILE_ATTRIBUTES || !(now & FILE_ATTRIBUTE_DIRECTORY) || (now & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        free(stack[0].name);
+        free(stack);
+        return;
+    }
+    while (depth > 0) {
+        sg_fw_wfound dir = stack[--depth];
+        wchar_t* path = sg_fw_wjoin(w->root, wcslen(w->root), dir.name, dir.len);
+        wchar_t* pattern = sg_fw_wjoin(path, wcslen(path), L"*", 1);
+        free(path);
+        WIN32_FIND_DATAW d;
+        HANDLE search = FindFirstFileExW(pattern, FindExInfoBasic, &d, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+        free(pattern);
+        if (search == INVALID_HANDLE_VALUE) { free(dir.name); continue; }
+        sg_fw_wfound* found = NULL;
+        bool* folders = NULL;
+        int64_t n = 0, cap = 0, fcap = 0;
+        do {
+            const wchar_t* e = d.cFileName;
+            if (e[0] == L'.' && (e[1] == 0 || (e[1] == L'.' && e[2] == 0))) continue;
+            if (n == cap) found = sg_grow(found, &cap, sizeof *found, _Alignof(sg_fw_wfound));
+            if (n == fcap) folders = sg_grow(folders, &fcap, sizeof *folders, _Alignof(bool));
+            size_t len = wcslen(e);
+            found[n].name = sg_fw_wjoin(dir.name, dir.len, e, len);
+            found[n].len = dir.len ? dir.len + 1 + len : len;
+            folders[n++] = (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
+        } while (FindNextFileW(search, &d));
+        FindClose(search);
+        free(dir.name);
+        for (int64_t i = 0; i < n; i++) {
+            sg_fw_wpush(w, 0, found[i].name, found[i].len);
+            if (folders[i]) {
+                if (depth == room) stack = sg_grow(stack, &room, sizeof *stack, _Alignof(sg_fw_wfound));
+                stack[depth++] = found[i];
+            } else {
+                free(found[i].name);
+            }
+        }
+        free(found);
+        free(folders);
+    }
+    free(stack);
+}
+/* The final path of the open folder, in a block of its own, to tell when it was moved away. */
+static wchar_t* sg_fw_final(HANDLE h) {
+    DWORD n = GetFinalPathNameByHandleW(h, NULL, 0, 0);
+    wchar_t* out = malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (!out) abort();
+    if (n == 0 || GetFinalPathNameByHandleW(h, out, n + 1, 0) == 0) out[0] = 0;
+    return out;
+}
+#define SG_FW_BLOCK 65536
+/* The thread: it waits for the changes until the event says stop, or the folder is gone. */
+static SG_THREAD_MAIN(sg_fw_run, arg) {
+    sg_fw* w = arg;
+    sg_read_changes read = (sg_read_changes)w->read;
+    DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
+    for (bool first = true;; first = false) {
+        OVERLAPPED o;
+        memset(&o, 0, sizeof o);
+        o.hEvent = w->done;
+        ResetEvent(w->done);
+        /* 2: `ReadDirectoryNotifyExtendedInformation`, which says whether each is a folder. Windows
+           keeps the changes from the first call on, so the watch starts once it is made. */
+        BOOL asked = read(w->dir, w->block, SG_FW_BLOCK, w->all, filter, NULL, &o, NULL, 2);
+        if (first) SetEvent(w->armed);
+        if (!asked) { sg_fw_end(w); break; }
+        HANDLE both[2] = { w->done, w->stop };
+        DWORD got = 0;
+        if (WaitForMultipleObjects(2, both, FALSE, INFINITE) == WAIT_OBJECT_0 + 1) {
+            CancelIoEx(w->dir, &o);
+            GetOverlappedResult(w->dir, &o, &got, TRUE);
+            break;
+        }
+        if (!GetOverlappedResult(w->dir, &o, &got, TRUE)) {
+            DWORD error = GetLastError();
+            if (error == ERROR_NOTIFY_ENUM_DIR) { sg_fw_push(w, 3, "", 0); continue; }
+            if (error != ERROR_OPERATION_ABORTED) sg_fw_end(w);
+            break;
+        }
+        if (got == 0) { sg_fw_push(w, 3, "", 0); continue; }
+        const uint8_t* bytes = w->block;
+        for (size_t at = 0;;) {
+            /* `FILE_NOTIFY_EXTENDED_INFORMATION`: the offset of the next, the action, the
+               attributes at 56, the length of the name at 80 and the name at 84. */
+            DWORD next, action, attributes, length;
+            memcpy(&next, bytes + at, 4);
+            memcpy(&action, bytes + at + 4, 4);
+            memcpy(&attributes, bytes + at + 56, 4);
+            memcpy(&length, bytes + at + 80, 4);
+            size_t len = length / sizeof(wchar_t);
+            wchar_t* name = malloc((len + 1) * sizeof(wchar_t));
+            if (!name) abort();
+            memcpy(name, bytes + at + 84, length);
+            name[len] = 0;
+            bool folder = (attributes & FILE_ATTRIBUTE_DIRECTORY) && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+            switch (action) {
+            case FILE_ACTION_ADDED:
+            case FILE_ACTION_RENAMED_NEW_NAME:
+                sg_fw_wpush(w, 0, name, len);
+                if (folder && w->all) sg_fw_wscan(w, name, len);
+                break;
+            case FILE_ACTION_REMOVED:
+            case FILE_ACTION_RENAMED_OLD_NAME:
+                sg_fw_wpush(w, 1, name, len);
+                break;
+            case FILE_ACTION_MODIFIED:
+                if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) sg_fw_wpush(w, 2, name, len);
+                break;
+            }
+            free(name);
+            if (next == 0) break;
+            at += next;
+        }
+        /* A folder moved away keeps its handle, and its changes would come under the old name:
+           it is gone for the watcher. */
+        wchar_t* now = sg_fw_final(w->dir);
+        DWORD attributes = GetFileAttributesW(w->root);
+        bool moved = wcscmp(now, w->first) != 0 || attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+        free(now);
+        if (moved) { sg_fw_end(w); break; }
+    }
+    return SG_THREAD_END;
+}
+static int sg_fw_system(sg_fw* w) {
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    FARPROC found = kernel ? GetProcAddress(kernel, "ReadDirectoryChangesExW") : NULL;
+    if (!found) return ERROR_CALL_NOT_IMPLEMENTED;
+    memcpy(&w->read, &found, sizeof found);
+    w->dir = CreateFileW(w->root, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+    if (w->dir == INVALID_HANDLE_VALUE) return sg_win_error();
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(w->dir, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { CloseHandle(w->dir); return ERROR_DIRECTORY; }
+    w->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    w->done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    w->armed = CreateEventW(NULL, TRUE, FALSE, NULL);
+    w->block = malloc(SG_FW_BLOCK);
+    if (!w->stop || !w->done || !w->armed || !w->block) abort();
+    w->first = sg_fw_final(w->dir);
+    int code = sg_thread_start(&w->thread, sg_fw_run, w, false);
+    if (code) {
+        CloseHandle(w->stop);
+        CloseHandle(w->done);
+        CloseHandle(w->armed);
+        CloseHandle(w->dir);
+        free(w->block);
+        free(w->first);
+        return code;
+    }
+    WaitForSingleObject(w->armed, INFINITE);
+    return 0;
+}
+static void sg_fw_system_stop(sg_fw* w) {
+    SetEvent(w->stop);
+    sg_thread_join(w->thread);
+    CloseHandle(w->stop);
+    CloseHandle(w->done);
+    CloseHandle(w->armed);
+    CloseHandle(w->dir);
+    free(w->block);
+    free(w->first);
+}
+#endif
+/* `System.watchStart(path, all)`: 0 and the watcher in `*id`, or the code of the system. A path
+   that is not a folder is not a directory. */
+static int sg_fw_start(sg_str path, bool all, int64_t* id) {
+    int code = 0;
+    sg_fw* w = calloc(1, sizeof *w);
+    if (!w) abort();
+    w->all = all;
+#if defined(_WIN32)
+    wchar_t* given = sg_wide(path, &code);
+    if (!given) { free(w); return code; }
+    DWORD attributes = GetFileAttributesW(given);
+    if (attributes == INVALID_FILE_ATTRIBUTES) code = sg_win_refine(given, sg_win_error());
+    else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) code = ERROR_DIRECTORY;
+    if (!code && wcsncmp(given, L"\\\\?\\", 4) != 0) {
+        DWORD full = GetFullPathNameW(given, 0, NULL, NULL);
+        wchar_t* plain = malloc(((size_t)full + 1) * sizeof(wchar_t));
+        if (!plain) abort();
+        if (full == 0 || GetFullPathNameW(given, full + 1, plain, NULL) == 0) code = sg_win_error();
+        else {
+            /* `\\server\share` is `\\?\UNC\server\share`. */
+            bool unc = plain[0] == L'\\' && plain[1] == L'\\';
+            wchar_t* whole = malloc((wcslen(plain) + 8) * sizeof(wchar_t));
+            if (!whole) abort();
+            wcscpy(whole, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
+            wcscat(whole, unc ? plain + 1 : plain);
+            free(given);
+            given = whole;
+        }
+        free(plain);
+    }
+    if (code) { free(given); free(w); return code; }
+    /* No `\` at the end: a name under it is joined after one. */
+    size_t n = wcslen(given);
+    while (n > 7 && given[n - 1] == L'\\') given[--n] = 0;
+    w->root = given;
+#else
+    char* given = sg_path(path, &code);
+    if (!given) { free(w); return code; }
+    struct stat info;
+    if (stat(given, &info) != 0) code = sg_os_error();
+    else if (!S_ISDIR(info.st_mode)) code = ENOTDIR;
+    if (code) { free(given); free(w); return code; }
+    w->root = given;
+    w->root_len = (int64_t)strlen(given);
+    /* No `/` at the end: a name under it is joined after one. */
+    while (w->root_len > 1 && given[w->root_len - 1] == '/') given[--w->root_len] = 0;
+#endif
+    sg_mtx_init(&w->lock);
+    sg_cnd_init(&w->came);
+    code = sg_fw_system(w);
+    if (code) {
+        sg_cnd_destroy(&w->came);
+        sg_mtx_destroy(&w->lock);
+        free(w->root);
+#if defined(__linux__)
+        for (int64_t i = 0; i < w->slots; i++) if (w->wds[i] > 0) free(w->rels[i]);
+        free(w->wds);
+        free(w->rels);
+        free(w->rel_lens);
+#endif
+        free(w);
+        return code;
+    }
+    *id = (int64_t)(intptr_t)w;
+    return 0;
+}
+/* `System.watchStop(watcher)`: the side of the system stops before this returns. */
+static void sg_fw_stop(int64_t id) {
+    sg_fw* w = (sg_fw*)(intptr_t)id;
+    sg_fw_system_stop(w);
+    for (int64_t i = 0; i < w->count; i++) free(w->items[i].name);
+    free(w->items);
+    free(w->root);
+    sg_cnd_destroy(&w->came);
+    sg_mtx_destroy(&w->lock);
+    free(w);
+}
+#if SG_FW_ASYNC
+/* `await System.watchWaitAsync(watcher, read token)`, in the frame of the task: `state` is
+   SG_WAITING, SG_OVER (a change is kept, or the folder is gone) or SG_CANCELLED. */
+typedef struct sg_fw_wait { sg_wait w; sg_fw* x; int state; } sg_fw_wait;
+/* The lock of the watcher is held, and a change came: the task that awaits one goes on. */
+static void sg_fw_tell(sg_fw* w) {
+    sg_mtx_lock(&sg_clock_lock);
+    sg_fw_wait* t = w->waiter;
+    sg_task* job = NULL;
+    if (t) {
+        w->waiter = NULL;
+        sg_wait_unlink(&t->w);
+        __atomic_store_n(&t->w.d.state, SG_OVER, __ATOMIC_RELEASE);
+        job = t->w.d.job;
+        __atomic_store_n(&t->w.settled, 2, __ATOMIC_RELEASE);
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    if (job) {
+        SG_WAKE_PAUSE();
+        sg_wake(job);
+        sg_wait_end(&t->w);
+    }
+}
+/* A cancel, under the clock's lock: the task goes on, and the change that comes later stays. */
+static void sg_fw_cut(sg_delay* d) {
+    sg_fw_wait* t = (sg_fw_wait*)d;
+    t->x->waiter = NULL;
+    sg_task* job = d->job;
+    __atomic_store_n(&t->w.settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
+    sg_wake(job);
+    sg_wait_end(&t->w);
+}
+static void sg_fw_wait_start(sg_fw_wait* t, int64_t id, sg_cancel* token) {
+    t->x = (sg_fw*)(intptr_t)id;
+    sg_wait_init(&t->w, sg_fw_cut);
+    if (sg_cancelled(token) || sg_job_cut()) { t->state = SG_CANCELLED; return; }
+    sg_mtx_lock(&t->x->lock);
+    if (t->x->count > 0 || t->x->ended) {
+        t->state = SG_OVER;
+    } else {
+        sg_mtx_lock(&sg_clock_lock);
+        if (token && token->cancelled) {
+            t->state = SG_CANCELLED;
+        } else {
+            if (token) sg_wait_link(&t->w, token);
+            t->x->waiter = t;
+            t->state = SG_WAITING;
+            sg_wait_hold(&t->w);
+        }
+        sg_mtx_unlock(&sg_clock_lock);
+    }
+    sg_mtx_unlock(&t->x->lock);
+}
+static bool sg_fw_wait_ready(sg_fw_wait* t) {
+    if (t->state == SG_WAITING) {
+        if (!sg_wait_settled(&t->w)) return false;
+        t->state = sg_wait_state(&t->w);
+    }
+    return true;
+}
+#endif
+"#;
+
 /// `System.lookupAsync`: the name is looked up on a thread of input and output, as for
 /// `connectAsync`, and a cancel leaves it to the thread. After `NET_ASYNC_RUNTIME`.
 const UDP_ASYNC_RUNTIME: &str = r#"
@@ -15363,7 +16340,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // Threads and locks are reached through one layer (`sg_mtx`, `sg_thread_start`): for the
     // program's threads, and for those of the runtime that write the input of another program
     // and hand on signals.
-    let sync = threads || emitter.made.contains("process") || emitter.made.contains("signals");
+    let sync = threads || emitter.made.contains("process") || emitter.made.contains("signals") || emitter.made.contains("watch");
     // glibc keeps `flockfile`, `clock_gettime`, `O_CLOEXEC` and `readlink` (which the program of
     // tests finds itself with) out of strict C11 unless POSIX is asked for.
     let mut out = match threads || tests || emitter.made.contains("clock") || emitter.made.contains("io") {
@@ -15478,6 +16455,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let _ = writeln!(out, "\n#define SG_SIGNALS_ASYNC {}", u8::from(emitter.made.contains("signals async")));
         out.push_str(SIGNALS_RUNTIME);
     }
+    if emitter.made.contains("watch") {
+        let _ = writeln!(out, "\n#define SG_FW_ASYNC {}", u8::from(emitter.made.contains("watch async")));
+        out.push_str(WATCH_RUNTIME);
+    }
     if tests {
         out.push_str(TEST_SUPPORT);
     }
@@ -15533,8 +16514,14 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // The libraries to link, on the first line, where `link_flags` reads them.
     // `-lm` is given to every program already.
     libs.remove("m");
-    if !libs.is_empty() {
-        let flags: Vec<String> = libs.iter().map(|lib| format!("-l{lib}")).collect();
+    // A program that watches folders on macOS calls FSEvents (`WATCH_RUNTIME`).
+    let frameworks: &[&str] = match emitter.made.contains("watch") && cfg!(target_os = "macos") {
+        true => &["-framework", "CoreServices"],
+        false => &[],
+    };
+    if !libs.is_empty() || !frameworks.is_empty() {
+        let mut flags: Vec<String> = libs.iter().map(|lib| format!("-l{lib}")).collect();
+        flags.extend(frameworks.iter().map(|word| word.to_string()));
         out.insert_str(0, &format!("/* sg-link: {} */\n", flags.join(" ")));
     }
     Ok(place_lines(&out, sources))
@@ -22848,6 +23835,14 @@ impl<'a> Emitter<'a> {
             SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, false, &bytes, &n)")),
             SystemCall::MakeTempFile => ("sg_system_make_temp_file", vec![text()], owned_text("sg_fs_make_temp(a0, true, &bytes, &n)")),
             SystemCall::TempFolder => ("sg_system_temp_folder", Vec::new(), owned_text("sg_fs_temp_folder(&bytes, &n)")),
+            SystemCall::WatchStart => {
+                self.made.insert("watch".to_string());
+                (
+                    "sg_system_watch_start",
+                    vec![text(), Ty::Bool],
+                    format!("int64_t id = 0; int code = sg_fw_start(a0, a1, &id); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ id }} }};", failed("sg_io_error(code)")),
+                )
+            }
             SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
             SystemCall::Run => {
                 self.made.extend(["process".to_string(), "io".to_string()]);
@@ -23040,6 +24035,26 @@ impl<'a> Emitter<'a> {
                     _ => ("sg_system_signal_number", vec![int], "return sg_sig_numbers[a0];".to_string()),
                 }
             }
+            SystemCall::WatchNext | SystemCall::WatchStop => {
+                self.made.extend(["watch", "io", "files"].map(str::to_string));
+                let long = Ty::Int(IntTy::Long);
+                match call {
+                    SystemCall::WatchStop => ("sg_system_watch_stop", vec![long], "sg_fw_stop(a0);".to_string()),
+                    _ => (
+                        "sg_system_watch_next",
+                        vec![long, Ty::Bool, Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
+                        format!(
+                            "sg_fw_item* e = NULL; int64_t n = 0; int code = sg_fw_next(a0, a1, &e, &n); if (code) {} \
+                             for (int64_t i = 0; i < n; i++) sg_name_own((uint8_t**)&e[i].name, &e[i].len); \
+                             if (n > 0) {{ if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr, _Alignof(__typeof__(*a2->ptr))); \
+                             if (a3->len + n > a3->cap) a3->ptr = sg_reserve(a3->ptr, &a3->cap, a3->len + n, sizeof *a3->ptr, _Alignof(__typeof__(*a3->ptr))); }} \
+                             for (int64_t i = 0; i < n; i++) {{ a2->ptr[a2->len++] = (sg_string){{ (uint8_t*)e[i].name, e[i].len, e[i].len + 1 }}; a3->ptr[a3->len++] = e[i].kind; }} \
+                             free(e); return ({gives}){{ .tag = 0 }};",
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                }
+            }
             SystemCall::PipeReader => {
                 self.made.extend(["process".to_string(), "net".to_string(), "process pipes".to_string()]);
                 ("sg_system_reader", vec![Ty::Int(IntTy::Long)], "return sg_proc_reader(a0);".to_string())
@@ -23048,7 +24063,7 @@ impl<'a> Emitter<'a> {
                 self.made.insert("process".to_string());
                 ("sg_system_writer", vec![Ty::Int(IntTy::Long)], "return sg_proc_writer(a0);".to_string())
             }
-            SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync => {
+            SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync | SystemCall::WatchWaitAsync => {
                 unreachable!("the checker has the async calls of `System` awaited where they are written")
             }
             SystemCall::UdpBind | SystemCall::UdpConnect | SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::SocketName | SystemCall::StreamName | SystemCall::StreamOption | SystemCall::CloseSocket | SystemCall::Lookup => {
@@ -23685,6 +24700,19 @@ impl<'a> Emitter<'a> {
                 result(self, format!(
                     "({wait}.state == SG_CANCELLED ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : {wait}.code ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error({wait}.code) }} }} : ({gives}){{ .tag = 0 }})"
                 ))
+            }
+            // `await System.watchWaitAsync(watcher, read token)`: the task waits until the watcher
+            // keeps a change or its folder is gone, or the token is cancelled.
+            ExprKind::Method { args, callee: Callee::System(SystemCall::WatchWaitAsync), .. } => {
+                self.made.extend(["watch", "watch async", "io", "files", "async io", "tasks"].map(str::to_string));
+                let id = self.value_as(&args[0], &Ty::Int(IntTy::Long))?;
+                let token = format!("(*{})", self.value(&args[1])?);
+                let wait = self.temp();
+                self.pre.push(format!("sg_fw_wait {wait}; sg_fw_wait_start(&{wait}, {id}, {token});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_fw_wait_ready(&{wait})) return false;"));
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})"))
             }
             // `await System.signalNextAsync(listener, read token, ref kind)`: the task waits until the
             // relay of the signals hands its listener one, or the token is cancelled.

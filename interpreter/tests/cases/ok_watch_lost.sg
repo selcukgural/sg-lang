@@ -1,0 +1,109 @@
+// A watcher keeps at most 16384 changes the program has not taken (choice 2061): beyond that they
+// are dropped, and one `Lost` of the folder says so, after which the program lists it again. The
+// changes after that come as before. The same change twice in a row before it is taken is one.
+//
+// What is dropped may be any change, a mark the program waits for too, so after a `Lost` the
+// program reads until the watcher is quiet before it waits for a change of its own. Every wait
+// has a limit, so a change that never comes is a line of the output, not a program that waits
+// for ever.
+
+// Reads until the folder `path` is told as made, or a `Lost` comes and a listing finds it there
+// (the system may drop the very change waited for, and say so: macOS under load); false if
+// neither comes within ten seconds.
+async Result<bool, IoError> waitFor(ref DirectoryWatcher watcher, read string path) {
+    var wanted = FileChange.Created(path.clone())
+    var soon = CancellationSource.after(10000)
+    while true {
+        match await watcher.nextAsync(read soon.token()) {
+            Ok(change) => {
+                if change == wanted {
+                    return Ok(true)
+                }
+                if change is Lost(_) && await Directory.existsAsync(read path) {
+                    return Ok(true)
+                }
+            }
+            Error(Cancelled(_)) => return Ok(false)
+            Error(cause) => return Error(cause)
+        }
+    }
+    return Ok(false)
+}
+
+// Reads until no change has come for a second; gives how many came and how many were `Lost` of
+// the folder.
+async Result<int[2], IoError> drain(ref DirectoryWatcher watcher, read string root) {
+    var counts = int[2]
+    while true {
+        var quiet = CancellationSource.after(1000)
+        match await watcher.nextAsync(read quiet.token()) {
+            Ok(change) => {
+                counts[0] += 1
+                if change == FileChange.Lost(root.clone()) {
+                    counts[1] += 1
+                }
+            }
+            Error(Cancelled(_)) => return Ok(counts)
+            Error(cause) => return Error(cause)
+        }
+    }
+    return Ok(counts)
+}
+
+async Result<void, IoError> main() {
+    var root = try await Directory.createTempAsync()
+    var watcher = try await Directory.watchAllAsync(read root)
+    // 20000 names made with no change taken, then time for the system to tell them all.
+    for i in 0..20000 {
+        try await Directory.createAsync(read Path.join(read root, read $"d{i}".toString()))
+    }
+    await Task.delay(1000)
+    var counts = try await drain(ref watcher, read root)
+    print($"taken {counts[0] <= 20001 && counts[0] > 1000}, lost {counts[1] >= 1}")
+    var listed = try await Directory.listAsync(read root)
+    print($"listed again: {listed.length()}")
+
+    // After it, changes come again.
+    try await Directory.createAsync(read Path.join(read root, "later"))
+    var later = try await waitFor(ref watcher, read Path.join(read root, "later"))
+    print($"later: {later}")
+
+    // Written many times before it is taken: one change, or a few as the system gathers them (or
+    // none but a `Lost`, where the system dropped them).
+    try await File.writeTextAsync(read Path.join(read root, "w.txt"), "")
+    try await Directory.createAsync(read Path.join(read root, "w-made"))
+    var made = try await waitFor(ref watcher, read Path.join(read root, "w-made"))
+    print($"w-made: {made}")
+    var file = try await File.openAppendAsync(read Path.join(read root, "w.txt"))
+    for _ in 0..200 {
+        try await file.writeAsync(read "x")
+        try await file.flushAsync()
+    }
+    try await file.closeAsync()
+    try await Directory.createAsync(read Path.join(read root, "w-end"))
+    var written = FileChange.Changed(Path.join(read root, "w.txt"))
+    var end = FileChange.Created(Path.join(read root, "w-end"))
+    var changes = 0
+    var ended = false
+    var lostWrites = false
+    var soon = CancellationSource.after(10000)
+    while !ended {
+        match await watcher.nextAsync(read soon.token()) {
+            Ok(change) => {
+                if change is Lost(_) {
+                    lostWrites = true
+                }
+                if change == end || (change is Lost(_) && await Directory.existsAsync(read Path.join(read root, "w-end"))) {
+                    ended = true
+                } else if change == written {
+                    changes += 1
+                }
+            }
+            Error(Cancelled(_)) => break
+            Error(cause) => return Error(cause)
+        }
+    }
+    print($"200 writes: {ended && changes < 200 && (changes >= 1 || lostWrites)}")
+    try await Directory.deleteAllAsync(read root)
+    return Ok()
+}

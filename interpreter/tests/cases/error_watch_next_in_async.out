@@ -1,0 +1,7 @@
+error: `DirectoryWatcher.next` holds the thread until it is done, and an async function does not hold its thread
+  `DirectoryWatcher.next` waits for a change in the folder
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_watch_next_in_async.sg:4:23
+ 4 |     print(try watcher.next())
+   |                       ^^^^
+  hint: `await watcher.nextAsync()` does the same work without holding the thread

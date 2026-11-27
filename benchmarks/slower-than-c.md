@@ -9,6 +9,14 @@ says what is slower, by how much and against what, the choice that measured it, 
 
 ## The library
 
+- **The memory of watching on macOS** (`Directory.watchAll`, slice 199, choice 2064): 13.0 MB while 100,000
+  files come, against `fswatch`'s 6.6 MB, and 13.3 MB with a tree of 110,000 names watched against 5.9 MB, whose
+  start reads the tree (274 ms). The watcher keeps each name under the folder with its node, about 65 bytes a
+  name, since FSEvents' flags hold what happened to a file seconds before, before the watch too, and `fswatch`
+  tells such a file as made. The delay is FSEvents' for both (12.4 ms against 11.5 ms at the middle); on Linux
+  SG keeps less than `inotifywait`. Candidates: names kept in one block, as the paths of a folder share their
+  start; a table of hashes with the folders kept apart, so that a folder deleted can still take its names out.
+
 - **A start at a terminal of its own** (`Command.terminal`, slice 198, choices 2045 and 2054): `true` started at
   a pseudo terminal and waited for, 5,000 times, takes 0.99 s on Linux against 0.94 s for C started the same
   way, by `posix_spawn` with `POSIX_SPAWN_SETSID` (1.06 times; 1.02 at 1,000 starts, up to about 10 µs a start);

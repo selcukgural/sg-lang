@@ -40,6 +40,7 @@ pub mod unicode;
 pub mod unicode_tables;
 pub mod unread;
 pub mod waits;
+pub mod watch;
 
 use std::io::Write;
 

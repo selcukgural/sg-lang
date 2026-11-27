@@ -1,0 +1,63 @@
+// `next` waits for a change holding the thread, for a program that is not async. Names come as
+// `Directory.list` gives them: one that is not UTF-8 with its bytes escaped (choice 1950), which
+// opens the same file (Linux; macOS refuses such a name, Windows keeps a form of its own); a
+// link is a name, and `watchAll` does not go into what it points at, so a link back to the
+// folder makes no loop.
+Result<void, IoError> main() {
+    var root = try Directory.createTemp()
+    try Directory.create(read Path.join(read root, "inside"))
+    var watcher = try Directory.watchAll(read root)
+
+    try File.writeText(read Path.join(read root, "çay ☕ list.txt"), "x")
+    // Linux keeps any bytes in a name; macOS and Windows refuse what is not UTF-8.
+    var odd = Path.join(read root, read Path.fromSystemBytes(read List<byte> { 0x6f, 0xff, 0x64 }))
+    var oddMade = File.writeText(read odd, "x") is Ok
+    // A link to the folder itself and one to a folder in it; Windows may refuse links.
+    var inside = Path.join(read root, "inside")
+    var loop = Path.join(read inside, "back")
+    var linked = File.createLink(read root, read loop) is Ok
+    try File.writeText(read Path.join(read inside, "after.txt"), "x")
+    try Directory.create(read Path.join(read root, "end"))
+
+    var seen = List<FileChange>()
+    while true {
+        var change = try watcher.next()
+        if change == FileChange.Created(Path.join(read root, "end")) {
+            break
+        }
+        seen.add(change)
+    }
+    print($"text: {seen.contains(read FileChange.Created(Path.join(read root, "çay ☕ list.txt")))}")
+    // Each name as `Directory.list` gives it: Windows keeps a name that is not UTF-8 in a form of
+    // its own, which both give.
+    var untold = 0
+    for entry in try Directory.list(read root) {
+        if entry.name != "inside" && entry.name != "end" && !seen.contains(read FileChange.Created(Path.join(read root, read entry.name))) {
+            untold += 1
+        }
+    }
+    print($"each as listed: {untold == 0}")
+    print($"not utf-8: {!oddMade || OperatingSystem.isWindows() || seen.contains(read FileChange.Created(odd.clone()))}")
+    if oddMade {
+        var text = try File.readText(read odd)
+        print($"opened by its name: {text}")
+    } else {
+        print("opened by its name: x")
+    }
+    print($"a link: {!linked || seen.contains(read FileChange.Created(loop.clone()))}")
+    print($"after the link: {seen.contains(read FileChange.Created(Path.join(read inside, "after.txt")))}")
+    var through = 0
+    for change in read seen {
+        match change {
+            Created(path) or Deleted(path) or Changed(path) or Lost(path) => {
+                if path.startsWith(read $"{loop}/".toString()) || path.startsWith(read $"{loop}\\".toString()) {
+                    through += 1
+                    print($"through: {change}")
+                }
+            }
+        }
+    }
+    print($"through the link: {through}")
+    try Directory.deleteAll(read root)
+    return Ok()
+}

@@ -1,0 +1,143 @@
+// Watching a folder (choices 2056-2065): each change after `watchAll` returns comes once, as made,
+// deleted or changed, on every system. A rename is the old name deleted and the new one made; a
+// folder that comes in has what is in it told as made; a folder is never changed; a cancel ends
+// the wait and loses nothing; the folder itself gone ends the watcher with `NotFound`.
+//
+// A file made and written may come as made and changed (Linux, Windows) or only as made (macOS,
+// where FSEvents gathers what happens to a file), so a phase does not show a change of a name
+// it shows made. Each phase ends with a folder made, which is never changed.
+// The change with the folder written `ROOT` and `/` between names, the same on every system.
+string shown(read FileChange change, read string root) {
+    match change {
+        Created(path) => return $"made {path.replaceAll(read root, "ROOT").replaceAll("\\", "/")}".toString()
+        Deleted(path) => return $"deleted {path.replaceAll(read root, "ROOT").replaceAll("\\", "/")}".toString()
+        Changed(path) => return $"changed {path.replaceAll(read root, "ROOT").replaceAll("\\", "/")}".toString()
+        Lost(path) => return $"lost {path.replaceAll(read root, "ROOT").replaceAll("\\", "/")}".toString()
+    }
+}
+
+async Result<void, IoError> phase(ref DirectoryWatcher watcher, read string root, read string title, read string sentinel) {
+    try await Directory.createAsync(read Path.join(read root, read sentinel))
+    var end = FileChange.Created(Path.join(read root, read sentinel))
+    var seen = List<FileChange>()
+    var soon = CancellationSource.after(10000)
+    while true {
+        match await watcher.nextAsync(read soon.token()) {
+            Ok(change) => {
+                if change == end {
+                    break
+                }
+                if !seen.contains(read change) {
+                    seen.add(change)
+                }
+            }
+            Error(cause) => {
+                print($"-- {title}: {cause} before the end")
+                return Ok()
+            }
+        }
+    }
+    var lines = List<string>()
+    for change in read seen {
+        if change is Changed(path) && seen.contains(read FileChange.Created(path.clone())) {
+            continue
+        }
+        lines.add(shown(read change, read root))
+    }
+    lines.sort()
+    print($"-- {title}")
+    for line in lines {
+        print(line)
+    }
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var root = try await Directory.createTempAsync()
+    var outside = try await Directory.createTempAsync()
+    try await Directory.createAsync(read Path.join(read root, "old"))
+    try await File.writeTextAsync(read Path.join(read root, "old/kept.txt"), "x")
+    try await File.writeTextAsync(read Path.join(read root, "w.txt"), "x")
+    try await File.writeTextAsync(read Path.join(read root, "before.txt"), "x")
+    try await File.moveAsync(read Path.join(read root, "before.txt"), read Path.join(read root, "renamed before.txt"))
+    try await Directory.createAllAsync(read Path.join(read outside, "moved/deep"))
+    try await File.writeTextAsync(read Path.join(read outside, "moved/in.txt"), "x")
+    try await File.writeTextAsync(read Path.join(read outside, "moved/deep/x.txt"), "x")
+
+    var watcher = try await Directory.watchAllAsync(read root)
+    // What was there and what changed before is not told.
+    try await phase(ref watcher, read root, "nothing yet", "s0")
+
+    try await File.appendTextAsync(read Path.join(read root, "w.txt"), "more")
+    try await File.appendTextAsync(read Path.join(read root, "renamed before.txt"), "more")
+    try await phase(ref watcher, read root, "written", "s1")
+
+    try await File.writeTextAsync(read Path.join(read root, "old/new.txt"), "x")
+    try await File.deleteAsync(read Path.join(read root, "old/kept.txt"))
+    try await phase(ref watcher, read root, "made and deleted deep", "s2")
+
+    try await File.moveAsync(read Path.join(read root, "w.txt"), read Path.join(read root, "old/w2.txt"))
+    try await phase(ref watcher, read root, "renamed", "s3")
+
+    try await File.moveAsync(read Path.join(read outside, "moved"), read Path.join(read root, "moved"))
+    try await phase(ref watcher, read root, "a folder moved in", "s4")
+
+    try await File.writeTextAsync(read Path.join(read root, "moved/deep/y.txt"), "x")
+    try await phase(ref watcher, read root, "written in the folder moved in", "s5")
+
+    try await File.moveAsync(read Path.join(read root, "moved"), read Path.join(read outside, "back"))
+    try await File.writeTextAsync(read Path.join(read outside, "back/after.txt"), "x")
+    try await phase(ref watcher, read root, "the folder moved away", "s6")
+
+    try await File.setPermissionsAsync(read Path.join(read root, "old"), 0o700)
+    try await phase(ref watcher, read root, "a folder is never changed", "s7")
+
+    // A cancel ends the wait, and the change that comes later stays.
+    var soon = CancellationSource.after(50)
+    match await watcher.nextAsync(read soon.token()) {
+        Ok(change) => print($"unexpected {shown(read change, read root)}")
+        Error(cause) => print($"waited: {cause}")
+    }
+    var gone = CancellationSource()
+    gone.cancel()
+    try await File.writeTextAsync(read Path.join(read root, "kept.txt"), "x")
+    match await watcher.nextAsync(read gone.token()) {
+        Ok(change) => print($"unexpected {shown(read change, read root)}")
+        Error(cause) => print($"cancelled before: {cause}")
+    }
+    try await phase(ref watcher, read root, "the change stays", "s8")
+
+    // `watch` watches what is in the folder, not what is in the folders in it.
+    var flat = try await Directory.watchAsync(read root)
+    try await File.writeTextAsync(read Path.join(read root, "old/deep.txt"), "x")
+    try await File.writeTextAsync(read Path.join(read root, "top.txt"), "x")
+    try await phase(ref flat, read root, "flat", "f0")
+
+    match await Directory.watchAsync(read Path.join(read root, "top.txt")) {
+        Ok(_) => print("a file watched")
+        Error(cause) => print($"a file: {cause}")
+    }
+    match await Directory.watchAllAsync(read Path.join(read root, "none")) {
+        Ok(_) => print("nothing watched")
+        Error(cause) => print($"nothing: {cause}")
+    }
+
+    // The folder itself gone: what came before, then `NotFound` for ever.
+    try await Directory.deleteAllAsync(read root)
+    var soon2 = CancellationSource.after(10000)
+    while true {
+        match await watcher.nextAsync(read soon2.token()) {
+            Ok(_) => {}
+            Error(cause) => {
+                print($"the folder deleted: {cause}")
+                break
+            }
+        }
+    }
+    match await watcher.nextAsync() {
+        Ok(change) => print($"unexpected {shown(read change, read root)}")
+        Error(cause) => print($"and again: {cause}")
+    }
+    try await Directory.deleteAllAsync(read outside)
+    return Ok()
+}

@@ -2211,6 +2211,14 @@ if !try db.tryLock() {                         // lock, lockShared, tryLockShare
 }
 var map = try unsafe File.mapRead(read big)    // the file where the system keeps it, until map ends
 var bytes = map.bytes()                        // a read byte[]
+
+var watcher = try Directory.watchAll(read root) // watch for Directory.watch: what is in it alone
+match try watcher.next() {                     // await watcher.nextAsync(read token) in an async function
+    Created(path) => print($"new {path}")      // made, or a rename's new name
+    Deleted(path) => print($"gone {path}")     // deleted, or a rename's old name
+    Changed(path) => print($"written {path}")  // a file; a folder is never changed
+    Lost(path) => print($"list {path} again")  // more changes than were kept
+}
 ```
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target

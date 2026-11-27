@@ -367,7 +367,7 @@ fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
 
 /// The methods of the language's own module that hold the thread and have an async version,
 /// named with `Async` after them.
-const ASYNC_METHODS: [&str; 9] = [
+const ASYNC_METHODS: [&str; 10] = [
     "std.Command.run",
     "std.Command.output",
     "std.Command.status",
@@ -377,10 +377,11 @@ const ASYNC_METHODS: [&str; 9] = [
     "std.UdpSocket.send",
     "std.UdpSocket.receive",
     "std.SignalListener.next",
+    "std.DirectoryWatcher.next",
 ];
 
 /// The functions of the language's own module that hold the thread and have an async version.
-const ASYNC_FUNCTIONS: [&str; 9] = [
+const ASYNC_FUNCTIONS: [&str; 11] = [
     "std.SocketAddress.lookup",
     "std.Directory.create",
     "std.Directory.createAll",
@@ -390,10 +391,12 @@ const ASYNC_FUNCTIONS: [&str; 9] = [
     "std.Directory.list",
     "std.Directory.exists",
     "std.Directory.createTemp",
+    "std.Directory.watch",
+    "std.Directory.watchAll",
 ];
 
 /// The calls of the file system the language's own module makes, which wait for the disk (1871).
-const DISK: [&str; 10] = ["status", "linkStatus", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile", "mapRead"];
+const DISK: [&str; 11] = ["status", "linkStatus", "list", "createDirectory", "removeDirectory", "removeAll", "syncDirectory", "makeTemp", "makeTempFile", "mapRead", "watchStart"];
 
 /// A function as a message names it: as the program writes it, `Directory.list` and `File.info`
 /// for those of the language's own module, the name alone for the program's own.
@@ -444,6 +447,13 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         // `SignalListener.next` waits for a signal.
         ExprKind::Call { callee: Callee::System(SystemCall::SignalNext), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::SignalNext), name_span, .. } => {
             Some((*name_span, "`System.signalNext`".to_string()))
+        }
+        // `DirectoryWatcher.next` waits for a change; asked with `false`, as `nextAsync` asks after
+        // its wait, it does not wait.
+        ExprKind::Call { callee: Callee::System(SystemCall::WatchNext), name_span, args, .. } | ExprKind::Method { callee: Callee::System(SystemCall::WatchNext), name_span, args, .. }
+            if !args.get(1).is_some_and(|block| matches!(block.kind, ExprKind::Bool(false))) =>
+        {
+            Some((*name_span, "`System.watchNext`".to_string()))
         }
         // `UdpSocket` and `SocketAddress.lookup` wait for the network.
         ExprKind::Call { callee: Callee::System(call @ (SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup)), name_span, .. }
@@ -1028,6 +1038,7 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
                 Some("`System.udpSend`" | "`System.udpReceive`") => "waits for the network".to_string(),
                 Some("`System.lookup`") => "waits for a name to be looked up".to_string(),
                 Some("`System.signalNext`") => "waits for a signal".to_string(),
+                Some("`System.watchNext`") => "waits for a change in the folder".to_string(),
                 Some(what) if what.starts_with("`System.") && DISK.iter().any(|call| what == format!("`System.{call}`")) => "waits for the disk".to_string(),
                 Some(what) => format!("does {what}"),
                 None => "waits".to_string(),

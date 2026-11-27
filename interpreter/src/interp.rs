@@ -6618,7 +6618,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     | SystemCall::CreateLink
                     | SystemCall::CreateHardLink
                     | SystemCall::SetPermissions
-                    | SystemCall::MapRead => 2,
+                    | SystemCall::MapRead
+                    | SystemCall::WatchStart => 2,
                     SystemCall::List => 3,
                     _ => 1,
                 };
@@ -8068,6 +8069,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         ) {
             return self.signals(call, args, frame);
         }
+        if matches!(call, SystemCall::WatchNext | SystemCall::WatchWaitAsync | SystemCall::WatchStop) {
+            return self.watching(call, args, frame);
+        }
         if matches!(
             call,
             SystemCall::UdpBind
@@ -8408,6 +8412,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::MakeTemp => done(make_temp(&text(0), false).map(|folder| Value::Str(Rc::new(folder)))),
             SystemCall::MakeTempFile => done(make_temp(&text(0), true).map(|file| Value::Str(Rc::new(file)))),
             SystemCall::TempFolder => ok(Value::Str(Rc::new(crate::sys::temp_folder()))),
+            SystemCall::WatchStart => {
+                let all = matches!(values[1], Value::Bool(true));
+                done(crate::watch::start(std::path::Path::new(&os(0)), all).map(|id| Value::Int(IntTy::Long, i128::from(id))))
+            }
             SystemCall::Executable
             | SystemCall::Unmap
             | SystemCall::ReaderStatus
@@ -8450,6 +8458,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalStop
             | SystemCall::SignalRaise
             | SystemCall::SignalNumber
+            | SystemCall::WatchNext
+            | SystemCall::WatchWaitAsync
+            | SystemCall::WatchStop
             | SystemCall::ColourTerminal
             | SystemCall::StackLow
             | SystemCall::CharCategory
@@ -8827,6 +8838,70 @@ impl<'a, 'e> Interp<'a, 'e> {
                         ok(Value::Void)
                     }
                     None => failed(cancelled()),
+                };
+                Ok(self.ended_task(value, at))
+            }
+        }
+    }
+
+    /// The calls of the system under `DirectoryWatcher` (see `watch.rs`). A wait for a change is a
+    /// piece of work the side of the system tells the scheduler of, so the other tasks run
+    /// meanwhile, with `next` as with `nextAsync`; a cancel ends the wait of `nextAsync`, and a
+    /// change that comes later stays for the next call.
+    fn watching(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let at = args[0].span;
+        let Value::Int(_, number) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a number") };
+        let id = number as u64;
+        match call {
+            SystemCall::WatchStop => {
+                crate::watch::stop(id);
+                Ok(Value::Void)
+            }
+            SystemCall::WatchNext => {
+                let block = matches!(strip(self.expr(&args[1], frame)?), Value::Bool(true));
+                let (Value::List(names), Value::List(kinds)) = (owned(self.expr(&args[2], frame)?), owned(self.expr(&args[3], frame)?)) else {
+                    unreachable!("the checker makes them lists")
+                };
+                if block {
+                    loop {
+                        let (work, done) = self.work(at)?;
+                        if crate::watch::ready_or_wait(id, work, done) {
+                            break;
+                        }
+                        self.wait_for(Outside::Work(work), None, at)?;
+                    }
+                }
+                Ok(match crate::watch::take(id) {
+                    Some(changes) => {
+                        let mut names = names.borrow_mut();
+                        let mut kinds = kinds.borrow_mut();
+                        for (kind, name) in changes {
+                            names.push(cell(Value::Str(Rc::new(crate::names::text_of(&name)))));
+                            kinds.push(cell(Value::Int(IntTy::Byte, i128::from(kind))));
+                        }
+                        ok(Value::Void)
+                    }
+                    None => failed(io_cause(None, Some(crate::sys::NOT_FOUND))),
+                })
+            }
+            _ => {
+                let source = self.token(&args[1], frame)?;
+                let ready = loop {
+                    if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                        break false;
+                    }
+                    let (work, done) = self.work(at)?;
+                    if crate::watch::ready_or_wait(id, work, done) {
+                        break true;
+                    }
+                    if self.wait_for(Outside::Work(work), source.as_ref(), at)? {
+                        crate::watch::forget_waiter(id);
+                        break false;
+                    }
+                };
+                let value = match ready {
+                    true => ok(Value::Void),
+                    false => failed(cancelled()),
                 };
                 Ok(self.ended_task(value, at))
             }

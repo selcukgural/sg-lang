@@ -15,7 +15,7 @@ and cancellation; `Memory` and the types of C. Their methods are checked by the 
 it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
-`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 and Adler-32 (`Crc32`, `Adler32`), compression (`Deflate`, `Zlib`, `Gzip`), zip archives (`ZipReader`, `ZipWriter`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), a log (`Log`), regular expressions (`Regex`), the general category of a character (`UnicodeCategory`), folders and paths (`Directory`, `Path`,
+`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 and Adler-32 (`Crc32`, `Adler32`), compression (`Deflate`, `Zlib`, `Gzip`), zip archives (`ZipReader`, `ZipWriter`), SHA-256 and HMAC (`Sha256`, `Hmac`), the command line (`CommandLine`), JSON (`Json`, `JsonValue`), a log (`Log`), regular expressions (`Regex`), the general category of a character (`UnicodeCategory`), folders and paths (`Directory`, `DirectoryWatcher`, `Path`,
 `FileInfo`), other programs (`Command`, `Process`, `Pipeline`), `Terminal`, `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can
@@ -61,7 +61,8 @@ from each item to its source.
   and saturating arithmetic, bits, math, `parse` and bytes in either order.
 - [Collections](./collections.md): `T[N]`, slices, `List<T>`, `HashMap<K, V>` and `HashSet<T>`.
 - [Files and folders](./files.md): `File`, `StreamReader` and `StreamWriter`, `Stdin`, `Stdout` and `Stderr`,
-  `Directory`, `Path`, `FileInfo`, `MappedFile` and `IoError`, links, permissions and the lock of a file.
+  `Directory`, `DirectoryWatcher` and `FileChange`, `Path`, `FileInfo`, `MappedFile` and `IoError`, links,
+  permissions and the lock of a file.
 - [Time](./time.md): `Duration`, `Instant`, `DateTime`, `DateTimeOffset` and the clocks under them.
 - [Tasks](./tasks.md): `Task<R>`, `Channel<T>` and `Sender<T>`, `shared locked T`, atomics and cancellation.
 - [Random numbers](./random.md): `Random`, with a seed, and `SecureRandom`.
