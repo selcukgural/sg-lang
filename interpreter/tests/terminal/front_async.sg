@@ -20,7 +20,8 @@ async bool inFront(int id) {
 async Result<void, IoError> main() {
     var me = Process.currentId()
     var job = Command("sh")
-    job.args(read List<string> { "-c", "kill -TSTP $$; echo resumed again" })
+    _ = await File.deleteAsync("front-async-went-on")
+    job.args(read List<string> { "-c", "kill -TSTP $$; echo resumed again; while [ ! -e front-async-went-on ]; do sleep 0.01; done" })
     job.foreground()
     var process = try job.start()
     var paused = try await process.waitChangeAsync()
@@ -29,7 +30,10 @@ async Result<void, IoError> main() {
     process.signalGroup(Signal.Continue)
     // The job writes `resumed again` at the same terminal once it goes on; the change it made
     // is printed only after the job has ended, so that the two lines always come in one order.
+    // The job ends only once `front-async-went-on` is there, written after the going on was seen: had
+    // it ended first, the wait would tell the end and the going on would never be seen.
     var went = try await process.waitChangeAsync()
+    try await File.writeTextAsync("front-async-went-on", "")
     var ended = try await process.waitChangeAsync()
     print(went)
     print(ended)
@@ -38,5 +42,6 @@ async Result<void, IoError> main() {
     print($"me in front at the end: {front}")
     var status = try await process.waitAsync()
     print(status)
+    try await File.deleteAsync("front-async-went-on")
     return Ok()
 }
