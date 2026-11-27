@@ -1,0 +1,5 @@
+error: `count` takes a `read shared Table` here, and a call without `await` starts it as a task of its own, which this cannot go to: a `read shared Table` is a borrow, and the task could outlive what it borrows from
+  --> error_async_borrow_of_shared.sg:11:22
+ 11 |     var task = count(read table)
+    |                      ^^^^^^^^^^
+  hint: give the task an owner of its own: take a `shared Table`, and give it one with `share`

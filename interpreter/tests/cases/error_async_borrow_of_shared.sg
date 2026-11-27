@@ -1,0 +1,13 @@
+struct Table {
+    List<string> words
+}
+
+async nint count(read shared Table table) {
+    return table.words.length()
+}
+
+void main() {
+    var table = new shared Table { words = List<string>() }
+    var task = count(read table)
+    print(task.wait())
+}

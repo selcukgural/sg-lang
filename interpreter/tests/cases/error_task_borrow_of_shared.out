@@ -1,0 +1,5 @@
+error: `count` takes a `read shared Table` here, which cannot go to another task: a `read shared Table` is a borrow, and the task could outlive what it borrows from
+  --> error_task_borrow_of_shared.sg:11:29
+ 11 |     var t = Task.run(count, share table)
+    |                             ^^^^^^^^^^^
+  hint: give the task an owner of its own: take a `shared Table`, and give it one with `share`

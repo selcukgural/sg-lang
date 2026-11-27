@@ -1,0 +1,330 @@
+---
+name: match
+kind: keyword
+summary: Chooses by the shape of a value; every case must be covered.
+see: is, when, or, enum, try
+learn: ../docs/learn/book/05-structs-and-enums.md#match
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `match x { P => value }` | gives the value of the arm that fits |
+| `match x { P => statement }` | runs the arm that fits |
+| `Circle(r)`, `Rect(w, _)` | a variant, with a name or `_` for each value |
+| `0`, `'a'`, `"stop"`, `true`, `null` | a value that must be equal |
+| `1..=9` | a range, both ends taken |
+| `A or B` | either pattern |
+| `P when condition` | the pattern, if the condition holds too |
+| `_`, `var name` | every value left, without or with a name |
+| `match read x`, `match ref x` | look into `x` without moving it |
+
+## What it means
+
+`match` tries its arms from the top and runs the first whose pattern fits. It works on enums, `Result`, a `T?`,
+numbers, characters, texts and `bool`. Written where a value goes, it gives the value of the arm.
+
+Every value must be taken by some arm. A `match` on an enum names each variant or ends with `_`; on a number or
+a text, `_` or `var name` takes the rest. A variant added to an enum later makes every `match` that misses it
+an error, so the compiler shows each place to look at. An arm that can never run is an error too.
+
+Arms are written one per line, without commas. An arm with `when` does not count as covering its pattern, since
+the condition may be false.
+
+`match x` moves `x` when `x` owns its value, as `var y = x` would. `match read x` only looks, and the names of
+the arms then borrow from `x`. On a value that is already a borrow, the names borrow the same way.
+
+## Examples
+
+### Numbers
+
+```sg
+string size(int n) {
+    return match n {
+        0 => "none"
+        1..=9 => "a few"
+        10 or 12 => "ten or a dozen"
+        _ => "many"
+    }
+}
+
+void main() {
+    print($"{size(0)}, {size(4)}, {size(12)}, {size(99)}")
+}
+```
+
+```text
+none, a few, ten or a dozen, many
+```
+
+### Text
+
+```sg
+void run(read string command) {
+    match command {
+        "go" => print("going")
+        "stop" or "halt" => print("stopping")
+        _ => print($"what is {command}?")
+    }
+}
+
+void main() {
+    run("go")
+    run("halt")
+    run("jump")
+}
+```
+
+```text
+going
+stopping
+what is jump?
+```
+
+### The variants of an enum
+
+```sg
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+int area(read Shape shape) {
+    return match shape {
+        Circle(r) => 3 * r * r
+        Rect(w, h) => w * h
+        Empty => 0
+    }
+}
+
+void main() {
+    var shapes = List<Shape> { Shape.Circle(2), Shape.Rect(3, 4), Shape.Empty }
+    for shape in read shapes {
+        print(area(shape))
+    }
+}
+```
+
+```text
+12
+12
+0
+```
+
+`Circle(r)` names the value a circle carries; `Empty` carries none.
+
+### `null`, and a `Result` with a pattern inside
+
+```sg
+nint lengthOf(read string? text) {
+    return match text {
+        null => 0
+        var t => t.length()
+    }
+}
+
+void main() {
+    print(lengthOf("Pasha"))
+    print(lengthOf(null))
+    match int.parse("12x") {
+        Ok(n) => print(n)
+        Error(Invalid(at)) => print($"not a number from byte {at}")
+        Error(OutOfRange) => print("too big")
+    }
+}
+```
+
+```text
+5
+0
+not a number from byte 2
+```
+
+Below the arm `null`, `t` is a `read string`, not a `read string?`. `Error(Invalid(at))` looks into the error
+too.
+
+### Patterns inside patterns, and `when`
+
+```sg
+enum Expr {
+    Number(int value)
+    Add(Expr* left, Expr* right)
+    Mul(Expr* left, Expr* right)
+}
+
+int eval(read Expr e) {
+    return match e {
+        Number(n) => n
+        Add(l, r) => eval(l) + eval(r)
+        Mul(Number(0), _) or Mul(_, Number(0)) => 0
+        Mul(l, r) => eval(l) * eval(r)
+    }
+}
+
+string show(read Expr e) {
+    return match e {
+        Number(n) when n < 0 => $"({n})".toString()
+        Number(n) => n.toString()
+        Add(l, r) => $"{show(l)} + {show(r)}".toString()
+        Mul(l, r) => $"{show(l)} * {show(r)}".toString()
+    }
+}
+
+void main() {
+    var e = Expr.Add(new Expr.Number(2), new Expr.Mul(new Expr.Number(-3), new Expr.Number(4)))
+    print($"{show(read e)} = {eval(read e)}")
+}
+```
+
+```text
+2 + (-3) * 4 = -10
+```
+
+A pattern looks through the `Expr*` pointers as through a field. `Mul(Number(0), _) or Mul(_, Number(0))`
+skips the work when either side is zero; the arm below it takes every other `Mul`.
+
+### Looking without moving
+
+```sg
+enum Message {
+    Text(string body)
+    Quit
+}
+
+void main() {
+    var m = Message.Text("hello".clone())
+    match read m {
+        Text(body) => print(body.length())
+        Quit => print("quit")
+    }
+    match m {
+        Text(body) => print(body)
+        Quit => print("quit")
+    }
+}
+```
+
+```text
+5
+hello
+```
+
+The first `match` lends `m`; the second takes it, and `body` then owns the text.
+
+## What the compiler refuses
+
+### A variant with no arm
+
+```sg error
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+int sides(read Shape shape) {
+    return match shape {
+        Circle(_) => 0
+        Rect(_, _) => 4
+    }
+}
+
+void main() {
+    print(sides(read Shape.Empty))
+}
+```
+
+```text
+error: this `match` does not handle `Empty`
+  every variant of `Shape` needs an arm
+  --> example.sg:8:18
+ 8 |     return match shape {
+   |                  ^^^^^
+  hint: add an arm for each, or `_ => ...` for everything else
+```
+
+### An arm that can never run
+
+```sg error
+string size(int n) {
+    return match n {
+        0 => "none"
+        _ => "some"
+        1..=9 => "a few"
+    }
+}
+
+void main() {
+    print(size(3))
+}
+```
+
+```text
+error: this arm can never run: an arm above takes every value
+  --> example.sg:5:9
+ 5 |         1..=9 => "a few"
+   |         ^^^^^
+```
+
+### A name that is not a variant
+
+```sg error
+enum Color {
+    Red
+    Green
+}
+
+void main() {
+    var c = Color.Green
+    match c {
+        Red => print("red")
+        Gren => print("green")
+    }
+}
+```
+
+```text
+error: `Color` has no variant `Gren`
+  --> example.sg:10:9
+ 10 |         Gren => print("green")
+    |         ^^^^
+  hint: `Green`
+```
+
+A misspelt variant does not quietly take every value: a name that takes the rest is written `var name`.
+
+### A value used after a `match` took it
+
+```sg error
+enum Message {
+    Text(string body)
+    Quit
+}
+
+void main() {
+    var m = Message.Text("hello".clone())
+    match m {
+        Text(body) => print(body)
+        Quit => print("quit")
+    }
+    match m {
+        Text(body) => print(body)
+        Quit => print("quit")
+    }
+}
+```
+
+```text
+error: `m` was moved and can no longer be used
+  --> example.sg:12:11
+ 12 |     match m {
+    |           ^
+  it was moved here:
+  --> example.sg:8:11
+ 8 |     match m {
+   |           ^
+```
+
+`match read m` the first time keeps `m`.

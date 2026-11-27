@@ -3288,6 +3288,15 @@ fn hold_apart(new: Span, other: Span, holder: Option<String>, head: String, tail
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
+/// The hint for a borrow that cannot go to a task: a value of its own, or one more owner of a `shared`
+/// one. A borrow of a `shared` value is pointed at an owner of its own, not at a `shared` around it.
+fn own_value_hint(inner: &Ty) -> String {
+    match inner {
+        Ty::Shared(..) => format!("give the task an owner of its own: take a `{inner}`, and give it one with `share`"),
+        _ => format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep"),
+    }
+}
+
 const THREAD_RULE: &str = "what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`";
 
 /// Whether a `Task` lies inside the type, not counting the types a `Func` takes and gives.
@@ -11887,7 +11896,7 @@ impl<'a> Checker<'a> {
                 let diag = Diag::error(*at_span, format!("`{shown}` takes a `{param}` here{what}, and a call without `await` starts it as a task of its own, which this cannot go to: {}", why_it_stays(&part, self.names)));
                 return Err(match &part {
                     Ty::Read(_) | Ty::Ref(_) if self.is_async => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
-                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
+                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(own_value_hint(inner)),
                     _ => diag.note(THREAD_RULE),
                 });
             }
@@ -12143,7 +12152,7 @@ impl<'a> Checker<'a> {
                 let what = if part == *param { String::new() } else { format!(", which holds a `{part}`{at}") };
                 let diag = Diag::error(rest[position].span, format!("`{func}` takes a `{param}` here{what}, which cannot go to another task: {}", why_it_stays(&part, self.names)));
                 return Err(match &part {
-                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
+                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(own_value_hint(inner)),
                     _ => diag.note(THREAD_RULE),
                 });
             }
