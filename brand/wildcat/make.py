@@ -18,7 +18,7 @@ They are written to `website/plain/assets/`. Run from the repository root:
 import os
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "..", "website", "plain", "assets")
@@ -91,3 +91,31 @@ save(MARK, height(MARK, 88), "logo-small-dark.webp", for_dark, quality=92, metho
 save(MARK, height(MARK, 88), "logo-small-light.webp", for_light, quality=92, method=6)
 save(SQUARE, (64, 64), "favicon.png", optimize=True)
 save(SQUARE, (180, 180), "apple-touch-icon.png", optimize=True)
+
+
+def social_card():
+    """The preview shown when a link to the site or the repository is shared: 1200 x 630, the logo with its glow
+    on the ground as drawn, the tagline under it in Outfit (the font of the earlier wordmark, `brand/src/`), and the
+    address in the cyan of the ring."""
+    card = Image.new("RGB", (1200, 630), tuple(int(c) for c in GROUND))
+    # The ground of the source is not flat (see FLOOR): pasted as it is, it shows as a box. The logo is put down
+    # without its ground, as on the dark pages, on a ground that is flat.
+    logo = source.crop(WITH_GLOW).resize(height(WITH_GLOW, 430), Image.LANCZOS)
+    colour, alpha = for_dark(np.asarray(logo).astype(float))
+    logo = Image.fromarray(np.dstack([colour, alpha * 255]).round().astype(np.uint8), "RGBA")
+    card.paste(logo, ((1200 - logo.width) // 2, 18), logo)
+    font = os.path.join(HERE, "..", "src", "Outfit.ttf")
+    draw = ImageDraw.Draw(card)
+    for text, size, colour, y in (
+        ("Small enough to know by heart. Safe and fast by construction.", 38, (226, 232, 240), 482),
+        ("sg-lang.org", 30, (34, 211, 238), 552),
+    ):
+        face = ImageFont.truetype(font, size)
+        face.set_variation_by_axes([400])
+        left, _, right, _ = draw.textbbox((0, 0), text, font=face)
+        draw.text(((1200 - (right - left)) // 2 - left, y), text, font=face, fill=colour)
+    card.save(os.path.join(OUT, "social-card.png"), optimize=True)
+    print("social-card.png", card.size)
+
+
+social_card()

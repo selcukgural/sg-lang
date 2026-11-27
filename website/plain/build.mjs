@@ -383,6 +383,16 @@ function frame({ url, title, description, section, main, wide = false, side = ''
 <title>${escape(title === 'SG' ? 'SG' : `${title} · SG`)}</title>
 <meta name="description" content="${escape(description || '')}">
 <meta name="sg-root" content="${root}/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SG">
+<meta property="og:title" content="${escape(title)}">
+<meta property="og:description" content="${escape(description || '')}">
+<meta property="og:url" content="${escape(`https://sg-lang.org/${url.replace(/(^|\/)index\.html$/, '$1').replace(/\.html$/, '')}`)}">
+<meta property="og:image" content="https://sg-lang.org/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="SG, with a wildcat's head over the G: Small enough to know by heart. Safe and fast by construction.">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="${to('style.css')}">
 <link rel="icon" href="${to('favicon.png')}" type="image/png">
 <link rel="apple-touch-icon" href="${to('apple-touch-icon.png')}">
@@ -796,7 +806,7 @@ changed with it.</p>
 }
 
 // The files beside the pages.
-for (const name of ['style.css', 'site.js', 'theme.js', 'logo-light.webp', 'logo-dark.webp', 'logo-small-light.webp', 'logo-small-dark.webp', 'favicon.png', 'apple-touch-icon.png', '_headers', '_redirects']) copyFileSync(join(plain, 'assets', name), join(out, name));
+for (const name of ['style.css', 'site.js', 'theme.js', 'logo-light.webp', 'logo-dark.webp', 'logo-small-light.webp', 'logo-small-dark.webp', 'favicon.png', 'apple-touch-icon.png', 'social-card.png', '_headers', '_redirects']) copyFileSync(join(plain, 'assets', name), join(out, name));
 
 // ---------------------------------------------------------------------------------------------------------
 // Checks: every link leads somewhere, and no page carries a script or a style of its own.

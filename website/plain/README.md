@@ -37,7 +37,10 @@ What it makes, and from what:
   same pages here (`/learn/tour`). An address with no page gets `404.html`, with status 404; its links start at
   the root, since it is served at any depth.
 - **Logo.** The wildcat (`../../brand/wildcat/`), with its ground taken out: a light and a dark version, and the
-  stylesheet shows the one that fits the theme. `make.py` there makes them in `assets/`.
+  stylesheet shows the one that fits the theme. `make.py` there makes them in `assets/`, and the card shown when a
+  link is shared (`social-card.png`, 1200 x 630), which every page names in its `og:image`. The repository's
+  README shows the same two logos, and GitHub's preview of the repository is the same card (set by hand in the
+  repository's settings, under Social preview).
 
 Every page reads and works without its script; the script adds the search, the line shown over a name in a
 program, a button to copy each program and command, the filter of the index, and the button for light or dark.

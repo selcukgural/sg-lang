@@ -4,9 +4,9 @@ The logo is the **S-cat**: a cat whose head and body make an S, with one blue an
 the cat of SG, has. The name is written **sg-lang** in the logo, the repository and the domain, and the
 language is called **SG** in text.
 
-Tagline: **Small enough to know by heart. Safe and fast by construction.** (choice 2080). The social card
-still shows an earlier one, **Safe by design. Fast by default.**, drawn as outlines by `src/build.py`; it is
-drawn again with the next logo.
+Tagline: **Small enough to know by heart. Safe and fast by construction.** (choice 2080). The S-cat's social
+card (`web/social-card.png`) still shows an earlier one, **Safe by design. Fast by default.**; the card in use
+is the wildcat's, below.
 
 ## The next logo: the wildcat
 
@@ -16,9 +16,12 @@ It is a picture with a glow, not a drawing. `wildcat/make.py` takes the ground o
 it, so each pixel keeps its colour and gets an alpha) and makes two of it: for dark pages the colours as drawn,
 for light pages the silver and white made dark navy, since they would vanish on white. It cuts and sizes the files
 the site uses (`logo-light.webp`, `logo-dark.webp`, `logo-small-light.webp`, `logo-small-dark.webp`, and, on
-the ground as drawn, `favicon.png` and `apple-touch-icon.png`, in `website/plain/assets/`). It does not yet read at 16 pixels, and it has no one-colour
-or vector form; the S-cat below stays the logo of the README, the current site and the social card until those
-are made.
+the ground as drawn, `favicon.png` and `apple-touch-icon.png`, in `website/plain/assets/`). It also makes the
+card shown when a link is shared (`social-card.png`, 1200 x 630): the logo on the ground, the tagline under it
+in Outfit, and the address. The README of the repository shows the light and the dark logo of the site, and
+GitHub's preview of the repository is that card (uploaded by hand: Settings, Social preview; GitHub has no API
+for it). It does not yet read at 16 pixels, and it has no one-colour or vector form; the S-cat below stays
+only in the Docusaurus site, which is kept but not published.
 
 ## Files
 
