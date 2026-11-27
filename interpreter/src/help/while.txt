@@ -1,0 +1,294 @@
+NAME
+     while - repeats a block as long as a condition holds
+
+SYNOPSIS
+     while condition { ... }
+            runs the block again and again while the condition holds
+
+     while true { ... }
+            a loop with no end of its own: break or return leaves it
+
+     break  leaves the loop at once
+
+     continue
+            goes on with the next round, from the condition
+
+     name: while ...
+            a loop with a name, for break name and continue name in a loop
+            inside it
+
+     while x is Circle(r) { ... }
+            goes on while x is that variant; r is seen in the block
+
+     while x is null { ... }
+            goes on while x is null; after the loop, x holds a value
+
+DESCRIPTION
+     while tests its condition before each round and runs the block while it
+     holds. The condition is a bool, written without brackets, and the { stays
+     on its line. When the condition fails the first time, the block does not
+     run at all.
+
+     while true is the loop that never ends by itself; there is no other word
+     for it. Only a break, a return or the end of the program stops it. A
+     function that ends with a while true that no break leaves needs no return
+     after it, since nothing gets past the loop. Any other while can end, so
+     the code after it must still return.
+
+     break leaves the loop it is in, and continue goes back to the condition
+     for the next round. Inside a loop within a loop, both act on the inner
+     one. To act on an outer loop, name it: outer: while ..., then break outer
+     or continue outer. A name that no break or continue uses is an error, and
+     so is the name of a loop around it used again.
+
+     An is in the condition names what the value carries, for the block. After
+     a while x is null, x is known to hold a value, since the loop ends only
+     when the test fails; a break inside the loop turns that off.
+
+     What the block moves, it moves in every round: a value given away inside
+     a loop is an error, since the next round would use it again.
+
+EXAMPLES
+   Counting down
+         void main() {
+             var n = 5
+             while n > 0 {
+                 print(n)
+                 n -= 1
+             }
+             print("lift off")
+         }
+
+         5
+         4
+         3
+         2
+         1
+         lift off
+
+     The condition is tested before every round. When n reaches 0 it fails,
+     and the line after the loop runs.
+
+   A loop with no end of its own
+         int firstSquareOver(int limit) {
+             var i = 1
+             while true {
+                 if i * i > limit {
+                     return i
+                 }
+                 i += 1
+             }
+         }
+
+         void main() {
+             print(firstSquareOver(50))
+             var tries = 0
+             while true {
+                 tries += 1
+                 if tries == 3 {
+                     break
+                 }
+             }
+             print(tries)
+         }
+
+         8
+         3
+
+     firstSquareOver leaves its loop only through return, so it needs no
+     return after the loop. In main, break leaves the loop and the program
+     goes on below it.
+
+   Skipping a round
+         void main() {
+             var words = List<string> { "a", "bb", "", "ccc" }
+             nint i = 0
+             var letters = 0
+             while i < words.length() {
+                 var w = read words[i]
+                 i += 1
+                 if w.length() == 0 {
+                     continue
+                 }
+                 letters += (int)w.length()
+             }
+             print(letters)
+         }
+
+         6
+
+     continue goes back to the condition. i is moved on before it; had it been
+     moved on at the end of the block, the empty word would have kept the loop
+     on it for ever.
+
+   Leaving two loops at once
+         void main() {
+             var row = 0
+             search: while row < 4 {
+                 var col = 0
+                 while col < 4 {
+                     if row * col == 6 {
+                         print($"found at {row}, {col}")
+                         break search
+                     }
+                     col += 1
+                 }
+                 row += 1
+             }
+         }
+
+         found at 2, 3
+
+     A plain break would leave only the inner loop, and the outer one would go
+     on with the next row. break search leaves both. continue search would go
+     on with the outer loop's next round.
+
+   As long as a pattern fits
+         enum Shape : Formattable {
+             Circle(int radius)
+             Square(int side)
+         }
+
+         void main() {
+             var s = Shape.Circle(1)
+             while s is Circle(r) && r < 4 {
+                 s = Shape.Circle(r + 1)
+             }
+             print(s)
+         }
+
+         Circle(4)
+
+     r is the radius in each round. It only borrows from s, and it is read
+     before s is given a new value, so the assignment is allowed.
+
+   After the loop
+         void main() {
+             var words = List<string> { "", "", "first", "second" }
+             nint i = 0
+             string? found = null
+             while found is null {
+                 if words[i].length() > 0 {
+                     found = words[i].clone()
+                 }
+                 i += 1
+             }
+             print($"{found} has {found.length()} letters")
+         }
+
+         first has 5 letters
+
+     The loop ends only when found is not null, so after it found is a string
+     and has a length(). With a break in the loop, that would no longer be
+     sure, and found.length() would be refused.
+
+WHAT THE COMPILER REFUSES
+   A condition that is not a bool
+         void main() {
+             var n = 3
+             while n {
+                 n -= 1
+             }
+         }
+
+         error: expected `bool`, found `int`
+           --> example.sg:3:11
+          3 |     while n {
+            |           ^
+           hint: a number is not a condition; compare it: `n != 0`
+
+   break outside a loop
+         void main() {
+             if true {
+                 break
+             }
+         }
+
+         error: `break` can only be written inside a loop
+           --> example.sg:3:9
+          3 |         break
+            |         ^^^^^
+
+   A name no break uses
+         void main() {
+             var n = 3
+             outer: while n > 0 {
+                 n -= 1
+             }
+         }
+
+         error: no `break outer` or `continue outer` uses the name of this loop
+           --> example.sg:3:5
+          3 |     outer: while n > 0 {
+            |     ^^^^^
+           hint: a loop needs a name only for a loop inside it to leave it: remove `outer:`
+
+   A while true that a break leaves, at the end of a function
+         int firstOver(read List<int> xs, int limit) {
+             nint i = 0
+             while true {
+                 if i == xs.length() {
+                     break
+                 }
+                 if xs[i] > limit {
+                     return xs[i]
+                 }
+                 i += 1
+             }
+         }
+
+         void main() {
+             var xs = List<int> { 3, 8, 12 }
+             print(firstOver(read xs, 5))
+         }
+
+         error: `firstOver` does not return a value on every path; it must return `int`
+           --> example.sg:1:5
+          1 | int firstOver(read List<int> xs, int limit) {
+            |     ^^^^^^^^^
+
+     The break reaches the end of the function with nothing to return. A
+     return -1 after the loop makes it whole.
+
+   A value moved inside the loop
+         void keep(string s) {
+             print(s)
+         }
+
+         void main() {
+             var name = "Pasha".clone()
+             var n = 0
+             while n < 2 {
+                 keep(name)
+                 n += 1
+             }
+         }
+
+         error: `name` is moved inside a loop, so the next iteration cannot use it
+           --> example.sg:9:14
+          9 |         keep(name)
+            |              ^^^^
+
+     keep takes the text, so the second round would have none.
+     keep(name.clone()) gives each round a copy; a keep(read string s), called
+     keep(read name), would only borrow it.
+
+   { on a line of its own
+         void main() {
+             var n = 3
+             while n > 0
+             {
+                 n -= 1
+             }
+         }
+
+         error: `{` cannot start a new line
+           --> example.sg:4:5
+          4 |     {
+            |     ^
+           hint: put `{` at the end of the previous line
+
+SEE ALSO
+     sg help for, sg help is, sg help if
+
+     https://sg-lang.org/reference/while.html

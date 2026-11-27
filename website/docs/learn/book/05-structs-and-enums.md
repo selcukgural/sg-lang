@@ -517,6 +517,10 @@ now at 5
 stop
 ```
 
+An arm can also leave the function with `return`, in a `match` that gives a value too: in
+`var percent = match code { ... }`, an arm `_ => return 0` ends the function for a code no other arm takes, and
+`percent` is given a value only by the arms that stay.
+
 ## `is`: one variant
 
 When only one variant matters, `is` tests for it in a condition. The names it binds are seen in the block, and

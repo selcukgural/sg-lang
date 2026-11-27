@@ -1,0 +1,283 @@
+NAME
+     if - runs a block when a condition holds
+
+SYNOPSIS
+     if c { ... }
+            runs the block when c is true
+
+     if c { ... } else { ... }
+            one block or the other
+
+     if c { ... } else if d { ... }
+            a chain: the first condition that holds picks its block
+
+     if a && b, if a || b, if !a
+            conditions joined; the right side runs only when it is needed
+
+     if x is null, if x is not null
+            a test of a T?; where it holds, x is narrowed
+
+     if x is Circle(r)
+            a test of one variant, with names for what it carries
+
+     c ? a : b
+            no if: a value picked by a condition
+
+DESCRIPTION
+     if runs its block when its condition is true, and skips it when it is
+     false. The condition must be a bool: a number, a text or a T? is not one,
+     and is compared or tested instead (count != 0, name is not null). The
+     block is always in braces, { at the end of the line, and an else goes on
+     the line of the } before it.
+
+     A block is a scope of its own: a variable declared in it is gone after
+     the }. && and || stop as soon as the answer is known, so i < xs.length()
+     && xs[i] > 0 never reads past the end.
+
+     A test with is tells the compiler more than true or false. After if x is
+     not null, x is a T in the block; after if x is null { return }, it is a T
+     for the rest of the function. The names of x is Circle(r) are seen in the
+     block. [is](is.md) has the whole of it; null is tested with is, never
+     with == or !=.
+
+     if is a statement, never a value. A value picked by a condition is
+     written c ? a : b: only the arm chosen runs, both arms have one type, and
+     the first arm sees what an is in c narrows, as the block of an if does.
+
+EXAMPLES
+   A block that runs when a condition holds
+         void main() {
+             var stock = 3
+             if stock < 5 {
+                 print("order more")
+             }
+             if stock == 0 { print("sold out") }
+             print("done")
+         }
+
+         order more
+         done
+
+     A short block can stay on one line. The second condition is false, so its
+     block is skipped.
+
+   One way or the other
+         void main() {
+             var hour = 20
+             if hour < 18 {
+                 print("open")
+             } else {
+                 print("closed")
+             }
+         }
+
+         closed
+
+     Exactly one of the two blocks runs. [else](else.md) has more on the
+     second one.
+
+   A chain of else if
+         string sizeOf(int bytes) {
+             if bytes < 1024 {
+                 return $"{bytes} B".toString()
+             } else if bytes < 1024 * 1024 {
+                 return $"{bytes / 1024} KB".toString()
+             } else {
+                 return $"{bytes / (1024 * 1024)} MB".toString()
+             }
+         }
+
+         void main() {
+             print(sizeOf(500))
+             print(sizeOf(4096))
+             print(sizeOf(3000000))
+         }
+
+         500 B
+         4 KB
+         2 MB
+
+     The conditions are tried from the top, and the first that holds picks its
+     block. Every way through the chain returns, so the function needs no
+     return after it.
+
+   Conditions joined
+         void main() {
+             var scores = List<int> { 7, 0, 12 }
+             var temperature = 31
+             var raining = false
+             if temperature > 30 && !raining {
+                 print("go to the sea")
+             }
+             if temperature < 5 || raining {
+                 print("take a coat")
+             }
+             nint i = 3
+             if i < scores.length() && scores[i] > 5 {
+                 print("a high score")
+             } else {
+                 print("no score there")
+             }
+         }
+
+         go to the sea
+         no score there
+
+     scores has no item at index 3, but scores[i] is never read: i <
+     scores.length() is false, and && stops there.
+
+   A test of null
+         void greet(read string? name) {
+             if name is null {
+                 print("hello, stranger")
+                 return
+             }
+             print($"hello, {name}, {name.length()} letters")
+         }
+
+         void main() {
+             greet(null)
+             greet("Ada")
+             string? city = "Izmir"
+             if city is not null && city.length() > 3 {
+                 print(city.toUpper())
+             }
+         }
+
+         hello, stranger
+         hello, Ada, 3 letters
+         IZMIR
+
+     The block of the first if returns, so after it name is a read string and
+     has a length(). On the right of &&, and in the block, city is a string.
+
+   A variant, with is
+         enum Command {
+             Move(int steps)
+             Turn(string direction)
+             Stop
+         }
+
+         void run(read Command command) {
+             if command is Move(n) && n > 0 {
+                 print($"forward {n}")
+             } else if command is Turn(way) {
+                 print($"turn {way}")
+             } else {
+                 print("stay")
+             }
+         }
+
+         void main() {
+             run(read Command.Move(3))
+             run(read Command.Move(0))
+             run(read Command.Turn("left"))
+             run(read Command.Stop)
+         }
+
+         forward 3
+         stay
+         turn left
+         stay
+
+     n is seen on the right of && and in the first block; way in the second. A
+     test of every variant at once is a [match](match.md).
+
+   A value picked by a condition
+         int sign(int n) {
+             return n > 0 ? 1 : n < 0 ? -1 : 0
+         }
+
+         void main() {
+             var count = 1
+             print($"{count} {(count == 1 ? "file" : "files")}")
+             print(sign(-8))
+             string? name = null
+             var letters = name is not null ? name.length() : 0
+             print(letters)
+         }
+
+         1 file
+         -1
+         0
+
+     ?: groups to the right, so a chain reads as else if. Inside { } of $"..."
+     it goes in parentheses, since a : there starts the format. In the first
+     arm of the last one, name is a string.
+
+WHAT THE COMPILER REFUSES
+   A number as a condition
+         void main() {
+             var count = 3
+             if count {
+                 print("some")
+             }
+         }
+
+         error: expected `bool`, found `int`
+           --> example.sg:3:8
+          3 |     if count {
+            |        ^^^^^
+           hint: a number is not a condition; compare it: `count != 0`
+
+   An assignment as a condition
+         void main() {
+             var count = 3
+             if count = 3 {
+                 print("three")
+             }
+         }
+
+         error: an assignment cannot be a condition
+           --> example.sg:3:14
+          3 |     if count = 3 {
+            |              ^
+           hint: comparison is written `==`
+
+   A block without braces
+         void main() {
+             var count = 3
+             if count > 2
+                 print("many")
+         }
+
+         error: expected `{`, found end of line
+           --> example.sg:3:17
+          3 |     if count > 2
+            |                 ^
+
+   null compared with !=
+         void main() {
+             string? name = "Ada"
+             if name != null {
+                 print(name.length())
+             }
+         }
+
+         error: `null` is not compared with `!=`
+           --> example.sg:3:8
+          3 |     if name != null {
+            |        ^^^^^^^^^^^^
+           hint: write `name is not null`
+
+     is not null is the test the compiler narrows by.
+
+   if as a value
+         void main() {
+             var count = 3
+             var word = if count > 2 { "many" } else { "few" }
+             print(word)
+         }
+
+         error: expected an expression, found `if`
+           --> example.sg:3:16
+          3 |     var word = if count > 2 { "many" } else { "few" }
+            |                ^^
+
+     if gives no value. The line is written var word = count > 2 ? "many" :
+     "few".
+
+SEE ALSO
+     sg help else, sg help is, sg help while, sg help match
+
+     https://sg-lang.org/reference/if.html

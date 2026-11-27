@@ -12,6 +12,7 @@ learn: ../docs/learn/book/05-structs-and-enums.md#match
 |---|---|
 | `match x { P => value }` | gives the value of the arm that fits |
 | `match x { P => statement }` | runs the arm that fits |
+| `P => return value` | an arm that leaves the function, in a `match` that gives a value too |
 | `Circle(r)`, `Rect(w, _)` | a variant, with a name or `_` for each value |
 | `0`, `'a'`, `"stop"`, `true`, `null` | a value that must be equal |
 | `1..=9` | a range, both ends taken |

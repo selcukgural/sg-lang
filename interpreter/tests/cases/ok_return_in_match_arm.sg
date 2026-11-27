@@ -1,0 +1,133 @@
+// A `match` that gives a value may have an arm that leaves the function with `return` (choice
+// 2085): in a declaration, in an argument after owned values, in a struct being built, nested,
+// in a loop, in a condition, with owned values returned from the arm. What was made before the
+// arm is let go on the way out, in compiled code too. (After an item of a list being built, the
+// C back end still refuses it: statements.md, leaving in the middle of a line.)
+
+struct Pair {
+    string left
+    string right
+}
+
+enum Token {
+    Number(int value)
+    Word(string text)
+    End
+}
+
+int discount(read string code) {
+    var percent = match code {
+        "SPRING" => 10
+        "VIP" => 25
+        _ => return 0
+    }
+    return percent * 2
+}
+
+string join(string a, string b, string c) {
+    return $"{a}|{b}|{c}".toString()
+}
+
+// Two owned texts are made before the arm that may leave.
+string joined(int k) {
+    return join("first".clone(), "second".clone(), match k {
+        0 => "zero".clone()
+        1 => "one".clone()
+        _ => return $"left at {k}".toString()
+    })
+}
+
+// A struct being built, with an owned field before the arm.
+string pairOf(int k) {
+    var p = Pair { left = "L".clone(), right = match k {
+        0 => "R".clone()
+        _ => return "no pair".clone()
+    } }
+    return $"{p.left}{p.right}".toString()
+}
+
+// A `match` inside a `match`, each with an arm that leaves.
+int nested(int a, int b) {
+    var x = match a {
+        0 => match b {
+            0 => 1
+            _ => return -2
+        }
+        1 => 10
+        _ => return -1
+    }
+    return x
+}
+
+// Inside a loop: the arm leaves the function, not only the loop.
+int firstNumber(read List<Token> tokens) {
+    var total = 0
+    for t in read tokens {
+        total += match t {
+            Number(v) => v
+            Word(_) => 0
+            End => return total
+        }
+    }
+    return -total
+}
+
+// The arm returns an owned value it took from what it matched.
+string firstWord(List<Token> tokens) {
+    for t in tokens {
+        var n = match t {
+            Number(v) => v
+            Word(text) => return text
+            End => 0
+        }
+        print($"skipped {n}")
+    }
+    return "none".clone()
+}
+
+// In the condition of a `while`.
+int countUpTo(int limit) {
+    var i = 0
+    while match i {
+        5 => return 500
+        _ => i < limit
+    } {
+        i += 1
+    }
+    return i
+}
+
+// A function returning `Result`: the arm leaves with an error.
+Result<int, string> parsed(read string text) {
+    var n = match int.parse(text) {
+        Ok(v) => v
+        Error(_) => return Error($"not a number: {text}".toString())
+    }
+    return Ok(n + 1)
+}
+
+void main() {
+    print(discount("VIP"))
+    print(discount("FREE"))
+    print(joined(0))
+    print(joined(1))
+    print(joined(7))
+    print(pairOf(0))
+    print(pairOf(3))
+    print(nested(0, 0))
+    print(nested(0, 9))
+    print(nested(1, 9))
+    print(nested(5, 0))
+    var tokens = List<Token> { Token.Number(3), Token.Word("x".clone()), Token.Number(4), Token.End, Token.Number(100) }
+    print(firstNumber(read tokens))
+    var noEnd = List<Token> { Token.Number(1), Token.Number(2) }
+    print(firstNumber(read noEnd))
+    print(firstWord(tokens))
+    print(firstWord(List<Token> { Token.Number(8) }))
+    print(countUpTo(3))
+    print(countUpTo(9))
+    print(parsed("41") ?? -1)
+    if parsed("x") is Error(message) {
+        print(message)
+    }
+}

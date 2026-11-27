@@ -1,0 +1,261 @@
+---
+name: else
+kind: keyword
+summary: The block that runs when the condition of an if is false.
+see: if, is, return, match
+learn: ../docs/learn/book/04-functions.md#declaring-and-returning
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `if c { ... } else { ... }` | the second block runs when `c` is `false` |
+| `} else if d {` | a further test, tried only when the ones above failed |
+
+## What it means
+
+`else` is written only after the block of an `if`, on the same line as its `}`, and is followed by a block in
+braces or by another `if`. Of an `if` and its `else`, exactly one block runs. A chain of `else if` is tried from
+the top, and at most one block of it runs; a last `else` runs when no condition held.
+
+In the `else` block the compiler knows the condition failed. After `if x is null`, `x` is a `T` in `else`; after
+`if x is not Ok(v)`, `v` is seen there. When the `else` block always leaves (`return`, `break`, `continue`), the
+code after the `if` knows the condition held: the names of an `is` and what it narrows are seen there too.
+
+When every block of a chain returns and the chain ends with an `else`, a function needs no `return` after it.
+
+`else` has no other place. A `match` takes the rest with `_` or `var name`, `??` gives a value in place of
+`null`, and in `c ? a : b` the arm after `:` is the value when `c` is `false`.
+
+## Examples
+
+### The other way
+
+```sg
+void main() {
+    var balance = 40
+    var price = 55
+    if balance >= price {
+        balance -= price
+        print($"paid, {balance} left")
+    } else {
+        print($"{price - balance} short")
+    }
+}
+```
+
+```text
+15 short
+```
+
+The balance is too small, so the `else` block runs.
+
+### A chain of `else if`
+
+```sg
+string grade(int score) {
+    if score >= 90 {
+        return "A"
+    } else if score >= 75 {
+        return "B"
+    } else if score >= 50 {
+        return "C"
+    } else {
+        return "F"
+    }
+}
+
+void main() {
+    print(grade(95))
+    print(grade(80))
+    print(grade(12))
+}
+```
+
+```text
+A
+B
+F
+```
+
+95 is also at least 75, but the first test that holds picks the block. The last `else` covers every other score,
+so `grade` returns on every path.
+
+### What the `else` block knows
+
+```sg
+void describe(read string? name) {
+    if name is null {
+        print("no name")
+    } else {
+        print($"{name}, {name.length()} letters")
+    }
+}
+
+int portOf(read string text) {
+    if int.parse(text) is not Ok(port) {
+        return 80
+    } else if port > 65535 {
+        return 80
+    } else {
+        return port
+    }
+}
+
+void main() {
+    describe(null)
+    describe("Pasha")
+    print(portOf("8080"))
+    print(portOf("web"))
+}
+```
+
+```text
+no name
+Pasha, 5 letters
+8080
+80
+```
+
+In `else`, `name` is not `null`, and the number `port` of a parse that did not fail is seen. [`is`](is.md) has
+the whole of these rules.
+
+### After an `if` whose `else` leaves
+
+```sg
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+}
+
+int diameterOf(read Shape shape) {
+    if shape is Circle(r) {
+        print("a circle")
+    } else {
+        return 0
+    }
+    return r * 2
+}
+
+int lengthOf(read string? text) {
+    if text is not null {
+        print("a text")
+    } else {
+        return -1
+    }
+    return (int)text.length()
+}
+
+void main() {
+    print(diameterOf(read Shape.Circle(5)))
+    print(diameterOf(read Shape.Rect(2, 3)))
+    print(lengthOf("tea"))
+    print(lengthOf(null))
+}
+```
+
+```text
+a circle
+10
+0
+a text
+3
+-1
+```
+
+Only a circle gets past the `if`, so `r` is seen after it. In `lengthOf`, `text` is a `read string` after the
+`if` for the same reason.
+
+## What the compiler refuses
+
+### `else` on a line of its own
+
+```sg error
+void main() {
+    var count = 3
+    if count > 2 {
+        print("many")
+    }
+    else {
+        print("few")
+    }
+}
+```
+
+```text
+error: `else` cannot start a new line
+  --> example.sg:6:5
+ 6 |     else {
+   |     ^^^^
+  hint: put `else` on the same line as `}`: `} else {`
+```
+
+### `else` without braces
+
+```sg error
+void main() {
+    var count = 3
+    if count > 2 {
+        print("many")
+    } else print("few")
+}
+```
+
+```text
+error: expected `{`, found `print`
+  --> example.sg:5:12
+ 5 |     } else print("few")
+   |            ^^^^^
+```
+
+### A chain with no last `else`
+
+```sg error
+string grade(int score) {
+    if score >= 90 {
+        return "A"
+    } else if score >= 50 {
+        return "C"
+    }
+}
+
+void main() {
+    print(grade(95))
+}
+```
+
+```text
+error: `grade` does not return a value on every path; it must return `string`
+  --> example.sg:1:8
+ 1 | string grade(int score) {
+   |        ^^^^^
+```
+
+A score under 50 reaches the end of the function with nothing to return. An `else { return "F" }` makes it
+whole.
+
+### A value the `else` cannot trust
+
+```sg error
+void greet(read string? name) {
+    if name is not null {
+        print($"hello, {name}")
+    } else {
+        print(name.length())
+    }
+}
+
+void main() {
+    greet(null)
+}
+```
+
+```text
+error: this is `read string?` and may be `null`; `.length()` needs a value
+  --> example.sg:5:15
+ 5 |         print(name.length())
+   |               ^^^^
+```
+
+In `else`, the test `name is not null` failed: `name` is `null` there.

@@ -213,6 +213,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `'a'..='z'` | `'a'..='z'` | built | |
 | `n @ A(_)` | none | not in SG | Not decided yet; listed in [Not here yet](../interpreter/docs/not-here-yet.md) |
 | `if let Some(c) = x.circle()` | `if x is Circle(r)` | built | The names reach along `&&` |
+| `let p = match code { "VIP" => 25, _ => return 0 };` | `var p = match code { ... }` with an arm `_ => return 0` | built | `return` inside an expression: on the right of `??` and as an arm of a `match` (2085) |
 | `let Ok(v) = r else { return };` | `if r is not Ok(v) { return }`, then `v` | built | |
 | `Option<T>` | `T?` | built | `T` itself is never `null` |
 | `Option<&[u8]>`, `fn header(&self, name: &str) -> Option<&[u8]>` | `read byte[]?`, `read byte[]? header(read this, read string name) from this` | built | A window, of length -1 when it is missing; only `read` (1774) |

@@ -12,13 +12,9 @@ keyword | break | leaves the loop
 keyword | checked | shared checked T: borrows of it are checked while the program runs
 keyword | const | a value fixed when the program is compiled
 keyword | continue | goes on with the next turn of the loop
-keyword | else | the block that runs when the condition of if is false
 keyword | embed | embed("logo.gif"): the bytes of a file, put into the program
 keyword | export | makes a function that C calls
 keyword | extern | declares the functions of a C library
-keyword | for | goes over the items of a collection or a range: for i in 0..n
-keyword | if | runs a block when a condition holds
-keyword | in | stands between the name and the items in a for
 keyword | interface | what a type can do: Clonable, Formattable, Equatable, Comparable
 keyword | lock | a short block that alone touches a locked value
 keyword | locked | shared locked T: a value that tasks reach only inside a lock
@@ -26,12 +22,10 @@ keyword | not | is not: the test of is, the other way round
 keyword | or | joins patterns in a match
 keyword | packed | a struct with no padding between its fields
 keyword | readonly | a field given when the value is built and never changed
-keyword | return | ends the function, with its value
 keyword | static | a value made once, the first time the program uses it
 keyword | union | holds one of its fields at a time in the same bytes
 keyword | weak | a link that does not keep its value alive
 keyword | when | adds a condition to an arm of a match
-keyword | while | repeats a block as long as a condition holds
 keyword | with | a copy of a struct with some fields changed
 
 type | bool | true or false

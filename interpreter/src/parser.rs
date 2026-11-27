@@ -2627,7 +2627,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Tok::Return => {
-                return Err(self.unexpected("an expression").note("inside an expression `return` is written only on the right side of `??`"))
+                return Err(self.unexpected("an expression").note("inside an expression `return` is written only on the right side of `??` or as an arm of a `match`"))
             }
             _ => return Err(self.unexpected("an expression")),
         };
