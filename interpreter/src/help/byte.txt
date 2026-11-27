@@ -357,6 +357,6 @@ WHAT THE COMPILER REFUSES
            hint: `List<byte>` to own the items, `read byte[]` for a window onto them
 
 SEE ALSO
-     sg help char, sg help string, sg help list, sg help int
+     sg help char, sg help string, sg help list, sg help slice, sg help int
 
      https://sg-lang.org/reference/byte.html

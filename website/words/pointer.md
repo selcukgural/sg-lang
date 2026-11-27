@@ -1,0 +1,390 @@
+---
+name: T*
+kind: sign
+summary: A pointer that owns a value on the heap.
+see: new, T?, shared, weak, struct, enum, raw
+learn: ../docs/learn/book/07-ownership.md#pointers-t-and-new
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `T*` | a pointer that owns a `T` on the heap |
+| `new x` | puts `x` on the heap and gives its `T*` |
+| `T*?` | the same, or `null`: a link that may be missing |
+| `p.field`, `p.method()` | a field or a method of the value it points to |
+| `read p`, `ref p` | a borrow of the value, where a `read T` or a `ref T` goes |
+| `var q = p` | moves the pointer; `p` is not used after |
+| `node.next.take()` | the pointer in a `T*?` field, with `null` left in its place |
+| `shared T`, `weak T` | several owners, and a look that owns nothing: see `shared` |
+
+## What it means
+
+A `T*` owns one value on the heap. `new` makes it, and each `new` in the code is one allocation: a value is never
+put on the heap by itself. Compiled, a `T*` is one pointer, and a `T*?` is the same pointer with `null` as the
+address zero, so a link that may be missing costs nothing more.
+
+Through a `T*`, fields and methods are reached with `.`, as on the value itself, and `print` writes the value,
+not an address. A borrow of a `T*` goes where a borrow of a `T` is wanted, so a function that takes
+`read Point` takes the point behind a `Point*` too.
+
+A `T*` has one owner, as every value does. Giving it to a variable or a function moves the pointer, not the
+value: a large value changes hands for the price of one pointer and is never copied. The value is freed, with
+everything it owns, where its last owner ends: at the end of a block, when the pointer is written over, or in
+the function it was given to. There is no `delete` and no garbage collector. A chain of values linked by one
+field is freed in a loop, so a long one does not run out of stack.
+
+Most values need no pointer: a struct lives where its variable is, in a list or inside another struct, with no
+allocation. A pointer is needed where a type holds itself (the node of a list, a tree, an expression), since such
+a type would have no size; it also keeps a large value from being copied byte by byte each time it moves.
+
+Since each value has one owner, owning pointers make chains and trees, never circles. A value reached from
+several places, or one that looks back at what holds it, has several owners: `shared T`, with a `weak T` for the
+link back.
+
+## Examples
+
+### A value, and a value behind a pointer
+
+```sg
+struct Point : Formattable {
+    int x
+    int y
+}
+
+void main() {
+    var a = Point { x = 1, y = 2 }
+    var b = new Point { x = 3, y = 4 }
+    b.x += a.x
+    print(a)
+    print(b)
+    print(b.x * b.y)
+}
+```
+
+```text
+Point { x = 1, y = 2 }
+Point { x = 4, y = 4 }
+16
+```
+
+`a` is a `Point` and lives in `main`; `b` is a `Point*` and points to a point on the heap. Both are read and
+written the same way.
+
+### The pointer moves, the value stays
+
+```sg
+struct Image : Disposable {
+    string name
+    byte[65536] pixels
+
+    void dispose(ref this) {
+        print($"free {this.name}")
+    }
+}
+
+Image* load(string name) {
+    var image = new Image { name = name, pixels = byte[65536] }
+    image.pixels[0] = 200
+    return image
+}
+
+Image* brighten(Image* image) {
+    image.pixels[0] += 50
+    return image
+}
+
+void main() {
+    var photo = load("cat.gif".clone())
+    var done = brighten(photo)
+    print(done.pixels[0])
+    print("end of main")
+}
+```
+
+```text
+250
+end of main
+free cat.gif
+```
+
+The image is made once. `load` gives back its pointer, `brighten` takes it and gives it back, and `done` takes it
+from there: 64 KB change hands as one pointer each time. It is freed once, where its last owner, `done`, ends.
+
+### A link that may be missing
+
+```sg
+struct Frame {
+    string name
+    Frame*? below
+}
+
+struct Stack {
+    Frame*? top
+    int depth
+
+    void push(ref this, string name) {
+        this.top = new Frame { name = name, below = this.top.take() }
+        this.depth += 1
+    }
+
+    string? pop(ref this) {
+        var frame = this.top.take() ?? return null
+        this.top = frame.below.take()
+        this.depth -= 1
+        return frame.name
+    }
+}
+
+void main() {
+    var calls = Stack { top = null, depth = 0 }
+    calls.push("main".clone())
+    calls.push("parse".clone())
+    calls.push("readLine".clone())
+    print(calls.depth)
+    print(calls.pop() ?? "empty")
+    print(calls.pop() ?? "empty")
+    print(calls.depth)
+}
+```
+
+```text
+3
+readLine
+parse
+1
+```
+
+`Frame*? below` is the frame under this one, or `null` at the bottom. `take()` moves a pointer out of a field and
+leaves `null` there, which is how a link is moved through a `ref this`. `pop` then owns the frame, gives its name
+back, and the frame is freed when `pop` ends.
+
+### A type that holds itself
+
+```sg
+enum Expr {
+    Number(double value)
+    Add(Expr* left, Expr* right)
+    Times(Expr* left, Expr* right)
+}
+
+double eval(read Expr e) {
+    return match e {
+        Number(v) => v
+        Add(l, r) => eval(read l) + eval(read r)
+        Times(l, r) => eval(read l) * eval(read r)
+    }
+}
+
+void main() {
+    var sum = new Expr.Add(new Expr.Number(2), new Expr.Number(3))
+    var e = Expr.Times(sum, new Expr.Number(4))
+    print(eval(read e))
+}
+```
+
+```text
+20
+```
+
+An `Expr` holds other `Expr`s, so it holds them behind pointers. `e` itself is a value in `main`; its parts are on
+the heap, and they are freed with it.
+
+### A long chain
+
+```sg
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    Node*? list = null
+    for i in 0..1000000 {
+        list = new Node { value = i, next = list }
+    }
+    var at = read list
+    long sum = 0
+    while at is not null {
+        sum += at.value
+        at = read at.next
+    }
+    print(sum)
+}
+```
+
+```text
+499999500000
+```
+
+Each new node takes the list so far as its `next`. `at` only borrows, so the walk moves nothing. A million nodes
+are freed when `list` ends, one after another in a loop, with no recursion that could run out of stack.
+
+## What the compiler refuses
+
+### A type that holds itself, not behind a pointer
+
+```sg error
+enum Expr {
+    Number(double value)
+    Add(Expr left, Expr right)
+}
+
+void main() {
+    var e = Expr.Number(1)
+    print(e is Number)
+}
+```
+
+```text
+error: enum `Expr` contains itself, so it has no finite size
+  --> example.sg:3:9
+ 3 |     Add(Expr left, Expr right)
+   |         ^^^^
+  hint: put it behind a pointer: `Expr* left`
+```
+
+### Two owners of one value
+
+```sg error
+struct Folder {
+    string name
+    Folder*? parent
+}
+
+void main() {
+    var home = new Folder { name = "home", parent = null }
+    var docs = new Folder { name = "docs", parent = home }
+    var notes = new Folder { name = "notes", parent = home }
+    print(docs.name)
+    print(notes.name)
+}
+```
+
+```text
+error: `home` was moved and can no longer be used
+  --> example.sg:9:55
+ 9 |     var notes = new Folder { name = "notes", parent = home }
+   |                                                       ^^^^
+  it was moved here:
+  --> example.sg:8:53
+ 8 |     var docs = new Folder { name = "docs", parent = home }
+   |                                                     ^^^^
+```
+
+`docs` owns `home` now, and a value has one owner. Two folders that point to one parent need `shared Folder`
+for the parent, and a link to the parent that does not own it is a `weak Folder?`.
+
+### A value put inside itself
+
+```sg error
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    var last = new Node { value = 1, next = null }
+    last.next = last
+    print(last.value)
+}
+```
+
+```text
+error: `last.next` is reached through `last`, which the right side moves
+  the right side is computed first, so nothing is left to write into; a value cannot be put inside itself
+  --> example.sg:8:5
+ 8 |     last.next = last
+   |     ^^^^^^^^^
+  it is moved here:
+  --> example.sg:8:17
+ 8 |     last.next = last
+   |                 ^^^^
+```
+
+The right side moves `last` into the field, so there is no `last` left to hold the field. A list that goes round
+has no last owner to free it; it is made of `shared` values with a `weak` link back.
+
+### A `weak` look at a `T*`
+
+```sg error
+struct Folder {
+    string name
+    weak Folder? parent
+}
+
+void main() {
+    var home = new Folder { name = "home", parent = null }
+    var docs = new Folder { name = "docs", parent = weak home }
+    print(docs.name)
+}
+```
+
+```text
+error: `weak` needs a `shared` value, and this is `Folder*`
+  a `Folder*` has one owner; a value with several is made with `new shared`: `shared Folder`
+  --> example.sg:8:58
+```
+
+`new shared Folder { ... }` for both folders makes the program right.
+
+### A link used without a test
+
+```sg error
+struct Node {
+    int value
+    Node*? next
+}
+
+int second(read Node*? list) {
+    return list.next.value
+}
+
+void main() {
+    var a = new Node { value = 1, next = null }
+    print(second(read a))
+}
+```
+
+```text
+error: this is `Node*?` and may be `null`; `.next` needs a value
+  --> example.sg:7:12
+ 7 |     return list.next.value
+   |            ^^^^
+  hint: test it first: `if list is not null { ... }`
+```
+
+### A method that takes the value, called through the pointer
+
+```sg error
+struct Point {
+    int x
+    int y
+
+    Point moved(this, int dx) {
+        return Point { x = this.x + dx, y = this.y }
+    }
+}
+
+void main() {
+    var p = new Point { x = 1, y = 2 }
+    var q = p.moved(3)
+    print(q.x)
+    print(p.x)
+}
+```
+
+```text
+error: `p` was moved and can no longer be used
+  --> example.sg:14:11
+ 14 |     print(p.x)
+    |           ^
+  it was moved here:
+  --> example.sg:12:13
+ 12 |     var q = p.moved(3)
+    |             ^
+```
+
+`moved` takes `this` by value, so the call moves the point out of the pointer and uses it up. A method that
+only looks takes `read this`, and then `p` stays.

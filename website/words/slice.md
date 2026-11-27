@@ -1,0 +1,495 @@
+---
+name: T[]
+kind: sign
+summary: A slice: a window onto items that something else owns.
+see: read, ref, List, a..b, xs[^1], string, T?
+learn: ../docs/learn/book/08-collections.md#slices
+library: ../docs/library/collections.md#slices
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `read T[]` | a slice to look at: a pointer and a length |
+| `ref T[]` | a slice whose items may be written, sorted or turned round |
+| `read xs`, `ref xs` | a whole list or array, lent as a slice |
+| `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]` | a part, to look at; the item at `b` is not in it |
+| `xs[^2..]`, `xs[1..^1]` | ends counted from the end |
+| `ref xs[a..b]` | a part, to write |
+| `text.asBytes()` | the bytes of a text, as a `read byte[]` |
+| `s[i]`, `s.length()`, `s.get(i)`, `for x in s` | as on a list |
+| `read T[]?` | a slice, or `null` |
+
+## What it means
+
+A slice is a window onto items that something else owns: a list, an array, the bytes of a text, or another
+slice. It is a pointer and a length, and taking one copies nothing. A `read T[]` only looks at the items. A
+`ref T[]` may also write them, sort them or turn them round, but not add or take away any: how many there are is
+up to the owner.
+
+`T[]` alone is not a type, since a slice never owns anything. A list that owns its items is a `List<T>`, and a
+fixed number of them is an array, `T[4]`. A function that only needs the items takes `read T[]` or `ref T[]`, and
+then takes a list, an array and any part of either. The call says what it lends: `read xs` the whole, `xs[1..3]`
+a part (a range is already a borrow), and `ref xs[1..3]` a part to write.
+
+A slice is a borrow, and the compiler checks it as one. While a slice is still used, the list it looks at cannot
+grow, be cleared or end, since its items could move or be freed. Two `ref` slices of one list may be held at once
+when they share no item, as `ref xs[..k]` beside `ref xs[k..]`.
+
+An index into a slice is checked against the slice's own length, and the ends of a range against the length of
+what it is taken from, in every build: a wrong one stops the program with a panic, never reads memory outside.
+`get(i)` gives `null` instead. A slice has the methods of a list that only look (`length`, `get`, `indexOf`,
+`contains`, `binarySearch`), each counting from the start of the slice; through a `ref T[]` it also has `sort`,
+`reverse` and `copyFrom`.
+
+## Examples
+
+### Lend a list or an array
+
+```sg
+int total(read int[] values) {
+    var sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum
+}
+
+void main() {
+    var list = List<int> { 1, 2, 3, 4, 5 }
+    var array = int[4] { 10, 20, 30, 40 }
+    print(total(read list))
+    print(total(read array))
+    print(total(list[1..3]))
+    print(total(array[^2..]))
+}
+```
+
+```text
+15
+100
+5
+70
+```
+
+One function takes the list, the array, and a part of each. `list[1..3]` is the items at 1 and 2, and
+`array[^2..]` the last two.
+
+### A part of a list
+
+```sg
+void main() {
+    var days = List<string> { "mon", "tue", "wed", "thu", "fri" }
+    print(days[1..3])
+    print(days[..2])
+    print(days[3..])
+    print(days[^2..])
+    print(days[1..^1])
+    var middle = days[1..4]
+    print($"{middle.length()} {middle[0]} {middle[^1]}")
+    print(middle.get(5) ?? "none")
+    print(middle.indexOf("thu") ?? -1)
+    print(middle[1..])
+}
+```
+
+```text
+["tue", "wed"]
+["mon", "tue"]
+["thu", "fri"]
+["thu", "fri"]
+["tue", "wed", "thu"]
+3 tue thu
+none
+2
+["wed", "thu"]
+```
+
+`middle` is a `read string[]` that looks at three items of `days`. Its indexes start at its own first item:
+`middle[0]` is `"tue"`, and `indexOf` finds `"thu"` at 2. A range of a slice is a slice again.
+
+### Write through a slice
+
+```sg
+void fill(ref int[] target, int value) {
+    for i in 0..target.length() {
+        target[i] = value
+    }
+}
+
+void main() {
+    var xs = List<int> { 9, 4, 7, 1, 8, 2 }
+    xs[..3].sort()
+    print(xs)
+    fill(ref xs[4..], 0)
+    print(xs)
+    var tail = ref xs[3..]
+    tail.reverse()
+    tail[0] = 5
+    print(xs)
+}
+```
+
+```text
+[4, 7, 9, 1, 8, 2]
+[4, 7, 9, 1, 0, 0]
+[4, 7, 9, 5, 0, 1]
+```
+
+`xs[..3].sort()` puts only the first three items in order, where they are. `ref xs[4..]` lends the last two to
+be written, and `tail` keeps a `ref int[]` in a variable; every change lands in `xs`.
+
+### The bytes of a text
+
+```sg
+nint countByte(read byte[] data, byte wanted) {
+    nint count = 0
+    for b in data {
+        if b == wanted {
+            count += 1
+        }
+    }
+    return count
+}
+
+void main() {
+    var line = "a,b,,c"
+    var bytes = line.asBytes()
+    print(bytes.length())
+    print(bytes[1])
+    print(countByte(bytes, ','))
+    print(countByte(bytes[2..], ','))
+}
+```
+
+```text
+6
+44
+3
+2
+```
+
+`asBytes()` gives the bytes of the text as a `read byte[]`, with no copy. What `read string` is for text,
+`read byte[]` is for raw data.
+
+### Items that are structs
+
+```sg
+struct Order {
+    string customer
+    long amount
+}
+
+long sum(read Order[] orders) {
+    long total = 0
+    for o in orders {
+        total += o.amount
+    }
+    return total
+}
+
+void discount(ref Order[] orders, long percent) {
+    for i in 0..orders.length() {
+        orders[i].amount -= orders[i].amount * percent / 100
+    }
+}
+
+void main() {
+    var orders = List<Order> {
+        Order { customer = "ada", amount = 1200 },
+        Order { customer = "grace", amount = 300 },
+        Order { customer = "linus", amount = 80 }
+    }
+    print(sum(read orders))
+    discount(ref orders[1..], 50)
+    print(sum(read orders))
+    print(orders[^1].amount)
+}
+```
+
+```text
+1580
+1390
+40
+```
+
+A `for` over a slice lends each item, so no order is copied. Through a `ref Order[]` the fields of the items can
+be written, and only the orders in the slice change.
+
+### Two parts of one list at once
+
+```sg
+void main() {
+    var xs = List<int> { 1, 2, 3, 10, 20, 30 }
+    var half = xs.length() / 2
+    var left = ref xs[..half]
+    var right = ref xs[half..]
+    for i in 0..left.length() {
+        left[i] += right[i]
+        right[i] = 0
+    }
+    print(xs)
+}
+```
+
+```text
+[11, 22, 33, 0, 0, 0]
+```
+
+`left` and `right` are both written, and both borrow `xs`. That is allowed because they share no item; it is
+checked when `right` is taken, and a panic if they do. Rust writes this with `split_at_mut`.
+
+### A slice that may be missing
+
+```sg
+read int[]? firstRun(read int[] items, int value) {
+    var start = items.indexOf(value) ?? return null
+    var end = start
+    while end < items.length() && items[end] == value {
+        end += 1
+    }
+    return items[start..end]
+}
+
+void main() {
+    var xs = List<int> { 4, 7, 7, 7, 2 }
+    var run = firstRun(read xs, 7)
+    if run is not null {
+        print($"{run.length()} at {run}")
+    }
+    print(firstRun(read xs, 9) is null)
+}
+```
+
+```text
+3 at [7, 7, 7]
+true
+```
+
+`read int[]?` is a slice or `null`. The slice that comes back looks at `xs`, as the one given did. After
+`if run is not null`, `run` is a `read int[]`. Only a `read` slice may be missing: a `ref int[]?` is refused.
+
+## What stops the program
+
+### An index past the end of the slice
+
+```sg panic
+void main() {
+    var xs = List<int> { 5, 3, 8, 1 }
+    var part = xs[1..3]
+    print(part[2])
+}
+```
+
+```text
+panic: index 2 is out of range: the length is 2
+```
+
+The list has an item at 2, but `part` has only two items. An index is checked against the slice, not against
+what it looks at.
+
+### A range past the end
+
+```sg panic
+void main() {
+    var xs = List<int> { 5, 3, 8, 1 }
+    var n = xs.length() + 2
+    print(xs[1..n])
+}
+```
+
+```text
+panic: range 1..6 is out of range: the length is 4
+```
+
+### Two `ref` parts that share items
+
+```sg panic
+void addInto(ref int[] into, read int[] from) {
+    for i in 0..from.length() {
+        into[i] += from[i]
+    }
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3, 10, 20, 30 }
+    var cut = xs.length() / 2 + 1
+    addInto(ref xs[..cut], xs[cut - 2..])
+    print(xs)
+}
+```
+
+```text
+panic: `xs[cut - 2..]` shares items 2..4 with `xs[..cut]`, lent to this call too
+```
+
+Where the ends depend on the data, the check is made as the program runs.
+
+## What the compiler refuses
+
+### `T[]` alone
+
+```sg error
+int total(int[] values) {
+    var sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(total(read xs))
+}
+```
+
+```text
+error: `int[]` is not a type on its own: a slice only looks at items that something else owns
+  --> example.sg:1:11
+ 1 | int total(int[] values) {
+   |           ^^^^^
+  hint: `List<int>` to own the items, `read int[]` for a window onto them
+```
+
+In C# `int[]` is an array that owns its items. In SG it would be a window with no owner, so `read` or `ref` is
+written.
+
+### A list given without `read`
+
+```sg error
+int total(read int[] values) {
+    var sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(total(xs))
+}
+```
+
+```text
+error: expected `read int[]`, found `List<int>`
+  --> example.sg:11:17
+ 11 |     print(total(xs))
+    |                 ^^
+  hint: lend it with `read`: `read xs`
+```
+
+### Changing a list a slice still looks at
+
+```sg error
+void main() {
+    var xs = List<int> { 5, 3, 8, 1 }
+    var part = xs[1..3]
+    xs.add(9)
+    print(part)
+}
+```
+
+```text
+error: `xs` cannot be changed here: `part` borrows from it and is used again later
+  --> example.sg:4:5
+ 4 |     xs.add(9)
+   |     ^^
+  `part` borrowed it here:
+  --> example.sg:3:16
+ 3 |     var part = xs[1..3]
+   |                ^^^^^^^^
+  hint: finish with `part` before this line: a borrow ends at its last use
+```
+
+`add` may move the items to a larger block, and `part` would point at the old one.
+
+### A slice of a list that ends first
+
+```sg error
+read int[] firstTwo() {
+    var xs = List<int> { 5, 3, 8, 1 }
+    return xs[..2]
+}
+
+void main() {
+    print(firstTwo())
+}
+```
+
+```text
+error: this returns a borrow of `xs`, and `xs` is gone when the function returns
+  --> example.sg:3:12
+ 3 |     return xs[..2]
+   |            ^^^^^^^
+  hint: return the value itself instead of a borrow of it
+```
+
+`xs` is freed when `firstTwo` returns. A function gives back a slice only of what it was lent.
+
+### Sorting through a `read` slice
+
+```sg error
+void tidy(read int[] values) {
+    values.sort()
+}
+
+void main() {
+    var xs = List<int> { 5, 3, 8, 1 }
+    tidy(read xs)
+    print(xs)
+}
+```
+
+```text
+error: `sort` changes the slice, but it is reached through a `read` borrow
+  --> example.sg:2:5
+ 2 |     values.sort()
+   |     ^^^^^^
+  hint: lend it as a `ref int[]`: `ref xs` or `ref xs[a..b]`
+```
+
+### Two `ref` parts that always overlap
+
+```sg error
+void main() {
+    var xs = List<int> { 1, 2, 3, 4, 5 }
+    var left = ref xs[0..3]
+    var right = ref xs[2..5]
+    left[0] = right[0]
+    print(xs)
+}
+```
+
+```text
+error: `xs[2..5]` shares items with `xs[0..3]` every time this runs, and a `ref` borrow must be the only one of its items
+  --> example.sg:4:17
+ 4 |     var right = ref xs[2..5]
+   |                 ^^^^^^^^^^^^
+  `left` borrowed it here, and is used again later:
+  --> example.sg:3:16
+ 3 |     var left = ref xs[0..3]
+   |                ^^^^^^^^^^^^
+  hint: lend items that do not overlap, as `ref xs[..k]` beside `ref xs[k..]` do
+```
+
+When the ends are numbers, the overlap is found when the program is compiled.
+
+### `read` in front of a range
+
+```sg error
+void main() {
+    var xs = List<int> { 1, 2, 3, 4, 5 }
+    print(read xs[1..3])
+}
+```
+
+```text
+error: a range is already a borrow, so `read` is not written in front of it
+  --> example.sg:3:11
+ 3 |     print(read xs[1..3])
+   |           ^^^^^^^^^^^^^
+  hint: `xs[1..3]`
+```

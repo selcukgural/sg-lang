@@ -3499,6 +3499,8 @@ fn help_from_sg_itself() {
     let (code, out, _) = ran(&sg(&dir, &["help", "x ?? y"]));
     assert_eq!(code, 0);
     assert!(out.starts_with("NAME\n     x ?? y - "), "{out}");
+    // A sign by its marks alone (choice 2086).
+    assert_eq!(ran(&sg(&dir, &["help", "??"])), (0, out, String::new()));
     let (code, out, _) = ran(&sg(&dir, &["help", "index"]));
     assert_eq!(code, 0);
     assert!(out.starts_with("KEYWORDS\n     alias ") && out.contains("\nCOMMANDS\n") && out.contains("\n     read "), "{out}");

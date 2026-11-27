@@ -314,6 +314,7 @@ WHAT THE COMPILER REFUSES
      next node moves up, and the first node, written over, is freed.
 
 SEE ALSO
-     sg help shared, sg help struct, sg help enum
+     sg help pointer, sg help nullable, sg help null, sg help shared, sg help
+     struct, sg help enum
 
      https://sg-lang.org/reference/new.html

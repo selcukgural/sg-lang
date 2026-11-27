@@ -57,6 +57,8 @@ function slugger() {
       .toLowerCase()
       .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
       .replace(/ /g, '-');
+    // A heading of marks alone (`?.`) has no letter left: its marks by their codes, so it can be linked.
+    if (!base) base = [...text.trim()].map((c) => c.codePointAt(0).toString(16)).join('-');
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
     return count === 0 ? base : `${base}-${count}`;
@@ -709,7 +711,8 @@ for (const entry of sectionPages.manual.slice(1)) {
   writeFileSync(join(out, `man/man7/${page.manName}.7`), roff);
   const text = manText(page);
   mkdirSync(join(out, 'help'), { recursive: true });
-  writeFileSync(join(out, `help/${page.meta.name.toLowerCase()}.txt`), helpText(page));
+  // Named by the file of the page, as in src/help/: the name of a sign (`T?`) is no name for a file.
+  writeFileSync(join(out, `help/${posix.basename(page.src, '.md')}.txt`), helpText(page));
   const main = `<p class="trail"><a href="index.html">Manual</a></p>
 <h1>${escape(page.manName)}(7)</h1>
 <p class="note">What <code>man ${escape(page.manName)}</code> shows. The same page on the site: <a href="${link(entry.url, page.url)}"><code>${escape(page.title)}</code></a>. The file: <a href="../man/man7/${escape(page.manName)}.7">${escape(page.manName)}.7</a></p>
@@ -836,6 +839,7 @@ for (const [url, html] of written) {
   if (/<script(?![^>]*\ssrc=)/.test(html)) problems.push(`${url}: a script written into the page`);
   if (/\sstyle="/.test(html) || /<style/.test(html)) problems.push(`${url}: a style written into the page`);
   if (/\son[a-z]+="/.test(html)) problems.push(`${url}: an event handler written into the page`);
+  if (/\sid=""/.test(html)) problems.push(`${url}: a place with no name (id="")`);
   for (const [, href] of html.matchAll(/\shref="([^"]+)"/g)) {
     if (/^[a-z]+:/.test(href)) continue;
     const [path, hash] = href.replaceAll('&amp;', '&').split('#');

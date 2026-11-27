@@ -327,6 +327,6 @@ WHAT THE COMPILER REFUSES
      is a pattern.
 
 SEE ALSO
-     sg help match, sg help ref
+     sg help match, sg help null, sg help nullable, sg help ref
 
      https://sg-lang.org/reference/is.html

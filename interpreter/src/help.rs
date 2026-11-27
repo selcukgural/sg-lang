@@ -52,7 +52,8 @@ pub fn text(words: &[String]) -> Result<String, Refusal> {
                 .find(|n| n.name == word)
                 .or_else(|| all.iter().find(|n| n.name.eq_ignore_ascii_case(word)))
                 .or_else(|| all.iter().find(|n| n.kind == "command" && n.name.strip_prefix("sg ").is_some_and(|c| c.eq_ignore_ascii_case(word))))
-                .or_else(|| all.iter().find(|n| !n.page.is_empty() && n.page.eq_ignore_ascii_case(word)));
+                .or_else(|| all.iter().find(|n| !n.page.is_empty() && n.page.eq_ignore_ascii_case(word)))
+                .or_else(|| all.iter().find(|n| n.kind == "sign" && !marks(word).is_empty() && marks(n.name) == marks(word)));
             match found {
                 Some(n) => Ok(match page(n.page) {
                     Some(text) if !n.page.is_empty() => text.to_string(),
@@ -63,6 +64,12 @@ pub fn text(words: &[String]) -> Result<String, Refusal> {
         }
         _ => Err(Refusal::Usage),
     }
+}
+
+/// The marks of a sign, without the names standing for its parts (choice 2086): `x ?? y` is `??`, `T[]` is `[]`,
+/// `xs[^1]` is `[^]`, so `sg help ??` finds it.
+fn marks(name: &str) -> String {
+    name.chars().filter(|c| !c.is_alphanumeric() && *c != '_' && !c.is_whitespace()).collect()
 }
 
 /// A name `sg help` has no page for yet: its line, and where the site says more.
@@ -181,6 +188,23 @@ mod tests {
             assert!(names().any(|n| n.page == *file), "{file}.txt: no name of the index has it as its page");
             assert!(text.starts_with("NAME\n"), "{file}.txt");
         }
+    }
+
+    /// Each sign is found by its marks alone, and no two signs share them.
+    #[test]
+    fn every_sign_by_its_marks() {
+        let signs: Vec<Name> = names().filter(|n| n.kind == "sign").collect();
+        assert!(signs.len() >= 8);
+        for n in &signs {
+            let alone = marks(n.name);
+            assert!(!alone.is_empty() && signs.iter().filter(|m| marks(m.name) == alone).count() == 1, "{}", n.name);
+            let found = text(std::slice::from_ref(&alone)).unwrap_or_else(|_| panic!("{alone}: not found"));
+            assert_eq!(found, text(&[n.name.to_string()]).unwrap(), "{alone}");
+        }
+        for word in ["??", "?.", "[]", "*", "..", "[^]"] {
+            assert!(text(&[word.to_string()]).is_ok(), "{word}");
+        }
+        assert!(text(&["+".to_string()]).is_err());
     }
 
     #[test]

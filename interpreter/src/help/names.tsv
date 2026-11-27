@@ -64,16 +64,16 @@ ulong	type	Primitive types	an integer of 64 bits without a sign		https://sg-lang
 ushort	type	Primitive types	an integer of 16 bits without a sign		https://sg-lang.org/reference/#n-ushort
 void	type	Primitive types	the type of a function that gives nothing back		https://sg-lang.org/reference/#n-void
 false	value	Values with a name	the bool that is not true		https://sg-lang.org/reference/#n-false
-null	value	Values with a name	no value; only a type written T? may hold it		https://sg-lang.org/reference/#n-null
+null	value	Values with a name	no value; only a type written T? may hold it, and it is tested with is null	null	https://sg-lang.org/reference/null
 this	value	Values with a name	the value a method was called on		https://sg-lang.org/reference/#n-this
 true	value	Values with a name	the bool that is not false		https://sg-lang.org/reference/#n-true
 $"{x}"	sign	Signs	text with values written into it		https://sg-lang.org/reference/#n--24227b-x-7d22
 a..b	sign	Signs	a range: from a up to, not with, b		https://sg-lang.org/reference/#n-a-2e2e-b
-T?	sign	Signs	a T that may be null		https://sg-lang.org/reference/#n-T-3f
-T[]	sign	Signs	a slice: items that something else owns		https://sg-lang.org/reference/#n-T-5b5d
-T*	sign	Signs	a pointer that owns a value on the heap		https://sg-lang.org/reference/#n-T-2a
-x ?? y	sign	Signs	x, or y when x is null or an error		https://sg-lang.org/reference/#n-x-203f3f20-y
-x?.y	sign	Signs	y of x, or null when x is null		https://sg-lang.org/reference/#n-x-3f2e-y
+T?	sign	Signs	a T that may be null; it is tested before it is used as a T	nullable	https://sg-lang.org/reference/nullable
+T[]	sign	Signs	a slice: a window onto items that something else owns	slice	https://sg-lang.org/reference/slice
+T*	sign	Signs	a pointer that owns a value on the heap	pointer	https://sg-lang.org/reference/pointer
+x ?? y	sign	Signs	the value of x, or y when x is null or an error	null-coalescing	https://sg-lang.org/reference/null-coalescing
+x?.y	sign	Signs	a field or a method of x, or null when x is null	null-conditional	https://sg-lang.org/reference/null-conditional
 xs[^1]	sign	Signs	an index counted from the end		https://sg-lang.org/reference/#n-xs-5b5e-1-5d
 Base64	library type	Types of the library	a type of the library, in Hex, Base64 and percent		https://sg-lang.org/library/encoding#base64
 CancellationSource	library type	Types of the library	a type of the library, in Tasks		https://sg-lang.org/library/tasks#cancellationsource-and-cancellationtoken

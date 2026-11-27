@@ -324,6 +324,6 @@ WHAT THE COMPILER REFUSES
            hint: say what lies there with a cast: `unsafe ((raw byte)block)[0]`
 
 SEE ALSO
-     sg help unsafe, sg help read
+     sg help unsafe, sg help pointer, sg help read, sg help null
 
      https://sg-lang.org/reference/raw.html

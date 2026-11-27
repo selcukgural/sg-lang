@@ -1,0 +1,384 @@
+NAME
+     T? - a T that may be null; it is tested before it is used as a T
+
+SYNOPSIS
+     int?, string?, Point?, Node*?
+            a value of the type, or null; every type has one
+
+     read string?
+            a borrow that may be missing: a pointer, null when there is
+            nothing
+
+     x is null, x is not null
+            the test; where x is sure not to be null, it is a T
+
+     x ?? fallback
+            the value, or the fallback when it is null
+
+     x ?? return null, x ?? panic("...")
+            the value, or leave the function, or stop the program
+
+     x?.field, x?.method()
+            the field or the result, or null when x is null
+
+     match x { null => ...  var v => ... }
+            an arm for null; below it, v is a T
+
+     try x  the value, or null handed back by a function that returns a T?
+
+     x.take()
+            the value, with null left in its place
+
+DESCRIPTION
+     No type can be empty by accident: an int is always a number and a string
+     always a text. A value that may be missing says so with ?: an int? is an
+     int or null. It is the type of a field that need not be there, of a
+     function that may find nothing, and of the library's methods that look
+     something up: list.get(i), map.get(key), list.removeLast(), n.tryToInt().
+
+     A T? is not a T. Its value is used only after a test, and the compiler
+     follows the test: after if x is not null, in the block, x is a T. The
+     same holds on the right of &&, in else after if x is null, after an if x
+     is null whose block always leaves, and after while x is null. Only local
+     variables and parameters are narrowed this way, never a field, which a
+     call in between could change; a field is lent to a variable, and the
+     variable tested. An assignment to the variable, or take(), ends what the
+     test said.
+
+     ?? gives a fallback in one step, and on its right a return or a panic
+     leaves instead. ?. reads through a T?: user?.name is null when user is,
+     and one ?. covers the rest of the chain, so there is never a T??. A T?
+     cannot be printed or written into text as it is, since null has no text
+     there; inside a list or a struct that is printed, it is written null.
+
+     A T? costs a flag. An int? is the number and a bool beside it, 8 bytes
+     where an int takes 4. A T*? takes nothing more: it is the pointer of a
+     T*, with null as the address zero. A read T? is a pointer too (for text,
+     the pointer and the length of a read string), and list.get(i) gives one
+     into the list, with nothing copied.
+
+EXAMPLES
+   Test, then use
+         void main() {
+             int? age = null
+             print(age is null)
+             print(age ?? 0)
+             age = 36
+             if age is not null {
+                 print(age + 1)
+             }
+         }
+
+         true
+         0
+         37
+
+     age is an int? everywhere, and an int only inside the block of the test,
+     where age + 1 is allowed.
+
+   A function that may find nothing
+         int? find(read List<string> names, read string wanted) {
+             nint i = 0
+             for name in names {
+                 if name == wanted {
+                     return (int)i
+                 }
+                 i += 1
+             }
+             return null
+         }
+
+         void main() {
+             var names = List<string> { "Ada", "Grace", "Pasha" }
+             print(find(read names, "Bob") ?? -1)
+             var at = find(read names, "Grace")
+             if at is null {
+                 print("not there")
+                 return
+             }
+             print($"found at {at}, the next is {at + 1}")
+         }
+
+         -1
+         found at 1, the next is 2
+
+     return (int)i gives an int, which becomes an int? on its own. After the
+     if, whose block returns, at is an int.
+
+   From the library
+         void main() {
+             var names = List<string> { "Ada", "Grace" }
+             var ages = HashMap<string, int> { {"Ada", 36} }
+             var first = names.get(0)
+             if first is not null {
+                 print($"{first} has {first.length()} letters")
+             }
+             print(names.get(9) ?? "nobody")
+             print(ages.get("Ada") ?? 0)
+             print(ages.get("Bob") ?? 0)
+             long big = 5_000_000_000
+             print(big.tryToInt() ?? -1)
+             print(names.removeLast() ?? "empty")
+         }
+
+         Ada has 3 letters
+         nobody
+         36
+         0
+         -1
+         Grace
+
+     names.get(0) gives a read string?, a look into the list with nothing
+     copied. Where names[9] would stop the program, get(9) gives null.
+
+   match, with an arm for null
+         string describe(int? code) {
+             return match code {
+                 null => "no answer"
+                 200 => "fine"
+                 400..=499 => "your mistake"
+                 var other => $"class {other / 100}xx".toString()
+             }
+         }
+
+         void main() {
+             print(describe(null))
+             print(describe(200))
+             print(describe(404))
+             print(describe(503))
+         }
+
+         no answer
+         fine
+         your mistake
+         class 5xx
+
+     Below the arm null, other is an int. Every other arm tests the number, as
+     on an int.
+
+   A field that may be missing
+         struct Address {
+             string city
+             string? street
+         }
+
+         struct Person {
+             string name
+             Address? address
+         }
+
+         void show(read Person person) {
+             var city = person.address?.city ?? "unknown"
+             var street = person.address?.street ?? "no street"
+             print($"{person.name}: {city}, {street}")
+             var address = read person.address
+             if address is not null && address.street is null {
+                 print($"  {address.city} has no street")
+             }
+         }
+
+         void main() {
+             var ada = Person { name = "Ada", address = Address { city = "London", street = "St James's Square" } }
+             var grace = Person { name = "Grace", address = Address { city = "New York", street = null } }
+             var pasha = Person { name = "Pasha", address = null }
+             show(read ada)
+             show(read grace)
+             show(read pasha)
+         }
+
+         Ada: London, St James's Square
+         Grace: New York, no street
+           New York has no street
+         Pasha: unknown, no street
+
+     person.address?.street is a read string?: null when there is no address
+     and when there is no street. The field person.address is not narrowed, so
+     it is lent to address, which is.
+
+   Handing null on
+         int? sumOfFirstTwo(read List<string> fields) {
+             var a = try fields.get(0)
+             var b = try fields.get(1)
+             var x = int.parse(a) ?? return null
+             var y = int.parse(b) ?? return null
+             return x + y
+         }
+
+         void main() {
+             print(sumOfFirstTwo(read List<string> { "2", "40" }) ?? -1)
+             print(sumOfFirstTwo(read List<string> { "2" }) ?? -1)
+             print(sumOfFirstTwo(read List<string> { "2", "x" }) ?? -1)
+         }
+
+         42
+         -1
+         -1
+
+     In a function that returns a T?, try on a T? returns null at once.
+     int.parse gives a Result, so it is opened with ??, whose right side
+     returns.
+
+   A pointer that may be null
+         struct Node {
+             int value
+             Node*? next
+         }
+
+         void main() {
+             Node*? list = null
+             for v in 1..4 {
+                 list = new Node { value = v, next = list.take() }
+             }
+             int sum = 0
+             var cur = read list
+             while cur is not null {
+                 sum += cur.value
+                 cur = read cur.next
+             }
+             print(sum)
+             print(list?.value ?? 0)
+         }
+
+         6
+         3
+
+     A Node* always points to a node; the end of the list is a Node*? that is
+     null. take() moves the old list into the new node and leaves null in list
+     until the assignment fills it again.
+
+WHAT STOPS THE PROGRAM
+   A value that had to be there
+         void main() {
+             var ports = HashMap<string, int> { {"http", 80}, {"https", 443} }
+             print(ports.get("https") ?? panic("no port for https"))
+             print(ports.get("gopher") ?? panic("no port for gopher"))
+         }
+
+         443
+         panic: no port for gopher
+           --> example.sg:4:34
+          4 |     print(ports.get("gopher") ?? panic("no port for gopher"))
+            |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+     ?? panic(...) says that a missing value is a bug. Where the data can
+     really be missing, a fallback or a Result is the way.
+
+WHAT THE COMPILER REFUSES
+   Using it before a test
+         int? find(read List<int> xs, int wanted) {
+             nint i = 0
+             for x in xs {
+                 if x == wanted {
+                     return (int)i
+                 }
+                 i += 1
+             }
+             return null
+         }
+
+         void main() {
+             var xs = List<int> { 4, 8, 15 }
+             var at = find(read xs, 8)
+             print(at + 1)
+         }
+
+         error: operator `+` is not defined for `int?` and `int`
+           `at` may be `null`
+           --> example.sg:15:11
+          15 |     print(at + 1)
+             |           ^^^^^^
+           hint: test it first: `if at is not null { ... }`; or give a fallback with `??`
+
+   Printing it as it is
+         void main() {
+             var ages = HashMap<string, int> { {"Ada", 36} }
+             var age = ages.get("Ada")
+             print(age)
+         }
+
+         error: this is `read int?` and may be `null`; there is no text for `null`
+           --> example.sg:4:11
+          4 |     print(age)
+            |           ^^^
+           hint: give a fallback with `??`, or test with `is null`
+
+   A field after its test
+         struct User {
+             string name
+             string? nickname
+         }
+
+         void main() {
+             var user = User { name = "Ada", nickname = "Countess" }
+             if user.nickname is not null {
+                 print(user.nickname.length())
+             }
+         }
+
+         error: this is `string?` and may be `null`; `.length()` needs a value
+           --> example.sg:9:15
+          9 |         print(user.nickname.length())
+            |               ^^^^^^^^^^^^^
+           hint: a field is not narrowed: lend it to a variable and test that: `var nickname = read user.nickname`, then `if nickname is not null { ... }`
+
+   A variable assigned after its test
+         void main() {
+             int? count = 5
+             if count is not null {
+                 count = 9
+                 print(count + 1)
+             }
+         }
+
+         error: operator `+` is not defined for `int?` and `int`
+           `count` may be `null`
+           --> example.sg:5:15
+          5 |         print(count + 1)
+            |               ^^^^^^^^^
+
+     Any assignment ends what the test said, even of a value that is not null:
+     count is an int? again.
+
+   A match with no arm for null
+         enum Shape {
+             Circle(int radius)
+             Square(int side)
+         }
+
+         int area(read Shape? shape) {
+             return match shape {
+                 Circle(r) => 3 * r * r
+                 Square(s) => s * s
+             }
+         }
+
+         void main() {
+             print(area(read Shape.Square(2)))
+         }
+
+         error: this `match` does not handle `null`
+           --> example.sg:7:18
+          7 |     return match shape {
+            |                  ^^^^^
+           hint: add an arm for it, or `_ => ...` for everything else
+
+   A T??
+         alias MaybeInt = int?
+
+         void main() {
+             MaybeInt? count = null
+             print(count ?? 0)
+         }
+
+         error: `??` is not a type: a value is either there or `null`
+           --> example.sg:4:5
+          4 |     MaybeInt? count = null
+            |     ^^^^^^^^^
+
+     A value is there or it is not; a second ? would say nothing more.
+
+SEE ALSO
+     sg help null, sg help is, sg help null-coalescing, sg help
+     null-conditional, sg help match, sg help try, sg help pointer
+
+     https://sg-lang.org/reference/nullable.html

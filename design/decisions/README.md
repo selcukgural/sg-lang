@@ -297,3 +297,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [Help in the terminal](2026-11-27.md#help-in-the-terminal) | `sg help <name>` prints the page of a word from `sg` itself, with no network; the packages of the preview install the manual pages | 2082-2083 |
 | [The README and the shared card](2026-11-27.md#the-readme-and-the-shared-card) | The README: a paragraph, one program, the steps to build; the wildcat in the README and in the card a shared link shows | 2084 |
 | [`return` as an arm of a `match`](2026-11-27.md#return-as-an-arm-of-a-match) | `return` inside an expression: on the right of `??`, and as an arm of a `match` that gives a value too | 2085 |
+| [A sign by its marks in `sg help`](2026-11-27.md#a-sign-by-its-marks-in-sg-help) | `sg help ??` finds `x ?? y`: a sign by its name without letters, digits and spaces | 2086 |

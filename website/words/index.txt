@@ -33,17 +33,11 @@ type | ushort | an integer of 16 bits without a sign
 type | void | the type of a function that gives nothing back
 
 value | false | the bool that is not true
-value | null | no value; only a type written T? may hold it
 value | this | the value a method was called on
 value | true | the bool that is not false
 
-sign | T? | a T that may be null
-sign | T[] | a slice: items that something else owns
-sign | T* | a pointer that owns a value on the heap
 sign | a..b | a range: from a up to, not with, b
 sign | xs[^1] | an index counted from the end
-sign | x ?? y | x, or y when x is null or an error
-sign | x?.y | y of x, or null when x is null
 sign | $"{x}" | text with values written into it
 
 command | sg | runs a program: sg hello.sg, or a folder
