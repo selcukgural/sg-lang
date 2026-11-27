@@ -22,13 +22,7 @@ keyword | weak | a link that does not keep its value alive
 keyword | when | adds a condition to an arm of a match
 keyword | with | a copy of a struct with some fields changed
 
-type | bool | true or false
-type | byte | an integer of 8 bits, 0 to 255
-type | char | one character of Unicode
-type | double | a fraction of 64 bits
 type | float | a fraction of 32 bits
-type | int | an integer of 32 bits
-type | long | an integer of 64 bits
 type | nint | an integer as wide as an address: what length() gives
 type | nuint | nint without a sign
 type | sbyte | an integer of 8 bits, -128 to 127

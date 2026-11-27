@@ -136,8 +136,9 @@ lists the formats.
 An integer becomes a wider type on its own, but only where the wider type holds every value of the narrower
 one on every machine: `int` to `long` or `nint`, `byte` to `ushort` or `int`, `uint` to `long`. A signed type
 never becomes an unsigned one on its own, since a negative number has no place there. Going the other way is
-written as a cast, `(int)x`, and the cast *panics* if the value does not fit: it never silently changes a
-number.
+written as a cast, `(int)x`, so a change of size is always seen in the program. The cast *panics* if the value
+does not fit, in the interpreter, in tests and in a debug build; a release build cuts it to size instead, as it
+wraps an overflow (below).
 
 ```sg
 long square(long x) {
@@ -303,7 +304,8 @@ Infinity
 ```
 
 A number is printed with the fewest digits that read back as the same number. A cast to an integer drops the
-fraction and panics if the result does not fit, as any cast does.
+fraction and panics if the result does not fit, `NaN` too, as any cast does; a release build gives the nearest
+value instead, and 0 for `NaN`.
 
 ## `bool` and `char`
 

@@ -21,12 +21,12 @@ no arithmetic.
 
 ## The rules every method follows
 
-An integer becomes a wider type on its own only when that type holds every one of its values (`int` to
-`long`, `byte` to `ushort`, never a signed type to an unsigned one); anything else is written as a cast,
-`(int)x`, which panics when the value does not fit. Overflow of `+`, `-` and `*` panics in the interpreter,
-in tests and in a debug build, and wraps in a release build, as in Rust. The methods below say what happens
-everywhere, whatever the build: `try...` gives `null`, `wrapping...` wraps, `saturating...` stops at the end
-of the type.
+An integer becomes a wider type on its own only when that type holds every one of its values (`int` to `long`,
+`byte` to `ushort`, never a signed type to an unsigned one); anything else is written as a cast, `(int)x`,
+which panics when the value does not fit and, like an overflow, is cut to size in a release build. Overflow of
+`+`, `-` and `*` panics in the interpreter, in tests and in a debug build, and wraps in a release build, as in
+Rust. The methods below say what happens everywhere, whatever the build: `try...` gives `null`, `wrapping...`
+wraps, `saturating...` stops at the end of the type.
 
 ```sg error
 void main() {
@@ -65,7 +65,7 @@ A constant is a value of its type: `uint u = int.MaxValue` needs `(uint)`.
 
 | Signature | What it gives |
 |---|---|
-| `(U)x` | `x` as the type `U`; a panic when it does not fit, and a fraction is cut toward zero |
+| `(U)x` | `x` as the type `U`, a fraction cut toward zero; when it does not fit, a panic, and in a release build the low bits (from an integer) or the nearest value, 0 for `NaN` (from a fraction); `(char)n` panics in every build |
 | `U? tryToU()` | `tryToInt()`, `tryToByte()` and the others: `null` where the cast would panic |
 | `U wrappingToU()` | the bits that fit: `wrappingToInt()`, on integers only |
 | `U saturatingToU()` | the nearest end of `U` where the value does not fit; on fractional numbers too |

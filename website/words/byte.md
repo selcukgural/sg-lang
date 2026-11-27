@@ -1,0 +1,414 @@
+---
+name: byte
+kind: type
+summary: An integer of 8 bits, 0 to 255: one byte of a text, a file or a buffer.
+see: char, string, List, T[], int
+learn: ../docs/learn/book/02-values.md#the-integer-types
+library: ../docs/library/numbers.md
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `byte b = 200`, `0xff`, `0b1010_0000` | a number from 0 to 255, written as any integer is |
+| `byte b = 'A'` | the code of a character of ASCII, where a `byte` goes |
+| `text[i]`, `text.asBytes()` | one byte of a text, all of them as a `read byte[]` |
+| `List<byte>`, `read byte[]`, `byte[4](0)` | bytes a list owns, a window onto bytes, an array of four |
+| `int x = b` | a `byte` becomes a wider integer on its own |
+| `(byte)n`, `n.tryToByte()`, `n.wrappingToByte()` | a wider number made a `byte`: a panic, `null`, or the low 8 bits when it does not fit |
+| `{b:x2}`, `{b:X}`, `{b:b8}` | the byte in hex or in binary, in `$"..."` |
+| `string.fromUtf8(bytes)` | bytes as text, once checked |
+
+## What it means
+
+A `byte` is a whole number from 0 to 255 in 8 bits, never negative. A number written in the program has no
+mark of its type: `200`, `0xff` and `'A'` are each a `byte` where a `byte` goes, and a number that does not fit
+is refused when the program is compiled. A character constant is a `byte` only when it takes one byte in UTF-8.
+
+Arithmetic happens in the type of its operands, so `byte + byte` is a `byte`, and a sum past 255 is an overflow:
+a panic in the interpreter, in tests and in a debug build, and a wrap in a release build. `wrappingAdd`,
+`tryAdd` and `saturatingAdd` say which one is meant in every build. A `byte` becomes an `int`, a `long`, an
+`nint` or another wider type on its own; the way back is a cast, `(byte)n`, which panics when the value does
+not fit, and keeps the low 8 bits in a release build.
+
+Bytes in a row are raw data: the bytes of a file, of a connection, of a text. A `List<byte>` owns them and a
+`read byte[]` looks at them where they lie; `byte[]` alone is not a type. `text[i]` reads one byte of a text,
+and `text.asBytes()` lends them all, with no copy. A `byte` is not a `char`: the two are never compared, and
+`(char)b` and `(byte)c` go between them.
+
+The methods are in [Numbers](../docs/library/numbers.md); the tests of ASCII (`isAsciiDigit`,
+`toAsciiUpper` ...) are in [Text](../docs/library/string.md#char).
+
+## Examples
+
+### A number from 0 to 255
+
+```sg
+void main() {
+    byte level = 200
+    byte step = 0x20
+    byte mask = 0b1111_0000
+    print($"{level} {step} {mask}")
+    print(level + step)
+    int wide = level
+    print(wide + 100)
+    print($"{level:x2} {level:X} {mask:b8}")
+}
+```
+
+```text
+200 32 240
+232
+300
+c8 C8 11110000
+```
+
+`level + step` is a `byte`, and 232 fits. `wide + 100` is an `int`: `level` widens on its way into `wide`.
+
+### The bytes of a text
+
+```sg
+void main() {
+    var line = "name: naïve"
+    print(line[4])
+    print(line[4] == ':')
+    var bytes = line.asBytes()
+    print(bytes[6..])
+    nint high = 0
+    for b in bytes {
+        if b >= 0x80 {
+            high += 1
+        }
+    }
+    print($"{bytes.length()} bytes, {high} outside ASCII")
+}
+```
+
+```text
+58
+true
+[110, 97, 195, 175, 118, 101]
+12 bytes, 2 outside ASCII
+```
+
+`line[4]` is the byte of `:`, and prints as a number. `':'` is a `byte` beside it. `ï` is two bytes in UTF-8,
+195 and 175, both above 127.
+
+### Digits out of bytes
+
+```sg
+long? number(read byte[] digits) {
+    if digits.length() == 0 {
+        return null
+    }
+    long n = 0
+    for b in digits {
+        if !b.isAsciiDigit() {
+            return null
+        }
+        n = n * 10 + (b - '0')
+    }
+    return n
+}
+
+void main() {
+    var header = "Content-Length: 1234".asBytes()
+    print(number(header[16..]) ?? -1)
+    print(number(header[..7]) ?? -1)
+}
+```
+
+```text
+1234
+-1
+```
+
+`b - '0'` is a `byte` from 0 to 9, which widens to a `long` in the sum. `header[16..]` looks at the last four
+bytes, with no copy.
+
+### A checksum
+
+```sg
+byte checksum(read string sentence) {
+    byte sum = 0
+    for b in sentence.asBytes() {
+        sum ^= b
+    }
+    return sum
+}
+
+bool valid(read string line) {
+    if line.length() < 4 || line[0] != '$' || line[^3] != '*' {
+        return false
+    }
+    var given = int.parseHex(line[^2..]) ?? -1
+    return given == checksum(line[1..^3])
+}
+
+void main() {
+    var body = "GPGLL,4916.45,N,12311.12,W,225444,A,"
+    print($"${body}*{checksum(read body):X2}")
+    print(valid("$GPGLL,4916.45,N,12311.12,W,225444,A,*1D"))
+    print(valid("$GPGLL,4916.45,N,12311.12,W,225445,A,*1D"))
+}
+```
+
+```text
+$GPGLL,4916.45,N,12311.12,W,225444,A,*1D
+true
+false
+```
+
+A sentence of NMEA, the text a GPS receiver sends, ends with the bytes between `$` and `*` joined by `^`, in
+two hex digits. `^` on two bytes is a `byte`, so it never overflows. The `byte` widens to an `int` to be
+compared with `given`.
+
+### Wrapping on purpose
+
+```sg
+uint fnv1a(read byte[] data) {
+    uint hash = 2166136261
+    for b in data {
+        hash ^= b
+        hash = hash.wrappingMultiply(16777619)
+    }
+    return hash
+}
+
+void main() {
+    print($"{fnv1a("".asBytes()):x8}")
+    print($"{fnv1a("a".asBytes()):x8}")
+    byte b = 250
+    print(b.wrappingAdd(10))
+    print(b.tryAdd(10) ?? 0)
+    print((300).wrappingToByte())
+}
+```
+
+```text
+811c9dc5
+e40c292c
+4
+0
+44
+```
+
+A hash means to wrap, so it says so with `wrappingMultiply`, and runs the same in every build. Each `byte`
+widens to a `uint` in `hash ^= b`. `wrappingToByte` keeps the low 8 bits of 300: 44.
+
+### The bytes of a file
+
+```sg
+Result<void, IoError> main() {
+    var folder = try Directory.createTemp()
+    var path = Path.join(read folder, "notes.txt")
+    try File.writeText(read path, "one\r\ntwo\nnaïve\n")
+    var bytes = try File.readBytes(read path)
+    nint lines = 0
+    nint returns = 0
+    for b in read bytes {
+        match b {
+            '\n' => lines += 1
+            '\r' => returns += 1
+            _ => {}
+        }
+    }
+    print($"{bytes.length()} bytes, {lines} lines, {returns} with \\r")
+    print(Hex.encode(bytes[..5]))
+    bytes[0] = bytes[0].toAsciiUpper()
+    print(string.fromUtf8(bytes[..3]) ?? "not UTF-8")
+    print(string.fromUtf8(bytes[..12]) ?? "not UTF-8")
+    try Directory.deleteAll(read folder)
+    return Ok()
+}
+```
+
+```text
+16 bytes, 3 lines, 1 with \r
+6f6e650d0a
+One
+not UTF-8
+```
+
+`File.readBytes` gives a `List<byte>`, checked for nothing. A `match` on a `byte` takes characters of ASCII as
+patterns. The list owns its bytes, so one can be changed; a text cannot. The first 12 bytes end in the middle
+of `ï`, so they are not text.
+
+## What stops the program
+
+### A sum past 255
+
+```sg panic
+void main() {
+    var data = List<byte> { 250, 3, 4 }
+    byte sum = 0
+    for b in data {
+        sum += b
+    }
+    print(sum)
+}
+```
+
+```text
+panic: overflow: 253 + 4 does not fit in byte
+  --> example.sg:5:9
+ 5 |         sum += b
+   |         ^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+```
+
+A sum of many bytes is kept in a wider type: `int sum = 0` takes each `byte` as it is.
+
+### A cast that does not fit
+
+```sg panic
+void main() {
+    var sizes = List<int> { 200, 300 }
+    for n in sizes {
+        byte b = (byte)n
+        print(b)
+    }
+}
+```
+
+```text
+200
+panic: value 300 does not fit in byte
+  --> example.sg:4:18
+ 4 |         byte b = (byte)n
+   |                  ^^^^^^^
+  hint: `tryToByte()` gives `null` when the value does not fit, and `wrappingToByte()` cuts it to size
+```
+
+A release build cuts the value to its low 8 bits instead, as for an overflow.
+
+## What the compiler refuses
+
+### A number that does not fit
+
+```sg error
+void main() {
+    byte b = 256
+    print(b)
+}
+```
+
+```text
+error: 256 does not fit in byte
+  --> example.sg:2:14
+ 2 |     byte b = 256
+   |              ^^^
+```
+
+`byte b = -1` is refused the same way, with `` a `byte` is never negative ``, and so is `(byte)300`.
+
+### A minus
+
+```sg error
+void main() {
+    byte b = 7
+    print(-b)
+}
+```
+
+```text
+error: operator `-` is not defined for `byte`: a `byte` is never negative
+  --> example.sg:3:11
+ 3 |     print(-b)
+   |           ^^
+  hint: convert first: `-(int)b`
+```
+
+### An `int` where a `byte` goes
+
+```sg error
+void main() {
+    int count = 70
+    byte b = count
+    print(b)
+}
+```
+
+```text
+error: expected `byte`, found `int`
+  --> example.sg:3:14
+ 3 |     byte b = count
+   |              ^^^^^
+  hint: convert with `(byte)`; it panics if the value does not fit
+```
+
+### A sum that is meant to be an `int`
+
+```sg error
+void main() {
+    byte b = 200
+    int total = b + 1000
+    print(total)
+}
+```
+
+```text
+error: 1000 does not fit in byte
+  --> example.sg:3:21
+ 3 |     int total = b + 1000
+   |                     ^^^^
+```
+
+The sum is a `byte`, since `b` is one, and is widened after it is found. `(int)b + 1000` adds in an `int`.
+
+### A `byte` beside a `char`
+
+```sg error
+void main() {
+    var text = "abc"
+    var first = 'a'
+    print(text[0] == first)
+}
+```
+
+```text
+error: operator `==` is not defined for `byte` and `char`
+  --> example.sg:4:11
+ 4 |     print(text[0] == first)
+   |           ^^^^^^^^^^^^^^^^
+  hint: a `char` is not a number; compare its code, `(int)c`, or make the `byte` a `char` with `(char)`
+```
+
+`first` is a `char`, since nothing said otherwise. `text[0] == 'a'` is fine: the constant becomes a `byte` there.
+
+### A character of two bytes
+
+```sg error
+void main() {
+    var text = "café"
+    print(text[3] == 'é')
+}
+```
+
+```text
+error: `é` does not fit in one byte: it takes 2 bytes in UTF-8
+  --> example.sg:3:22
+ 3 |     print(text[3] == 'é')
+   |                      ^^^
+  hint: the type for any character is `char`: `char c = 'é'`
+```
+
+`text[3..].startsWith('é')` asks the question of the text, by characters.
+
+### `byte[]` alone
+
+```sg error
+void main() {
+    byte[] data = "SG".asBytes()
+    print(data)
+}
+```
+
+```text
+error: `byte[]` is not a type on its own: a slice only looks at items that something else owns
+  --> example.sg:2:5
+ 2 |     byte[] data = "SG".asBytes()
+   |     ^^^^^^
+  hint: `List<byte>` to own the items, `read byte[]` for a window onto them
+```

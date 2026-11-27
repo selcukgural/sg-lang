@@ -1,0 +1,468 @@
+---
+name: char
+kind: type
+summary: One character of Unicode, in 32 bits; not a number.
+see: string, byte, match, int
+learn: ../docs/learn/book/02-values.md#bool-and-char
+library: ../docs/library/string.md#char
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `'a'`, `'é'`, `'🐈'` | a character, in single quotes |
+| `'\n'`, `'\t'`, `'\''`, `'\u{1F600}'` | an escape, or the character of a code in hex |
+| `text.chars()` | the characters of a text, one at a time |
+| `(int)c`, `(char)n`, `n.tryToChar()` | the code of a character, the character of a code, or `null` when no character has it |
+| `c.isAsciiDigit()`, `c.isLetter()`, `c.toUpper()` | tests and changes of case |
+| `text.write(c)`, `c.toString()`, `$"{c}"` | a character into a text |
+| `'a'..='z' => ...` | in a `match`, an arm for a range of characters |
+
+## What it means
+
+A `char` is one character of Unicode, any code from 0 to 0x10FFFF but the ones from 0xD800 to 0xDFFF, kept in
+32 bits. An emoji is one `char`. It is written in single quotes, which hold exactly one character, and takes
+the escapes of a text: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'` and `\u{...}` with one to six hex digits.
+
+A `char` is not a number. It has no arithmetic and is never compared with an integer; `(int)c` gives its code
+and `(char)n` the character of a code. `(char)n` stops the program when no character has the code, and
+`n.tryToChar()` gives `null` there. Two characters compare by their codes, so `'a' < 'b'`.
+
+A text is UTF-8, so a `char` takes one to four bytes in it. `text[i]` reads a byte, not a character; `chars()`
+reads the text character by character. A character constant of ASCII is a `byte` where a `byte` goes, as in
+`text[i] == ':'`; anywhere else it is a `char`, and `var c = 'a'` is a `char`.
+
+The tests of ASCII (`isAsciiDigit`, `isAsciiLetter` ...) answer the same for every script. The tests of Unicode
+(`isLetter`, `isNumeric`, `isUpper` ...) and `toUpper` and `toLower` follow the tables of Unicode 17.0, one
+character for one. The methods are in [Text](../docs/library/string.md#char).
+
+## Examples
+
+### A character and its code
+
+```sg
+void main() {
+    var letter = 'é'
+    var smile = '\u{1F600}'
+    print($"{letter} {(int)letter} {letter.utf8Length()}")
+    print($"{smile} U+{(int)smile:X} {smile.utf8Length()}")
+    print((char)65)
+    print('\t' == (char)9)
+    print('a' < 'b')
+}
+```
+
+```text
+é 233 2
+😀 U+1F600 4
+A
+true
+true
+```
+
+`(int)letter` is the code of `é`; `utf8Length` counts the bytes it takes in a text.
+
+### The characters of a text
+
+```sg
+void main() {
+    var name = "Paşa 🐈"
+    print($"{name.length()} bytes")
+    nint count = 0
+    for _ in name.chars() {
+        count += 1
+    }
+    print($"{count} characters")
+    print(name[2])
+    var letters = name.chars()
+    _ = letters.next()
+    _ = letters.next()
+    print(letters.next() ?? '?')
+}
+```
+
+```text
+10 bytes
+6 characters
+197
+ş
+```
+
+`ş` takes two bytes and the cat four. `name[2]` is the first byte of `ş`, a number; the third `char` is `ş`
+itself.
+
+### Tests and case
+
+```sg
+void main() {
+    print('7'.isAsciiDigit())
+    print('٣'.isAsciiDigit())
+    print('٣'.isNumeric())
+    print('Ä'.isLetter() && 'Ä'.isUpper())
+    print('ä'.toUpper())
+    print('ß'.toUpper())
+    print('€'.category())
+    print('\u{a0}'.isWhitespace())
+}
+```
+
+```text
+true
+false
+true
+true
+Ä
+ß
+CurrencySymbol
+true
+```
+
+`٣` is the Arabic-Indic digit three: a number to Unicode, not a digit `parse` reads. `ß` has no single
+character in upper case, so `toUpper` leaves it.
+
+### Into a text
+
+```sg
+void main() {
+    var line = string.withCapacity(16)
+    for c in "dog".chars() {
+        line.write(c.toUpper())
+        line.write('-')
+    }
+    line.write('🐈')
+    print(line)
+    string one = 'é'.toString()
+    print($"{one.length()} [{'x',3}] [{'x',-3}]")
+    print("a,b;c".split(';').next() ?? "")
+    print("naïve".contains('ï'))
+    print("naïve".indexOf('v') ?? -1)
+}
+```
+
+```text
+D-O-G-🐈
+2 [  x] [x  ]
+a,b
+true
+4
+```
+
+`write` puts the bytes of the character at the end of the text. `split`, `contains` and `indexOf` take a
+`char`; the place `indexOf` gives is in bytes.
+
+### In a `match`
+
+```sg
+string kind(char c) {
+    return match c {
+        'a'..='z' or 'A'..='Z' => "letter"
+        '0'..='9' => "digit"
+        ' ' or '\t' => "space"
+        _ => "other"
+    }
+}
+
+void main() {
+    for c in "a1 é!".chars() {
+        print($"{c} {kind(c)}")
+    }
+}
+```
+
+```text
+a letter
+1 digit
+  space
+é other
+! other
+```
+
+`..=` takes both ends. `é` is a letter, but not one of the ranges.
+
+### ROT13, through the code
+
+```sg
+char rot13(char c) {
+    return match c {
+        'a'..='z' => (char)(((int)c - 'a' + 13) % 26 + 'a')
+        'A'..='Z' => (char)(((int)c - 'A' + 13) % 26 + 'A')
+        _ => c
+    }
+}
+
+void main() {
+    var secret = string.withCapacity(32)
+    for c in "Hello, Paşa!".chars() {
+        secret.write(rot13(c))
+    }
+    print(secret)
+}
+```
+
+```text
+Uryyb, Cnşn!
+```
+
+The arithmetic is on the code, an `int`; `'a'` beside an `int` is a number. `(char)` turns the code back into a
+character, and cannot fail here: the code is always one of a letter.
+
+### A slug for an address
+
+```sg
+string slug(read string title) {
+    var out = string.withCapacity(title.length())
+    bool gap = false
+    for c in title.chars() {
+        if c.isAlphanumeric() {
+            if gap && out.length() > 0 {
+                out.write('-')
+            }
+            out.write(c.toLower())
+            gap = false
+        } else {
+            gap = true
+        }
+    }
+    return out
+}
+
+void main() {
+    print(slug("Hello, Wörld!"))
+    print(slug("  SG 0.1: Bytes & Characters  "))
+}
+```
+
+```text
+hello-wörld
+sg-0-1-bytes-characters
+```
+
+Every run of characters that are neither letters nor digits becomes one `-`. `ö` is a letter, so it stays.
+
+### Codes that may be no character
+
+```sg
+void main() {
+    var codes = List<int> { 0x48, 0xe9, 0xD800, 0x1F408, 0x110000 }
+    for n in codes {
+        match n.tryToChar() {
+            null => print($"{n:X}: no character")
+            var c => print($"{n:X}: {c}")
+        }
+    }
+}
+```
+
+```text
+48: H
+E9: é
+D800: no character
+1F408: 🐈
+110000: no character
+```
+
+0xD800 to 0xDFFF are kept for UTF-16, and no code is past 0x10FFFF.
+
+## What stops the program
+
+### A code that is no character
+
+```sg panic
+void main() {
+    var codes = List<int> { 0x41, 0xD800 }
+    for n in codes {
+        print((char)n)
+    }
+}
+```
+
+```text
+A
+panic: 55296 is not the code of a character
+  --> example.sg:4:15
+ 4 |         print((char)n)
+   |               ^^^^^^^
+  hint: `tryToChar()` gives `null` when no character has the code
+```
+
+This is checked in every build, a release build too: a bad code written into a text would make it UTF-8 that
+is not valid.
+
+### A character that is not a byte
+
+```sg panic
+void main() {
+    var sign = '€'
+    byte b = (byte)sign
+    print(b)
+}
+```
+
+```text
+panic: value 8364 does not fit in byte
+  --> example.sg:3:14
+ 3 |     byte b = (byte)sign
+   |              ^^^^^^^^^^
+  hint: `(int)c` holds the code of every character
+```
+
+`(byte)c` gives the code, not the bytes of UTF-8, and follows the rule of the integers: a release build keeps
+the low 8 bits. The bytes are `c.toString().asBytes()`.
+
+## What the compiler refuses
+
+### Two characters in single quotes
+
+```sg error
+void main() {
+    var pair = 'ab'
+    print(pair)
+}
+```
+
+```text
+error: single quotes hold exactly one character
+  --> example.sg:2:16
+ 2 |     var pair = 'ab'
+   |                ^^^^
+  hint: text is written with double quotes: `"ab"`
+```
+
+`''` is refused too: `there is no character between the quotes`.
+
+### A `char` where a `string` goes
+
+```sg error
+void main() {
+    string name = 'P'
+    print(name)
+}
+```
+
+```text
+error: expected `string`, found `char`
+  --> example.sg:2:19
+ 2 |     string name = 'P'
+   |                   ^^^
+  hint: a text of one character: `'P'.toString()`
+```
+
+`"P"` is the same text, written in the program.
+
+### Arithmetic
+
+```sg error
+void main() {
+    var letter = 'a'
+    print(letter + 1)
+}
+```
+
+```text
+error: operator `+` is not defined for `char` and `int`
+  a `char` is not a number: `(int)c` is its code, and `(char)n` the character of a code
+  --> example.sg:3:11
+ 3 |     print(letter + 1)
+   |           ^^^^^^^^^^
+```
+
+### A `char` where an `int` goes
+
+```sg error
+void main() {
+    var letter = 'a'
+    int code = letter
+    print(code)
+}
+```
+
+```text
+error: expected `int`, found `char`
+  --> example.sg:3:16
+ 3 |     int code = letter
+   |                ^^^^^^
+  hint: the code of the character: `(int)letter`
+```
+
+Comparing with a number, `letter == 97`, is refused the same way: `(int)letter == 97` compares the code.
+
+### A byte where a `char` goes
+
+```sg error
+void main() {
+    var text = "abc"
+    char first = text[0]
+    print(first)
+}
+```
+
+```text
+error: expected `char`, found `byte`
+  --> example.sg:3:18
+ 3 |     char first = text[0]
+   |                  ^^^^^^^
+  hint: `(char)text[0]` panics if no character has this code; `text[0].tryToChar()` gives `null` instead
+```
+
+`text[0]` is a byte of UTF-8, which is a character alone only in ASCII. The first character is
+`text.chars().next()`.
+
+### A `char` beside a text
+
+```sg error
+void main() {
+    for c in "café".chars() {
+        if c == "é" {
+            print("found")
+        }
+    }
+}
+```
+
+```text
+error: operator `==` is not defined for `char` and `string`
+  --> example.sg:3:12
+ 3 |         if c == "é" {
+   |            ^^^^^^^^
+```
+
+A character is written in single quotes: `c == 'é'`.
+
+### `isDigit`
+
+```sg error
+void main() {
+    var c = '7'
+    print(c.isDigit())
+}
+```
+
+```text
+error: type `char` has no method `isDigit`
+  `isNumeric()` says yes to the digits of every script, and to `'½'` and `'²'`, which `parse` does not read
+  --> example.sg:3:13
+ 3 |     print(c.isDigit())
+   |             ^^^^^^^
+  hint: `isAsciiDigit()`: the digits `parse` reads
+```
+
+### A code known to be no character
+
+```sg error
+void main() {
+    var c = (char)0xD800
+    print(c)
+}
+```
+
+```text
+error: 55296 is not the code of a character
+  a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF
+  --> example.sg:2:13
+ 2 |     var c = (char)0xD800
+   |             ^^^^^^^^^^^^
+```
+
+`'\u{110000}'` is refused the same way, and `'\x41'` as an escape it does not know: a code is written
+`'\u{41}'`.

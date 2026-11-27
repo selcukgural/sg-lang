@@ -225,6 +225,6 @@ WHAT THE COMPILER REFUSES
      One byte written alone could leave half a character behind.
 
 SEE ALSO
-     sg help read, sg help list
+     sg help read, sg help char, sg help byte, sg help list
 
      https://sg-lang.org/reference/string.html

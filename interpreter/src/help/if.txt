@@ -278,6 +278,6 @@ WHAT THE COMPILER REFUSES
      "few".
 
 SEE ALSO
-     sg help else, sg help is, sg help while, sg help match
+     sg help else, sg help is, sg help bool, sg help while, sg help match
 
      https://sg-lang.org/reference/if.html

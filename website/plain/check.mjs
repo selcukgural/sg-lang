@@ -149,7 +149,7 @@ if (!existsSync(man)) {
     const page = join(plain, 'build', 'manual', `${file}.html`);
     if (!existsSync(page)) continue;
     const plainLines = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').trim();
-    const laid = execFileSync(mandoc, ['-T', 'utf8', '-O', 'width=78', join(man, file)], { encoding: 'utf8' }).replace(/.\u0008/g, '');
+    const laid = execFileSync(mandoc, ['-T', 'utf8', '-O', 'width=78', join(man, file)], { encoding: 'utf8' }).replace(/.\u0008/gu, '');
     const shownHtml = readFileSync(page, 'utf8').match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1];
     const shown = decode(shownHtml.replace(/<[^>]+>/g, '').replaceAll('&quot;', '"').replaceAll('&#39;', "'"));
     if (plainLines(laid) !== plainLines(shown)) {

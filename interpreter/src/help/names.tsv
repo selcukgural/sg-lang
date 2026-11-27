@@ -47,13 +47,13 @@ weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang
 when	keyword	Keywords	adds a condition to an arm of a match		https://sg-lang.org/reference/#n-when
 while	keyword	Keywords	repeats a block as long as a condition holds	while	https://sg-lang.org/reference/while
 with	keyword	Keywords	a copy of a struct with some fields changed		https://sg-lang.org/reference/#n-with
-bool	type	Primitive types	true or false		https://sg-lang.org/reference/#n-bool
-byte	type	Primitive types	an integer of 8 bits, 0 to 255		https://sg-lang.org/reference/#n-byte
-char	type	Primitive types	one character of Unicode		https://sg-lang.org/reference/#n-char
-double	type	Primitive types	a fraction of 64 bits		https://sg-lang.org/reference/#n-double
+bool	type	Primitive types	true or false; the only type a condition can be	bool	https://sg-lang.org/reference/bool
+byte	type	Primitive types	an integer of 8 bits, 0 to 255: one byte of a text, a file or a buffer	byte	https://sg-lang.org/reference/byte
+char	type	Primitive types	one character of Unicode, in 32 bits; not a number	char	https://sg-lang.org/reference/char
+double	type	Primitive types	a fraction of 64 bits (IEEE 754); its arithmetic is the hardware's and never panics	double	https://sg-lang.org/reference/double
 float	type	Primitive types	a fraction of 32 bits		https://sg-lang.org/reference/#n-float
-int	type	Primitive types	an integer of 32 bits		https://sg-lang.org/reference/#n-int
-long	type	Primitive types	an integer of 64 bits		https://sg-lang.org/reference/#n-long
+int	type	Primitive types	an integer of 32 bits, with a sign; a whole number is one when nothing else is asked for	int	https://sg-lang.org/reference/int
+long	type	Primitive types	an integer of 64 bits, with a sign; for sums, sizes of files and time in milliseconds	long	https://sg-lang.org/reference/long
 nint	type	Primitive types	an integer as wide as an address: what length() gives		https://sg-lang.org/reference/#n-nint
 nuint	type	Primitive types	nint without a sign		https://sg-lang.org/reference/#n-nuint
 sbyte	type	Primitive types	an integer of 8 bits, -128 to 127		https://sg-lang.org/reference/#n-sbyte

@@ -1,0 +1,296 @@
+NAME
+     bool - true or false; the only type a condition can be
+
+SYNOPSIS
+     true, false
+            the two values
+
+     a && b, a || b
+            both, either; the right side runs only when it is needed
+
+     !a     the other value
+
+     a == b, a != b
+            the same, not the same (!= is an exclusive or)
+
+     x < y, x is Circle(r), xs.contains(v)
+            a comparison, a test, a method: each gives a bool
+
+     c ? a : b
+            a value picked by a condition
+
+     match flag { true => ... false => ... }
+            an arm for each value
+
+DESCRIPTION
+     A bool is true or false, and takes one byte; in compiled code it is C's
+     bool. It is what a comparison, an is and a test such as contains give,
+     and what an if, a while, an assert and c ? a : b take. A condition must
+     be a bool: a number, a text or a T? is never one on its own, and is
+     compared or tested instead (count != 0, name is not null).
+
+     && and || stop as soon as the answer is known: the right side of && runs
+     only when the left is true, that of || only when it is false. So i <
+     xs.length() && xs[i] > 0 never reads past the end. ! turns a bool around.
+     &, |, ^ and ~ are the operators of the bits of an integer, not of a bool.
+
+     A bool is not a number. It has no order, true == 1 is refused, and
+     (int)flag too: flag ? 1 : 0 says which number each value is. It is
+     Equatable and Hashable, so it can be compared with == and kept in a
+     HashSet. It prints as true or false.
+
+     A match on a bool has an arm for true and one for false, or a _. A bool
+     can be a const, a field, an item of a list or an array: bool[8](false).
+
+EXAMPLES
+   Values and operators
+         void main() {
+             var raining = true
+             bool cold = false
+             print($"{raining && cold} {raining || cold} {!cold}")
+             print($"{raining == cold} {raining != cold}")
+             var warm = !cold
+             print(warm)
+         }
+
+         false true true
+         false true
+         true
+
+     raining is a bool from its value, cold from its type written.
+
+   A condition with a name
+         bool isLeap(int year) {
+             return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+         }
+
+         void main() {
+             var years = List<int> { 1900, 2000, 2024, 2026 }
+             for year in years {
+                 var leap = isLeap(year)
+                 print($"{year}: {leap}, {(leap ? 366 : 365)} days")
+             }
+         }
+
+         1900: false, 365 days
+         2000: true, 366 days
+         2024: true, 366 days
+         2026: false, 365 days
+
+     A condition kept in a variable, or given back by a function, reads as
+     what it means. && binds tighter than ||, so the parentheses are needed.
+     ?: goes in parentheses inside { } of $"...", where : starts a format.
+
+   Only what is needed runs
+         bool asked(string name, bool answer) {
+             print($"  asked {name}")
+             return answer
+         }
+
+         void main() {
+             var items = List<int> { 4, 8 }
+             nint i = 5
+             if i < items.length() && items[i] > 0 {
+                 print("positive")
+             } else {
+                 print($"no item {i}")
+             }
+             print(asked("a", false) && asked("b", true))
+             print(asked("c", true) || asked("d", true))
+         }
+
+         no item 5
+           asked a
+         false
+           asked c
+         true
+
+     items[5] is never read, since the left side is already false. b and d are
+     never asked.
+
+   A field of a struct
+         struct Job {
+             string title
+             bool done
+         }
+
+         void main() {
+             var jobs = List<Job> {
+                 Job { title = "write", done = true },
+                 Job { title = "test", done = false },
+                 Job { title = "ship", done = false },
+             }
+             jobs[1].done = true
+             nint finished = 0
+             for job in read jobs {
+                 print($"[{(job.done ? "x" : " ")}] {job.title}")
+                 finished += job.done ? 1 : 0
+             }
+             var allDone = finished == jobs.length()
+             print($"{finished} of {jobs.length()} done, all done: {allDone}")
+         }
+
+         [x] write
+         [x] test
+         [ ] ship
+         2 of 3 done, all done: false
+
+     job.done ? 1 : 0 is how a bool is counted: it does not become a number on
+     its own.
+
+   From is, and in a match
+         enum Reply {
+             Yes
+             No
+             Later(int days)
+         }
+
+         string word(bool on) {
+             return match on {
+                 true => "on"
+                 false => "off"
+             }
+         }
+
+         void main() {
+             var reply = Reply.Later(3)
+             bool waiting = reply is Later(_)
+             bool soon = reply is Later(d) && d < 7
+             print($"{waiting} {soon}")
+             print($"light {word(waiting)}")
+             var votes = List<bool> { true, false, true }
+             print($"{votes} {votes.contains(false)}")
+         }
+
+         true true
+         light on
+         [true, false, true] true
+
+     is gives a bool that can be kept, and d is seen on the right of &&. The
+     match needs both arms, and has them.
+
+WHAT THE COMPILER REFUSES
+   A number as a condition
+         void main() {
+             var queue = List<int> { 3, 1 }
+             while queue.length() {
+                 print(queue.pop())
+             }
+         }
+
+         error: expected `bool`, found `nint`
+           --> example.sg:3:11
+          3 |     while queue.length() {
+            |           ^^^^^^^^^^^^^^
+           hint: a number is not a condition; compare it: `queue.length() != 0`
+
+   A T? as a condition
+         void main() {
+             string? name = null
+             if name {
+                 print(name)
+             }
+         }
+
+         error: expected `bool`, found `string?`
+           --> example.sg:3:8
+          3 |     if name {
+            |        ^^^^
+
+     A T? is tested with [is](is.md): if name is not null, and in the block
+     name is a string.
+
+   A bool as a number
+         void main() {
+             bool done = true
+             int score = (int)done
+             print(score)
+         }
+
+         error: a `bool` value cannot be converted to `int`
+           --> example.sg:3:17
+          3 |     int score = (int)done
+            |                 ^^^^^^^^^
+
+     done ? 1 : 0 says which number each value is.
+
+   A bool compared with a number
+         void main() {
+             bool done = true
+             if done == 1 {
+                 print("done")
+             }
+         }
+
+         error: operator `==` is not defined for `bool` and `int`
+           --> example.sg:3:8
+          3 |     if done == 1 {
+            |        ^^^^^^^^^
+
+     if done is the whole test.
+
+   & on two bools
+         void main() {
+             bool cold = true
+             bool wet = false
+             print(cold & wet)
+         }
+
+         error: operator `&` is not defined for `bool` and `bool`
+           --> example.sg:4:11
+          4 |     print(cold & wet)
+            |           ^^^^^^^^^^
+           hint: for two `bool`s write `&&`
+
+     | is refused the same way, with || as the hint, and ^ with !=.
+
+   Two comparisons in a row
+         void main() {
+             int age = 30
+             if 18 <= age < 65 {
+                 print("working age")
+             }
+         }
+
+         error: operator `<` is not defined for `bool` and `int`
+           --> example.sg:3:8
+          3 |     if 18 <= age < 65 {
+            |        ^^^^^^^^^^^^^^
+
+     18 <= age is a bool, which is then compared with 65. Two tests are joined
+     with &&: 18 <= age && age < 65.
+
+   A match with one arm
+         string label(bool on) {
+             return match on {
+                 true => "on"
+             }
+         }
+
+         void main() {
+             print(label(true))
+         }
+
+         error: this `match` does not handle `false`
+           --> example.sg:2:18
+          2 |     return match on {
+            |                  ^^
+           hint: add an arm for it, or `_ => ...` for everything else
+
+   True with a capital
+         void main() {
+             bool ready = True
+             print(ready)
+         }
+
+         error: there is no variable named `True`
+           --> example.sg:2:18
+          2 |     bool ready = True
+            |                  ^^^^
+
+     The two values are written true and false.
+
+SEE ALSO
+     sg help if, sg help while, sg help is, sg help match
+
+     https://sg-lang.org/reference/bool.html

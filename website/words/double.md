@@ -1,0 +1,520 @@
+---
+name: double
+kind: type
+summary: A fraction of 64 bits (IEEE 754); its arithmetic is the hardware's and never panics.
+see: float, int, long, const, string
+learn: ../docs/learn/book/02-values.md#float-and-double
+library: ../docs/library/numbers.md
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `1.5`, `2.998e8`, `6.674_30e-11` | a fraction written in the program; a `double` in a `var` |
+| `double x = 3` | a whole number where a `double` goes |
+| `+ - * / %` | the hardware's arithmetic: `1 / 0.0` is `Infinity`, `0 / 0.0` is `NaN` |
+| `a == b`, `a < b` | the hardware's comparison: `NaN` is equal to nothing |
+| `(double)n`, `(int)x` | a `long` or a `nint` as a `double`; a `double` as an integer, the fraction dropped |
+| `x.sqrt()`, `x.pow(y)`, `x.round()` | math, as methods of the value |
+| `double.Pi`, `double.NaN`, `double.Infinity`, `double.MaxValue` | constants |
+| `x.isNaN()` | the test for `NaN`, which `==` never finds |
+| `{x:F2}` | printed with two digits after the point |
+| `double.parse(text)` | the number a text writes, or the place where it stops being one |
+
+## What it means
+
+A `double` is a floating-point number of 64 bits, as IEEE 754 sets it out: about 16 digits, up to about 1.8e308
+(`double.MaxValue`). A number written with a point or an exponent takes the type it is used as, and is a `double`
+in a `var`; `float small = 0.1` makes a [`float`](../docs/learn/book/02-values.md#float-and-double), the type of
+32 bits. Digits stand on both sides of the point, and there is no suffix: `1.5f` is refused.
+
+An integer becomes a `double` on its own only where the `double` holds every value of it exactly: `int`, `uint`
+and the smaller ones do. A `long`, a `ulong`, a `nint` or a `nuint` needs `(double)n`, which rounds past 2^53, so
+a sum divided by `xs.length()` needs it too. A `float` becomes a `double` on its own; the other way is
+`(float)x`, which rounds.
+
+A `double` never becomes an integer on its own. `(int)x` drops the fraction, toward zero. A value that does not
+fit, `NaN` too, stops the program in the interpreter, in tests and in a debug build; a release build gives the
+nearest value instead, and 0 for `NaN`. `x.tryToInt()` gives `null` and `x.saturatingToInt()` the nearest end,
+in every build. To round first, write `(int)x.round()`.
+
+The arithmetic is the hardware's and never panics: a division by zero gives `Infinity`, or `NaN` for `0 / 0.0`,
+and `%` keeps the sign of the left side. Each operation is rounded on its own, nothing is fused, so the
+interpreter and compiled code give the same digits. A division of two integer variables is done as integers,
+before the result becomes a `double`: `double part = done / total` is 0 for 7 and 8. Numbers written out take the
+type they go to, so `double part = 7 / 8` is 0.875.
+
+`==` and `<` are the hardware's too: `NaN` equals nothing, itself included, and is found with `isNaN()`.
+`equals`, `compare`, `sort`, `contains` and `==` on a struct or a list use an order in which `NaN` equals itself
+and comes first. Since `0.1 + 0.2` is not `0.3`, two results are compared with a margin. A `double` is never a
+pattern of a `match` nor the key of a `HashMap`.
+
+A `double` is printed with the fewest digits that read back as the same number, as JavaScript writes it: `0.1`,
+`3`, `1e+21`, `1e-7`, `NaN`, `Infinity`, `-0`. `double.parse` reads all of them back. The methods, from C's
+`<math.h>`, and the constants are in [Numbers](../docs/library/numbers.md#math-on-float-and-double); in compiled
+code a `double` is C's `double`.
+
+## Examples
+
+### Written and printed
+
+```sg
+void main() {
+    var price = 19.99
+    var light = 2.998e8
+    double whole = 3
+    print($"{price} {light} {whole}")
+    print($"{0.1 + 0.2} {1.0 / 3.0} {1e21} {0.0000001}")
+    print($"{price:F1} {1.0 / 3.0:F4}")
+}
+```
+
+```text
+19.99 299800000 3
+0.30000000000000004 0.3333333333333333 1e+21 1e-7
+20.0 0.3333
+```
+
+`0.1` and `0.2` have no exact form in binary, and their sum shows it: the shortest digits that read back are
+written, not a rounded guess. `{price:F1}` rounds to one digit after the point.
+
+### An average
+
+```sg
+double average(read List<double> values) {
+    double sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum / (double)values.length()
+}
+
+void main() {
+    var temperatures = List<double> { 21.5, 23.0, 19.25, 22.75 }
+    print($"{average(read temperatures):F2} degrees")
+    int passed = 7
+    int total = 8
+    double wrong = passed / total
+    double right = (double)passed / total
+    print($"{wrong} {right}")
+}
+```
+
+```text
+21.62 degrees
+0 0.875
+```
+
+`length()` gives a `nint`, which needs `(double)`. `passed / total` divides two integers, and only the 0 it
+gives becomes a `double`; with `(double)passed` the division is a fractional one, and `total` follows.
+
+### Compound interest
+
+```sg
+void main() {
+    double balance = 1000
+    double rate = 0.035
+    for year in 1..4 {
+        balance *= 1 + rate
+        print($"year {year}: {balance:F2}")
+    }
+    var tenYears = 1000 * (1 + rate).pow(10)
+    print($"after ten years: {tenYears:F2}")
+}
+```
+
+```text
+year 1: 1035.00
+year 2: 1071.22
+year 3: 1108.72
+after ten years: 1410.60
+```
+
+`1 + rate` is a `double`, since `rate` is one, and `pow` is a method of it.
+
+### The distance between two points
+
+```sg
+struct Point : Copyable {
+    double x
+    double y
+}
+
+double distance(Point a, Point b) {
+    var dx = b.x - a.x
+    var dy = b.y - a.y
+    return (dx * dx + dy * dy).sqrt()
+}
+
+void main() {
+    var home = Point { x = 0, y = 0 }
+    var shop = Point { x = 3, y = 4 }
+    var park = Point { x = -1.5, y = 2.25 }
+    print(distance(home, shop))
+    print($"{distance(shop, park):F3}")
+    print((shop.x - park.x).hypot(shop.y - park.y))
+    var angle = (shop.y - home.y).atan2(shop.x - home.x)
+    print($"{angle * 180 / double.Pi:F1} degrees")
+}
+```
+
+```text
+5
+4.828
+4.828301978956992
+53.1 degrees
+```
+
+`hypot` gives the same length without squaring, so it does not overflow on numbers near `double.MaxValue`.
+Angles are in radians.
+
+### Infinity and `NaN`
+
+```sg
+void main() {
+    double zero = 0
+    var up = 1 / zero
+    var down = -1 / zero
+    var none = zero / zero
+    print($"{up} {down} {none}")
+    print($"{none == none} {none.isNaN()} {up.isInfinite()} {up > double.MaxValue}")
+    var readings = List<double> { 2.5, none, -1, up }
+    readings.sort()
+    print(readings)
+    print(readings.contains(double.NaN))
+}
+```
+
+```text
+Infinity -Infinity NaN
+false true true true
+[NaN, -1, 2.5, Infinity]
+true
+```
+
+Nothing stops the program. `none == none` is `false`, as the hardware has it; `sort` and `contains` use the order
+in which `NaN` equals itself and comes first.
+
+### To an integer and back
+
+```sg
+void main() {
+    double x = 2.75
+    print($"{(int)x} {(int)-x} {x.round()} {x.floor()} {(-x).floor()}")
+    var rounded = (int)x.round()
+    print(rounded)
+    long micros = 9007199254740993
+    double seconds = (double)micros
+    print(seconds)
+    print($"{1e10.tryToInt() ?? -1} {1e10.saturatingToInt()} {double.NaN.tryToLong() ?? -1}")
+}
+```
+
+```text
+2 -2 3 2 -3
+3
+9007199254740992
+-1 2147483647 -1
+```
+
+A cast cuts toward zero; `floor` goes down, `round` to the nearest, a half away from zero. 2^53 + 1 is the first
+`long` a `double` cannot hold, so `(double)` rounds it. `tryToInt` and `saturatingToInt` never stop the program.
+
+### `float` and `double`
+
+```sg
+void main() {
+    float small = 0.1
+    double wide = small
+    print($"{small} {wide}")
+    float sum = 0
+    for _ in 0..10 {
+        sum += small
+    }
+    print($"{sum} {(float)wide == small}")
+    print($"{float.MaxValue} {double.MaxValue}")
+}
+```
+
+```text
+0.1 0.10000000149011612
+1.0000001 true
+3.4028235e+38 1.7976931348623157e+308
+```
+
+A `float` is printed with the digits a `float` needs. As a `double` the same value shows that it was never
+exactly 0.1. A `float` is computed as a `float`, so ten of them miss 1 by more.
+
+### Read from text
+
+```sg
+void show(read string text) {
+    match double.parse(text) {
+        Ok(v) => print($"{text} -> {v}")
+        Error(e) => print($"{text} -> {e}")
+    }
+}
+
+void main() {
+    show("2.5")
+    show("-1e-3")
+    show(".5")
+    show("NaN")
+    show("1e999")
+    show("12,5")
+    show(" 7")
+    var total = (double.parse("19.99") ?? 0) * 3
+    print($"{total:F2}")
+}
+```
+
+```text
+2.5 -> 2.5
+-1e-3 -> -0.001
+.5 -> 0.5
+NaN -> NaN
+1e999 -> Infinity
+12,5 -> Invalid(2)
+ 7 -> Invalid(0)
+59.97
+```
+
+`parse` is looser than a number in the program (`.5`) and reads what `print` writes (`NaN`). A number past the
+largest is `Infinity`, as in C. `Invalid` gives the place where the text stops being a number; a space is not
+skipped, so a program trims the text first.
+
+## What stops the program
+
+### A value that does not fit the integer
+
+```sg panic
+void main() {
+    var sizes = List<double> { 1.5, 3e9 }
+    int total = 0
+    for s in sizes {
+        total += (int)s
+    }
+    print(total)
+}
+```
+
+```text
+panic: value 3000000000 does not fit in int
+  --> example.sg:5:18
+ 5 |         total += (int)s
+   |                  ^^^^^^
+  hint: `tryToInt()` gives `null` when the value does not fit
+```
+
+In a release build `(int)3e9` is `2147483647`, the nearest `int`, and the program goes on.
+
+### `NaN` as an integer
+
+```sg panic
+int percent(int done, int total) {
+    return (int)((double)done / total * 100)
+}
+
+void main() {
+    var done = 0
+    var total = 0
+    print($"{percent(done, total)}%")
+}
+```
+
+```text
+panic: value NaN does not fit in int
+  --> example.sg:2:12
+ 2 |     return (int)((double)done / total * 100)
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `tryToInt()` gives `null` when the value does not fit
+```
+
+`0 / 0.0` is `NaN`, and no integer is `NaN`. A release build gives 0 and prints `0%`.
+
+## What the compiler refuses
+
+### A length in a division
+
+```sg error
+void main() {
+    var prices = List<double> { 2.5, 4.0 }
+    double sum = 0
+    for p in read prices {
+        sum += p
+    }
+    print(sum / prices.length())
+}
+```
+
+```text
+error: `nint` and `double` do not mix: a `double` does not hold every `nint` exactly
+  --> example.sg:7:17
+ 7 |     print(sum / prices.length())
+   |                 ^^^^^^^^^^^^^^^
+  hint: convert it: `(double)prices.length()`, which rounds past 2^53
+```
+
+### A `long` and a `double`
+
+```sg error
+void main() {
+    long bytes = 3500000000
+    double gigabytes = bytes / 1e9
+    print(gigabytes)
+}
+```
+
+```text
+error: `long` and `double` do not mix: a `double` does not hold every `long` exactly
+  --> example.sg:3:24
+ 3 |     double gigabytes = bytes / 1e9
+   |                        ^^^^^
+  hint: convert it: `(double)bytes`, which rounds past 2^53
+```
+
+An `int` mixes with a `double` on its own, since every `int` has an exact `double`.
+
+### A `double` where an integer goes
+
+```sg error
+void main() {
+    double ratio = 0.25
+    int percent = ratio * 100
+    print(percent)
+}
+```
+
+```text
+error: expected `int`, found `double`
+  --> example.sg:3:19
+ 3 |     int percent = ratio * 100
+   |                   ^^^^^^^^^^^
+  hint: convert with `(int)`; it drops the fraction, and panics if the value does not fit
+```
+
+### A `double` where a `float` goes
+
+```sg error
+void main() {
+    double precise = 2.5
+    float small = precise
+    print(small)
+}
+```
+
+```text
+error: expected `float`, found `double`
+  --> example.sg:3:19
+ 3 |     float small = precise
+   |                   ^^^^^^^
+  hint: convert with `(float)`, which rounds
+```
+
+### A suffix
+
+```sg error
+void main() {
+    var half = 0.5f
+    print(half)
+}
+```
+
+```text
+error: a number has no `f` at its end; it takes the type it is used as
+  --> example.sg:2:16
+ 2 |     var half = 0.5f
+   |                ^^^^
+```
+
+The number takes its type from where it goes: `float half = 0.5`.
+
+### A number that becomes 0
+
+```sg error
+void main() {
+    double tiny = 1e-400
+    print(tiny)
+}
+```
+
+```text
+error: 1e-400 is too small for double: it would be 0
+  --> example.sg:2:19
+ 2 |     double tiny = 1e-400
+   |                   ^^^^^^
+```
+
+`1e400`, which would be `Infinity`, is refused the same way.
+
+### A fraction as a pattern
+
+```sg error
+string grade(double score) {
+    return match score {
+        1.0 => "full"
+        _ => "partial"
+    }
+}
+
+void main() {
+    print(grade(1.0))
+}
+```
+
+```text
+error: a fractional number cannot be a pattern
+  two fractional numbers are seldom exactly equal; compare in an `if`: `if x < 0.5 { ... }`
+```
+
+### A `double` as a key
+
+```sg error
+void main() {
+    var counts = HashMap<double, int>()
+    print(counts.length())
+}
+```
+
+```text
+error: `double` cannot be the key of a `HashMap`: it is not `Hashable`
+  a fractional number is not `Hashable`: `0.0` and `-0.0` are equal and have different bits, and a sum seldom gives the exact key back
+```
+
+### `sqrt` of an integer
+
+```sg error
+void main() {
+    int area = 50
+    print(area.sqrt())
+}
+```
+
+```text
+error: type `int` has no method `sqrt`
+  --> example.sg:3:16
+ 3 |     print(area.sqrt())
+   |                ^^^^
+  hint: it is a method of `double`: `((double)area).sqrt()`
+```
+
+### Bits of a `double`
+
+```sg error
+void main() {
+    double x = 6.5
+    print(x & 1)
+}
+```
+
+```text
+error: operator `&` is not defined for `double` and `double`
+  the bit operators work on integers
+  --> example.sg:3:11
+ 3 |     print(x & 1)
+   |           ^^^^^
+  hint: `x.toBits()` gives its bits as a `ulong`
+```
+
+`toBits()` and `double.fromBits(bits)` give the 64 bits as a `ulong` and back, with nothing lost.
