@@ -11068,16 +11068,16 @@ static int* sg_proc_open_fds(int64_t* count) {
 #endif
 }
 /* A pseudo terminal of `rows` and `columns` (2043): the end kept here (`master`) and the end a
-   program gets (`slave`), both close-on-exec, neither the terminal of this program. */
-static int sg_proc_pty(int64_t rows, int64_t columns, int* master, int* slave) {
+   program gets (`slave`), both close-on-exec, neither the terminal of this program; `name` (128
+   bytes) gets the path of the end a program gets. */
+static int sg_proc_pty(int64_t rows, int64_t columns, int* master, int* slave, char* name) {
     int m = posix_openpt(O_RDWR | O_NOCTTY);
     if (m < 0) return sg_os_error();
     fcntl(m, F_SETFD, FD_CLOEXEC);
-    char name[128];
     int code = 0;
     if (grantpt(m) != 0 || unlockpt(m) != 0) code = sg_os_error();
 #if defined(__linux__)
-    if (!code) code = ptsname_r(m, name, sizeof name);
+    if (!code) code = ptsname_r(m, name, 128);
 #else
     if (!code && ioctl(m, TIOCPTYGNAME, name) != 0) code = sg_os_error();
 #endif
@@ -11233,8 +11233,8 @@ static void sg_proc_child(const char* program, char** argv, char** envp, const c
 /* Starts the program with `fork` and `exec` rather than `posix_spawn`, for a program to be put in
    front at the terminal of this one (`Command.foreground`, 2034): `posix_spawn` cannot do that
    before the program runs, and one that read the terminal first would be paused. The group is
-   in front before the program runs a single step. So is one at a terminal made for it
-   (`own_tty`, 2045), which `posix_spawn` cannot make its controlling terminal on macOS. What the
+   in front before the program runs a single step. So is one at a terminal made for it on macOS
+   (`own_tty`, 2045), which `posix_spawn` cannot make its controlling terminal there. What the
    child could not do is the error of the call; the child is then taken away. */
 static int sg_proc_fork(const char* program, char** argv, char** envp, const char* dir, const int onto[3],
                         bool error_to_output, const int64_t* ways, int own_tty, pid_t* child) {
@@ -11285,8 +11285,8 @@ static int sg_proc_fork(const char* program, char** argv, char** envp, const cha
    `Pipeline`. `ways[5]` puts it into a new group of its own (-1) or the group of that number,
    `ways[6]` into a session of its own (2023, 2024), and `ways[7]` in front at the terminal of
    this program, which `sg_proc_fork` does. `ways[8]` and `ways[9]` are the rows and the columns
-   of a pseudo terminal made for it (2043), which the streams of way 7 go to, also started by
-   `sg_proc_fork`. `ends` gets the ends of the pipes this program keeps (the input, the output,
+   of a pseudo terminal made for it (2043), which the streams of way 7 go to, started by
+   `sg_proc_fork` on macOS (2045) and by `posix_spawn` on Linux (2054). `ends` gets the ends of the pipes this program keeps (the input, the output,
    the standard error), or -1; `tty` (when given) the end of its terminal read here, the one
    written and the one kept to resize it, or -1. What was printed goes out first. Only 0, 1 and
    2 reach the program: every other descriptor of the runtime is opened close-on-exec, and on
@@ -11316,7 +11316,8 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     for (int i = 0; i < 3 && !code; i++) code = sg_proc_open(ways[i], i == 0, paths[i], &files[i]);
     /* A pseudo terminal made for it: the end kept here and the end it gets. */
     int master = -1, slave = -1;
-    if (!code && ways[8] != 0) code = sg_proc_pty(ways[8], ways[9], &master, &slave);
+    char slave_name[128] = { 0 };
+    if (!code && ways[8] != 0) code = sg_proc_pty(ways[8], ways[9], &master, &slave, slave_name);
     /* What goes onto each stream: a descriptor above 2, the null device (-2), or this program's
        own (-1). */
     int onto[3] = { -1, -1, -1 };
@@ -11345,6 +11346,11 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     /* A C library without the flag (glibc before 2.26): the session is made by the child of a
        `fork`. */
     fork_path = fork_path || ways[6] != 0;
+#elif defined(__linux__)
+    /* On Linux a terminal made for it is started by `posix_spawn` as well (2054): the session is
+       made first, and the end of the terminal opened by its path in it without `O_NOCTTY` becomes
+       its controlling terminal, as `TIOCSCTTY` makes it. */
+    fork_path = ways[7] != 0;
 #endif
     if (!code && fork_path) {
         code = sg_proc_fork(program, argv, envp, dir, onto, ways[2] == 6, ways, slave, child);
@@ -11373,9 +11379,23 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
         }
         posix_spawnattr_setflags(&attr, flags);
         posix_spawnattr_setsigmask(&attr, &none);
+        /* At a terminal of its own Ctrl-Z pauses it, as the child of `sg_proc_fork` sets. */
+        if (slave >= 0) {
+            sigaddset(&plain, SIGTSTP);
+            sigaddset(&plain, SIGTTIN);
+            sigaddset(&plain, SIGTTOU);
+        }
         posix_spawnattr_setsigdefault(&attr, &plain);
+        /* The first stream at the terminal made for it opens it by its path, in the session the
+           spawn made: so it becomes the controlling terminal; the others are copies of that one. */
+        int at_terminal = -1;
         for (int i = 0; i < 3; i++) {
-            if (onto[i] == -2) {
+            if (slave >= 0 && ways[i] == 7 && at_terminal >= 0) {
+                posix_spawn_file_actions_adddup2(&actions, at_terminal, i);
+            } else if (slave >= 0 && ways[i] == 7) {
+                posix_spawn_file_actions_addopen(&actions, i, slave_name, O_RDWR, 0);
+                at_terminal = i;
+            } else if (onto[i] == -2) {
                 posix_spawn_file_actions_addopen(&actions, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
             } else if (onto[i] >= 0) {
                 posix_spawn_file_actions_adddup2(&actions, onto[i], i);

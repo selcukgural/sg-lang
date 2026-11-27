@@ -670,8 +670,9 @@ columns)` starts a program at a pseudo terminal made for it (ConPTY on Windows),
 terminal it is; `process.takeTerminalReader()` reads what it shows, `takeTerminalWriter()` types its keys, and
 `resizeTerminal` gives it another size. `Terminal.rawMode()` makes the input of this program raw and gives a
 `RawMode` that puts it back, as the language does at the end, at a panic and at a signal that ends the program;
-`Terminal.size()` gives the rows and the columns. A terminal carries as much through SG as through C; a start at
-one is 15% slower than C on Linux.
+`Terminal.size()` gives the rows and the columns. A terminal carries as much through SG as through C. After the
+slice (2054) Linux starts such a program with `posix_spawn`, as it starts any other: 21% faster than with `fork`,
+1.06 times C started the same way.
 
 ## Next
 

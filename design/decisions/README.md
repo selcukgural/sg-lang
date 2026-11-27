@@ -286,4 +286,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [195](2026-11-26.md#slice-195) | Four places the borrow check let through, closed | none: the rules as they were |
 | [196](2026-11-26.md#slice-196) | The streams of a program, `Pipeline`, `tryWait`, `detach`, programs by their numbers; the plan of 197 and 198 | 2016–2029 |
 | [197](2026-11-26.md#slice-197) | Groups, sessions, the signals of job control, and a job in front at the terminal | 2023–2026, 2030–2041 |
-| [198](2026-11-27.md#slice-198) | A program at a terminal of its own, a terminal made raw, and its size | 2027–2028, 2042–2053 |
+| [198](2026-11-27.md#slice-198) | A program at a terminal of its own, a terminal made raw, and its size | 2027–2028, 2042–2054 |

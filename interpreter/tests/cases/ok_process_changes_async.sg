@@ -40,11 +40,15 @@ async Result<void, ProcessError> main() {
     var seen4 = try await later.waitAsync()
     print($"async wait: {seen4}")
 
-    // A program that pauses itself, and goes on when told.
-    var self = tool(read List<string> { "stop" })
+    // A program that pauses itself, and goes on when told. It then waits for a line, so that it
+    // cannot end before its going on is seen: once a program has ended, the system tells only of
+    // its end.
+    var self = tool(read List<string> { "stop", "line" })
+    self.pipeInput()
     self.pipeOutput()
     var stopping = try self.start()
     var reader = stopping.takeOutput() ?? panic("asked for with pipeOutput")
+    var keys = stopping.takeInput() ?? panic("asked for with pipeInput")
     if !windows {
         var seen5 = try await stopping.waitChangeAsync()
         print($"stopSelf: {said(seen5)}")
@@ -52,6 +56,8 @@ async Result<void, ProcessError> main() {
         var seen6 = try await stopping.waitChangeAsync()
         print($"told to go on: {said(seen6)}")
     }
+    try await keys.writeAsync("done\n")
+    _ = await keys.closeAsync()
     var line = ""
     _ = try await reader.readLineAsync(ref line)
     print($"it said: {line}")

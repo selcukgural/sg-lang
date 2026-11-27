@@ -96,9 +96,9 @@
 - **Of other programs**: what a program at a terminal of its own wrote, read whole by `output` (as `script`
   does; only `start` starts one now, 2046); keys read as events, with the sequences a key sends taken apart
   (`Stdin` reads the bytes, 2052); a `Signal.WindowChange` on Windows, whose console tells of a new size among
-  the events of its input; a start at a terminal by `posix_spawn` on Linux, 15% faster ([Slower than
-  C](../../benchmarks/slower-than-c.md)); an async read of the pipe of another program in the interpreter that
-  lets other tasks run while it waits (it holds the run now, compiled code does not); a program that joins the
+  the events of its input; an async read of the pipe of another program in the interpreter that lets other
+  tasks run while it waits (it holds the run now, compiled code does not; [issue
+  10](https://github.com/selcukgural/sg-lang/issues/10)); a program that joins the
   group of another by its number (`setpgid` to a group; a `Pipeline.newGroup` puts its programs in one group,
   and Windows cannot, 2039); the modes of the terminal of a paused job kept and put back (the raw mode of a
   terminal is here since 198, the settings of a job's are not kept for it); a wait for any child
