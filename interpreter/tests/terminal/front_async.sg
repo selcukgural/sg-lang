@@ -27,9 +27,11 @@ async Result<void, IoError> main() {
     print(paused is Stopped(_))
     try Terminal.giveTo(read process)
     process.signalGroup(Signal.Continue)
+    // The job writes `resumed again` at the same terminal once it goes on; the change it made
+    // is printed only after the job has ended, so that the two lines always come in one order.
     var went = try await process.waitChangeAsync()
-    print(went)
     var ended = try await process.waitChangeAsync()
+    print(went)
     print(ended)
     try Terminal.takeBack()
     var front = await inFront(me)

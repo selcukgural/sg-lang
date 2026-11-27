@@ -319,10 +319,10 @@ fn a_job_in_front_at_a_terminal() {
         (
             "front",
             "me in front: true\nchild in front: 1\nstatus: true\nme in front again: true\ntrue\nme in front while it is paused: false\n\
-             me in front after takeBack: true\nthe job in front: true\nwent on\nresumed\nexited with code 0\nme in front at the end: true\n\
+             me in front after takeBack: true\nthe job in front: true\nresumed\nwent on\nexited with code 0\nme in front at the end: true\n\
              giving it to a group with no program left: true\nexited with code 0\n",
         ),
-        ("front_async", "true\nwent on\nresumed again\nexited with code 0\nme in front at the end: true\nexited with code 0\n"),
+        ("front_async", "true\nresumed again\nwent on\nexited with code 0\nme in front at the end: true\nexited with code 0\n"),
     ];
     for (command, way) in both_ways(&dir, &programs) {
         let program = std::iter::once(command.get_program()).chain(command.get_args()).map(|word| format!("'{}'", word.to_string_lossy())).collect::<Vec<_>>().join(" ");

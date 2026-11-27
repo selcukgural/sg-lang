@@ -41,9 +41,11 @@ Result<void, IoError> main() {
     try Terminal.giveTo(read process)
     print($"the job in front: {inFront(process.id())}")
     process.signalGroup(Signal.Continue)
+    // The job writes `resumed` at the same terminal once it goes on; the change it made is
+    // printed only after the job has ended, so that the two lines always come in one order.
     var went = try process.waitChange()
-    print(went)
     var ended = try process.waitChange()
+    print(went)
     print(ended)
     try Terminal.takeBack()
     print($"me in front at the end: {inFront(me)}")
