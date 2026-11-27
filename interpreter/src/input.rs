@@ -1,4 +1,5 @@
-//! The input of the program in the interpreter, read through a block of its own.
+//! The input of the program in the interpreter, and the end of a pipe or of a terminal of a
+//! program it started, read through a block of its own.
 //!
 //! An async read of an input that can make the program wait (a pipe, a terminal) does not
 //! hold the run: a thread reads once into the block of the input while the fiber waits, and a

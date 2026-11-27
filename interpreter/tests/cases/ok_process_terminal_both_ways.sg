@@ -1,0 +1,68 @@
+// A program at a terminal of its own, written to and read from at once by async functions
+// (issue 10): `sg-test-tool raw=N` makes the terminal raw and says each of the N bytes it reads as
+// a line `byte: B`, far more than a terminal holds, which a task reads while the keys go in. On
+// Windows the pseudo console draws the lines among sequences of its own, and moves to some of them
+// without a new line: each `byte: 97` is counted, wherever it stands.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.terminal(24, 200)
+    return command
+}
+
+// How many times the screen shows `byte: 97`, read to its end, and whether it says `restored`
+// at the end.
+async Result<string, IoError> counted(StreamReader screen) {
+    var reader = screen
+    var block = byte[4096]
+    var held = ""
+    long lines = 0
+    bool restored = false
+    while true {
+        var got = try await reader.readSomeAsync(ref block)
+        if got == 0 {
+            break
+        }
+        held = $"{held}{string.fromUtf8(block[..got]) ?? panic("ASCII")}".toString()
+        var cut = held.lastIndexOf('\n') ?? -1
+        if cut < 0 {
+            continue
+        }
+        var part = held[..cut].clone()
+        while true {
+            var at = part.indexOf("byte: 97") ?? -1
+            if at < 0 {
+                break
+            }
+            lines += 1
+            part = part[at + 8..].clone()
+        }
+        restored = restored || held[..cut].contains("restored")
+        held = held[cut + 1..].clone()
+    }
+    restored = restored || held.contains("restored")
+    return Ok($"{lines} seen, restored: {restored}".toString())
+}
+
+async Result<void, IoError> main() {
+    for count in (List<int> { 1, 5000, 50000 }) {
+        var process = try tool(read List<string> { $"raw={count}".toString() }).start()
+        var screen = process.takeTerminalReader() ?? panic("asked for")
+        var keys = process.takeTerminalWriter() ?? panic("asked for")
+        // The keys go in once the terminal is raw.
+        var line = ""
+        while try await screen.readLineAsync(ref line) && !line.contains("raw") {
+        }
+        var reading = counted(screen)
+        var key = byte[1] { 'a' }
+        for _ in 0..count {
+            try await keys.writeBytesAsync(read key)
+        }
+        try await keys.flushAsync()
+        var seen = try await reading
+        var status = try await process.waitAsync()
+        print($"{count} keys: {seen}, {status}")
+        _ = await keys.closeAsync()
+    }
+    return Ok()
+}

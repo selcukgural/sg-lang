@@ -1,0 +1,12 @@
+1 x 1: 1 bytes, plain: true (of 1), exited with code 0
+10000 x 100: 1000000 bytes, plain: true (of 1000000), exited with code 0
+100000 x 100: 10000000 bytes, plain: true (of 10000000), exited with code 0
+40 x 70000: 2800000 bytes, plain: true (of 2800000), exited with code 0
+one write: 1048576 bytes, exited with code 0
+to and fro: 1000 of 1000 came back, more after the close: false, exited with code 0
+readBytes: 70000, fill: at least 65536 true, the rest plain: true, exited with code 0
+in all: 300000 of 300000
+output: 1000000 bytes, error: done, exited with code 0
+cut short: cancelled
+then: true `late`, at the end: false, exited with code 0
+written to an ended program: failed true, it printed 10 bytes, exited with code 0

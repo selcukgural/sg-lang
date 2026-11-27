@@ -13942,14 +13942,53 @@ static int sg_writer_out(sg_writer* w) {
     if (code) w->failed = code;
     return code;
 }
+/* A writer of a standard stream met a pipe whose reader is gone (choice 2055): the program ends
+   as `print` and `printError` end it, by `SIGPIPE` where there is one, at once, since macOS gives
+   the signal only after the write has returned `EPIPE` and the end of `main` would leave it out.
+   The output on Windows ends the program with 0 as `print` does; the standard error there gives the
+   error, as the interpreter's does. A panic that has taken the output is not ended so (1602). */
+static int sg_std_ended(int std, int code) {
+    if (code != EPIPE || __atomic_load_n(&sg_out_ended, __ATOMIC_ACQUIRE)) return code;
+    if (std == 1) {
+        sg_out_lock();
+        sg_out_failed(EPIPE, false);
+    }
+#if !defined(_WIN32)
+    signal(SIGPIPE, SIG_DFL);
+    raise(SIGPIPE);
+#endif
+    return code;
+}
 /* A call's bytes to a standard stream: the output's go into its block (`sg_out_bytes`, choice
    1545); the standard error's are written after what the output holds. 0, or the error. */
 static int sg_std_write(int std, const void* bytes, int64_t len) {
     if (len <= 0) return 0;
-    if (std == 1) return sg_out_bytes(bytes, len);
+    if (std == 1) return sg_std_ended(1, sg_out_bytes(bytes, len));
     sg_out_flush();
+#if defined(_WIN32)
+    /* C's `stderr` on Windows takes what a pipe whose reader is gone refuses and says it was
+       written; the writer of a pipe or a file writes itself, so that it gets the error, as the
+       interpreter's does (2055). No standard error at all takes it and drops it. */
+    if (!sg_con_is(2)) {
+        HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+        if (h == NULL || h == INVALID_HANDLE_VALUE) return 0;
+        fflush(stderr);
+        const char* at = (const char*)bytes;
+        while (len > 0) {
+            DWORD put = 0;
+            DWORD part = len > 0x40000000 ? 0x40000000 : (DWORD)len;
+            if (!WriteFile(h, at, part, &put, NULL)) {
+                DWORD e = GetLastError();
+                return e == ERROR_NO_DATA || e == ERROR_BROKEN_PIPE ? EPIPE : EIO;
+            }
+            at += put;
+            len -= put;
+        }
+        return 0;
+    }
+#endif
     errno = 0;
-    return fwrite(bytes, 1, (size_t)len, stderr) == (size_t)len ? 0 : sg_os_error();
+    return fwrite(bytes, 1, (size_t)len, stderr) == (size_t)len ? 0 : sg_std_ended(2, sg_os_error());
 }
 /* After something was put into the block: a standard stream writes it at once, a file when the
    block holds 64 KB. */
@@ -13987,8 +14026,8 @@ static int sg_std_put(sg_writer* w, sg_string* block) {
 }
 static int sg_writer_flush(sg_writer* w) {
     if (sg_failed(w)) return sg_failed(w);
-    if (w->std == 1) { int code = sg_out_flushed(); return code ? sg_fail(w, code) : 0; }
-    if (w->std) return fflush(stderr) == 0 ? 0 : sg_fail(w, sg_os_error());
+    if (w->std == 1) { int code = sg_std_ended(1, sg_out_flushed()); return code ? sg_fail(w, code) : 0; }
+    if (w->std) return fflush(stderr) == 0 ? 0 : sg_fail(w, sg_std_ended(2, sg_os_error()));
     return sg_writer_out(w);
 }
 /* The block goes out and the file is closed; the first error is given. */

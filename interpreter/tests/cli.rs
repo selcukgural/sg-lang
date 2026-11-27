@@ -447,15 +447,16 @@ fn error_lines_are_whole() {
 
 /// A standard error whose reader is gone ends the program by `SIGPIPE`, as the output does
 /// (1601), interpreted and compiled, also when the program was started with the signal ignored:
-/// a line of `Log` or `printError` that no one can read does not let it go on as if it were read.
+/// a line of `Log`, `printError` or the writer `Stderr` (2055) that no one can read does not let
+/// it go on as if it were read.
 #[cfg(unix)]
 #[test]
 fn an_error_output_closed_early() {
     use std::os::unix::process::ExitStatusExt;
     let dir = work("an_error_output_closed_early");
-    let source = "void main(List<string> args) {\n    var line = \"\"\n    _ = Stdin.readLine(ref line)\n    if args[0] == \"log\" {\n        Log.error(\"no one reads this\")\n    } else {\n        printError(\"no one reads this\")\n    }\n    print(\"went on\")\n}\n";
+    let source = "void main(List<string> args) {\n    var line = \"\"\n    _ = Stdin.readLine(ref line)\n    if args[0] == \"log\" {\n        Log.error(\"no one reads this\")\n    } else if args[0] == \"writer\" {\n        _ = Stderr.write(\"no one reads this\\n\")\n        _ = Stderr.flush()\n    } else {\n        printError(\"no one reads this\")\n    }\n    print(\"went on\")\n}\n";
     for (command, way) in both_ways(&dir, &[("closed", source)]) {
-        for (kind, ignored) in [("log", false), ("printError", false), ("printError", true)] {
+        for (kind, ignored) in [("log", false), ("printError", false), ("printError", true), ("writer", false), ("writer", true)] {
             let trap = if ignored { "trap '' PIPE; " } else { "" };
             let mut child = Command::new("sh").args(["-c", &format!("{trap}exec \"$0\" \"$@\"")]).arg(command.get_program()).args(command.get_args()).arg(kind).current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
             // The reader of the standard error is gone before the program writes to it.

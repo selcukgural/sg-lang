@@ -672,7 +672,10 @@ terminal it is; `process.takeTerminalReader()` reads what it shows, `takeTermina
 `RawMode` that puts it back, as the language does at the end, at a panic and at a signal that ends the program;
 `Terminal.size()` gives the rows and the columns. A terminal carries as much through SG as through C. After the
 slice (2054) Linux starts such a program with `posix_spawn`, as it starts any other: 21% faster than with `fork`,
-1.06 times C started the same way.
+1.06 times C started the same way. In the interpreter an async read or write of such a terminal, or of a pipe
+of another program, no longer holds the other tasks while it waits ([issue
+10](https://github.com/selcukgural/sg-lang/issues/10)), and `Stdout` and `Stderr` written into a pipe no one reads end
+the program as `print` and `printError` do, every time (2055, [issue 7](https://github.com/selcukgural/sg-lang/issues/7)).
 
 ## Next
 

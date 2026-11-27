@@ -491,7 +491,9 @@ false
 
 `Stdin` is a `StreamReader` of the input of the program, `Stdout` and `Stderr` are `StreamWriter`s. They are
 lent, never moved or closed: `ref Stdout` gives one to a function that takes a `ref StreamWriter`. `print(x)`
-writes to `Stdout` and `printError(x)` to `Stderr`. `Stdin` cannot `seek` (`NotSeekable`).
+writes to `Stdout` and `printError(x)` to `Stderr`. `Stdin` cannot `seek` (`NotSeekable`). Into a pipe whose
+reader is gone (`program | head`), `Stdout` and `Stderr` end the program as `print` and `printError` do: by
+`SIGPIPE` on Linux and macOS; on Windows `Stdout` ends it with 0 and `Stderr` gives the error (choice 2055).
 
 `isTerminal()` tells whether a stream is a terminal (choice 1901), as C's `isatty` and Rust's `IsTerminal`
 do: a tool that writes bytes refuses a terminal, and one that colours its output colours it only there.

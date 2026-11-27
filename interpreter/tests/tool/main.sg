@@ -13,6 +13,10 @@
 //   args        each word after it as `[word]`
 //   yes=TEXT    TEXT and a new line to the output, again and again, until no one reads it,
 //               when it ends by `SIGPIPE` (by `print`) on Linux and macOS
+//   ywrite=TEXT  the same with `Stdout.writeAsync` and `flushAsync`, which end it as `print` does
+//   ysync=TEXT   the same with `Stdout.write` and `flush`
+//   yerror=TEXT  the same to the standard error with `Stderr.writeAsync`, which ends it as
+//               `printError` does on Linux and macOS, and fails on Windows
 //   pid         its own number, as the system knows it  ppid      the number of its parent
 //   listen      listens for `Interrupt`, `Terminate` and `Hangup`, says `ready`, and when one
 //               comes says `caught` and ends with 5
@@ -24,7 +28,8 @@
 //   tty         whether its input and its output are terminals, and the size of the terminal
 //   winch       listens for `WindowChange`, says `ready`, and says the size once one comes
 //   raw=N       makes the terminal raw, says `raw`, reads N bytes one by one, saying each as
-//               `byte: B`, puts the terminal back and says `restored`
+//               `byte: B`, each line ending with `\r\n`, puts the terminal back and says
+//               `restored`
 //   rawpanic    makes the terminal raw and panics, leaving the language to put it back
 //   many=N      N lines of 99 times `x`
 async Result<void, IoError> main(List<string> args) {
@@ -109,6 +114,27 @@ async Result<void, IoError> main(List<string> args) {
                     print(value)
                 }
             }
+            "ywrite" => {
+                var line = $"{value}\n".toString()
+                while true {
+                    try await Stdout.writeAsync(read line)
+                    try await Stdout.flushAsync()
+                }
+            }
+            "ysync" => {
+                var line = $"{value}\n".toString()
+                while true {
+                    try Stdout.write(read line)
+                    try Stdout.flush()
+                }
+            }
+            "yerror" => {
+                var line = $"{value}\n".toString()
+                while true {
+                    try await Stderr.writeAsync(read line)
+                    try await Stderr.flushAsync()
+                }
+            }
             "pid" => {
                 try await Stdout.writeLineAsync($"{Process.currentId()}")
                 try await Stdout.flushAsync()
@@ -184,15 +210,17 @@ async Result<void, IoError> main(List<string> args) {
                 try await Stdout.flushAsync()
             }
             "raw" => {
+                // A raw terminal does not go back to the start of the line at a new line: each
+                // line ends with `\r\n`, else the lines step to the right and wrap.
                 var mode = try Terminal.rawMode()
-                try await Stdout.writeLineAsync("raw")
+                try await Stdout.writeAsync("raw\r\n")
                 try await Stdout.flushAsync()
                 var one = byte[1]
                 for _ in 0..number(read value) {
                     if try await Stdin.readSomeAsync(ref one) == 0 {
                         break
                     }
-                    try await Stdout.writeLineAsync($"byte: {one[0]}")
+                    try await Stdout.writeAsync($"byte: {one[0]}\r\n")
                     try await Stdout.flushAsync()
                 }
                 try mode.restore()

@@ -988,7 +988,7 @@ fn c_stdio_flush() {
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
     let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false, pipe: false }))));
-    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0, seekable: false }))));
+    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, pipe: None, done: 0, seekable: false }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
     PENDING.with(|pending| pending.borrow_mut().clear());
@@ -1182,12 +1182,13 @@ fn behind(value: &Value) -> Option<Cell> {
     }
 }
 
-/// A `StreamReader`: a file read through a buffer, a connection (`net`), or, with neither,
-/// the input of the program.
+/// A `StreamReader`: a file read through a buffer, a connection (`net`), the end of a pipe of
+/// another program (`pipe`), or, with none of them, the input of the program.
 #[derive(Debug)]
 pub struct Reader {
     file: Option<FileBlock>,
     net: Option<NetReader>,
+    pipe: Option<PipeIn>,
     /// The bytes given out so far: where an `InvalidText` lies. For a file it is where the
     /// reader stands, also after a `seek`.
     done: u64,
@@ -1197,7 +1198,37 @@ pub struct Reader {
 
 impl Reader {
     fn is_stdin(&self) -> bool {
-        self.file.is_none() && self.net.is_none()
+        self.file.is_none() && self.net.is_none() && self.pipe.is_none()
+    }
+}
+
+/// The end of a pipe, or of a terminal, of a program `System.start` started, read as the input
+/// of the program is (see `input.rs`): an async read that has to wait for it does not hold the
+/// run, since a thread reads into its block while the fiber waits (issue 10).
+pub struct PipeIn {
+    input: crate::input::Input,
+    /// The end is that of a terminal made for the program (`takeTerminalReader`).
+    terminal: bool,
+}
+
+impl std::fmt::Debug for PipeIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipeIn").field("terminal", &self.terminal).finish_non_exhaustive()
+    }
+}
+
+/// The end of a pipe as a source of the input: EIO is its end on Linux and macOS, which Linux
+/// gives on a terminal made for a program once no program holds it any more (2047); Windows
+/// says the end of a pipe as its end, and 5 is another error there.
+struct PipeSource(std::fs::File);
+
+impl Read for PipeSource {
+    fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+        const EIO: i32 = 5;
+        match self.0.read(into) {
+            Err(error) if cfg!(unix) && error.raw_os_error() == Some(EIO) => Ok(0),
+            other => other,
+        }
     }
 }
 
@@ -1209,18 +1240,11 @@ pub struct FileBlock {
     block: Vec<u8>,
     /// Where what has not been given out starts in `block`.
     at: usize,
-    /// The end of a pipe or of a terminal made for a program (`System.reader`): EIO is its end,
-    /// which Linux gives once no program holds the terminal any more (2047).
-    pipe: bool,
 }
 
 impl FileBlock {
     fn new(file: std::fs::File) -> FileBlock {
-        FileBlock { file, block: Vec::new(), at: 0, pipe: false }
-    }
-
-    fn pipe(file: std::fs::File) -> FileBlock {
-        FileBlock { file, block: Vec::new(), at: 0, pipe: true }
+        FileBlock { file, block: Vec::new(), at: 0 }
     }
 
     /// One read into the block from `held` on.
@@ -1231,14 +1255,9 @@ impl FileBlock {
         read
     }
 
-    /// One read of the system; EIO is the end on a pipe's, on Linux and macOS (Windows says the
-    /// end of a pipe as its end, and 5 is another error there).
+    /// One read of the system.
     fn take(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
-        const EIO: i32 = 5;
-        match self.file.read(into) {
-            Err(error) if cfg!(unix) && self.pipe && error.raw_os_error() == Some(EIO) => Ok(0),
-            other => other,
-        }
+        self.file.read(into)
     }
 
     fn get_ref(&self) -> &std::fs::File {
@@ -4380,19 +4399,21 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(cut)
     }
 
-    /// An async read of an input that can make the program wait: until what the read needs
-    /// is in the block of the input, a thread reads into it and this fiber waits. A cancel
-    /// ends the wait, and gives `Some(Error(Cancelled))`; what the thread reads stays in the
-    /// block. `None` when the read can be done now.
-    fn input_wait(&mut self, call: StreamCall, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Option<Value>> {
+    /// An async read of an input that can make the program wait (the input of the program, or
+    /// the end of a pipe of another program that `reader` reads): until what the read needs is
+    /// in the block of the input, a thread reads into it and this fiber waits. A cancel ends the
+    /// wait, and gives `Some(Error(Cancelled))`; what the thread reads stays in the block.
+    /// `None` when the read can be done now.
+    fn input_wait(&mut self, reader: &Rc<RefCell<Reader>>, call: StreamCall, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Option<Value>> {
         let need = match call {
             StreamCall::ReadLine | StreamCall::ReadLineBytes => crate::input::Need::Line,
             StreamCall::ReadText => crate::input::Need::End,
             StreamCall::ReadBytes => crate::input::Need::Bytes(cells_of(&owned(self.expr(&args[0], frame)?)).len()),
             StreamCall::ReadSome => crate::input::Need::Some,
-            StreamCall::Fill => crate::input::Need::More(self.io.input.borrow().buffer().len()),
+            StreamCall::Fill => crate::input::Need::More(self.input_do(reader, |input| input.buffer().len())),
             _ => unreachable!("only reads wait for the input"),
         };
+        let stdin = reader.borrow().is_stdin();
         let source = match token {
             Some(token) => self.token(token, frame)?,
             None => None,
@@ -4401,14 +4422,14 @@ impl<'a, 'e> Interp<'a, 'e> {
             if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
                 return Ok(Some(failed(io_cancelled())));
             }
-            if self.io.input.borrow_mut().ready(need) {
+            if self.input_do(reader, |input| input.ready(need)) {
                 return Ok(None);
             }
-            if self.io.world.borrow().input_is_terminal {
+            if stdin && self.io.world.borrow().input_is_terminal {
                 self.flush_out()?;
             }
             let (id, done) = self.work(at)?;
-            let Some((id, work)) = self.io.input.borrow_mut().fill(id) else { continue };
+            let Some((id, work)) = self.input_do(reader, |input| input.fill(id)) else { continue };
             if let Some(work) = work {
                 beside(at, "reading the input", move || {
                     work();
@@ -4509,7 +4530,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     None => READER_LIMIT,
                 };
                 let net = NetReader { stream, block: Vec::new(), at: 0, ended: false, limit, too_long: false };
-                Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: Some(net), done: 0, seekable: false }))))
+                Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: Some(net), pipe: None, done: 0, seekable: false }))))
             }
             NetCall::Port => {
                 let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `port` on a listener") };
@@ -6624,16 +6645,18 @@ impl<'a, 'e> Interp<'a, 'e> {
             Callee::StreamAsync(call) => {
                 let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close | StreamCall::Fill | StreamCall::SyncData | StreamCall::Sync | StreamCall::Unlock) { 0 } else { 1 };
                 let token = args.get(given);
-                // The input that can make the program wait is waited for outside the run.
-                if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) && self.io.input.borrow().waits {
-                    let reader = match owned(self.expr(recv, frame)?) {
-                        Value::Reader(reader) if reader.borrow().is_stdin() => Some(reader),
+                // The input that can make the program wait, and the end of a pipe of another
+                // program, are waited for outside the run.
+                let stream = owned(self.expr(recv, frame)?);
+                if matches!(call, StreamCall::ReadLine | StreamCall::ReadLineBytes | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Fill) {
+                    let reader = match &stream {
+                        Value::Reader(reader) if (reader.borrow().is_stdin() && self.io.input.borrow().waits) || reader.borrow().pipe.is_some() => Some(reader.clone()),
                         _ => None,
                     };
                     if let Some(reader) = reader {
                         self.input_held(&reader, *call == StreamCall::Fill, expr.span)?;
-                        let base = self.io.input.borrow().buffer().len();
-                        if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
+                        let base = self.input_base(&reader);
+                        if let Some(cancelled) = self.input_wait(&reader, *call, &args[..given], token, expr.span, frame)? {
                             return Ok(self.ended_task(cancelled, expr.span));
                         }
                         if *call == StreamCall::Fill {
@@ -6643,7 +6666,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         }
                     }
                 }
-                let value = self.stream(*call, recv, &args[..given], token, expr.span, frame)?;
+                let value = self.stream_call(*call, stream, recv, &args[..given], token, true, expr.span, frame)?;
                 Ok(self.ended_task(value, expr.span))
             }
             Callee::Wait => {
@@ -8012,11 +8035,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
             IoCall::OpenText => done(std::fs::File::open(&name).and_then(|file| match file.metadata()?.is_dir() {
                 true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
-                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
+                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, pipe: None, done: 0, seekable: true })))),
             })),
             // Only a regular file is opened: anything else is refused before it is (1873).
             IoCall::OpenRegular => match crate::sys::open_regular(&path) {
-                Ok(Some(file)) => ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, done: 0, seekable: true })))),
+                Ok(Some(file)) => ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::new(file)), net: None, pipe: None, done: 0, seekable: true })))),
                 Ok(None) => failed(io_not_a_file()),
                 Err(error) => done(Err(error)),
             },
@@ -8261,7 +8284,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(FileBlock::pipe(file)), net: None, done: 0, seekable: false }))));
+                let terminal = std::io::IsTerminal::is_terminal(&file);
+                let pipe = PipeIn { input: crate::input::Input::new(Box::new(PipeSource(file)), true), terminal };
+                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, pipe: Some(pipe), done: 0, seekable: false }))));
             }
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
@@ -9094,13 +9119,20 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// looked at after the arguments, before the work.
     fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
+        self.stream_call(call, stream, recv, args, token, false, at, frame)
+    }
+
+    /// `stream.call(args)` on the stream `recv` gave; `away` for the async method of a writer.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_call(&mut self, call: StreamCall, stream: Value, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, away: bool, at: Span, frame: &mut Frame) -> Res<Value> {
         if call == StreamCall::IsTerminal {
             use std::io::IsTerminal;
             let world = self.io.world.borrow();
             let terminal = match &stream {
-                Value::Reader(reader) => match &reader.borrow().file {
-                    Some(block) => block.file.is_terminal(),
-                    None => reader.borrow().is_stdin() && world.input_is_terminal,
+                Value::Reader(reader) => match (&reader.borrow().file, &reader.borrow().pipe) {
+                    (Some(block), _) => block.file.is_terminal(),
+                    (_, Some(pipe)) => pipe.terminal,
+                    _ => reader.borrow().is_stdin() && world.input_is_terminal,
                 },
                 Value::Writer(writer) => match &writer.borrow().sink {
                     Sink::File(file) => !writer.borrow().pipe && file.as_ref().is_some_and(|file| file.is_terminal()),
@@ -9123,16 +9155,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Some(token) => self.token(token, frame)?,
                         None => None,
                     };
-                    let base = self.io.input.borrow().buffer().len();
+                    let base = self.input_base(reader);
                     self.reader_fill(reader, base, source.as_ref(), recv.span)
                 }
                 _ => {
-                    let held = reader.borrow();
-                    let bytes = match (&held.file, &held.net) {
-                        (Some(file), _) => file.buffer().to_vec(),
-                        (_, Some(net)) => net.block[net.at..].to_vec(),
-                        _ => self.io.input.borrow().buffer().to_vec(),
+                    let bytes = {
+                        let held = reader.borrow();
+                        match (&held.file, &held.net) {
+                            (Some(file), _) => Some(file.buffer().to_vec()),
+                            (_, Some(net)) => Some(net.block[net.at..].to_vec()),
+                            _ => None,
+                        }
                     };
+                    let bytes = bytes.unwrap_or_else(|| self.input_do(reader, |input| input.buffer().to_vec()));
                     Ok(Value::Slice(Rc::new(bytes.into_iter().map(byte_cell).collect())))
                 }
             };
@@ -9171,15 +9206,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 let mut bytes = Vec::new();
                 let start = reader.borrow().done;
-                let read = match reader.borrow_mut().file.as_mut() {
-                    Some(file) => file.read_to_end(&mut bytes),
-                    None => {
-                        if self.io.world.borrow().input_is_terminal {
-                            self.flush_out()?;
-                        }
-                        self.io.input.borrow_mut().read_to_end(&mut bytes)
-                    }
-                };
+                let read = self.reading(&reader, |source| source.read_to_end(&mut bytes))?;
                 reader.borrow_mut().done += bytes.len() as u64;
                 Ok(match read {
                     Ok(_) => text_read(bytes, start),
@@ -9199,15 +9226,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     if got == bytes.len() {
                         break Ok(());
                     }
-                    let step = match reader.borrow_mut().file.as_mut() {
-                        Some(file) => file.read(&mut bytes[got..]),
-                        None => {
-                            if self.io.world.borrow().input_is_terminal {
-                                self.flush_out()?;
-                            }
-                            self.io.input.borrow_mut().read(&mut bytes[got..])
-                        }
-                    };
+                    let step = self.reading(&reader, |source| source.read(&mut bytes[got..]))?;
                     match step {
                         Ok(0) => break Ok(()),
                         Ok(n) => got += n,
@@ -9235,15 +9254,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     if bytes.is_empty() {
                         break Ok(0);
                     }
-                    let step = match reader.borrow_mut().file.as_mut() {
-                        Some(file) => file.read(&mut bytes),
-                        None => {
-                            if self.io.world.borrow().input_is_terminal {
-                                self.flush_out()?;
-                            }
-                            self.io.input.borrow_mut().read(&mut bytes)
-                        }
-                    };
+                    let step = self.reading(&reader, |source| source.read(&mut bytes))?;
                     match step {
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                         other => break other,
@@ -9274,7 +9285,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }
-                self.write_stream(&writer, &bytes, false)
+                self.write_out(&writer, &bytes, false, away, at)
             }
             (StreamCall::Write | StreamCall::WriteLine, Value::Writer(writer)) => {
                 let value = self.expr(&args[0], frame)?;
@@ -9285,13 +9296,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                 if call == StreamCall::WriteLine {
                     text.push('\n');
                 }
-                self.write_stream(&writer, text.as_bytes(), false)
+                self.write_out(&writer, text.as_bytes(), false, away, at)
             }
             (StreamCall::Flush, Value::Writer(writer)) => {
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }
-                self.write_stream(&writer, &[], true)
+                self.write_out(&writer, &[], true, away, at)
             }
             (StreamCall::SyncData | StreamCall::Sync, Value::Writer(writer)) => {
                 if self.cancelled(token, frame)? {
@@ -9322,7 +9333,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 self.seek(stream, kind, offset as i64)
             }
             (StreamCall::Close, Value::Writer(writer)) => {
-                let result = self.write_stream(&writer, &[], true)?;
+                let result = self.write_out(&writer, &[], true, away, at)?;
                 let mut writer = writer.borrow_mut();
                 // The buffer is written, or its error is in `result`: nothing is left to do
                 // when it ends.
@@ -9594,6 +9605,48 @@ impl<'a, 'e> Interp<'a, 'e> {
         })
     }
 
+    /// What the block of the input a reader reads holds when a `fill` begins; `0` for a file or
+    /// a connection, whose `fill` does not need it.
+    fn input_base(&self, reader: &Rc<RefCell<Reader>>) -> usize {
+        let elsewhere = reader.borrow().file.is_some() || reader.borrow().net.is_some();
+        match elsewhere {
+            true => 0,
+            false => self.input_do(reader, |input| input.buffer().len()),
+        }
+    }
+
+    /// `use` on the input a reader reads, which is neither a file nor a connection: the end of a
+    /// pipe of another program, or the input of the program.
+    fn input_do<T>(&self, reader: &Rc<RefCell<Reader>>, using: impl FnOnce(&mut crate::input::Input) -> T) -> T {
+        let mut held = reader.borrow_mut();
+        match held.pipe.as_mut() {
+            Some(pipe) => using(&mut pipe.input),
+            None => {
+                drop(held);
+                using(&mut self.io.input.borrow_mut())
+            }
+        }
+    }
+
+    /// `read` on what a reader that is not a connection reads through its block: a file, the
+    /// end of a pipe, or the input of the program, after what was printed when that is a terminal.
+    fn reading<T>(&mut self, reader: &Rc<RefCell<Reader>>, read: impl FnOnce(&mut dyn BufRead) -> std::io::Result<T>) -> Res<std::io::Result<T>> {
+        {
+            let mut held = reader.borrow_mut();
+            let held = &mut *held;
+            if let Some(file) = held.file.as_mut() {
+                return Ok(read(file));
+            }
+            if let Some(pipe) = held.pipe.as_mut() {
+                return Ok(read(&mut pipe.input));
+            }
+        }
+        if self.io.world.borrow().input_is_terminal {
+            self.flush_out()?;
+        }
+        Ok(read(&mut *self.io.input.borrow_mut()))
+    }
+
     /// A read of the input by a task that does not hold it is a panic once a task holds it: the
     /// first that called `fill`, `buffered` or `consume` on it (`claim`), so the bytes of the
     /// block under a borrow do not change (choice 1746). Any other reader goes on.
@@ -9620,25 +9673,40 @@ impl<'a, 'e> Interp<'a, 'e> {
         let Value::Reader(reader) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `consume` on a reader") };
         let Value::Int(_, count) = strip(self.expr(count, frame)?) else { unreachable!("the checker makes the count a number") };
         self.input_held(&reader, true, at)?;
-        let mut held = reader.borrow_mut();
-        let holds = match (&held.file, &held.net) {
-            (Some(file), _) => file.buffer().len(),
-            (_, Some(net)) => net.block.len() - net.at,
-            _ => self.io.input.borrow().buffer().len(),
+        let holds = {
+            let held = reader.borrow();
+            match (&held.file, &held.net) {
+                (Some(file), _) => Some(file.buffer().len()),
+                (_, Some(net)) => Some(net.block.len() - net.at),
+                _ => None,
+            }
         };
+        let holds = holds.unwrap_or_else(|| self.input_do(&reader, |input| input.buffer().len()));
         if count < 0 || count > holds as i128 {
             return Err(Diag::panic(at, format!("`consume({count})` gives out more than the reader holds: it holds {holds} byte(s)"))
                 .note("`buffered().length()` is what it holds")
                 .into());
         }
         let count = count as usize;
-        let held = &mut *held;
-        match (&mut held.file, &mut held.net) {
-            (Some(file), _) => file.consume(count),
-            (_, Some(net)) => net.at += count,
-            _ => self.io.input.borrow_mut().consume(count),
+        let given = {
+            let mut held = reader.borrow_mut();
+            let held = &mut *held;
+            held.done += count as u64;
+            match (&mut held.file, &mut held.net) {
+                (Some(file), _) => {
+                    file.consume(count);
+                    true
+                }
+                (_, Some(net)) => {
+                    net.at += count;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !given {
+            self.input_do(&reader, |input| input.consume(count));
         }
-        held.done += count as u64;
         Ok(Value::Void)
     }
 
@@ -9669,13 +9737,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
             });
         }
-        let read = match reader.borrow_mut().file.as_mut() {
-            Some(file) => file.more(),
+        let read = reader.borrow_mut().file.as_mut().map(|file| file.more());
+        let read = match read {
+            Some(read) => read,
             None => {
-                if self.io.world.borrow().input_is_terminal {
+                if reader.borrow().is_stdin() && self.io.world.borrow().input_is_terminal {
                     self.flush_out()?;
                 }
-                self.io.input.borrow_mut().more(base, STREAM_BUFFER)
+                self.input_do(reader, |input| input.more(base, STREAM_BUFFER))
             }
         };
         Ok(match read {
@@ -9721,15 +9790,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             return self.net_read(call, reader, Some(slot), &[], None, at);
         }
         let mut bytes = Vec::new();
-        let read = match reader.borrow_mut().file.as_mut() {
-            Some(file) => file.read_until(b'\n', &mut bytes),
-            None => {
-                if self.io.world.borrow().input_is_terminal {
-                    self.flush_out()?;
-                }
-                self.io.input.borrow_mut().read_until(b'\n', &mut bytes)
-            }
-        };
+        let read = self.reading(reader, |source| source.read_until(b'\n', &mut bytes))?;
         let start = reader.borrow().done;
         reader.borrow_mut().done += bytes.len() as u64;
         // The line goes into the text (or the list of bytes) that is there, which keeps its room.
@@ -9792,6 +9853,61 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// Writes `bytes` through a writer; `flush`: what its buffer holds goes out too. Gives
     /// `Ok()`, or the first error the writer met.
+    /// `write_stream`, but for an async method of a writer into the input of another program
+    /// (`away`): the block goes out on a thread of its own while this fiber waits, as compiled
+    /// code writes it on a thread of input and output, so the program it writes to, and a task
+    /// that reads what that program prints, go on meanwhile (issue 10). The wait is not cut
+    /// short by a token, which was looked at before; a task that is cut short gives `Cancelled`,
+    /// and the thread writes the block to its end.
+    fn write_out(&mut self, writer: &Rc<RefCell<Writer>>, bytes: &[u8], flush: bool, away: bool, at: Span) -> Res<Value> {
+        let piped = away && writer.borrow().pipe && matches!(writer.borrow().sink, Sink::File(Some(_)));
+        if !piped {
+            return self.write_stream(writer, bytes, flush);
+        }
+        let taken = {
+            let mut held = writer.borrow_mut();
+            let held = &mut *held;
+            if let Some(cause) = &held.failed {
+                return Ok(failed(cause.clone()));
+            }
+            held.buffer.extend_from_slice(bytes);
+            if !flush && held.buffer.len() < STREAM_BUFFER {
+                return Ok(ok(Value::Void));
+            }
+            let Sink::File(Some(file)) = &held.sink else { unreachable!("just seen") };
+            file.try_clone().map(|copy| (copy, std::mem::take(&mut held.buffer)))
+        };
+        let done = match taken {
+            Err(error) => Err(error),
+            Ok(_) if self.cut_now() => return Ok(failed(io_cancelled())),
+            Ok((mut file, block)) => {
+                let (id, done) = self.work(at)?;
+                let slot = std::sync::Arc::new(Mutex::new(None));
+                let kept = slot.clone();
+                beside(at, "writing to another program", move || {
+                    let written = file.write_all(&block);
+                    drop(file);
+                    *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(written);
+                    done.tell(id);
+                })?;
+                self.wait_for(Outside::Work(id), None, at)?;
+                let written = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+                match written {
+                    Some(written) => written,
+                    None => return Ok(failed(io_cancelled())),
+                }
+            }
+        };
+        Ok(match done {
+            Ok(()) => ok(Value::Void),
+            Err(error) => {
+                let cause = io_cause(Some(&error), error.raw_os_error());
+                writer.borrow_mut().failed = Some(cause.clone());
+                failed(cause)
+            }
+        })
+    }
+
     fn write_stream(&mut self, writer: &Rc<RefCell<Writer>>, bytes: &[u8], flush: bool) -> Res<Value> {
         let mut writer = writer.borrow_mut();
         if let Some(cause) = &writer.failed {
@@ -9811,10 +9927,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                 self.io.test_err.borrow_mut().push_str(&String::from_utf8_lossy(bytes));
                 Ok(())
             }
+            // A pipe whose reader is gone ends the program as `printError` does, where there is
+            // `SIGPIPE` (2055).
             Sink::Stderr => {
                 self.flush_out()?;
                 let mut world = self.io.world.borrow_mut();
-                world.err.write_all(bytes).and_then(|()| if flush { world.err.flush() } else { Ok(()) })
+                match world.err.write_all(bytes).and_then(|()| if flush { world.err.flush() } else { Ok(()) }) {
+                    Err(error) if cfg!(unix) && error.kind() == std::io::ErrorKind::BrokenPipe => return Err(output_failed(error)),
+                    other => other,
+                }
             }
             Sink::File(file) => {
                 writer.buffer.extend_from_slice(bytes);

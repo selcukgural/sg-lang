@@ -1,0 +1,163 @@
+// A started program written to and read from at once by async functions (issue 10): what one
+// task writes to `sg-test-tool cat` comes back while it writes, to a task that reads it, so
+// neither waits for the other once the pipes are full. Then the other reads of a pipe, one line
+// at a time to and fro, its standard error beside its output, a read cut short by a token that
+// loses nothing, and writing to a program that has ended.
+// `sg-test-tool` with its output piped, and its input and its standard error when asked.
+Command tool(read string[] steps, bool input, bool error) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    command.pipeOutput()
+    if input {
+        command.pipeInput()
+    }
+    if error {
+        command.pipeError()
+    }
+    return command
+}
+
+// All a reader gives, to its end.
+async Result<string, IoError> readAll(StreamReader output) {
+    var reader = output
+    return Ok(try await reader.readTextAsync())
+}
+
+// How many bytes a reader gives, read with `readSomeAsync`, and whether every one is `x` or `\n`.
+async Result<string, IoError> counted(StreamReader output) {
+    var reader = output
+    var block = byte[1000]
+    long bytes = 0
+    bool plain = true
+    while true {
+        var got = try await reader.readSomeAsync(ref block)
+        if got == 0 {
+            break
+        }
+        bytes += got
+        for b in block[..got] {
+            plain = plain && (b == 'x' || b == '\n')
+        }
+    }
+    return Ok($"{bytes} bytes, plain: {plain}".toString())
+}
+
+// `lines` lines of `width` bytes each, the last `\n`, written through `input`, which is closed
+// at the end.
+async Result<void, IoError> writeLines(StreamWriter input, long lines, nint width) {
+    var writer = input
+    var line = $"{"x".repeat(width - 1)}\n".toString()
+    for _ in 0..lines {
+        try await writer.writeAsync(read line)
+    }
+    try await writer.flushAsync()
+    return await writer.closeAsync()
+}
+
+async Result<void, IoError> main() {
+    // Up to ten megabytes through `cat`, in lines short and long; and in one write of a megabyte.
+    var sizes = List<long> { 1, 1, 10000, 100, 100000, 100, 40, 70000 }
+    for at in 0..4 {
+        var lines = sizes[at * 2]
+        var width = (nint)sizes[at * 2 + 1]
+        var process = try tool(read List<string> { "cat" }, true, false).start()
+        var output = process.takeOutput() ?? panic("asked for")
+        var input = process.takeInput() ?? panic("asked for")
+        var reading = counted(output)
+        try await writeLines(input, lines, width)
+        var seen = try await reading
+        var status = try await process.waitAsync()
+        print($"{lines} x {width}: {seen} (of {lines * (long)width}), {status}")
+    }
+    var big = List<byte>.repeat('x', 1048576)
+    var once = try tool(read List<string> { "cat" }, true, false).start()
+    var onceOut = once.takeOutput() ?? panic("asked for")
+    var onceIn = once.takeInput() ?? panic("asked for")
+    var all = readAll(onceOut)
+    try await onceIn.writeBytesAsync(read big)
+    _ = await onceIn.closeAsync()
+    var allText = try await all
+    var onceStatus = try await once.waitAsync()
+    print($"one write: {allText.length()} bytes, {onceStatus}")
+
+    // One line written, the same line read back, a thousand times: each read waits for `cat`.
+    var echo = try tool(read List<string> { "cat" }, true, false).start()
+    var back = echo.takeOutput() ?? panic("asked for")
+    var to = echo.takeInput() ?? panic("asked for")
+    nint same = 0
+    var line = ""
+    for i in 0..1000 {
+        try await to.writeLineAsync($"line {i}")
+        try await to.flushAsync()
+        if try await back.readLineAsync(ref line) && line == $"line {i}".toString() {
+            same += 1
+        }
+    }
+    _ = await to.closeAsync()
+    var more = try await back.readLineAsync(ref line)
+    var echoStatus = try await echo.waitAsync()
+    print($"to and fro: {same} of 1000 came back, more after the close: {more}, {echoStatus}")
+
+    // `readBytesAsync` and `fillAsync` on a pipe that `cat` fills while it is written.
+    var bytes = try tool(read List<string> { "cat" }, true, false).start()
+    var bytesOut = bytes.takeOutput() ?? panic("asked for")
+    var bytesIn = bytes.takeInput() ?? panic("asked for")
+    var writing = writeLines(bytesIn, 3000, 100)
+    var block = byte[70000]
+    var got = try await bytesOut.readBytesAsync(ref block)
+    nint filled = 0
+    while try await bytesOut.fillAsync() {
+        filled = bytesOut.buffered().length()
+        if filled >= 65536 {
+            break
+        }
+    }
+    bytesOut.consume(filled)
+    var rest = try await counted(bytesOut)
+    try await writing
+    var bytesStatus = try await bytes.waitAsync()
+    print($"readBytes: {got}, fill: at least 65536 {filled >= 65536}, the rest plain: {rest.endsWith("plain: true")}, {bytesStatus}")
+    print($"in all: {(nint)got + filled + (nint)(long.parse(rest[..rest.indexOf(' ') ?? 0]) ?? 0)} of 300000")
+
+    // Its output and its standard error, each read by a task of its own, while it is written.
+    var both = try tool(read List<string> { "cat", "err=done" }, true, true).start()
+    var out = readAll(both.takeOutput() ?? panic("asked for"))
+    var err = readAll(both.takeError() ?? panic("asked for"))
+    try await writeLines(both.takeInput() ?? panic("asked for"), 20000, 50)
+    var outText = try await out
+    var errText = try await err
+    var bothStatus = try await both.waitAsync()
+    print($"output: {outText.length()} bytes, error: {errText.trim()}, {bothStatus}")
+
+    // A read cut short by its token while the program sleeps; the line it prints later is read
+    // whole, and a read after the end gives the end.
+    var late = try tool(read List<string> { "sleep=300", "out=late" }, false, false).start()
+    var lateOut = late.takeOutput() ?? panic("asked for")
+    var soon = CancellationSource.after(30)
+    match await lateOut.readLineAsync(ref line, read soon.token()) {
+        Ok(_) => print("not cut short")
+        Error(cause) => print($"cut short: {cause}")
+    }
+    var read1 = try await lateOut.readLineAsync(ref line)
+    var first = line.clone()
+    var read2 = try await lateOut.readLineAsync(ref line)
+    var lateStatus = try await late.waitAsync()
+    print($"then: {read1} `{first}`, at the end: {read2}, {lateStatus}")
+
+    // Writing to a program that has read ten bytes and ended: an error, not a wait.
+    var short = try tool(read List<string> { "head=10" }, true, false).start()
+    var shortOut = readAll(short.takeOutput() ?? panic("asked for"))
+    var shortIn = short.takeInput() ?? panic("asked for")
+    var lost = false
+    for _ in 0..1000 {
+        if await shortIn.writeBytesAsync(read big) is Error(_) {
+            lost = true
+            break
+        }
+    }
+    _ = await shortIn.closeAsync()
+    var shortText = try await shortOut
+    var shortStatus = try await short.waitAsync()
+    print($"written to an ended program: failed {lost}, it printed {shortText.length()} bytes, {shortStatus}")
+    return Ok()
+}

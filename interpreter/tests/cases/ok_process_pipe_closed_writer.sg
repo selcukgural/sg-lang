@@ -1,0 +1,35 @@
+// A writer of `Stdout` or `Stderr` whose reader is gone ends the program as `print` and
+// `printError` do (2055): by `SIGPIPE` on Linux and macOS, every time, where it ended now by the
+// signal and now with the error `connection reset` (issue 7). On Windows the output ends the
+// program with 0, as `print` does, and the standard error gives the error, so the program ends
+// with 1. Each writes `y` again and again into `sg-test-tool head=6` (`yes | head -c 6`), five
+// times over: async and plain to the output, async to the standard error (`2>&1 |`).
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
+Result<void, ProcessError> main() {
+    for step in (List<string> { "ywrite=y", "ysync=y", "yerror=y" }) {
+        var ends = List<string>()
+        var shown = ""
+        for _ in 0..5 {
+            var pipeline = Pipeline()
+            var writer = tool(read List<string> { step.clone() })
+            if step.startsWith("yerror") {
+                writer.errorToOutput()
+            }
+            pipeline.add(writer)
+            pipeline.add(tool(read List<string> { "head=6" }))
+            var all = try pipeline.status()
+            var end = $"{all[0]}".toString()
+            if !ends.contains(read end) {
+                ends.add(end.clone())
+            }
+            shown = $"{all[1]}".toString()
+        }
+        print($"{step}: {ends.length()} way(s) of ending: {ends[0]}; head: {shown}")
+    }
+    return Ok()
+}
