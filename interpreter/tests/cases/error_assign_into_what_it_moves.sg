@@ -1,0 +1,10 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    var a = new Node { value = 1, next = null }
+    a.next = new Node { value = 2, next = a }
+    print(a.value)
+}

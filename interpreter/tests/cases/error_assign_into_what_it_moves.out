@@ -1,0 +1,9 @@
+error: `a.next` is reached through `a`, which the right side moves
+  the right side is computed first, so nothing is left to write into; a value cannot be put inside itself
+  --> error_assign_into_what_it_moves.sg:8:5
+ 8 |     a.next = new Node { value = 2, next = a }
+   |     ^^^^^^
+  it is moved here:
+  --> error_assign_into_what_it_moves.sg:8:43
+ 8 |     a.next = new Node { value = 2, next = a }
+   |                                           ^

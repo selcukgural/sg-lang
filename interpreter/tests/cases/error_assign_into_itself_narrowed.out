@@ -1,0 +1,9 @@
+error: `a.next` is reached through `a`, which the right side moves
+  the right side is computed first, so nothing is left to write into; a value cannot be put inside itself
+  --> error_assign_into_itself_narrowed.sg:9:9
+ 9 |         a.next = a
+   |         ^^^^^^
+  it is moved here:
+  --> error_assign_into_itself_narrowed.sg:9:18
+ 9 |         a.next = a
+   |                  ^

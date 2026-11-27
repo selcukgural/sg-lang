@@ -1,0 +1,11 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    Node*? a = new Node { value = 1, next = null }
+    if a is not null {
+        a.next = a
+    }
+}

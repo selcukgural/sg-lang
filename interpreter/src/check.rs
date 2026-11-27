@@ -6862,6 +6862,12 @@ impl<'a> Checker<'a> {
                         self.typed(value, &target_ty)?;
                     }
                 }
+                // The place was checked before the right side, which is computed first: a place
+                // reached through what the right side moved has nothing left to write into
+                // (`a.next = a` would put a value inside itself).
+                if !matches!(target.kind, ExprKind::Var(_)) {
+                    self.place_kept(target)?;
+                }
                 // A number written in the program that does not fit a bit field.
                 if let (None, ExprKind::Field { recv, index, .. }) = (*op, &target.kind) {
                     if let Some(width) = struct_of(&recv.ty).and_then(|name| self.structs.get(name)).and_then(|info| info.shape.bits.get(*index).copied().flatten()) {
@@ -8494,6 +8500,24 @@ impl<'a> Checker<'a> {
             Ty::List(item) => Ty::Read(Box::new(Ty::Slice(item.clone()))),
             _ => self.key_param(key),
         }
+    }
+
+    /// The place of an assignment after its right side: the variable it is reached through, and
+    /// the fields on the way, must still hold their values.
+    fn place_kept(&mut self, target: &Expr) -> Res<()> {
+        let Some((name, path)) = path_of(target) else { return Ok(()) };
+        let Some(var) = self.find(name) else { return Ok(()) };
+        let gone = match var.moved.whole {
+            Some(at) => Some((name.to_string(), at)),
+            None => var.moved.parts.iter().find(|(part, _)| within(&path, part) && path != *part).map(|(part, at)| (format!("{name}.{part}"), *at)),
+        };
+        if let Some((through, at)) = gone {
+            let text = &self.src[target.span.start..target.span.end];
+            return Err(Diag::error(target.span, format!("`{text}` is reached through `{through}`, which the right side moves"))
+                .related(at, "it is moved here")
+                .note("the right side is computed first, so nothing is left to write into; a value cannot be put inside itself"));
+        }
+        Ok(())
     }
 
     /// Rejects the use of a place that overlaps a field that was moved out. When `assigning`,

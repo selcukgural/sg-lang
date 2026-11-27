@@ -1,0 +1,13 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+struct Holder {
+    Node* node
+}
+
+void main() {
+    var h = Holder { node = new Node { value = 1, next = null } }
+    h.node.next = h.node
+}

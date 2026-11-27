@@ -1,0 +1,9 @@
+error: `h.node.next` is reached through `h.node`, which the right side moves
+  the right side is computed first, so nothing is left to write into; a value cannot be put inside itself
+  --> error_assign_through_moved_field.sg:12:5
+ 12 |     h.node.next = h.node
+    |     ^^^^^^^^^^^
+  it is moved here:
+  --> error_assign_through_moved_field.sg:12:19
+ 12 |     h.node.next = h.node
+    |                   ^^^^^^
