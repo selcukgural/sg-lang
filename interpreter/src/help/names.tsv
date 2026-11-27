@@ -12,18 +12,18 @@ const	keyword	Keywords	a value fixed when the program is compiled		https://sg-la
 continue	keyword	Keywords	goes on with the next turn of the loop		https://sg-lang.org/reference/#n-continue
 else	keyword	Keywords	the block that runs when the condition of if is false		https://sg-lang.org/reference/#n-else
 embed	keyword	Keywords	embed("logo.gif"): the bytes of a file, put into the program		https://sg-lang.org/reference/#n-embed
-enum	keyword	Keywords	a type that is one of several variants, each with its own values		https://sg-lang.org/reference/#n-enum
+enum	keyword	Keywords	declares a type whose value is one of several variants, each with values of its own	enum	https://sg-lang.org/reference/enum
 export	keyword	Keywords	makes a function that C calls		https://sg-lang.org/reference/#n-export
 extern	keyword	Keywords	declares the functions of a C library		https://sg-lang.org/reference/#n-extern
 for	keyword	Keywords	goes over the items of a collection or a range: for i in 0..n		https://sg-lang.org/reference/#n-for
 if	keyword	Keywords	runs a block when a condition holds		https://sg-lang.org/reference/#n-if
 in	keyword	Keywords	stands between the name and the items in a for		https://sg-lang.org/reference/#n-in
 interface	keyword	Keywords	what a type can do: Clonable, Formattable, Equatable, Comparable		https://sg-lang.org/reference/#n-interface
-is	keyword	Keywords	tests for one variant in a condition; is not turns it round		https://sg-lang.org/reference/#n-is
+is	keyword	Keywords	tests whether a value is one variant, or null, and names what it carries	is	https://sg-lang.org/reference/is
 lock	keyword	Keywords	a short block that alone touches a locked value		https://sg-lang.org/reference/#n-lock
 locked	keyword	Keywords	shared locked T: a value that tasks reach only inside a lock		https://sg-lang.org/reference/#n-locked
 match	keyword	Keywords	chooses by the shape of a value; every case must be covered	match	https://sg-lang.org/reference/match
-new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it		https://sg-lang.org/reference/#n-new
+new	keyword	Keywords	puts a value on the heap and gives the pointer that owns it	new	https://sg-lang.org/reference/new
 not	keyword	Keywords	is not: the test of is, the other way round		https://sg-lang.org/reference/#n-not
 or	keyword	Keywords	joins patterns in a match		https://sg-lang.org/reference/#n-or
 packed	keyword	Keywords	a struct with no padding between its fields		https://sg-lang.org/reference/#n-packed
@@ -33,14 +33,14 @@ read	keyword	Keywords	lends a value to be looked at, not changed	read	https://sg
 readonly	keyword	Keywords	a field given when the value is built and never changed		https://sg-lang.org/reference/#n-readonly
 ref	keyword	Keywords	lends a value to be changed in place; the only borrow of it while it lasts	ref	https://sg-lang.org/reference/ref
 return	keyword	Keywords	ends the function, with its value		https://sg-lang.org/reference/#n-return
-share	keyword	Keywords	makes one more owner of a shared value		https://sg-lang.org/reference/#n-share
+share	keyword	Keywords	makes one more owner of a shared value, or an owner from a weak look	share	https://sg-lang.org/reference/share
 shared	keyword	Keywords	shared T: a value on the heap with several owners, only read	shared	https://sg-lang.org/reference/shared
 static	keyword	Keywords	a value made once, the first time the program uses it		https://sg-lang.org/reference/#n-static
-struct	keyword	Keywords	a type made of named fields, with its methods		https://sg-lang.org/reference/#n-struct
+struct	keyword	Keywords	declares a type made of named fields, with the methods that work on them	struct	https://sg-lang.org/reference/struct
 test	keyword	Keywords	a block of checks that sg test runs		https://sg-lang.org/reference/#n-test
 try	keyword	Keywords	opens a Result: its value, or the error handed to the caller	try	https://sg-lang.org/reference/try
 union	keyword	Keywords	holds one of its fields at a time in the same bytes		https://sg-lang.org/reference/#n-union
-unsafe	keyword	Keywords	a block where what the checker cannot follow is written		https://sg-lang.org/reference/#n-unsafe
+unsafe	keyword	Keywords	marks code the checker cannot follow: raw memory, calls of C, the fields of a union	unsafe	https://sg-lang.org/reference/unsafe
 use	keyword	Keywords	brings in a module		https://sg-lang.org/reference/#n-use
 var	keyword	Keywords	declares a variable; its type comes from its value	var	https://sg-lang.org/reference/var
 weak	keyword	Keywords	a link that does not keep its value alive		https://sg-lang.org/reference/#n-weak

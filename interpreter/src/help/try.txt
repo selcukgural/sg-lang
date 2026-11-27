@@ -232,6 +232,6 @@ WHAT THE COMPILER REFUSES
            hint: pass the error on with `try save()`, or drop it on purpose with `_ = save()`
 
 SEE ALSO
-     sg help match
+     sg help match, sg help is
 
      https://sg-lang.org/reference/try.html

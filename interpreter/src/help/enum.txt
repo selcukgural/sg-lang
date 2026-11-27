@@ -1,0 +1,335 @@
+NAME
+     enum - declares a type whose value is one of several variants, each with
+     values of its own
+
+SYNOPSIS
+     enum Name { A ... }
+            a type with one variant on each line
+
+     Circle(int radius)
+            a variant that carries values, named and typed like parameters
+
+     Name.A, Name.Circle(2)
+            a value of a variant, built with the enum's name in front
+
+     enum Name : Copyable, Formattable
+            an enum that takes built-in interfaces
+
+     T m(read this), ref this, this
+            a method, written after or between the variants
+
+     enum Name : byte { A = 1 ... }
+            an enum with numbers: an integer type first, a number for each
+            variant
+
+     (byte)value, Name.fromValue(n)
+            the number of a variant; the variant of a number, or null
+
+     new Name.Node(...), Name* field
+            a variant on the heap, for an enum that holds itself
+
+DESCRIPTION
+     An enum lists its variants, one per line, with no commas. A value of the
+     enum is always exactly one of them. A variant may carry values, written
+     like the parameters of a function: Rect(int width, int height). It is
+     built with the enum's name in front, Shape.Rect(3, 4), and every value it
+     carries must be given.
+
+     match looks inside an enum and must have an arm for every variant, so a
+     variant added later shows each place that has to handle it. is tests for
+     one variant in a condition. In a pattern the variant is written without
+     the enum's name: Rect(w, h).
+
+     An enum takes the room of its largest variant plus a small tag that says
+     which one it holds. It lives where its variable is, with no allocation.
+     So an enum cannot hold itself directly: a variant that carries the same
+     enum points to it, Expr* left, or holds it in a List.
+
+     An enum has one owner and is moved like a struct, unless it is marked
+     Copyable. It is printed only when it is Formattable, and compared with ==
+     only when it is Equatable. An enum may have methods, as a struct does,
+     but no fields: a value every variant needs is written in each variant.
+
+     An enum with numbers names its integer type first, enum Block : byte. Its
+     variants carry nothing, and each stands for a number: the one written, or
+     one more than the variant above. A cast gives the number, and fromValue
+     goes the other way.
+
+EXAMPLES
+   Plain variants
+         enum Light : Copyable, Formattable, Equatable {
+             Red
+             Yellow
+             Green
+         }
+
+         void main() {
+             var light = Light.Red
+             var before = light
+             light = Light.Green
+             print($"{before} then {light}")
+             print(light == Light.Green)
+         }
+
+         Red then Green
+         true
+
+     Copyable makes var before = light a copy, so both can be used. A variant
+     is printed by its name alone.
+
+   Variants that carry values
+         enum Reply : Formattable {
+             Found(string name, int age)
+             Missing(string key)
+             Busy
+         }
+
+         Reply lookup(read string key) {
+             if key == "ada" {
+                 return Reply.Found("Ada", 36)
+             }
+             if key == "" {
+                 return Reply.Busy
+             }
+             return Reply.Missing(key.clone())
+         }
+
+         void main() {
+             var keys = List<string> { "ada", "bob", "" }
+             for key in read keys {
+                 match lookup(key) {
+                     Found(name, age) => print($"{name} is {age}")
+                     Missing(k) => print($"no one is called {k}")
+                     Busy => print("try later")
+                 }
+             }
+             print(lookup("ada"))
+         }
+
+         Ada is 36
+         no one is called bob
+         try later
+         Found("Ada", 36)
+
+     Each arm names the values its variant carries. Busy carries none, and is
+     written without parentheses.
+
+   Methods
+         enum Shape : Formattable {
+             Circle(int radius)
+             Rect(int width, int height)
+             Empty
+
+             Shape square(int side) {
+                 return Shape.Rect(side, side)
+             }
+
+             int area(read this) {
+                 return match this {
+                     Circle(r) => 3 * r * r
+                     Rect(w, h) => w * h
+                     Empty => 0
+                 }
+             }
+
+             void grow(ref this, int by) {
+                 match this {
+                     Circle(r) => r += by
+                     Rect(w, h) => {
+                         w += by
+                         h += by
+                     }
+                     Empty => {}
+                 }
+             }
+         }
+
+         void main() {
+             var shapes = List<Shape> { Shape.Circle(2), Shape.square(3), Shape.Empty }
+             for shape in ref shapes {
+                 shape.grow(1)
+             }
+             for shape in read shapes {
+                 print($"{shape}: {shape.area()}")
+             }
+         }
+
+         Circle(3): 27
+         Rect(4, 4): 16
+         Empty: 0
+
+     Methods follow the variants. square has no this and is called on the
+     type. In grow the match is on a ref borrow, so r, w and h borrow the
+     values inside, and changing them changes the shape.
+
+   is: one variant
+         enum Reply : Formattable {
+             Found(string name, int age)
+             Missing(string key)
+             Busy
+         }
+
+         void main() {
+             var reply = Reply.Found("Ada", 36)
+             if reply is Found(name, age) && age > 30 {
+                 print($"{name}, over thirty")
+             }
+             if reply is not Busy {
+                 print(reply)
+             }
+         }
+
+         Ada, over thirty
+         Found("Ada", 36)
+
+     is only looks: reply is still there after it. The names it gives are seen
+     in the block and along &&.
+
+   Numbers
+         enum Block : byte, Copyable, Formattable {
+             Extension = 0x21
+             Image = 0x2C
+             Trailer = 0x3B
+         }
+
+         enum Level : int, Copyable, Comparable, Formattable {
+             Low = 10
+             Middle
+             High = 30
+         }
+
+         string describe(byte code) {
+             return match Block.fromValue(code) {
+                 null => $"no block starts with {code:x2}".toString()
+                 var block => $"{block} starts with {(byte)block:x2}".toString()
+             }
+         }
+
+         void main() {
+             print(describe(0x2C))
+             print(describe(0x00))
+             print((int)Level.Middle)
+             var levels = List<Level> { Level.High, Level.Low, Level.Middle }
+             levels.sort()
+             print(levels)
+         }
+
+         Image starts with 2c
+         no block starts with 00
+         11
+         [Low, Middle, High]
+
+     Middle is one more than Low. A byte read from a file may be no variant at
+     all, so fromValue gives a Block?. Comparable orders the variants by their
+     numbers.
+
+   An enum that holds itself
+         enum Json : Formattable {
+             Number(double value)
+             Text(string value)
+             Items(List<Json> items)
+             Nothing
+         }
+
+         int depth(read Json value) {
+             return match value {
+                 Items(items) => {
+                     var deepest = 0
+                     for item in items {
+                         deepest = deepest.max(depth(item))
+                     }
+                     deepest + 1
+                 }
+                 _ => 0
+             }
+         }
+
+         void main() {
+             var inner = Json.Items(List<Json> { Json.Text("a") })
+             var outer = Json.Items(List<Json> { Json.Number(1), inner, Json.Nothing })
+             print(outer)
+             print(depth(read outer))
+         }
+
+         Items([Number(1), Items([Text("a")]), Nothing])
+         2
+
+     A List keeps its items on the heap, so a Json that holds a list of Json
+     still has a size. inner is moved into the list. _ takes every variant the
+     arm above did not.
+
+WHAT THE COMPILER REFUSES
+   A variant without its values
+         enum Shape {
+             Circle(int radius)
+             Empty
+         }
+
+         void main() {
+             var shape = Shape.Circle
+         }
+
+         error: `Circle` carries 1 value(s) and cannot be built without them
+           --> example.sg:7:17
+          7 |     var shape = Shape.Circle
+            |                 ^^^^^^^^^^^^
+           hint: `Shape.Circle(radius)`
+
+   A field in an enum
+         enum Shape {
+             Circle(int radius)
+             Rect(int width, int height)
+             string label
+         }
+
+         void main() {
+         }
+
+         error: an enum holds variants and functions, not fields
+           --> example.sg:4:12
+          4 |     string label
+            |            ^^^^^
+           hint: a value every variant carries is written in each variant: `Name(string label)`
+
+   An enum inside itself
+         enum Tree {
+             Leaf(int value)
+             Node(Tree left, Tree right)
+         }
+
+         void main() {
+         }
+
+         error: enum `Tree` contains itself, so it has no finite size
+           --> example.sg:3:10
+          3 |     Node(Tree left, Tree right)
+            |          ^^^^
+           hint: put it behind a pointer: `Tree* left`
+
+     Node(Tree* left, Tree* right) keeps each side on the heap, built with new
+     Tree.Leaf(1).
+
+   A number from an enum without numbers
+         enum Light {
+             Red
+             Green
+         }
+
+         void main() {
+             print((int)Light.Green)
+         }
+
+         error: a `Light` value cannot be converted to `int`
+           the variants of `Light` have no numbers; an enum has them when it names their integer type: `enum Light : int`
+           --> example.sg:7:11
+          7 |     print((int)Light.Green)
+            |           ^^^^^^^^^^^^^^^^
+
+     The order of the lines is not a number. With enum Light : int, each
+     variant has a number that stays the same when the lines are moved, so
+     what a file or a protocol stored keeps its meaning.
+
+SEE ALSO
+     sg help match, sg help is, sg help struct, sg help new
+
+     https://sg-lang.org/reference/enum.html

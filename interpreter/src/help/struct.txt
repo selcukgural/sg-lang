@@ -1,0 +1,335 @@
+NAME
+     struct - declares a type made of named fields, with the methods that work
+     on them
+
+SYNOPSIS
+     struct Name { T field ... }
+            a type with one field on each line
+
+     T field = value
+            a field with a default value
+
+     readonly T field, public T field
+            a field given only when the value is built; a field other modules
+            see
+
+     struct Name : Copyable, Formattable
+            a type that takes built-in interfaces
+
+     Name { field = value, ... }
+            a value, every field given or left to its default
+
+     value.field
+            a field, read or written
+
+     T m(read this), ref this, this
+            a method that looks, changes, or takes the value
+
+     Name create(...), Name(...)
+            a constructor, and the short way to call it
+
+     value with { field = value }
+            a copy with some fields changed
+
+     packed struct, align(N) struct
+            a struct with no padding; one kept at a multiple of N bytes
+
+DESCRIPTION
+     A struct puts several values together under one name. Each field is
+     written type first, one per line. A value is built by naming its fields,
+     in any order: Book { title = "Dune", pages = 412 }. Every field gets a
+     value when the value is built. A field with a default may be left out;
+     any other field must be given. In the head of an if, while or for, where
+     { starts the block, a literal goes in parentheses: if p == (Point { x =
+     1, y = 2 }) {.
+
+     Methods are written inside the struct. The first parameter says what a
+     method does with the value it is called on: read this only looks, ref
+     this may change it, and this takes it, so the caller's variable is used
+     up. A function without this belongs to the type and is called on it,
+     Book.create(...); one named create is the constructor, and Book(...) is
+     short for calling it. A field is always reached through this., so a field
+     and a local variable never look alike.
+
+     A struct value lives where its variable is, with no allocation of its
+     own. It has one owner: giving it to a variable, a field or a parameter
+     moves it, and the old name can no longer be used. A struct marked
+     Copyable, whose fields are all numbers, bool, char or other Copyable
+     types, is copied instead. Nothing else is there unless the struct asks
+     for it after the :: Formattable to be printed, Equatable for ==, Clonable
+     for .clone(), and the others in the book.
+
+     The compiler may order the fields as it likes, to keep the gaps between
+     them small. packed struct and align(N) struct are for a layout that a
+     file, a device or C expects.
+
+EXAMPLES
+   Fields and a literal
+         struct Book : Formattable {
+             string title
+             int pages
+             bool lent = false
+         }
+
+         void main() {
+             var book = Book { title = "Dune", pages = 412 }
+             book.pages += 2
+             print(book.title)
+             print(book)
+         }
+
+         Dune
+         Book { title = "Dune", pages = 414, lent = false }
+
+     lent is left out, so it gets its default. : Formattable lets print write
+     the whole value, the way it is built.
+
+   Methods and a constructor
+         struct Cart {
+             List<string> items
+             long total
+
+             Cart create() {
+                 return Cart { items = List<string>(), total = 0 }
+             }
+
+             void add(ref this, string item, long price) {
+                 this.items.add(item)
+                 this.total += price
+             }
+
+             nint count(read this) {
+                 return this.items.length()
+             }
+
+             string receipt(this) {
+                 return $"{this.count()} items, {this.total} cents".toString()
+             }
+         }
+
+         void main() {
+             var cart = Cart()
+             cart.add("tea", 450)
+             cart.add("cups", 1200)
+             print(cart.count())
+             var text = cart.receipt()
+             print(text)
+         }
+
+         2
+         2 items, 1650 cents
+
+     Cart() calls create. add changes the cart and count only looks; the call
+     does not write ref or read for the value before the dot. receipt takes
+     the cart, so cart cannot be used after that line.
+
+   A readonly field
+         struct Reading : Formattable {
+             readonly string sensor
+             double celsius
+         }
+
+         void main() {
+             var last = Reading { sensor = "kitchen", celsius = 21.5 }
+             last.celsius = 22.0
+             print(last)
+             last = Reading { sensor = "garden", celsius = 9.5 }
+             print(last.sensor)
+         }
+
+         Reading { sensor = "kitchen", celsius = 22 }
+         garden
+
+     sensor is given when the value is built and cannot be assigned after
+     that, nor changed through a method. The variable that holds the value can
+     still be given a whole new one.
+
+   A copy with with
+         struct Point : Copyable, Formattable, Equatable {
+             int x
+             int y
+
+             Point origin() {
+                 return Point { x = 0, y = 0 }
+             }
+
+             Point moved(this, int dx) {
+                 return this with { x = this.x + dx }
+             }
+         }
+
+         void main() {
+             var p = Point { x = 1, y = 2 }
+             var q = p.moved(4)
+             print($"{p} {q}")
+             print(q with { x = 0, y = 0 } == Point.origin())
+         }
+
+         Point { x = 1, y = 2 } Point { x = 5, y = 2 }
+         true
+
+     with makes a new value with the fields written changed and the others as
+     they were. Point is Copyable, so moved gets a copy and p is still there.
+     On a struct that is not Copyable, with and this move the value. origin
+     has no this and is called on the type.
+
+   A struct that holds a list
+         struct Playlist {
+             string name
+             List<string> songs
+         }
+
+         nint totalLength(read Playlist list) {
+             nint sum = 0
+             for song in read list.songs {
+                 sum += song.length()
+             }
+             return sum
+         }
+
+         void main() {
+             var mix = Playlist { name = "Morning", songs = List<string> { "Intro", "Sunrise" } }
+             print(totalLength(read mix))
+             var songs = mix.songs
+             print(mix.name)
+             print(songs)
+             mix.songs = List<string> { "Encore" }
+             print(mix.songs)
+         }
+
+         12
+         Morning
+         ["Intro", "Sunrise"]
+         ["Encore"]
+
+     read mix lends the playlist, list and all, without copying. var songs =
+     mix.songs moves the list out of the field: mix.name can still be used,
+     but mix as a whole cannot until mix.songs has a value again.
+
+   Layout: packed and align
+         struct Plain {
+             byte kind
+             uint length
+         }
+
+         packed struct Header {
+             byte kind
+             uint length
+         }
+
+         align(64) struct Slot {
+             long count
+         }
+
+         void main() {
+             print(Memory.sizeOf<Plain>())
+             print(Memory.sizeOf<Header>())
+             print(Memory.sizeOf<Slot>())
+             var header = Header { kind = 1, length = 300 }
+             print(header.length)
+         }
+
+         8
+         5
+         64
+         300
+
+     Plain takes eight bytes: length must lie at a multiple of four, so three
+     stay empty. Header has no gap, as a format on the disk may want; its
+     fields are copied out, not lent. Slot starts at a multiple of 64 bytes
+     wherever it is kept, the heap included.
+
+WHAT THE COMPILER REFUSES
+   A field left out
+         struct Book {
+             string title
+             int pages
+             bool lent = false
+         }
+
+         void main() {
+             var book = Book { title = "Dune" }
+             print(book.title)
+         }
+
+         error: `Book` is missing `pages`
+           every field gets a value; there is no uninitialized memory
+           --> example.sg:8:16
+          8 |     var book = Book { title = "Dune" }
+            |                ^^^^^^^^^^^^^^^^^^^^^^^
+
+     lent may be left out, since it has a default; pages has none.
+
+   Changing a readonly field
+         struct Reading {
+             readonly string sensor
+             double celsius
+         }
+
+         void main() {
+             var last = Reading { sensor = "kitchen", celsius = 21.5 }
+             last.sensor = "garden"
+             print(last.celsius)
+         }
+
+         error: `sensor` is `readonly`: it is given when the value is built and not changed afterwards
+           --> example.sg:8:10
+          8 |     last.sensor = "garden"
+            |          ^^^^^^
+
+   A struct used after it was moved
+         struct Playlist {
+             string name
+             List<string> songs
+         }
+
+         void play(Playlist list) {
+             print(list.name)
+         }
+
+         void main() {
+             var mix = Playlist { name = "Morning", songs = List<string> { "Intro" } }
+             play(mix)
+             print(mix.songs.length())
+         }
+
+         error: `mix` was moved and can no longer be used
+           --> example.sg:13:11
+          13 |     print(mix.songs.length())
+             |           ^^^
+           it was moved here:
+           --> example.sg:12:10
+          12 |     play(mix)
+             |          ^^^
+
+     play takes the playlist and lets it go when it ends. To keep it, play
+     takes read Playlist and the call writes play(read mix).
+
+   A struct with a field moved out
+         struct Playlist {
+             string name
+             List<string> songs
+         }
+
+         void main() {
+             var mix = Playlist { name = "Morning", songs = List<string> { "Intro" } }
+             var songs = mix.songs
+             print(songs)
+             var copy = mix
+             print(copy.name)
+         }
+
+         error: `mix` cannot be used as a whole: `mix.songs` was moved out of it
+           --> example.sg:10:16
+          10 |     var copy = mix
+             |                ^^^
+           it was moved here:
+           --> example.sg:8:17
+          8 |     var songs = mix.songs
+            |                 ^^^^^^^^^
+           hint: give `mix.songs` a value again, or use the other fields one by one
+
+SEE ALSO
+     sg help enum
+
+     https://sg-lang.org/reference/struct.html

@@ -271,6 +271,6 @@ WHAT THE COMPILER REFUSES
      breaks the table.
 
 SEE ALSO
-     sg help index
+     sg help share, sg help new
 
      https://sg-lang.org/reference/shared.html

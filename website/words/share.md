@@ -1,0 +1,336 @@
+---
+name: share
+kind: keyword
+summary: Makes one more owner of a shared value, or an owner from a weak look.
+see: shared, weak, new, checked, locked
+learn: ../docs/learn/book/07-ownership.md#several-owners-shared-t-and-weak-t
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `share x` | one more owner of the value `x` points to; `x` stays an owner |
+| `share w` | an owner from a `weak` look, or `null` once the value is gone |
+| `share x`, with `x` `null` | `null`: the result of `share` on a `T?` is a `T?` |
+| `share this` | in a method that takes `read shared T this`: an owner of the value it was called on |
+| `x.clone()` | of a `shared T`: the same as `share x`, nothing is copied |
+
+## What it means
+
+A `shared T` is one owner of a value on the heap, made by `new shared x`. Given to a variable, a field or a call,
+it moves, as any owner does, and the place it left can no longer be used. `share x` makes one more owner
+instead: both point to the same value, nothing is copied, and `x` goes on as before.
+
+Each `share` adds one to the count of owners, and each owner that ends takes one away. When the last one ends
+the value is let go: its `dispose` runs, if it has one, and its memory is freed. The count is atomic, so an
+owner made by `share` can go to another task. No method reads it: a program asks `same(a, b)`, or holds a
+`weak` look and asks `share` whether the value is still there.
+
+`share` on a `weak` look gives a `shared T?`: an owner while the value is alive, `null` once it is gone. On a
+`shared T?` that is `null`, `share` gives `null` too, so a value that may be missing needs no test before it.
+
+`share` costs an atomic step, and so does the end of each owner. A function that only reads the value takes a
+`read` borrow, which does not touch the count; `share` is written where a second owner is kept: in a field,
+in a collection, or in another task. It works the same on `shared checked` and `shared locked` values.
+
+## Examples
+
+### One more owner
+
+```sg
+struct Theme {
+    string name
+    string accent
+}
+
+void main() {
+    var theme = new shared Theme { name = "dark", accent = "teal" }
+    var editor = share theme
+    var terminal = share theme
+    print($"{editor.name} {terminal.accent}")
+    print($"{theme.name} is still here")
+    print(same(editor, terminal))
+}
+```
+
+```text
+dark teal
+dark is still here
+true
+```
+
+Three owners point to one `Theme`. `same` tells that two of them point to the same value.
+
+### Let go with the last owner
+
+```sg
+struct Connection : Disposable {
+    string host
+
+    void dispose(ref this) {
+        print($"closed {this.host}")
+    }
+}
+
+void main() {
+    var first = new shared Connection { host = "db.local" }
+    var second = share first
+    print("two owners")
+    first = new shared Connection { host = "cache.local" }
+    print("one owner left")
+    second = share first
+    print("none left for db.local")
+}
+```
+
+```text
+two owners
+one owner left
+closed db.local
+none left for db.local
+closed cache.local
+```
+
+When `first` gets a new value, `second` still owns `db.local`. Once `second` is given an owner of the new one,
+nothing owns `db.local` and its `dispose` runs; `cache.local` is let go when `main` ends.
+
+### An owner from inside a method
+
+```sg
+struct Team {
+    string name
+
+    Member join(read shared Team this, string person) {
+        return Member { name = person, team = share this }
+    }
+}
+
+struct Member {
+    string name
+    shared Team team
+}
+
+void main() {
+    var team = new shared Team { name = "compiler" }
+    var ada = team.join("Ada")
+    var linus = team.join("Linus")
+    print($"{ada.name} and {linus.name} are in {ada.team.name}")
+    print(same(ada.team, linus.team))
+}
+```
+
+```text
+Ada and Linus are in compiler
+true
+```
+
+`read shared Team this` borrows the owner, not only the `Team`, so the method can make one more owner of the
+value it was called on.
+
+### An owner that may be missing
+
+```sg
+struct Image {
+    string path
+    int width
+}
+
+void main() {
+    var cache = HashMap<string, shared Image>()
+    cache.add("logo", new shared Image { path = "logo.png", width = 64 })
+
+    var logo = share cache.get("logo")
+    var banner = share cache.get("banner")
+    if logo is not null {
+        print($"{logo.path} {logo.width}")
+    }
+    print(banner is null)
+}
+```
+
+```text
+logo.png 64
+true
+```
+
+`cache.get` gives `null` for a key it does not have, and `share` of `null` is `null`. Each `share` here gives a
+`shared Image?`, which is tested before it is used.
+
+### Walking up through weak links
+
+```sg
+struct Folder {
+    string name
+    weak Folder? parent
+}
+
+string pathOf(read Folder folder) {
+    var path = folder.name.clone()
+    var at = share folder.parent
+    while at is not null {
+        path = $"{at.name}/{path}".toString()
+        at = share at.parent
+    }
+    return path
+}
+
+void main() {
+    var home = new shared Folder { name = "home", parent = null }
+    var docs = new shared Folder { name = "docs", parent = weak home }
+    var notes = new shared Folder { name = "notes", parent = weak docs }
+    print(pathOf(read notes))
+    docs = new shared Folder { name = "papers", parent = weak home }
+    print(pathOf(read notes))
+    print(pathOf(read docs))
+}
+```
+
+```text
+home/docs/notes
+notes
+home/papers
+```
+
+A folder looks at its parent through a `weak` link, which does not keep it alive. Once `docs` is given a new
+folder, the old one has no owner; `share` on the link of `notes` then gives `null`, and the walk stops there.
+
+### Owners in other tasks
+
+```sg
+struct Prices {
+    List<long> cents
+}
+
+long total(shared Prices prices) {
+    long sum = 0
+    for c in read prices.cents {
+        sum += c
+    }
+    return sum
+}
+
+long highest(shared Prices prices) {
+    long top = 0
+    for c in read prices.cents {
+        top = top.max(c)
+    }
+    return top
+}
+
+void main() {
+    var prices = new shared Prices { cents = List<long> { 1250, 399, 7800, 15 } }
+    var sum = Task.run(total, share prices)
+    var top = Task.run(highest, share prices)
+    print($"total {sum.wait()}, highest {top.wait()}")
+    print(prices.cents.length())
+}
+```
+
+```text
+total 9464, highest 7800
+4
+```
+
+Each task gets an owner of its own and reads the same list, which is not copied. The prices are let go when
+the last of the three owners ends: here `prices`, at the end of `main`.
+
+## What the compiler refuses
+
+### An owner given away without `share`
+
+```sg error
+struct Theme {
+    string name
+}
+
+void main() {
+    var theme = new shared Theme { name = "dark" }
+    var editor = theme
+    print(editor.name)
+    print(theme.name)
+}
+```
+
+```text
+error: `theme` was moved and can no longer be used
+  --> example.sg:9:11
+ 9 |     print(theme.name)
+   |           ^^^^^
+  it was moved here:
+  --> example.sg:7:18
+ 7 |     var editor = theme
+   |                  ^^^^^
+```
+
+A `shared` owner moves like any other value. `var editor = share theme` keeps both.
+
+### `share` of a value with one owner
+
+```sg error
+struct Theme {
+    string name
+}
+
+void main() {
+    var theme = Theme { name = "dark" }
+    var editor = share theme
+    print(editor.name)
+}
+```
+
+```text
+error: `share` needs a `shared` value or a `weak` one, and this is `Theme`
+  --> example.sg:7:24
+ 7 |     var editor = share theme
+   |                        ^^^^^
+  hint: a value with several owners is made with `new shared`: `var owner = new shared Node { ... }`
+```
+
+### An owner from a `weak` look, used without a test
+
+```sg error
+struct Theme {
+    string name
+}
+
+void main() {
+    var theme = new shared Theme { name = "dark" }
+    var look = weak theme
+    var other = share look
+    print(other.name)
+}
+```
+
+```text
+error: this is `shared Theme?` and may be `null`; `.name` needs a value
+  --> example.sg:9:11
+ 9 |     print(other.name)
+   |           ^^^^^
+  hint: test it first: `if other is not null { ... }`
+```
+
+### A `shared checked` owner sent to a task
+
+```sg error
+struct Account {
+    long balance
+}
+
+long balanceOf(shared checked Account account) {
+    return account.balance
+}
+
+void main() {
+    var account = new shared checked Account { balance = 10 }
+    var task = Task.run(balanceOf, share account)
+    print(task.wait())
+}
+```
+
+```text
+error: `balanceOf` takes a `shared checked Account` here, which cannot go to another task: a `shared checked Account` is checked within one task; one that several tasks change is `shared locked`
+```
+
+A plain `shared` value is only read, so its owners may be in several tasks. A `shared checked` one is changed
+through its owners, and its checks hold within one task.

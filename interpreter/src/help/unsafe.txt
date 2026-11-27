@@ -1,0 +1,314 @@
+NAME
+     unsafe - marks code the checker cannot follow: raw memory, calls of C,
+     the fields of a union
+
+SYNOPSIS
+     unsafe { ... }
+            a block of statements that reach what the checker cannot follow
+
+     unsafe value
+            the same for one expression: unsafe p[0], unsafe abs(-7)
+
+     struct T : unsafe Sendable
+            the writer's promise that a struct holding raw pointers may go to
+            another task
+
+     require name address version unsafe
+            a line of sg.project that allows a package with unsafe or extern
+            in it
+
+DESCRIPTION
+     The checker follows every value: who owns it, who borrows it, how long it
+     lives. A few things are out of its sight: memory reached through a raw T,
+     a function of C, the bits of a union read as another type. Those are
+     written inside unsafe, which says that here the writer, not the compiler,
+     keeps memory safe. Outside unsafe there is no use after free, no read out
+     of bounds and no data race, so when memory does go wrong the cause is in
+     an unsafe place or in C.
+
+     The word is asked for by what touches memory, not by where a pointer came
+     from. Making room with Memory.allocate, keeping and copying a pointer,
+     comparing two (p == null, p < q) and counting the items between them (q -
+     p) need no unsafe. Reading or writing p[i], p + n, a cast between raw
+     pointers or from a number, Memory.free, Memory.copy, Memory.view,
+     Memory.addressOf, a volatile read or write, a call or a variable of C,
+     string.fromCString and reading a field of a union do. An unsafe that
+     nothing needs is an error, so the word always marks a real place.
+
+     There is no unsafe function. A function that needs unsafe writes it
+     inside, and its callers write none. That is how unsafe code is kept
+     small: a struct or a module holds the raw memory or the calls of C in a
+     few lines, checks what it is given in front of them, and gives the rest
+     of the program safe types.
+
+     The interpreter checks each item of raw memory against its block, and
+     stops the program at an item outside it, after Memory.free and through
+     null. Compiled code checks none of this: a raw T is a pointer of C and
+     costs what C costs. So unsafe code is tried in the interpreter first.
+
+     A raw pointer does not go to another task, since the checker cannot tell
+     whether two tasks would reach what it points at. A package with unsafe or
+     extern in its source is built only when the program allows it, with
+     unsafe at the end of the package's line: require zlib example.com/bo/zlib
+     1.2.0 unsafe.
+
+EXAMPLES
+   Raw memory
+         void main() {
+             var scores = Memory.allocate<int>(3)
+             unsafe {
+                 scores[0] = 90
+                 scores[1] = 75
+                 scores[2] = scores[0] - 5
+             }
+             var last = unsafe scores[2]
+             print(last)
+             unsafe Memory.free(scores)
+         }
+
+         85
+
+     Memory.allocate gives room for three ints, all zero, and needs no unsafe.
+     Each item read or written does: the checker does not know how many items
+     the block holds, or whether it is still there.
+
+   A function of C
+         extern {
+             nuint strlen(read CString text)
+             int abs(int value)
+         }
+
+         void main() {
+             var name = CString.from("Pasha") ?? panic("a zero byte inside")
+             print(unsafe strlen(read name))
+             unsafe {
+                 var distance = abs(3 - 10)
+                 print(distance)
+             }
+         }
+
+         5
+         7
+
+     extern { } declares functions of the C library. The checker cannot see
+     what they do, so every call is inside unsafe; a block covers several
+     statements.
+
+   A pointer that moves
+         void main() {
+             var readings = Memory.allocate<long>(4)
+             for i in 0..4 {
+                 unsafe {
+                     readings[i] = (long)(i + 1) * 10
+                 }
+             }
+             var end = unsafe (readings + 4)
+             var at = readings
+             long total = 0
+             while at < end {
+                 total += unsafe at[0]
+                 at = unsafe (at + 1)
+             }
+             print($"{total} from {end - readings} items")
+             print(at == end)
+             unsafe Memory.free(readings)
+         }
+
+         100 from 4 items
+         true
+
+     p + n moves by items and needs unsafe. Comparing two pointers and end -
+     readings, the count of items between them, read no memory and need none.
+
+   The bits of a float
+         union Bits {
+             uint word
+             float number
+         }
+
+         void main() {
+             var bits = Bits { number = 1.0 }
+             print($"{unsafe bits.word:x8}")
+         }
+
+         3f800000
+
+     A union holds one of its fields in the same bytes. Writing a field is
+     safe; reading one is inside unsafe, since it reads the bytes as its own
+     type, whichever field was written last.
+
+   Unsafe kept inside a struct
+         struct Stack : Disposable {
+             raw int items
+             nint capacity
+             nint count
+
+             Stack create(nint capacity) {
+                 return Stack { items = Memory.allocate<int>(capacity), capacity = capacity, count = 0 }
+             }
+
+             void push(ref this, int value) {
+                 if this.count == this.capacity {
+                     panic("the stack is full")
+                 }
+                 unsafe {
+                     this.items[this.count] = value
+                 }
+                 this.count += 1
+             }
+
+             int pop(ref this) {
+                 if this.count == 0 {
+                     panic("the stack is empty")
+                 }
+                 this.count -= 1
+                 return unsafe this.items[this.count]
+             }
+
+             void dispose(ref this) {
+                 unsafe Memory.free(this.items)
+             }
+         }
+
+         void main() {
+             var stack = Stack(2)
+             stack.push(1)
+             stack.push(2)
+             print(stack.pop())
+             stack.push(3)
+             print(stack.pop())
+             print(stack.pop())
+         }
+
+         2
+         3
+         1
+
+     The check in front of each unsafe line keeps every index inside the
+     block, and dispose frees it once, when the stack's owner ends. main
+     writes no unsafe at all.
+
+   A raw pointer for another task
+         struct Buffer : unsafe Sendable {
+             raw long items
+             nint count
+         }
+
+         long sum(Buffer buffer) {
+             long total = 0
+             for item in unsafe Memory.view(buffer.items, buffer.count) {
+                 total += item
+             }
+             return total
+         }
+
+         void main() {
+             var items = Memory.allocate<long>(100)
+             for i in 0..100 {
+                 unsafe {
+                     items[i] = (long)i
+                 }
+             }
+             var task = Task.run(sum, Buffer { items = items, count = 100 })
+             print(task.wait())
+             unsafe Memory.free(items)
+         }
+
+         4950
+
+     : unsafe Sendable is the writer's promise that no two tasks change what
+     the pointer reaches at once: here only the task reads it, and main frees
+     it after wait. Memory.view lends the items as a read long[], which for
+     walks with its usual checks.
+
+WHAT STOPS THE PROGRAM
+   Raw memory read after it is freed
+         void main() {
+             var scores = Memory.allocate<int>(3)
+             unsafe Memory.free(scores)
+             var first = unsafe scores[0]
+             print(first)
+         }
+
+         panic: raw memory is read after it was given back with `Memory.free`
+           --> example.sg:4:17
+          4 |     var first = unsafe scores[0]
+            |                 ^^^^^^^^^^^^^^^^
+
+     The checker takes this program; the interpreter stops it as it runs. A
+     compiled build checks nothing: it reads whatever the freed memory holds,
+     as a program of C would.
+
+WHAT THE COMPILER REFUSES
+   Raw memory without unsafe
+         void main() {
+             var scores = Memory.allocate<int>(3)
+             scores[0] = 90
+             unsafe Memory.free(scores)
+         }
+
+         error: this reaches raw memory, whose size and life the checker does not know, so it is written inside `unsafe`
+           --> example.sg:3:5
+          3 |     scores[0] = 90
+            |     ^^^^^^^^^
+           hint: a write is a statement: `unsafe { scores[0] = ... }`
+
+   A call of C without unsafe
+         extern {
+             int abs(int value)
+         }
+
+         void main() {
+             print(abs(-12))
+         }
+
+         error: `abs` is a function of C, and the checker cannot see what it does, so it is written inside `unsafe`
+           --> example.sg:6:11
+          6 |     print(abs(-12))
+            |           ^^^^^^^^
+           hint: `unsafe abs(-12)`, or `unsafe { ... }` around several statements
+
+   An unsafe that nothing needs
+         void main() {
+             var scores = Memory.allocate<int>(3)
+             var empty = unsafe (scores == null)
+             print(empty)
+             unsafe Memory.free(scores)
+         }
+
+         error: nothing here needs `unsafe`
+           `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a call of a C function, a variable of C and `string.fromCString`
+           --> example.sg:3:17
+          3 |     var empty = unsafe (scores == null)
+            |                 ^^^^^^
+           hint: leave `unsafe` out
+
+     Comparing a pointer with null reads no memory.
+
+   A raw pointer sent to a task without the promise
+         struct Buffer {
+             raw long items
+             nint count
+         }
+
+         long sum(Buffer buffer) {
+             long total = 0
+             for item in unsafe Memory.view(buffer.items, buffer.count) {
+                 total += item
+             }
+             return total
+         }
+
+         void main() {
+             var items = Memory.allocate<long>(100)
+             var task = Task.run(sum, Buffer { items = items, count = 100 })
+             print(task.wait())
+             unsafe Memory.free(items)
+         }
+
+         error: `sum` takes a `Buffer` here, which holds a `raw long` (the field `items` of `Buffer`), which cannot go to another task: the checker does not follow a raw pointer, and two tasks could reach what it points at at once; a struct that keeps what it reaches safe for several tasks says so with `: unsafe Sendable`
+
+SEE ALSO
+     sg help index
+
+     https://sg-lang.org/reference/unsafe.html
