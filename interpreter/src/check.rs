@@ -12382,7 +12382,9 @@ impl<'a> Checker<'a> {
         // (`Equatable` and `Hashable` details, #15): a side that is a pointer is lent as a
         // `read` of its value.
         let (mut left_ty, mut right_ty) = (left_ty, right_ty);
-        if op.is_comparison() && left_ty != Ty::Null && right_ty != Ty::Null {
+        // A `T*?` beside it is compared as a `T?` (choice 2131), whose values are then looked through.
+        let nullable_side = matches!(peel(&left_ty), Ty::Nullable(_)) || matches!(peel(&right_ty), Ty::Nullable(_));
+        if op.is_comparison() && left_ty != Ty::Null && right_ty != Ty::Null && !nullable_side {
             for (side, ty) in [(&mut *left, &mut left_ty), (&mut *right, &mut right_ty)] {
                 while let Ty::Ptr(inner) = ty.strip_borrow() {
                     let inner = (**inner).clone();
@@ -12673,18 +12675,6 @@ impl<'a> Checker<'a> {
                 let ExprKind::Binary(_, _, middle) = &left.kind else { unreachable!("tested above") };
                 let (first, middle, last) = (&self.src[left.span.start..left.span.end], &self.src[middle.span.start..middle.span.end], &self.src[right.span.start..right.span.end]);
                 Err(undefined().hint(format!("compare twice: `{first} && {middle} {} {last}`", op.symbol())))
-            }
-            // `answer == true` on a `bool?`: what `null` counts as is said with `??`.
-            (Ty::Nullable(inner), Ty::Bool) | (Ty::Bool, Ty::Nullable(inner)) if **inner == Ty::Bool && matches!(op, BinOp::Eq | BinOp::Ne) => {
-                let (maybe, value) = if matches!(left_ty.strip_borrow(), Ty::Nullable(_)) { (&*left, &*right) } else { (&*right, &*left) };
-                let text = as_operand(maybe, &self.src[maybe.span.start..maybe.span.end]);
-                let hint = match value.kind {
-                    ExprKind::Bool(wanted) if wanted == (op == BinOp::Eq) => format!("`null` counts as `false` with `??`: `{text} ?? false`"),
-                    ExprKind::Bool(_) if op == BinOp::Eq => format!("`null` counts as `true` with `??`: `!({text} ?? true)`"),
-                    ExprKind::Bool(_) => format!("`null` counts as `false` with `??`: `!({text} ?? false)`"),
-                    _ => format!("say what `null` counts as with `??`: `{text} ?? false`"),
-                };
-                Err(undefined().note(format!("`{text}` may be `null`")).hint(hint))
             }
             // `done == 1`, from C: a `bool` is tested alone.
             (Ty::Bool, Ty::Int(_)) | (Ty::Int(_), Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => {

@@ -35,6 +35,7 @@ while the slice was built and how it was tested. This folder is that record, one
 | [25 November 2026](2026-11-25.md) | 178, 179, 180, 181 | What each request costs a server: a file opened only when it is a regular one, and the info of an open file; a GIF tool held to gifsicle; the lookup of a `HashMap` as hashbrown's; an interpreter of Lox held to clox, with the bits of a `double`, `%e` and `%g`, and a hash of a key of a fixed size. |
 | [26 November 2026](2026-11-26.md) | 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197 | A static program with musl linked in, measured against glibc and set aside; the descriptors a started program must not get, also with musl and an older glibc; flags of C on every build; a compiled program in the debugger, on the lines of SG; names of the system that are not text; sockets of the machine, the options of a connection, one side closed, pieces written to a file; links, permissions, the lock of a file and a file in memory; `select`, waiting on several channels at once; the panic of a program whose every task waits, compiled too; two `ref` windows of one list at once; four places the borrow check let through, closed; the streams of a program, programs joined by pipes, a look without waiting, a program let go of, programs by their numbers; groups, sessions, the signals of job control and a job in front at the terminal. |
 | [27 November 2026](2026-11-27.md) | 198, 199, 200 | A program at a terminal made for it, the raw mode of a terminal, and its size; issues 10 and 7: a pipe of another program read and written at once in the interpreter, and the writers of the standard streams into a pipe no one reads; watching a folder; a folder as the root of paths from outside, one file read and written through one opening, and a file with no name |
+| [28 November 2026](2026-11-28.md) | fixes of issues | The open `bug` issues fixed, with their tests, documents and pages: messages that name the way out, and the rules they found (#15–#51) |
 
 ## Every slice
 
@@ -300,3 +301,15 @@ while the slice was built and how it was tested. This folder is that record, one
 | [A sign by its marks in `sg help`](2026-11-27.md#a-sign-by-its-marks-in-sg-help) | `sg help ??` finds `x ?? y`: a sign by its name without letters, digits and spaces | 2086 |
 | [The pages of the commands](2026-11-27.md#the-pages-of-the-commands) | A page for each command, `sg-build(1)` in section 1 of the manual; `sg build --help` prints it | 2087-2088 |
 | [A build never writes over a source](2026-11-27.md#a-build-never-writes-over-a-source) | `sg build x.sg -o x.sg` is refused: an output never replaces a file of SG or C, or a header of one's own | 2089 |
+
+### 28 November
+
+| Slice | What it decided | Choices |
+|---|---|---|
+| [`bool`, conditions, `$"..."`, `a..b` and `xs[^1]` (issues 30 and 47)](2026-11-28.md#bool-conditions--ab-and-xs1-issues-30-and-47) | A `$"..."` kept in a variable borrows what it names; messages around `bool`, ranges and `^` | 2110–2112 |
+| [Shared values, `lock` and `readonly`](2026-11-28.md#shared-values-lock-and-readonly) | A `shared atomic` in `when` refused, items of a list of checked values lent, `readonly` through a shared field | 2150–2151 |
+| [Numbers, characters and bytes (issues 29, 31, 42, 46)](2026-11-28.md#numbers-characters-and-bytes-issues-29-31-42-46) | Messages about numbers name the way out; a known overflow is a compile error; float NaN bits | 2090–2096 |
+| [Pointers, raw memory and the edge with C](2026-11-28.md#pointers-raw-memory-and-the-edge-with-c) | `==` through `T*`, raw memory reached through a number checked, `embed` in about its size | 2170–2177 |
+| [Patterns, aliases, `with`, interfaces and the loader of modules](2026-11-28.md#patterns-aliases-with-interfaces-and-the-loader-of-modules) | `when` and `not` as names, an alias of a built-in type, a derived `equals`, the loader of modules | 2210–2215 |
+| [Statements, names and the messages around them](2026-11-28.md#statements-names-and-the-messages-around-them) | A line that never runs, the types of `std` named again, `try` in a new list, `assert` lined up | 2190–2194 |
+| [`T?`, `null` and `?:`](2026-11-28.md#t-null-and-) | `==` on `T?`, narrowing kept by an assignment and below `Go(null)`, `?:` | 2130–2133 |

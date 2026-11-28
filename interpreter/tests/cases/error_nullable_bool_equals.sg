@@ -1,6 +1,0 @@
-void main() {
-    bool? answer = null
-    if answer == true {
-        print("yes")
-    }
-}
