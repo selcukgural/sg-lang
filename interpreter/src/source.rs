@@ -225,18 +225,26 @@ impl Sources {
 
     /// The files of SG beside the program's file that were not read, when the program is one file
     /// of a folder that has others (`sg shop/main.sg`, where `shop/prices.sg` is; choice 2242):
-    /// each named as `load` names it, with its text, and the folder as written.
+    /// each named as `load` names it, with its text, and the folder as written. A file beside is
+    /// written as the program's file is, with the same separator (`shop/main.sg` gives
+    /// `shop/prices.sg` on Windows too).
     pub fn beside(&self) -> (String, Vec<(String, String)>) {
         let Some(root) = self.root.as_ref() else { return (String::new(), Vec::new()) };
-        let read: HashSet<std::ffi::OsString> = self.files.iter().filter(|file| file.module.is_empty()).filter_map(|file| Path::new(&file.path).file_name().map(|name| name.to_os_string())).collect();
+        let own: Vec<&str> = self.files.iter().filter(|file| file.module.is_empty()).map(|file| file.path.as_str()).collect();
+        let read: HashSet<std::ffi::OsString> = own.iter().filter_map(|path| Path::new(path).file_name().map(|name| name.to_os_string())).collect();
+        // The folder as the program's file writes it, up to and with its last separator.
+        let written = own.first().and_then(|path| Some(path.strip_suffix(Path::new(path).file_name()?.to_str()?)?.to_string()));
         let base = if root == Path::new(".") { PathBuf::new() } else { root.clone() };
         let files = sg_files(root)
             .into_iter()
             .filter_map(|file| file.file_name().map(|name| name.to_os_string()))
             .filter(|name| !read.contains(name))
             .filter_map(|name| {
-                let path = base.join(&name);
-                std::fs::read_to_string(&path).ok().map(|text| (path.to_string_lossy().into_owned(), text))
+                let path = match (&written, name.to_str()) {
+                    (Some(folder), Some(name)) => format!("{folder}{name}"),
+                    _ => base.join(&name).to_string_lossy().into_owned(),
+                };
+                std::fs::read_to_string(&path).ok().map(|text| (path, text))
             })
             .collect();
         (root.to_string_lossy().into_owned(), files)
