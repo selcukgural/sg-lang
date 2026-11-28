@@ -1396,8 +1396,10 @@ fn compiled_tests() {
                 let only = number.to_string();
                 let run = output_within(std::process::Command::new(&plain).args(["--only", &only]), &name);
                 match run.status.code() {
-                    // There is no test of this number: all of them were looked at.
-                    Some(3) => break,
+                    // There is no test of this number: all of them were looked at. The program says
+                    // so and ends with 2 (choice 2233; before, 3 and nothing said); a test that
+                    // itself ends with 2 is told apart by the message.
+                    Some(2) if String::from_utf8_lossy(&run.stderr).contains("error: `--only` ") => break,
                     // On Windows the count of blocks of the debug build looked, and would have
                     // said so and ended with 1.
                     Some(0) if cfg!(windows) => alone += 1,
