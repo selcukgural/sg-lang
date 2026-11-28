@@ -1,0 +1,13 @@
+// The address `Memory.addressOf` gives names the value in the interpreter; reading through it
+// as raw memory is a panic, not a quiet zero (#45).
+struct Runner {
+    int bib
+    int seconds
+}
+
+void main() {
+    var a = Runner { bib = 5, seconds = 2990 }
+    var pa = unsafe Memory.addressOf(ref a)
+    var x = unsafe ((raw Runner)pa)[0]
+    print(x.bib)
+}

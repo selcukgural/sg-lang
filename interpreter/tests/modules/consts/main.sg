@@ -1,9 +1,12 @@
 // Consts of another module, the count of an array from one, the bytes of a file, and consts
-// of another module made of its other consts.
+// of another module made of its other consts. Every value of a byte, `??=`, `"` and `\` in a
+// file of `embed`, and two consts of one file (#45).
 
 use limits
 
 const byte[] Logo = embed("logo.gif")
+const byte[] Again = embed("logo.gif")
+const byte[] Bytes = embed("bytes.bin")
 
 int first(read int[MaxItems] items) {
     return items[0]
@@ -19,6 +22,14 @@ void main() {
     print(Logo.length())
     print(Logo[0])
     print(Logo[7])
+    print(Again[7])
+    print(Logo == Again)
+    long total = 0
+    for item in Bytes {
+        total += (long)item
+    }
+    print($"{Bytes.length()} bytes, {total} in all")
+    print($"{Bytes[256]} {Bytes[257]} {Bytes[258]} {Bytes[259]} {Bytes[260]} {Bytes[261]} {Bytes[262]} {Bytes[518]}")
     print(Powers[3])
     print(Label)
     match "up to 8 items" {

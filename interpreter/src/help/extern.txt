@@ -447,7 +447,7 @@ WHAT THE COMPILER REFUSES
              print(abs(-3))
          }
 
-         error: function `abs` is defined twice
+         error: function `abs` is defined twice: here, and as a function of C in an `extern` block
            --> example.sg:5:5
           5 | int abs(int value) {
             |     ^^^

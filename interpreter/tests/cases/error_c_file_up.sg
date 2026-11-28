@@ -1,0 +1,8 @@
+// A C file above the module's folder: the hint does not lead to `./../` (#45).
+extern "../up.c" {
+    int up(int value)
+}
+
+void main() {
+    print(unsafe up(1))
+}

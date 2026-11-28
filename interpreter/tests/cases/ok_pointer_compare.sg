@@ -1,0 +1,66 @@
+// `==` and the order look through a `T*` to what it owns, as they look through `read`
+// (#15), in both back ends; a key that holds a `T*?` is hashed by what it owns (#48).
+struct Point : Equatable, Comparable {
+    int x
+    int y
+
+    int compare(read this, read Point other) {
+        return this.x != other.x ? this.x - other.x : this.y - other.y
+    }
+}
+
+struct Node : Equatable, Hashable {
+    int value
+    Node*? next
+}
+
+bool alike(read Point* a, read Point* b) {
+    return a == b
+}
+
+void main() {
+    var a = new Point { x = 1, y = 2 }
+    var b = new Point { x = 1, y = 2 }
+    var c = new Point { x = 3, y = 0 }
+    print(a == b)
+    print(a != c)
+    print(a < c)
+    print(c >= b)
+    print(a == Point { x = 1, y = 2 })
+    print(Point { x = 3, y = 0 } == c)
+    print(alike(read a, read b))
+
+    var five = new 5
+    var other = new 5
+    var six = new 6
+    print(five == other)
+    print(five != six)
+    print(five < six)
+    print(six == 6)
+    print(7 > six)
+    var deep = new new 2.5
+    print(deep == new new 2.5)
+
+    var name = new "Pasha"
+    print(name == "Pasha")
+    print(name < new "Zed")
+    var flag = new true
+    print(flag == new true)
+    var letter = new 'q'
+    print(letter > 'a')
+    var items = new List<int> { 1, 2 }
+    print(items == List<int> { 1, 2 })
+
+    var seen = HashSet<Node> { }
+    _ = seen.add(Node { value = 1, next = new Node { value = 2, next = null } })
+    _ = seen.add(Node { value = 1, next = new Node { value = 2, next = null } })
+    _ = seen.add(Node { value = 1, next = new Node { value = 3, next = null } })
+    _ = seen.add(Node { value = 1, next = null })
+    _ = seen.add(Node { value = 1, next = null })
+    print(seen.length())
+    print(seen.contains(read Node { value = 1, next = new Node { value = 3, next = null } }))
+    var counts = HashMap<Node, int>()
+    counts.add(Node { value = 4, next = null }, 1)
+    counts.add(Node { value = 4, next = new Node { value = 5, next = null } }, 2)
+    print(counts.get(read Node { value = 4, next = new Node { value = 5, next = null } }) ?? 0)
+}

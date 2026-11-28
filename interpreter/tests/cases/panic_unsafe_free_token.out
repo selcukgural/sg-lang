@@ -1,0 +1,4 @@
+panic: `Memory.free` is given the address `Memory.addressOf` gave, which is no block of raw memory
+  --> panic_unsafe_free_token.sg:5:5
+ 5 |     unsafe Memory.free(at)
+   |     ^^^^^^^^^^^^^^^^^^^^^^

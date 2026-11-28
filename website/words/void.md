@@ -277,6 +277,7 @@ error: this call does not return a value
   --> example.sg:6:16
  6 |     var said = greet("Ada")
    |                ^^^^^^^^^^^^
+  hint: call it on a line of its own: `greet("Ada")`
 ```
 
 ### A `void` call where a value is needed
@@ -328,7 +329,8 @@ void main() {
 ```
 
 ```text
-error: `void` can only be a return type
+error: `void` is no type of a value
+  it is written as the return type of a function that gives nothing, in `Result<void, E>` and `Task<void>`, and as `raw void`, an address of memory of no known type
   --> example.sg:2:24
  2 |     var nothing = List<void>()
    |                        ^^^^
@@ -349,13 +351,14 @@ void main() {
 ```
 
 ```text
-error: expected a parameter name, found `)`
-  --> example.sg:1:16
+error: a function without parameters has nothing between its parentheses
+  --> example.sg:1:12
  1 | int answer(void) {
-   |                ^
+   |            ^^^^
+  hint: `answer()`
 ```
 
-A function with no parameters is written with empty parentheses: `int answer()`.
+A function with no parameters is written with empty parentheses: `int answer()`, not as C writes it.
 
 ### A `main` that returns a number
 

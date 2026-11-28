@@ -1,0 +1,8 @@
+// `public` comes before `export` (#45).
+export public int answer() {
+    return 42
+}
+
+void main() {
+    print(answer())
+}

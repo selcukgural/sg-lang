@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `int*` and `int`
+  `==` and the order compare what a `T*` owns; the other operators work on the number itself
+  --> error_pointer_number_operator.sg:4:11
+ 4 |     print(count + 1)
+   |           ^^^^^^^^^
+  hint: a number needs no `new`: give it the type `int`, not `int*`

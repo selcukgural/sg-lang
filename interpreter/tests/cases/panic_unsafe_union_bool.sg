@@ -1,0 +1,11 @@
+// A `bool` read out of a byte that is neither 0 nor 1 (#42): C would take it as either.
+union Flag {
+    byte value
+    bool flag
+}
+
+void main() {
+    var f = Flag { value = 2 }
+    var x = unsafe f.flag
+    print(x)
+}

@@ -1,0 +1,59 @@
+// A pointer made from a number, or read out of a union, reaches what the pointer made into that
+// number reached (#42): a block of `Memory.allocate`, memory C gave, or the value whose address
+// `Memory.addressOf` gave, lent again with a cast.
+extern {
+    raw void malloc(nuint size)
+    raw void memset(raw void target, int value, nuint count)
+}
+
+union Slot {
+    raw int pointer
+    nuint number
+}
+
+struct Counter {
+    int hits
+}
+
+void bump(raw void state) {
+    var counter = unsafe (ref Counter)state
+    counter.hits += 1
+}
+
+void main() {
+    // Into a number, moved on as a number, and back: still checked against its block.
+    var cells = Memory.allocate<int>(4)
+    var at = (nuint)cells + 8
+    var third = unsafe (raw int)at
+    unsafe {
+        third[0] = 30
+        third[1] = 40
+    }
+    print(unsafe (cells[2] + cells[3]))
+
+    // Through a union and back.
+    var slot = Slot { pointer = cells }
+    var again = unsafe slot.pointer
+    unsafe {
+        again[0] = 10
+    }
+    print(unsafe cells[0])
+    var number = unsafe slot.number
+    print(number == (nuint)cells)
+    unsafe Memory.free(cells)
+
+    // Memory C gave, through a number: not checked, as before.
+    var block = unsafe malloc(16)
+    _ = unsafe memset(block, 7, 16)
+    var bytes = unsafe (raw byte)(nuint)block
+    print(unsafe bytes[15])
+    unsafe Memory.free(block)
+
+    // The address of a value, through a number and a union, lent again.
+    var counter = Counter { hits = 0 }
+    var n = (nuint)unsafe Memory.addressOf(ref counter)
+    bump(unsafe (raw void)n)
+    var kept = Slot { number = n }
+    bump(unsafe (raw void)kept.pointer)
+    print(counter.hits)
+}

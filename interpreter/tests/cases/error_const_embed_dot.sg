@@ -1,0 +1,6 @@
+// The path of a file of `embed` is written without `./` (#45).
+const byte[] Motd = embed("./motd.txt")
+
+void main() {
+    print(Motd.length())
+}

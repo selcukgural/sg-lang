@@ -1,0 +1,5 @@
+error: this is `Result<void, Failure>`: success with nothing, or an error
+  --> error_print_result_void.sg:11:11
+ 11 |     print(check())
+    |           ^^^^^^^
+  hint: open it first with `try` or `match`

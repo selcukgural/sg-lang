@@ -483,7 +483,7 @@ void main() {
 ```
 
 ```text
-error: function `abs` is defined twice
+error: function `abs` is defined twice: here, and as a function of C in an `extern` block
   --> example.sg:5:5
  5 | int abs(int value) {
    |     ^^^

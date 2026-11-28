@@ -1,0 +1,5 @@
+error: `void` is no type of a value
+  it is written as the return type of a function that gives nothing, in `Result<void, E>` and `Task<void>`, and as `raw void`, an address of memory of no known type
+  --> error_void_list.sg:3:24
+ 3 |     var nothing = List<void>()
+   |                        ^^^^

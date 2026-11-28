@@ -25,18 +25,32 @@ an `unsafe` place or in C.
 
 The word is asked for by what touches memory, not by where a pointer came from. Making room with
 `Memory.allocate`, keeping and copying a pointer, comparing two (`p == null`, `p < q`) and counting the items
-between them (`q - p`) need no `unsafe`. Reading or writing `p[i]`, `p + n`, a cast between raw pointers or from
-a number, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a volatile read or write, a call or a
-variable of C, `string.fromCString` and reading a field of a union do. An `unsafe` that nothing needs is an
-error, so the word always marks a real place.
+between them (`q - p`) need no `unsafe`. These need it, and nothing else does:
+
+- an item of raw memory, read or written: `p[i]`, `p[i].x`;
+- moving a pointer: `p + n`;
+- a cast between raw pointers, from a number to a raw pointer, from a `raw void` to a `CFunc`, and
+  `(ref T)p` or `(read T)p`, which lend the value at an address `Memory.addressOf` gave;
+- reading a field of a union;
+- `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.viewRef`, `Memory.addressOf`,
+  `Memory.readVolatile`, `Memory.writeVolatile`, `Memory.readUnaligned` and `Memory.writeUnaligned`;
+- `File.mapRead`, the bytes of a file where the system keeps them;
+- a call of a function of C, a call through a `CFunc`, and a variable of C;
+- `string.fromCString`.
+
+An `unsafe` that nothing needs is an error, so the word always marks a real place.
 
 There is no `unsafe` function. A function that needs `unsafe` writes it inside, and its callers write none.
 That is how unsafe code is kept small: a struct or a module holds the raw memory or the calls of C in a few
 lines, checks what it is given in front of them, and gives the rest of the program safe types.
 
 The interpreter checks each item of raw memory against its block, and stops the program at an item outside it,
-after `Memory.free` and through `null`. Compiled code checks none of this: a `raw T` is a pointer of C and costs
-what C costs. So unsafe code is tried in the interpreter first.
+after `Memory.free` and through `null`. A pointer made from a number, or read out of a union, is checked as the
+pointer that was made into that number was, or against the block it lies in; one that no pointer was made into
+and that lies in no block reaches nothing, and neither does the address `Memory.addressOf` gives, which in the
+interpreter names a value without being where its bytes lie. Memory C gave is not checked. Compiled code checks
+none of this: a `raw T` is a pointer of C and costs what C costs. So unsafe code is tried in the interpreter
+first.
 
 A raw pointer does not go to another task, since the checker cannot tell whether two tasks would reach what it
 points at. A package with `unsafe` or `extern` in its source is built only when the program allows it, with
@@ -313,7 +327,7 @@ void main() {
 
 ```text
 error: nothing here needs `unsafe`
-  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a call of a C function, a variable of C and `string.fromCString`
+  `unsafe` is for what the checker cannot follow, such as an item of raw memory (`p[i]`), a field of a union read, `Memory.free` or a call of a C function; `sg help unsafe` lists every case
   --> example.sg:3:17
  3 |     var empty = unsafe (scores == null)
    |                 ^^^^^^

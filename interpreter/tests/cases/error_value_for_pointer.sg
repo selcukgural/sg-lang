@@ -1,0 +1,14 @@
+// A value where a `T*` goes: the hint puts it on the heap with `new` (#37).
+struct Point {
+    int x
+    int y
+}
+
+struct Holder {
+    Point*? at
+}
+
+void main() {
+    var h = Holder { at = Point { x = 1, y = 2 } }
+    print(h.at?.x ?? 0)
+}

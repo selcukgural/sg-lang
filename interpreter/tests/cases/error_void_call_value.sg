@@ -1,0 +1,8 @@
+// The value of a call that gives none (#45).
+void greet() {
+    print("hello")
+}
+
+void main() {
+    var said = greet()
+}

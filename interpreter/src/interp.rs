@@ -2116,31 +2116,47 @@ fn raw_of(value: &Value) -> RawPtr {
 
 /// The value of type `ty` that lies at `addr`, which the caller has checked.
 fn load(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span) -> Result<Value, Diag> {
+    load_in(addr, ty, plain, span, false)
+}
+
+/// As `load`; `union` says that the bytes are those of a union, read as one of its fields: a
+/// pointer there is a number the program wrote (`raw::from_number`), and a panic names the
+/// union, not raw memory.
+fn load_in(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span, union: bool) -> Result<Value, Diag> {
+    let holder = if union { "the union" } else { "raw memory" };
     // SAFETY: the caller checked that the bytes of a value of `ty` lie at `addr`, or the
     // pointer came from outside, where the program says so with `unsafe`.
     unsafe {
         let at = addr as *const u8;
         Ok(match ty {
-            Ty::Atomic(inner) => return load(addr, inner, plain, span),
+            Ty::Atomic(inner) => return load_in(addr, inner, plain, span, union),
             Ty::Int(int) => Value::Int(*int, raw::read_int(addr, *int)),
             Ty::Float(FloatTy::Float) => Value::Float(FloatTy::Float, float_from_bits(at.cast::<u32>().read_unaligned())),
             Ty::Float(FloatTy::Double) => Value::Float(FloatTy::Double, at.cast::<f64>().read_unaligned()),
-            Ty::Bool => Value::Bool(at.read() != 0),
+            // A `bool` is 0 or 1, as `fromBytes` says; C would take another byte as either (#42).
+            Ty::Bool => match at.read() {
+                0 => Value::Bool(false),
+                1 => Value::Bool(true),
+                byte => return Err(Diag::panic(span, format!("{holder} holds {byte} where a `bool` is read, and a `bool` is 0 or 1"))),
+            },
             Ty::Char => {
                 let code = at.cast::<u32>().read_unaligned();
                 let Some(found) = char::from_u32(code) else {
-                    return Err(Diag::panic(span, format!("raw memory holds {code} where a `char` is read, and no character has that code")));
+                    return Err(Diag::panic(span, format!("{holder} holds {code} where a `char` is read, and no character has that code")));
                 };
                 Value::Char(found)
             }
             Ty::Raw(_) => {
                 let address = at.cast::<usize>().read_unaligned();
-                Value::Raw(RawPtr { addr: address, block: raw::block_at(address) })
+                Value::Raw(match union {
+                    true => raw::from_number(address),
+                    false => RawPtr { addr: address, block: raw::block_at(address).or_else(|| token_at(address)) },
+                })
             }
             Ty::CFunc(..) => Value::Raw(RawPtr { addr: at.cast::<usize>().read_unaligned(), block: None }),
             Ty::Array(item, length) => {
                 let (size, _) = raw::layout(item, plain);
-                let items = (0..*length).map(|at| load(addr + at * size, item, plain, span).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
+                let items = (0..*length).map(|at| load_in(addr + at * size, item, plain, span, union).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
                 Value::Array(Rc::new(items))
             }
             // A union is kept as its bytes, which each read of a field takes as that field.
@@ -2156,7 +2172,7 @@ fn load(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span) -> Res
                     .iter()
                     .zip(raw::places(name, plain))
                     .map(|(field, place)| match place {
-                        raw::Place::Bytes(at) => load(addr + at, field, plain, span).map(cell),
+                        raw::Place::Bytes(at) => load_in(addr + at, field, plain, span, union).map(cell),
                         raw::Place::Bits { at, width } => Ok(cell(load_bits(addr, at, width, field))),
                     })
                     .collect::<Result<Vec<Cell>, Diag>>()?;
@@ -2165,6 +2181,19 @@ fn load(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span) -> Res
             other => unreachable!("raw memory holds plain data, not `{other}`"),
         })
     }
+}
+
+/// A pointer written into a union is a number from then on: kept for `raw::from_number`.
+fn remember_pointer(value: &Value) {
+    if let Value::Raw(pointer) = strip(value.clone()) {
+        raw::remember(pointer);
+    }
+}
+
+/// `raw::TOKEN` for the address of a value `Memory.addressOf` gave that still lives: C gave it
+/// back (the state of a callback), and it is no place of raw memory.
+fn token_at(addr: usize) -> Option<u64> {
+    ADDRESSES.with(|given| given.borrow().get(&addr).is_some_and(|(held, _)| held.strong_count() > 0)).then_some(raw::TOKEN)
 }
 
 /// Writes `value`, of type `ty`, at `addr`, which the caller has checked.
@@ -3246,10 +3275,18 @@ fn value_of(found: &ConstVal) -> Value {
         ConstVal::Char(value) => Value::Char(*value),
         ConstVal::Str(text) => Value::Str(text.as_str().to_string().into()),
         ConstVal::Array(items) => Value::Array(Rc::new(items.iter().map(|item| cell(value_of(item))).collect())),
-        ConstVal::Bytes(bytes) => Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())),
+        ConstVal::Bytes(bytes) => byte_array(bytes),
         ConstVal::Struct(name, fields) => Value::Struct(name.as_str().into(), Fields::plain(fields.iter().map(|field| cell(value_of(field))).collect())),
         ConstVal::Enum(name, index, fields) => Value::Enum(name.as_str().into(), *index, Rc::new(fields.iter().map(|field| cell(value_of(field))).collect())),
     }
+}
+
+/// The array of a const of bytes (`embed`). Nothing writes into the items of a const (a copy
+/// gets cells of its own), so each item is one of 256 cells, one for each byte, shared: eight
+/// bytes an item instead of a cell of its own, for a file of up to 64 MB (#45).
+fn byte_array(bytes: &[u8]) -> Value {
+    let cells: Vec<Cell> = (0..=255u8).map(|byte| cell(Value::Int(IntTy::Byte, byte as i128))).collect();
+    Value::Array(Rc::new(bytes.iter().map(|byte| cells[*byte as usize].clone()).collect()))
 }
 
 /// What a const holds, out of the value the interpreter found for it.
@@ -3261,16 +3298,17 @@ fn const_of(found: &Value) -> ConstVal {
         Value::Char(value) => ConstVal::Char(*value),
         Value::Str(text) => ConstVal::Str(text.to_string()),
         Value::Borrow(target) => const_of(&target.borrow()),
-        Value::Array(items) => {
-            let items: Vec<ConstVal> = items.iter().map(|item| const_of(&item.borrow())).collect();
-            match items.iter().all(|item| matches!(item, ConstVal::Int(IntTy::Byte, _))) {
-                true => ConstVal::Bytes(items.iter().map(|item| match item {
-                    ConstVal::Int(_, byte) => *byte as u8,
+        // Bytes are kept as they are, without a value for each first.
+        Value::Array(items) if items.iter().all(|item| matches!(*item.borrow(), Value::Int(IntTy::Byte, _))) => ConstVal::Bytes(
+            items
+                .iter()
+                .map(|item| match *item.borrow() {
+                    Value::Int(_, byte) => byte as u8,
                     _ => unreachable!("tested above"),
-                }).collect()),
-                false => ConstVal::Array(items),
-            }
-        }
+                })
+                .collect(),
+        ),
+        Value::Array(items) => ConstVal::Array(items.iter().map(|item| const_of(&item.borrow())).collect()),
         Value::Struct(name, fields) => ConstVal::Struct(name.to_string(), fields.iter().map(|field| const_of(&field.borrow())).collect()),
         Value::Enum(name, index, fields) => ConstVal::Enum(name.to_string(), *index, fields.iter().map(|field| const_of(&field.borrow())).collect()),
         _ => unreachable!("the checker gives a const only plain values"),
@@ -3329,6 +3367,13 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
         let mut found = BTreeMap::new();
         for decl in decls {
             let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
+            // The bytes of `embed` are the value as they are, read once (#45).
+            if let ExprKind::Embed(index) = &decl.init.kind {
+                if let Some(bytes) = &prog.embeds[*index].bytes {
+                    found.insert(decl.name.clone(), ConstVal::Bytes(bytes.clone()));
+                    continue;
+                }
+            }
             match interp.const_cell(&decl.name, decl.name_span) {
                 Ok(slot) => {
                     found.insert(decl.name.clone(), const_of(&slot.borrow()));
@@ -3508,7 +3553,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 None => {
                     if let Some(value) = self.consts.static_values.get(name) {
-                        let slot = cell(value_of(value));
+                        // A static may be written, so its items get cells of their own (`byte_array`).
+                        let slot = cell(fresh(&value_of(value)));
                         self.consts.statics.borrow_mut().insert(name.to_string(), StaticState::Found(slot.clone()));
                         return Ok(slot);
                     }
@@ -4995,6 +5041,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Value::Shared(held) => holder = held.value.clone(),
                     Value::Struct(_, fields) => {
                         let mut bytes = union_bytes(&fields);
+                        remember_pointer(&new);
                         let given = bytes_of(&new, &ty, self.plain);
                         bytes[..given.len()].copy_from_slice(&given);
                         *holder.borrow_mut() = union_value(&name, &bytes);
@@ -5111,10 +5158,16 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn stmt_for_each(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
         let StmtKind::ForEach { var, iter, body, by, label, .. } = &stmt.kind else { unreachable!() };
         {
-            let collection = owned(self.expr(iter, frame)?);
+            // A const is gone over where it is, each item copied as it comes: an array of
+            // 64 MB of `embed` is not copied whole first (#45).
+            let constant = matches!(iter.kind, ExprKind::Const(_));
+            let collection = match constant {
+                true => owned(self.place(iter, frame)?.borrow().clone()),
+                false => owned(self.expr(iter, frame)?),
+            };
             // A loop handed the collection owns its items one by one: each ends with its
             // turn, as in compiled code, and not with the collection.
-            let owns = by.is_none() && (iter.moved || !iter.is_place());
+            let owns = by.is_none() && !constant && (iter.moved || !iter.is_place());
             // A map or a set is gone over as it was when the loop started.
             let entry = |(key, value): &(Value, Cell)| {
                 let value = if owns { cell(value.replace(Value::Null)) } else { value.clone() };
@@ -5148,6 +5201,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     (Some(_), _) => Value::Borrow(item),
                     (None, true) => item.replace(Value::Null),
                     (None, false) if matches!(collection, Value::Chan(_)) => item.replace(Value::Null),
+                    (None, false) if constant => fresh(&item.borrow()),
                     (None, false) => item.borrow().clone(),
                 };
                 frame.scopes.push(Scope::default());
@@ -5248,7 +5302,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Value::Struct(name, fields) if self.plain.get(&*name).is_some_and(|plain| plain.union) => {
                             let bytes = union_bytes(&fields);
                             let ty = &self.plain[&*name].fields[*index];
-                            return Ok(cell(load(bytes.as_ptr() as usize, ty, self.plain, expr.span)?));
+                            return Ok(cell(load_in(bytes.as_ptr() as usize, ty, self.plain, expr.span, true)?));
                         }
                         Value::Struct(_, fields) => return Ok(fields[*index].clone()),
                         _ => unreachable!("the checker rules out field access on `null` and non-structs"),
@@ -5494,10 +5548,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     _ => Ok(slot.borrow().clone()),
                 }
             }
-            ExprKind::Embed(index) => {
-                let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
-                Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))
-            }
+            ExprKind::Embed(index) => Ok(byte_array(self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs"))),
             ExprKind::Widen(ty, inner) => match self.expr(inner, frame) {
                 Ok(value) => Ok(convert(strip(value), ty)),
                 // An overflow before the widening names the wider type as the way out.
@@ -5741,11 +5792,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         let ExprKind::RawCast { expr: inner, .. } = &expr.kind else { unreachable!() };
         Ok(match strip(self.expr(inner, frame)?) {
             Value::Null => Value::Null,
-            // A number made into a pointer finds its block again by its address.
-            Value::Int(_, number) => {
-                let addr = number as i64 as usize;
-                Value::Raw(RawPtr { addr, block: raw::block_at(addr) })
-            }
+            // A number made into a pointer finds the block of the pointer it was made from, or
+            // the one it lies in (#42).
+            Value::Int(_, number) => Value::Raw(raw::from_number(number as i64 as usize)),
             pointer => Value::Raw(raw_of(&pointer)),
         })
     }
@@ -5865,8 +5914,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn cast_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let ExprKind::Cast { ty, expr: inner } = &expr.kind else { unreachable!() };
         match (strip(self.expr(inner, frame)?), ty) {
-            (Value::Raw(pointer), Ty::Int(IntTy::Nint)) => Ok(Value::Int(IntTy::Nint, pointer.addr as isize as i128)),
-            (Value::Raw(pointer), Ty::Int(_)) => Ok(Value::Int(IntTy::Nuint, pointer.addr as i128)),
+            (Value::Raw(pointer), Ty::Int(to)) => {
+                raw::remember(pointer);
+                Ok(match to {
+                    IntTy::Nint => Value::Int(IntTy::Nint, pointer.addr as isize as i128),
+                    _ => Value::Int(IntTy::Nuint, pointer.addr as i128),
+                })
+            }
             (Value::Null, Ty::Int(to)) => Ok(Value::Int(*to, 0)),
             (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
             (Value::Int(_, value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name()))
@@ -5902,6 +5956,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             let ty = Ty::Struct(name.clone());
             let (size, _) = raw::layout(&ty, self.plain);
             let mut bytes = vec![0u8; size];
+            remember_pointer(&value);
             let given = bytes_of(&value, &self.plain[name.as_str()].fields[fields[0].index], self.plain);
             bytes[..given.len()].copy_from_slice(&given);
             Ok(union_value(name, &bytes))
@@ -6327,6 +6382,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let length = match raw::text_length(pointer) {
                     Ok(length) => length,
                     Err(raw::Fault::Freed) => return Err(Diag::panic(expr.span, "`string.fromCString` reads raw memory after it was given back with `Memory.free`").into()),
+                    Err(raw::Fault::Token) => return Err(Diag::panic(expr.span, "`string.fromCString` reads through the address `Memory.addressOf` gave, which in the interpreter names a value but is not where its bytes lie").into()),
+                    Err(raw::Fault::Unknown) => return Err(Diag::panic(expr.span, "`string.fromCString` reads through a pointer made from a number that is no address the interpreter knows").into()),
                     Err(_) => return Err(Diag::panic(expr.span, "`string.fromCString` finds no zero byte before the end of the block").into()),
                 };
                 // SAFETY: `length` bytes lie at the pointer: in its block, or C said so.
@@ -6796,7 +6853,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             Callee::Plain => {
                 // An array that is put in order is the one in its place, not a copy of it.
                 let mark = self.guards.len();
-                let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse" | "copyFrom") {
+                // `Data.length()` of a const array of 64 MB is not a copy of it first (#45).
+                let looks = matches!(name.as_str(), "length" | "get") && matches!(recv.ty.strip_borrow(), Ty::Array(..));
+                let recv = match (recv.is_place() && (looks || matches!(name.as_str(), "sort" | "reverse" | "copyFrom"))) || (looks && matches!(recv.kind, ExprKind::Const(_))) {
                     true => owned(self.place(recv, frame)?.borrow().clone()),
                     false => owned(self.expr(recv, frame)?),
                 };
@@ -7154,8 +7213,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                         lent.push((scratch, param.clone(), Vec::new()));
                     }
                     Ty::Read(inner) | Ty::Ref(inner) => {
-                        let Value::Borrow(target) = value else { unreachable!("the checker gives a borrow") };
-                        let target = behind_borrows(target);
+                        // A const is lent as its value (`read Fixed`, #45): only read.
+                        let target = match value {
+                            Value::Borrow(target) => behind_borrows(target),
+                            value => cell(value),
+                        };
                         if **inner == Ty::CString {
                             let Value::CStr(text) = &*target.borrow() else { unreachable!("the checker gives a `CString`") };
                             at.cast::<usize>().write(text.as_ptr() as usize);
@@ -7275,7 +7337,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let (_, align) = raw::layout(ty, self.plain);
         if !at.addr.is_multiple_of(align) {
             let off = at.addr % align;
-            return Err(Diag::panic(span, format!("raw memory is reached {off} byte(s) past a multiple of {align}, the alignment of `{ty}`: `Memory.readUnaligned` reads it there")).into());
+            return Err(Diag::panic(span, format!("raw memory is reached {off} byte(s) past a multiple of {align}, the alignment of `{ty}`: `Memory.readUnaligned` and `Memory.writeUnaligned` reach it there")).into());
         }
         Ok(())
     }
@@ -7289,6 +7351,16 @@ impl<'a, 'e> Interp<'a, 'e> {
             Ok(()) => return Ok(()),
             Err(raw::Fault::Null) => format!("raw memory is {verb} through a pointer that is `null`"),
             Err(raw::Fault::Freed) => format!("raw memory is {verb} after it was given back with `Memory.free`"),
+            Err(raw::Fault::Token) => {
+                return Err(Diag::panic(span, format!("raw memory is {verb} through the address `Memory.addressOf` gave, which in the interpreter names the value but is not where its bytes lie"))
+                    .hint(format!("lend the value at the address with a cast: `unsafe (ref {ty})...` or `unsafe (read {ty})...`"))
+                    .into());
+            }
+            Err(raw::Fault::Unknown) => {
+                return Err(Diag::panic(span, format!("raw memory is {verb} through a pointer made from a number that is no address the interpreter knows"))
+                    .note("a pointer made from a number reaches what the pointer made into that number reached, or the block of `Memory.allocate` it lies in; compiled code reaches whatever lies at the address")
+                    .into());
+            }
             Err(raw::Fault::Outside { at, block }) if size > 0 => {
                 let first = at.div_euclid(size as i128);
                 let items = match count {
@@ -7336,7 +7408,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let held = behind_borrows(self.place(place, frame)?);
                 let addr = Rc::as_ptr(&held) as usize;
                 ADDRESSES.with(|given| given.borrow_mut().insert(addr, (Rc::downgrade(&held), place.ty.strip_borrow().clone())));
-                Ok(Value::Raw(RawPtr { addr, block: None }))
+                // It names the value; its bytes do not lie there (#45).
+                Ok(Value::Raw(RawPtr { addr, block: Some(raw::TOKEN) }))
             }
             // The items are read once, into cells of their own: the window only reads, and
             // what lies there is the program's to keep still while it looks (`unsafe`).
@@ -7428,6 +7501,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(()) => return Ok(Value::Void),
                     Err(raw::FreeError::Twice) => "`Memory.free` is given memory that was given back already".to_string(),
                     Err(raw::FreeError::Inside) => "`Memory.free` is given an address inside a block, not the one `Memory.allocate` gave".to_string(),
+                    Err(raw::FreeError::Token) => "`Memory.free` is given the address `Memory.addressOf` gave, which is no block of raw memory".to_string(),
+                    Err(raw::FreeError::Unknown) => "`Memory.free` is given a pointer made from a number that is no address the interpreter knows".to_string(),
                     Err(raw::FreeError::Aligned { made }) => format!(
                         "`Memory.free` is given a block made for a type aligned to {} through a `{}`: a block is given back through a pointer to the type it was made for",
                         match made {

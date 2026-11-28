@@ -1,0 +1,5 @@
+error: a variable is not declared with `read` in its type; it borrows when its value is a borrow
+  --> error_local_borrow_type.sg:4:5
+ 4 |     read int[] part = read xs
+   |     ^^^^^^^^^^
+  hint: `var part = read xs` borrows

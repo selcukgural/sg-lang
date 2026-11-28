@@ -1,0 +1,5 @@
+// A borrow type on a variable whose value is no borrow (#37).
+void main() {
+    read string s = "abc"
+    print(s)
+}

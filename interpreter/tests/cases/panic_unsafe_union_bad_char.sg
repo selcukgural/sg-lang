@@ -1,0 +1,10 @@
+// A `char` read out of a union holds a character; the panic names the union (#42).
+union Letter {
+    uint code
+    char c
+}
+
+void main() {
+    var l = Letter { code = 0xd800 }
+    print(unsafe l.c)
+}

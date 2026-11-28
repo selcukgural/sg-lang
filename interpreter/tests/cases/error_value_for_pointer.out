@@ -1,0 +1,5 @@
+error: expected `Point*`, found `Point`
+  --> error_value_for_pointer.sg:12:27
+ 12 |     var h = Holder { at = Point { x = 1, y = 2 } }
+    |                           ^^^^^^^^^^^^^^^^^^^^^^
+  hint: a `Point*` is made with `new`: `new Point { x = 1, y = 2 }`

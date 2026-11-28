@@ -1,0 +1,5 @@
+panic: raw memory is read through the address `Memory.addressOf` gave, which in the interpreter names the value but is not where its bytes lie
+  --> panic_unsafe_address_of_read.sg:11:13
+ 11 |     var x = unsafe ((raw Runner)pa)[0]
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: lend the value at the address with a cast: `unsafe (ref Runner)...` or `unsafe (read Runner)...`

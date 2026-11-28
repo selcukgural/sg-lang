@@ -1,0 +1,12 @@
+// A `Result<void, E>` has no value to fall back on, so `??` is not offered (#45).
+enum Failure {
+    Broken
+}
+
+Result<void, Failure> check() {
+    return Ok()
+}
+
+void main() {
+    print(check())
+}

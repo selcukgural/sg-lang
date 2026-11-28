@@ -1,0 +1,11 @@
+// A pointer read out of a union is a number the program wrote: here no address (#42).
+union Slot {
+    raw int pointer
+    nuint number
+}
+
+void main() {
+    var s = Slot { number = 4096 }
+    var p = unsafe s.pointer
+    print(unsafe p[0])
+}

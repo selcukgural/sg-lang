@@ -1,0 +1,5 @@
+// An operator other than `==` and the order does not reach through a `T*` (#37).
+void main() {
+    var count = new 5
+    print(count + 1)
+}

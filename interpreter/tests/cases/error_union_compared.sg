@@ -1,0 +1,11 @@
+// Two unions are not compared: the hint is the field it holds, not `Equatable` (#42).
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var a = Bits { word = 1 }
+    var b = Bits { word = 1 }
+    print(a == b)
+}

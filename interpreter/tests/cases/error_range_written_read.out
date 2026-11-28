@@ -1,0 +1,5 @@
+error: this item is reached through a `read` borrow and cannot be written
+  --> error_range_written_read.sg:5:5
+ 5 |     part[0] = 7
+   |     ^^^^^^^
+  hint: lend it with `ref` where it is made: `var part = ref xs[1..3]`

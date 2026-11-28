@@ -1,0 +1,5 @@
+error: a variable is not declared with `read` in its type; it borrows when its value is a borrow
+  --> error_local_borrow_type_value.sg:3:5
+ 3 |     read string s = "abc"
+   |     ^^^^^^^^^^^
+  hint: `string s = "abc"` keeps a value of its own; `var s = read ...` borrows one

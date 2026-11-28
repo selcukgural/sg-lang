@@ -1,0 +1,24 @@
+// `free` and `calloc` declared in an `extern` block build, though the runtime calls the same
+// functions of C for raw memory (#45).
+extern {
+    raw void malloc(nuint size)
+    raw void calloc(nuint count, nuint size)
+    raw void realloc(raw void block, nuint size)
+    void free(raw void block)
+}
+
+void main() {
+    var block = unsafe malloc(16)
+    unsafe free(block)
+    var zeros = unsafe (raw int)calloc(4, 4)
+    print(unsafe zeros[3])
+    var grown = unsafe (raw int)realloc((raw void)zeros, 64)
+    unsafe {
+        grown[15] = 9
+    }
+    print(unsafe grown[15])
+    unsafe free((raw void)grown)
+    var mine = Memory.allocate<long>(2)
+    unsafe free((raw void)mine)
+    print("freed")
+}

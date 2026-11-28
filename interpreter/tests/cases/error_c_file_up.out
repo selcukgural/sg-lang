@@ -1,0 +1,6 @@
+error: `../up.c` is not the name of a library, nor a C file of this module
+  a C file beside the program lies in the module's folder or below it, without `..`
+  --> error_c_file_up.sg:2:1
+ 2 | extern "../up.c" {
+   | ^^^^^^^^^^^^^^^^
+  hint: move the file into the folder and write it from there: `extern "./native.c" { ... }`

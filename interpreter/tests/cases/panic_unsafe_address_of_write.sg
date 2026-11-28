@@ -1,0 +1,14 @@
+// Writing through the address `Memory.addressOf` gave, after it went through a number (#45).
+struct Runner {
+    int bib
+    int seconds
+}
+
+void main() {
+    var a = Runner { bib = 5, seconds = 2990 }
+    var n = (nuint)unsafe Memory.addressOf(ref a)
+    unsafe {
+        ((raw Runner)n)[0] = Runner { bib = 9, seconds = 1 }
+    }
+    print(a.bib)
+}

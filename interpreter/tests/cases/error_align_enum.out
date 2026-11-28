@@ -1,0 +1,5 @@
+error: `align` is written in front of a struct or a union, and an enum is laid out by the compiler
+  --> error_align_enum.sg:2:11
+ 2 | align(16) enum Light {
+   |           ^^^^
+  hint: an enum aligned for C is held by a struct: `align(16) struct ... { ... }`

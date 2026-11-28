@@ -1,0 +1,5 @@
+error: `public` is written before `align`
+  --> error_align_after_public.sg:2:11
+ 2 | align(16) public struct Slot {
+   |           ^^^^^^
+  hint: `public align(16) struct ...`

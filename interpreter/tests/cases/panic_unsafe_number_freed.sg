@@ -1,0 +1,8 @@
+// A pointer made again from the number of a pointer whose block was given back (#42).
+void main() {
+    var cells = Memory.allocate<int>(2)
+    var n = (nuint)cells
+    unsafe Memory.free(cells)
+    var p = unsafe (raw int)n
+    print(unsafe p[0])
+}

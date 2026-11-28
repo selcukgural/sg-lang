@@ -1,0 +1,10 @@
+// A union that holds itself: its pointer is a raw one, since a union holds plain data (#42).
+union Cell {
+    uint word
+    Cell inner
+}
+
+void main() {
+    var cell = Cell { word = 1 }
+    print(unsafe cell.word)
+}

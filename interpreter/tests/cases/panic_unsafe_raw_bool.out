@@ -1,0 +1,4 @@
+panic: raw memory holds 7 where a `bool` is read, and a `bool` is 0 or 1
+  --> panic_unsafe_raw_bool.sg:8:8
+ 8 |     if unsafe flags[0] {
+   |        ^^^^^^^^^^^^^^^

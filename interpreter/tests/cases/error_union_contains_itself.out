@@ -1,0 +1,5 @@
+error: union `Cell` contains itself, so it has no finite size
+  --> error_union_contains_itself.sg:4:5
+ 4 |     Cell inner
+   |     ^^^^
+  hint: a union holds plain data, so the pointer is a raw one: `raw Cell inner`

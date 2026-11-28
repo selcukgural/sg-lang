@@ -41,8 +41,8 @@ whose fields are all numbers, `bool`, `char` or other `Copyable` types, is copie
 there unless the struct asks for it after the `:`: `Formattable` to be printed, `Equatable` for `==`, `Clonable`
 for `.clone()`, and the others in the book.
 
-The compiler may order the fields as it likes, to keep the gaps between them small. `packed struct` and `align(N) struct`
-are for a layout that a file, a device or C expects.
+The fields lie in the order they are written, as C lays them out, so the largest first leaves the fewest gaps
+between them. `packed struct` and `align(N) struct` are for a layout that a file, a device or C expects.
 
 ## Examples
 

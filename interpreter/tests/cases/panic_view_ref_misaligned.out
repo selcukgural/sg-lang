@@ -1,4 +1,4 @@
-panic: raw memory is reached 1 byte(s) past a multiple of 4, the alignment of `int`: `Memory.readUnaligned` reads it there
+panic: raw memory is reached 1 byte(s) past a multiple of 4, the alignment of `int`: `Memory.readUnaligned` and `Memory.writeUnaligned` reach it there
   --> panic_view_ref_misaligned.sg:6:22
  6 |         var window = Memory.viewRef(words, 2)
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^

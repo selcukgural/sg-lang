@@ -1,0 +1,8 @@
+// `public` comes before `align(N)` (#45).
+align(16) public struct Slot {
+    long count
+}
+
+void main() {
+    print(Memory.sizeOf<Slot>())
+}

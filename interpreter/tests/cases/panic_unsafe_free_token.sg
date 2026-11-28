@@ -1,0 +1,7 @@
+// The address `Memory.addressOf` gave is no block of raw memory to give back (#45).
+void main() {
+    var count = 3
+    var at = unsafe Memory.addressOf(ref count)
+    unsafe Memory.free(at)
+    print(count)
+}

@@ -258,7 +258,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `let (a, b) = v.split_at_mut(k)` | `var a = ref xs[..k]`, `var b = ref xs[k..]` | built | No pair: two windows of one place go together when they share no item, checked when the second is taken, a panic if they do; for `..k` beside `k..` the compiler of C leaves the check out (2011, 2012) |
 | `let [a, b] = v.get_disjoint_mut([i, j])?` | `swap(ref xs[i], ref xs[j])` | built | An item is a window of one; the same item twice is a panic, where Rust gives an error (2014) |
 | `let (first, rest) = v.split_first_mut()?` | `var first = ref xs[0]`, `var rest = ref xs[1..]` | built | An empty list is a panic of the index, as `xs[0]` is (2014) |
-| `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
+| `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | `==` and `<` compare what two pointers own, as Rust's `PartialEq` for `Box` does; `*count + 1` has no form, and a number needs no `new` |
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |
 | `Rc::new(x)`, `Rc::clone(&a)` | `new shared x`, `share a` (or `a.clone()`) | built | |
@@ -282,7 +282,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `mem::size_of::<T>()`, `mem::align_of::<T>()` | `Memory.sizeOf<T>()`, `Memory.alignOf<T>()` | built | For a type of plain data, a `nint`; `offset_of!` is not in SG yet. A struct with no fields is 1, as in C++, where Rust has 0 |
 | `#[repr(C)] union Bits { word: u32, number: f32 }` | `union Bits { uint word` / `float number }` | built | Built with one field, a field written whole without `unsafe` and read inside it, as in Rust; a field is not lent, and a union is not `Equatable` or `Formattable` by its fields |
 | bit fields through bindgen's accessors, or the `bitfield` crate | `uint version : 4` in a struct | built | Rust has no bit fields; SG lays them out as C does on the machine (Windows' rule included). A value that does not fit is the rule of overflow; a bit field has no address |
-| `#[repr(C, packed)]` | `packed struct Header { ... }` | built | A field is copied out, not lent (Rust's error E0793); no bit fields in it, and `packed(N)` is not in SG yet |
+| `#[repr(C, packed)]` | `packed struct Header { ... }` | built | A field is copied out, not lent (Rust's error E0793); no bit fields in it, and `packed(N)` is not in SG yet. `packed union` is taken too (alignment 1) |
 | `#[repr(C, align(64))]` | `align(64) struct Slot { ... }` | built | Kept at a multiple of 64 on the heap too (`new`, `List`, `shared`) |
 | `bytemuck::pod_read_unaligned::<Header>(&bytes)`, `zerocopy::FromBytes` | `Header.fromBytes(bytes)` | built | No `unsafe`: only a type that every pattern of bits is a value of; a window of another length is a panic |
 | `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | built | Every call inside `unsafe`; `extern { }` is the C library itself. C names as C writes them; private to the module unless `public` is written on a function |

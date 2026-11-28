@@ -1,0 +1,8 @@
+// A function without parameters, written as C writes it (#45).
+int answer(void) {
+    return 42
+}
+
+void main() {
+    print(answer())
+}

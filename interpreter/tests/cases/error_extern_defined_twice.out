@@ -1,0 +1,9 @@
+error: function `abs` is defined twice: here, and as a function of C in an `extern` block
+  --> error_extern_defined_twice.sg:6:5
+ 6 | int abs(int value) {
+   |     ^^^
+  the function of C:
+  --> error_extern_defined_twice.sg:3:9
+ 3 |     int abs(int value)
+   |         ^^^
+  hint: give the function of SG another name

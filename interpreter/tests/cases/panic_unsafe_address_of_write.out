@@ -1,0 +1,5 @@
+panic: raw memory is written through the address `Memory.addressOf` gave, which in the interpreter names the value but is not where its bytes lie
+  --> panic_unsafe_address_of_write.sg:11:9
+ 11 |         ((raw Runner)n)[0] = Runner { bib = 9, seconds = 1 }
+    |         ^^^^^^^^^^^^^^^^^^
+  hint: lend the value at the address with a cast: `unsafe (ref Runner)...` or `unsafe (read Runner)...`

@@ -1,0 +1,5 @@
+// `void` is no type of a value; the note says where it is written (#45).
+void main() {
+    var nothing = List<void>()
+    print(nothing.length())
+}

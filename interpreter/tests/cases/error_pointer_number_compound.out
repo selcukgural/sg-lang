@@ -1,0 +1,6 @@
+error: `+=` needs a number on the left, found `int*`
+  `==` and the order compare what a `T*` owns; the other operators work on the number itself
+  --> error_pointer_number_compound.sg:4:5
+ 4 |     count += 1
+   |     ^^^^^^^^^^
+  hint: a number needs no `new`: give it the type `int`, not `int*`
