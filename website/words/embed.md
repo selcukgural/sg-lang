@@ -34,8 +34,9 @@ where a link leads, so a module of someone else's takes in only the files it car
 The file holds 1 byte to 64 MB. A file that is missing, empty, larger, or that cannot be read is an error
 when the program is compiled.
 
-A built program keeps the bytes in the data it only reads, and needs the file no more. The interpreter reads
-the file each time it checks the program, before it runs.
+A built program keeps the bytes in the data it only reads, and needs the file no more; two consts of the same
+bytes are kept once. The interpreter reads the file each time it checks the program, before it runs, and holds
+the bytes in about eight times their size.
 
 ## Examples
 
@@ -229,8 +230,9 @@ error: `../keys/secret.txt` is not a file beside this one
   hint: `embed("logo.gif")`, `embed("images/logo.gif")`
 ```
 
-A path from the root (`embed("/etc/hosts")`), one with a drive or `\`, and `./logo.gif` are refused the same
-way. A link beside the file that leads outside its folder is refused with where it leads.
+A path from the root (`embed("/etc/hosts")`) and one with a drive or `\` are refused the same way;
+`./logo.gif` is refused with the path to write, `logo.gif`. A link beside the file that leads outside its folder
+is refused with where it leads.
 
 ### A file that is not there
 

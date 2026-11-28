@@ -1124,6 +1124,22 @@ fn takes_in_no_file_from_outside_its_folder() {
     assert_eq!((code, out.as_str(), err.as_str()), (0, "7\n", ""));
 }
 
+/// A const of `embed` declared as a `string` is told to keep the bytes and read them as text
+/// where they are used (#45), and the hint is a program that runs.
+#[test]
+fn embed_into_a_string_is_hinted() {
+    let dir = work("embed_into_a_string_is_hinted");
+    write(&dir, "motd.txt", "welcome\n");
+    write(&dir, "main.sg", "const string Motd = embed(\"motd.txt\")\n\nvoid main() {\n    print(Motd)\n}\n");
+    let (code, out, err) = ran(&sg(&dir, &["main.sg"]));
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(err.starts_with("error: expected `string`, found `byte[8]`"), "{err}");
+    assert!(err.contains("hint: keep the bytes, `const byte[] Motd = embed(...)`, and read them as text where they are used: `string.fromUtf8(Motd)`"), "{err}");
+    write(&dir, "main.sg", "const byte[] Motd = embed(\"motd.txt\")\n\nvoid main() {\n    print(string.fromUtf8(Motd) ?? \"\")\n}\n");
+    let (code, out, err) = ran(&sg(&dir, &["main.sg"]));
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "welcome\n\n", ""));
+}
+
 /// A function whose values no thread's stack holds is refused by `sg build` on every machine
 /// (choice 1346): it could not run, and the C compiler of Windows on Arm fails on a frame above
 /// 256 MB. Two variables that each fit count together; the interpreter keeps them on its heap.

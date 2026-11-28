@@ -1,0 +1,12 @@
+// A function of SG with the name of a function of C: both places are named (#45).
+extern {
+    int abs(int value)
+}
+
+int abs(int value) {
+    return value < 0 ? -value : value
+}
+
+void main() {
+    print(abs(-3))
+}

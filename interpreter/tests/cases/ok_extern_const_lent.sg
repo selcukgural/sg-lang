@@ -1,0 +1,18 @@
+// A const lent to C is lent as its value, in the interpreter as in compiled code (#45).
+extern {
+    int memcmp(read Pair a, read Pair b, nuint count)
+}
+
+struct Pair : Copyable {
+    long a
+    long b
+}
+
+const Pair Fixed = Pair { a = 5, b = 6 }
+
+void main() {
+    var same = Pair { a = 5, b = 6 }
+    var other = Pair { a = 5, b = 7 }
+    print(unsafe memcmp(read Fixed, read same, 16))
+    print(unsafe memcmp(read Fixed, read other, 16) != 0)
+}

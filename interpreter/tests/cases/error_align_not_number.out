@@ -1,0 +1,5 @@
+error: `align` takes a number of bytes, written as it is
+  --> error_align_not_number.sg:4:1
+ 4 | align(Size) struct Slot {
+   | ^^^^^
+  hint: `align(64) struct Slot { ... }`

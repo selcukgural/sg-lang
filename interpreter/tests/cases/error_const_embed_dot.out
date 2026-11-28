@@ -1,0 +1,6 @@
+error: the path of a file of `embed` is written without `./`: `motd.txt`
+  it is read from the folder of the file it is written in
+  --> error_const_embed_dot.sg:2:21
+ 2 | const byte[] Motd = embed("./motd.txt")
+   |                     ^^^^^^^^^^^^^^^^^^^
+  hint: `embed("motd.txt")`

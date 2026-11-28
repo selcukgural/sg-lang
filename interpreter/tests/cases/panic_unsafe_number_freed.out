@@ -1,0 +1,4 @@
+panic: raw memory is read after it was given back with `Memory.free`
+  --> panic_unsafe_number_freed.sg:7:11
+ 7 |     print(unsafe p[0])
+   |           ^^^^^^^^^^^

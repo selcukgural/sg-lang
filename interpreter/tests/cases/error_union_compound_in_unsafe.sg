@@ -1,0 +1,13 @@
+// Inside `unsafe { }` the hint for changing a field of a union writes no second `unsafe` (#42).
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { word = 1 }
+    unsafe {
+        bits.word += 1
+    }
+    print(unsafe bits.word)
+}

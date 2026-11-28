@@ -409,6 +409,11 @@ error: `Size` is a const: what it holds is fixed when the program is compiled
   hint: change a copy of it: `var copy = Size`
 ```
 
+A const can also hold the bytes of a file that lies beside the source: `const byte[] Logo = embed("logo.gif")`
+reads the file when the program is compiled and takes the count of the array from it, so a built program
+carries the bytes and needs the file no more. A text is made of such bytes where it is used, with
+`string.fromUtf8(Logo)`, which checks that they are UTF-8. The page of `embed` says where the file may lie.
+
 ## Bits
 
 On integers, `&` (and), `|` (or), `^` (exclusive or), `~` (not), `<<` and `>>` (shifts) work on the bits, and

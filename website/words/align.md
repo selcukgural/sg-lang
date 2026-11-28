@@ -280,7 +280,7 @@ void main() {
 ```
 
 ```text
-panic: raw memory is reached 16 byte(s) past a multiple of 64, the alignment of `Slot`: `Memory.readUnaligned` reads it there
+panic: raw memory is reached 16 byte(s) past a multiple of 64, the alignment of `Slot`: `Memory.readUnaligned` and `Memory.writeUnaligned` reach it there
   --> example.sg:10:9
  10 |         wrong[0].count = 5
     |         ^^^^^^^^

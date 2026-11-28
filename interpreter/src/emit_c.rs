@@ -1416,7 +1416,7 @@ static void sg_out_end(void) {
 /* A debug build counts the blocks it takes for values and gives back, on every system, and a
    program or a test that ends with some still taken is reported (`sg_blocks_left`). Raw memory
    (`Memory.allocate`, `Memory.free`) is not counted, since C's blocks go back that way too and
-   the other way round: it calls C's functions through `sg_c_free` and the others. Nor are the
+   the other way round: it calls C's functions through `sg_libc_free` and the others. Nor are the
    blocks the runtime keeps while a thread or the process lives (`SG_KEPT`), nor those of the C
    files of the program, before which the names are C's again. */
 #ifndef SG_COUNT
@@ -1425,19 +1425,19 @@ static void sg_out_end(void) {
 /* C's own functions, for raw memory: in parentheses no macro of the count replaces them; without
    an operating system they are the program's allocator. */
 #if SG_FREESTANDING
-#define sg_c_calloc(count, size) calloc(count, size)
-#define sg_c_aligned_alloc(align, size) aligned_alloc(align, size)
-#define sg_c_free(p) free(p)
+#define sg_libc_calloc(count, size) calloc(count, size)
+#define sg_libc_aligned_alloc(align, size) aligned_alloc(align, size)
+#define sg_libc_free(p) free(p)
 #elif defined(_WIN32)
 /* Windows' C has no `aligned_alloc`: `_aligned_malloc`, whose block only `_aligned_free` gives
    back. */
-#define sg_c_calloc(count, size) (calloc)(count, size)
-#define sg_c_aligned_alloc(align, size) _aligned_malloc(size, align)
-#define sg_c_free(p) (free)(p)
+#define sg_libc_calloc(count, size) (calloc)(count, size)
+#define sg_libc_aligned_alloc(align, size) _aligned_malloc(size, align)
+#define sg_libc_free(p) (free)(p)
 #else
-#define sg_c_calloc(count, size) (calloc)(count, size)
-#define sg_c_aligned_alloc(align, size) (aligned_alloc)(align, size)
-#define sg_c_free(p) (free)(p)
+#define sg_libc_calloc(count, size) (calloc)(count, size)
+#define sg_libc_aligned_alloc(align, size) (aligned_alloc)(align, size)
+#define sg_libc_free(p) (free)(p)
 #endif
 #if SG_COUNT
 static int64_t sg_blocks;
@@ -1621,7 +1621,7 @@ static inline void* sg_alloc(size_t size, size_t align) {
 }
 static inline void sg_aligned_free(void* p) { free(p); }
 /* Raw memory aligned beyond 16 bytes, given back as `Memory.allocate` made it, not counted. */
-static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
+static inline void sg_raw_aligned_free(void* p) { sg_libc_free(p); }
 #endif
 /* A block of `sg_alloc`, `sg_grow` or `sg_reserve` given back, by the alignment of what it holds:
    on Windows a block aligned beyond 16 bytes goes back only through `_aligned_free`. The test is
@@ -1632,6 +1632,19 @@ static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wparentheses-equality"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression"
+#endif
+
+/* The bytes of a const array of `byte` are written as one text, which fills the array to its
+   last byte, with no zero after it, and may be as long as the file of `embed`. */
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wunknown-warning-option"
+#pragma clang diagnostic ignored "-Wunterminated-string-initialization"
+#pragma clang diagnostic ignored "-Woverlength-strings"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Woverlength-strings"
+#if __GNUC__ >= 15
+#pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
+#endif
 #endif
 
 /* A fractional operation is rounded on its own, as the interpreter does it: `a * b + c` is
@@ -4042,7 +4055,7 @@ static void* sg_raw_alloc(int64_t n, size_t size, size_t align, const char* ty, 
     if (size != 0 && (uint64_t)n > (uint64_t)(PTRDIFF_MAX - (align > 16 ? align : 16)) / size)
         sg_panicf(loc, "`Memory.allocate` is asked for more memory than an address can count: %lld items of `%s`", (long long)n, ty);
     size_t bytes = (n ? (size_t)n : 1) * (size ? size : 1);
-    void* p = align <= 16 ? sg_c_calloc(1, bytes) : sg_c_aligned_alloc(align, (bytes + align - 1) & ~(align - 1));
+    void* p = align <= 16 ? sg_libc_calloc(1, bytes) : sg_libc_aligned_alloc(align, (bytes + align - 1) & ~(align - 1));
     if (!p) sg_panicf(loc, "`Memory.allocate` found no memory for %lld items of `%s`", (long long)n, ty);
     if (align > 16) memset(p, 0, bytes);
     return p;
@@ -4050,7 +4063,7 @@ static void* sg_raw_alloc(int64_t n, size_t size, size_t align, const char* ty, 
 /* In a debug build an item of raw memory is reached only where its type may lie. */
 static inline void* sg_raw_aligned(const void* at, size_t align, const char* ty, const char* loc) {
     uintptr_t off = (uintptr_t)at & (align - 1);
-    if (off) sg_panicf(loc, "raw memory is reached %llu byte(s) past a multiple of %llu, the alignment of `%s`: `Memory.readUnaligned` reads it there", (unsigned long long)off, (unsigned long long)align, ty);
+    if (off) sg_panicf(loc, "raw memory is reached %llu byte(s) past a multiple of %llu, the alignment of `%s`: `Memory.readUnaligned` and `Memory.writeUnaligned` reach it there", (unsigned long long)off, (unsigned long long)align, ty);
     return (void*)at;
 }
 static inline void sg_raw_copy(const void* source, void* target, int64_t n, size_t size, size_t align, const char* ty, const char* loc) {
@@ -17275,8 +17288,17 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
     // The consts the code reads, each defined once, in the data the program only reads.
     let mut const_defs = String::new();
+    // Two consts of the same bytes (`embed` of one file twice) are one array in the program (#45).
+    let mut bytes_defined: Vec<(&Ty, &std::sync::Arc<[u8]>, String)> = Vec::new();
     for name in std::mem::take(&mut emitter.consts_used) {
         let (ty, value) = &prog.const_values[&name];
+        if let ConstVal::Bytes(bytes) = value {
+            if let Some((_, _, first)) = bytes_defined.iter().find(|(seen, held, _)| *seen == ty && held[..] == bytes[..]) {
+                let _ = writeln!(const_defs, "#define {} {first}", const_cname(&name));
+                continue;
+            }
+            bytes_defined.push((ty, bytes, const_cname(&name)));
+        }
         let ctype = emitter.ctype(ty, Span::new(0, 0))?;
         let init = emitter.const_init(ty, value)?;
         let _ = writeln!(const_defs, "static const {ctype} {} = {init};", const_cname(&name));
@@ -20276,9 +20298,30 @@ impl<'a> Emitter<'a> {
 
     fn const_init(&mut self, ty: &Ty, value: &ConstVal) -> Res<String> {
         Ok(match (ty, value) {
+            // The bytes as a text of C, which fills the array to its last byte: a file of `embed`
+            // may be 64 MB, and a C compiler takes a list of numbers that long in a hundred
+            // times the memory (#45). A printable byte stands as it is, any other as three octal
+            // digits, which no digit after them can lengthen; `?` is escaped, against trigraphs.
             (Ty::Array(..), ConstVal::Bytes(bytes)) => {
-                let items: Vec<String> = bytes.iter().map(u8::to_string).collect();
-                format!("{{ {{ {} }} }}", items.join(","))
+                let mut out = String::with_capacity(bytes.len() * 3 + bytes.len() / 24 + 8);
+                out.push_str("{ \"");
+                for (at, byte) in bytes.iter().enumerate() {
+                    if at > 0 && at % 96 == 0 {
+                        out.push_str("\"\n\"");
+                    }
+                    match byte {
+                        b'"' | b'\\' | b'?' => {
+                            out.push('\\');
+                            out.push(*byte as char);
+                        }
+                        b' '..=b'~' => out.push(*byte as char),
+                        _ => {
+                            let _ = write!(out, "\\{byte:03o}");
+                        }
+                    }
+                }
+                out.push_str("\" }");
+                out
             }
             (Ty::Array(item, _), ConstVal::Array(items)) => {
                 let items = items.iter().map(|each| self.const_init(item, each)).collect::<Res<Vec<String>>>()?;
@@ -20940,6 +20983,12 @@ impl<'a> Emitter<'a> {
     /// The helper that hashes a key of this type on top of the hash `h` of what came before
     /// it, written once: a struct field after field, an enum its variant and what it carries.
     fn hasher(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        // A `T*?` has the name of the `T*`, whose helper hashes `null` too.
+        if let Ty::Nullable(inner) = ty {
+            if matches!(**inner, Ty::Ptr(_)) {
+                return self.hasher(inner, span);
+            }
+        }
         let name = mangle(ty).ok_or_else(|| not_yet(span, &format!("a `{ty}` as a key")))?;
         let helper = format!("sg_hash_{name}");
         let ctype = self.ctype(ty, span)?;
@@ -20951,6 +21000,10 @@ impl<'a> Emitter<'a> {
         match ty {
             Ty::Int(_) | Ty::Bool | Ty::Char => body.push_str("return sg_hash_word(h, (uint64_t)*v);"),
             Ty::Str => body.push_str("return sg_hash_bytes(h, v->ptr, v->len);"),
+            // What a `T*` owns, as `==` compares it; `null` for a `T*?`.
+            Ty::Ptr(inner) => {
+                let _ = write!(body, "return *v == NULL ? sg_hash_word(h, 0) : {}(*v, sg_hash_word(h, 1));", self.hasher(inner, span)?);
+            }
             Ty::Nullable(inner) if is_option(ty) => {
                 let _ = write!(body, "return v->has ? {}(&v->value, sg_hash_word(h, 1)) : sg_hash_word(h, 0);", self.hasher(inner, span)?);
             }
@@ -28768,9 +28821,9 @@ impl<'a> Emitter<'a> {
                     match args[0].ty.strip_borrow() {
                         Ty::Raw(item) if **item != Ty::Void => {
                             let ctype = self.ctype(item, expr.span)?;
-                            Ok(format!("(_Alignof({ctype}) > 16 ? sg_raw_aligned_free({pointer}) : sg_c_free({pointer}))"))
+                            Ok(format!("(_Alignof({ctype}) > 16 ? sg_raw_aligned_free({pointer}) : sg_libc_free({pointer}))"))
                         }
-                        _ => Ok(format!("sg_c_free({pointer})")),
+                        _ => Ok(format!("sg_libc_free({pointer})")),
                     }
                 }
                 Callee::Atomic { op, order, failure } => self.atomic(*op, *order, *failure, recv, args, head, expr),

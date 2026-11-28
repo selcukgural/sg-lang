@@ -253,7 +253,7 @@ void main() {
 ```
 
 ```text
-panic: raw memory is reached 1 byte(s) past a multiple of 4, the alignment of `Plain`: `Memory.readUnaligned` reads it there
+panic: raw memory is reached 1 byte(s) past a multiple of 4, the alignment of `Plain`: `Memory.readUnaligned` and `Memory.writeUnaligned` reach it there
   --> example.sg:10:9
  10 |         items[0].size = 3
     |         ^^^^^^^^
@@ -287,7 +287,7 @@ error: a field of a `packed` struct is not lent: `header.size` may lie where a `
   --> example.sg:12:15
  12 |     show(read header.size)
     |               ^^^^^^^^^^^
-  hint: copy it out: `var part = header.size`, and write it back whole
+  hint: copy it out: `var part = header.size`
 ```
 
 ### A method called on a field

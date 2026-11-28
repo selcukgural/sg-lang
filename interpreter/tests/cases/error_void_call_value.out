@@ -1,0 +1,5 @@
+error: this call does not return a value
+  --> error_void_call_value.sg:7:16
+ 7 |     var said = greet()
+   |                ^^^^^^^
+  hint: call it on a line of its own: `greet()`

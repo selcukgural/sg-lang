@@ -1,0 +1,18 @@
+// The fields of a struct lie in the order they are written, as C lays them out: the gaps are
+// the writer's to leave out by the order (choice 2177).
+struct Spread {
+    byte first
+    long middle
+    byte last
+}
+
+struct Tight {
+    long middle
+    byte first
+    byte last
+}
+
+void main() {
+    print(Memory.sizeOf<Spread>())
+    print(Memory.sizeOf<Tight>())
+}

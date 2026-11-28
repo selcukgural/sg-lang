@@ -1,0 +1,6 @@
+// `+=` on a number kept behind `new` (#37).
+void main() {
+    var count = new 5
+    count += 1
+    print(count)
+}

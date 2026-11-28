@@ -1,0 +1,10 @@
+// `align` takes a number written as it is (#45).
+const int Size = 16
+
+align(Size) struct Slot {
+    long count
+}
+
+void main() {
+    print(Memory.sizeOf<Slot>())
+}

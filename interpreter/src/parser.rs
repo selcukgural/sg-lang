@@ -585,6 +585,10 @@ impl<'a> Parser<'a> {
             let export = self.at_word("export");
             if export {
                 self.bump();
+                // `export public int f()`: the words come in the other order (#45).
+                if *self.peek() == Tok::Public {
+                    return Err(Diag::error(self.span(), "`public` is written before `export`").hint("`public export int name(...) { ... }`"));
+                }
                 if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_alias() || self.at_word("extern") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
                     return Err(Diag::error(export_span, "`export` is written in front of a function that C calls").hint("`export int compare(raw void a, raw void b) { ... }`"));
                 }
@@ -642,6 +646,8 @@ impl<'a> Parser<'a> {
                     self.skip_newlines();
                     continue;
                 }
+            } else if self.at_word("align") && *self.peek_at(1) == Tok::LParen && !self.at_layout() {
+                return Err(self.misplaced_align());
             } else if *self.peek() == Tok::Struct || self.at_layout() {
                 let mut decl = self.struct_decl()?;
                 decl.public = public;
@@ -715,6 +721,12 @@ impl<'a> Parser<'a> {
         }
         let (libs, file) = match names.pop() {
             Some(written) if names.is_empty() && written.starts_with("./") => (Vec::new(), Some(c_file_path(&written, span)?)),
+            // A file above the module's folder is not one of its C files (#45).
+            Some(written) if names.is_empty() && written.ends_with(".c") && written.split('/').any(|part| part == "..") => {
+                return Err(Diag::error(span, format!("`{written}` is not the name of a library, nor a C file of this module"))
+                    .note("a C file beside the program lies in the module's folder or below it, without `..`")
+                    .hint("move the file into the folder and write it from there: `extern \"./native.c\" { ... }`"))
+            }
             Some(written) if names.is_empty() && written.ends_with(".c") => {
                 return Err(Diag::error(span, format!("`{written}` is not the name of a library, nor a C file of this module"))
                     .hint(format!("a C file beside the program is written from the module's folder: `extern \"./{}\"`", written.trim_start_matches('/'))))
@@ -834,6 +846,26 @@ impl<'a> Parser<'a> {
             marked = true;
         }
         union_at(at) || (marked && *self.peek_at(at) == Tok::Struct)
+    }
+
+    /// `align(` at the top level where no struct or union laid out by it follows (#45): the
+    /// error says what goes where.
+    fn misplaced_align(&self) -> Diag {
+        let start = self.span();
+        let Tok::Int(value) = *self.peek_at(2) else {
+            return Diag::error(start, "`align` takes a number of bytes, written as it is").hint("`align(64) struct Slot { ... }`");
+        };
+        if *self.peek_at(3) != Tok::RParen {
+            return Diag::error(start, "`align` takes a number of bytes, written as it is").hint("`align(64) struct Slot { ... }`");
+        }
+        let after = self.peek_at(4);
+        let span = self.toks.get(self.i + 4).map_or(start, |token| token.span);
+        match after {
+            Tok::Public => Diag::error(span, "`public` is written before `align`").hint(format!("`public align({value}) struct ...`")),
+            Tok::Enum => Diag::error(span, "`align` is written in front of a struct or a union, and an enum is laid out by the compiler")
+                .hint(format!("an enum aligned for C is held by a struct: `align({value}) struct ... {{ ... }}`")),
+            _ => Diag::error(start, "`align` is written in front of a struct or a union").hint(format!("`align({value}) struct Slot {{ ... }}`")),
+        }
     }
 
     /// `struct Name { ... }`, `union Name { ... }`, with `packed` or `align(N)` in front.
@@ -1223,6 +1255,11 @@ impl<'a> Parser<'a> {
                     this = Some(mode);
                     this_ty = Some(ty);
                 } else {
+                    // `int answer(void)`, as C writes a function without parameters (#45).
+                    if ty.name == "void" && params.is_empty() && ty.suffixes.is_empty() && ty.raw == 0 && ty.mode.is_none() && *self.peek() == Tok::RParen {
+                        return Err(Diag::error(ty.span, "a function without parameters has nothing between its parentheses")
+                            .hint(format!("`{name_text}()`")));
+                    }
                     let (name, span) = self.ident("a parameter name")?;
                     let default = match *self.peek() == Tok::Assign {
                         true => Some(self.param_default(&name_text, &name, span, &ty)?),
@@ -1470,6 +1507,21 @@ impl<'a> Parser<'a> {
                 let (name, name_span) = self.ident("a name for what is opened")?;
                 let body = self.block()?;
                 StmtKind::As { mutable, value, name, name_span, body }
+            }
+            // `read int[] part = read xs`: a variable takes a borrow from its value, not from a
+            // word in its type (#37).
+            Tok::Read | Tok::Ref if self.type_len(1).is_some_and(|n| matches!(self.peek_at(n + 1), Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::Assign) => {
+                let word = if self.bump().tok == Tok::Ref { "ref" } else { "read" };
+                let ty = self.type_expr()?;
+                let (name, _) = self.ident("a variable name")?;
+                self.bump();
+                let init = self.expr()?;
+                let (ty_text, init_text) = (&self.src[ty.span.start..ty.span.end], &self.src[init.span.start..init.span.end]);
+                let hint = match init_text.strip_prefix(word).is_some_and(|rest| rest.starts_with(' ')) {
+                    true => format!("`var {name} = {init_text}` borrows"),
+                    false => format!("`{ty_text} {name} = {init_text}` keeps a value of its own; `var {name} = {word} ...` borrows one"),
+                };
+                return Err(Diag::error(Span::new(start.start, ty.span.end), format!("a variable is not declared with `{word}` in its type; it borrows when its value is a borrow")).hint(hint));
             }
             // `lock total as c { ... }`, `lock a as x, b as y { ... }`, `lock q as x when c { ... }`
             Tok::Ident(word) if word == "lock" => self.lock_stmt(false)?,
@@ -2950,6 +3002,12 @@ fn assign_op(tok: &Tok) -> Option<Option<BinOp>> {
 fn embed_path(written: &str, span: Span) -> Res<()> {
     let parts_fine = written.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
     let chars_fine = !written.chars().any(|c| c == '\\' || c == ':' || c.is_control());
+    // `./motd.txt`: the file may well be there; the `./` is what is not written (#45).
+    if let Some(rest) = written.strip_prefix("./").filter(|rest| embed_path(rest, span).is_ok()) {
+        return Err(Diag::error(span, format!("the path of a file of `embed` is written without `./`: `{rest}`"))
+            .note("it is read from the folder of the file it is written in")
+            .hint(format!("`embed(\"{rest}\")`")));
+    }
     if !parts_fine || !chars_fine {
         return Err(Diag::error(span, format!("`{written}` is not a file beside this one"))
             .note("a file of `embed` lies in the folder of the file it is written in or below it, and its path is written from there with `/`, without `..`")

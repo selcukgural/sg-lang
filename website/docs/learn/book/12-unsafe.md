@@ -18,9 +18,15 @@ cause is in an `unsafe` block or in C, and there are few of those to read.
 p[0]`). It is needed for:
 
 - an item of raw memory (`p[i]`, read or written) and moving a pointer (`p + n`);
-- a cast between raw pointers, or from a number to one;
-- `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, and volatile reads and writes;
-- a call of a function of C, a variable of C, and `string.fromCString`.
+- a cast between raw pointers, from a number to one, from a `raw void` to a `CFunc`, and `(ref T)p` or
+  `(read T)p` of an address `Memory.addressOf` gave;
+- reading a field of a union;
+- `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.viewRef`, `Memory.addressOf`, volatile reads and
+  writes, and `Memory.readUnaligned` and `Memory.writeUnaligned`;
+- `File.mapRead`;
+- a call of a function of C, a call through a `CFunc`, a variable of C, and `string.fromCString`.
+
+The note of the error below names a few of them; `sg help unsafe` lists them all.
 
 Making room with `Memory.allocate`, comparing pointers (`p == null`, `p < q`) and counting the items between
 two (`q - p`) need no `unsafe`: none of them reaches memory. An `unsafe` that nothing needs is an error, so
@@ -38,7 +44,7 @@ void main() {
 
 ```text
 error: nothing here needs `unsafe`
-  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a call of a C function, a variable of C and `string.fromCString`
+  `unsafe` is for what the checker cannot follow, such as an item of raw memory (`p[i]`), a field of a union read, `Memory.free` or a call of a C function; `sg help unsafe` lists every case
   --> example.sg:3:5
  3 |     unsafe {
    |     ^^^^^^
@@ -137,7 +143,10 @@ panic: raw memory is written outside its block: item 4, where the block holds 4 
    |             ^^^^^^^^^^
 ```
 
-That program is accepted by the checker; the interpreter stops it as it runs. Compiled code checks none of
+That program is accepted by the checker; the interpreter stops it as it runs. A pointer made from a number
+(`(raw int)n`) or read out of a union is checked as the pointer made into that number was, or against the
+block it lies in; one that matches neither, and the address `Memory.addressOf` gives, reach nothing there.
+Memory C gave is not checked. Compiled code checks none of
 this: a `raw T` is a plain `T*` of C, and a release build costs what C costs. The same program, built, writes
 past the block and goes on. An item at an address that is not a multiple of its type's alignment is a panic in
 the interpreter and in a debug build, and costs nothing in a release build.

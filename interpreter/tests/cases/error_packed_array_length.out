@@ -1,0 +1,6 @@
+error: a field of a `packed` struct is not lent: `frame.words` may lie where a `uint[4]` cannot be reached
+  a method is lent the value it is called on
+  --> error_packed_array_length.sg:9:11
+ 9 |     print(frame.words.length())
+   |           ^^^^^^^^^^^
+  hint: copy it out: `var part = frame.words`

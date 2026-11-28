@@ -1,0 +1,9 @@
+// `align(N)` is for a struct or a union (#45).
+align(16) enum Light {
+    Red
+    Green
+}
+
+void main() {
+    print(1)
+}

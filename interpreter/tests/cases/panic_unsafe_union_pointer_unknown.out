@@ -1,0 +1,5 @@
+panic: raw memory is read through a pointer made from a number that is no address the interpreter knows
+  a pointer made from a number reaches what the pointer made into that number reached, or the block of `Memory.allocate` it lies in; compiled code reaches whatever lies at the address
+  --> panic_unsafe_union_pointer_unknown.sg:10:11
+ 10 |     print(unsafe p[0])
+    |           ^^^^^^^^^^^

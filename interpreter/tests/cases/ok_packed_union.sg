@@ -1,0 +1,21 @@
+// `packed union` has the size of its largest field and an alignment of 1, as C's
+// `__attribute__((packed))` union has (#42); in a packed struct it lies at any byte.
+packed union Word {
+    uint whole
+    byte low
+}
+
+packed struct Frame {
+    byte kind
+    Word word
+}
+
+void main() {
+    print(Memory.sizeOf<Word>())
+    print(Memory.alignOf<Word>())
+    print(Memory.sizeOf<Frame>())
+    var frame = Frame { kind = 7, word = Word { whole = 0x01020304 } }
+    var word = frame.word
+    print($"{unsafe word.whole:x8}")
+    print(unsafe word.low)
+}

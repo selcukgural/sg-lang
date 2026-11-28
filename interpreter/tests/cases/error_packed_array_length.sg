@@ -1,0 +1,10 @@
+// `length` only reads: the hint copies the field out and writes nothing back (#42).
+packed struct Frame {
+    byte kind
+    uint[4] words
+}
+
+void main() {
+    var frame = Frame { kind = 1, words = uint[4] { 1, 2, 3, 4 } }
+    print(frame.words.length())
+}

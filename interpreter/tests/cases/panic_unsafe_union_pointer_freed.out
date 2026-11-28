@@ -1,0 +1,4 @@
+panic: raw memory is written after it was given back with `Memory.free`
+  --> panic_unsafe_union_pointer_freed.sg:13:9
+ 13 |         p[1] = 3
+    |         ^^^^

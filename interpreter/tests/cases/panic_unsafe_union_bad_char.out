@@ -1,0 +1,4 @@
+panic: the union holds 55296 where a `char` is read, and no character has that code
+  --> panic_unsafe_union_bad_char.sg:9:11
+ 9 |     print(unsafe l.c)
+   |           ^^^^^^^^^^

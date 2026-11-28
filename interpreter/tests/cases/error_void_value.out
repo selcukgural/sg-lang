@@ -2,3 +2,4 @@ error: this call does not return a value
   --> error_void_value.sg:2:13
  2 |     var x = print(1)
    |             ^^^^^^^^
+  hint: call it on a line of its own: `print(1)`

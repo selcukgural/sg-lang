@@ -1,0 +1,12 @@
+// A `bool` in raw memory is 0 or 1 (#42).
+void main() {
+    var bytes = Memory.allocate<byte>(1)
+    unsafe {
+        bytes[0] = 7
+    }
+    var flags = unsafe (raw bool)bytes
+    if unsafe flags[0] {
+        print("taken")
+    }
+    unsafe Memory.free(bytes)
+}

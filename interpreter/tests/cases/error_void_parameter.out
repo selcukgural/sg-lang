@@ -1,0 +1,5 @@
+error: a function without parameters has nothing between its parentheses
+  --> error_void_parameter.sg:2:12
+ 2 | int answer(void) {
+   |            ^^^^
+  hint: `answer()`

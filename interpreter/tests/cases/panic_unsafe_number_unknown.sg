@@ -1,0 +1,7 @@
+// A pointer made from a number that no pointer was made into, and that lies in no block,
+// reaches nothing in the interpreter (#42); compiled code checks nothing.
+void main() {
+    var p = unsafe (raw int)(nuint)4096
+    print((nuint)p)
+    print(unsafe p[0])
+}

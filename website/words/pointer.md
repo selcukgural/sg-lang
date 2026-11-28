@@ -26,7 +26,7 @@ put on the heap by itself. Compiled, a `T*` is one pointer, and a `T*?` is the s
 address zero, so a link that may be missing costs nothing more.
 
 Through a `T*`, fields and methods are reached with `.`, as on the value itself, and `print` writes the value,
-not an address. A borrow of a `T*` goes where a borrow of a `T` is wanted, so a function that takes
+not an address. `==` and the order compare the values two pointers own, never their addresses. A borrow of a `T*` goes where a borrow of a `T` is wanted, so a function that takes
 `read Point` takes the point behind a `Point*` too.
 
 A `T*` has one owner, as every value does. Giving it to a variable or a function moves the pointer, not the

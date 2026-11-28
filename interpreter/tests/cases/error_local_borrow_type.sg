@@ -1,0 +1,6 @@
+// A variable takes a borrow from its value, not from a word in its type (#37).
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    read int[] part = read xs
+    print(part)
+}

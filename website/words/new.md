@@ -24,7 +24,9 @@ struct is made without it and lives where its variable is. A value is never put 
 `new` in the code is one allocation, and a `Point` is not taken where a `Point*` is wanted.
 
 Through a `T*`, fields and methods are reached with `.`, as on the value itself, and `print` writes what it points
-to. A borrow of a `T*` goes where a borrow of a `T` is wanted: `show(read p)` for `void show(read Point p)`.
+to. `==` and the order compare what two pointers own: `a == b` on two `Point*` compares the points, as on two
+`int*` it compares the numbers. The other operators work on numbers, not on a `T*`; a number needs no `new`. A
+borrow of a `T*` goes where a borrow of a `T` is wanted: `show(read p)` for `void show(read Point p)`.
 
 A `T*` has one owner, as every value does. `var q = p` moves the pointer, not the value, and `p` can no longer be
 used. The value is freed, with everything it owns, where its owner ends: at the end of its block, when the

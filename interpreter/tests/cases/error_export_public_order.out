@@ -1,0 +1,5 @@
+error: `public` is written before `export`
+  --> error_export_public_order.sg:2:8
+ 2 | export public int answer() {
+   |        ^^^^^^
+  hint: `public export int name(...) { ... }`

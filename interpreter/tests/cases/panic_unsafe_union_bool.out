@@ -1,0 +1,4 @@
+panic: the union holds 2 where a `bool` is read, and a `bool` is 0 or 1
+  --> panic_unsafe_union_bool.sg:9:13
+ 9 |     var x = unsafe f.flag
+   |             ^^^^^^^^^^^^^

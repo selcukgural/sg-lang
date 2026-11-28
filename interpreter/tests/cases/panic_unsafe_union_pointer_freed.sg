@@ -1,0 +1,15 @@
+// A pointer kept in a union and read out after its block was given back (#42).
+union Slot {
+    raw int pointer
+    nuint number
+}
+
+void main() {
+    var cells = Memory.allocate<int>(2)
+    var s = Slot { pointer = cells }
+    unsafe Memory.free(cells)
+    var p = unsafe s.pointer
+    unsafe {
+        p[1] = 3
+    }
+}

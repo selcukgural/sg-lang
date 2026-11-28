@@ -1230,7 +1230,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         members.insert(name, info.variants.iter().flat_map(|(_, fields)| fields.iter().map(|(_, ty)| ty)).collect());
     }
     for decl in &prog.structs {
-        contains_itself("struct", &decl.name, decl.fields.iter().zip(&structs[&decl.name].fields), &members)?;
+        contains_itself(if decl.layout.union { "union" } else { "struct" }, &decl.name, decl.fields.iter().zip(&structs[&decl.name].fields), &members)?;
     }
     for decl in &prog.enums {
         let fields = decl.variants.iter().flat_map(|variant| &variant.fields);
@@ -1310,7 +1310,18 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
         }
         if sigs.insert(func.name.clone(), func_sig(func, &names, None)?).is_some() {
-            return Err(Diag::error(func.name_span, format!("function `{}` is defined twice", func.name)));
+            let diag = Diag::error(func.name_span, format!("function `{}` is defined twice", func.name));
+            // One of the two is a function of C (#45): both places are named.
+            let other = prog.funcs.iter().find(|other| other.name == func.name && !std::ptr::eq(*other, func));
+            return Err(match other {
+                Some(other) if other.foreign.is_some() != func.foreign.is_some() => {
+                    let (sg, c) = if func.foreign.is_some() { (other, func) } else { (func, other) };
+                    Diag::error(sg.name_span, format!("function `{}` is defined twice: here, and as a function of C in an `extern` block", func.name))
+                        .related(c.name_span, "the function of C")
+                        .hint("give the function of SG another name")
+                }
+                _ => diag,
+            });
         }
     }
 
@@ -1635,6 +1646,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 diag.msg = diag.msg.replacen("a const cannot read it", &format!("the default value of {what} cannot read it"), 1);
                 diag.hint = None;
                 diag.note(default_note(what))
+            }
+            // `const string M = embed("motd.txt")`: the bytes are read as text where they are
+            // used (#45).
+            (false, _) if matches!(decl.init.kind, ExprKind::Embed(_)) && ty == Ty::Str => {
+                let name = decl.local.as_deref().unwrap_or_else(|| short_name(&decl.name));
+                diag.note("`embed` gives the bytes of the file").hint(format!("keep the bytes, `const byte[] {name} = embed(...)`, and read them as text where they are used: `string.fromUtf8({name})`"))
             }
             (false, _) => diag,
         })?;
@@ -2720,7 +2737,8 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         }
         Some(Ty::Void) if ty.raw > 0 && ty.suffixes.is_empty() => Ty::Void,
         Some(Ty::Void) if !allow_void || !ty.suffixes.is_empty() || ty.mode.is_some() || ty.raw > 0 => {
-            return Err(Diag::error(ty.span, "`void` can only be a return type"));
+            return Err(Diag::error(ty.span, "`void` is no type of a value")
+                .note("it is written as the return type of a function that gives nothing, in `Result<void, E>` and `Task<void>`, and as `raw void`, an address of memory of no known type"));
         }
         Some(base) => base,
         None => match names.full(&ty.name, ty.span)?.and_then(|full| names.kinds.get(&full).map(|kind| (full, *kind))) {
@@ -3822,6 +3840,13 @@ fn c_arithmetic(src: &str, symbol: &str, ty: IntTy, sides: &[(&Expr, IntTy)], sp
         .hint(format!("compute in `{partner}`: `{written}`"))
 }
 
+/// An operator on a number kept behind `new` (`var count = new 5`): only `==` and the order
+/// look through a `T*` (#37).
+fn number_behind_new(diag: Diag, number: &Ty) -> Diag {
+    diag.note("`==` and the order compare what a `T*` owns; the other operators work on the number itself")
+        .hint(format!("a number needs no `new`: give it the type `{number}`, not `{number}*`"))
+}
+
 /// A shift count that is known before the program runs and can never be right is not left
 /// to run time.
 fn shift_count(ty: IntTy, count: &Expr) -> Res<()> {
@@ -4171,10 +4196,14 @@ fn contains_itself<'d>(
     for (field, (_, ty)) in fields {
         let Some(inner) = by_value(ty).into_iter().find(|inner| *inner == name || reaches(inner, name, members, &mut Vec::new())) else { continue };
         {
+            let diag = Diag::error(field.ty.span, format!("{kind} `{name}` contains itself, so it has no finite size"));
+            // A union holds plain data, so its pointer is a raw one (#42).
+            if kind == "union" {
+                return Err(diag.hint(format!("a union holds plain data, so the pointer is a raw one: `raw {inner} {}`", field.name)));
+            }
             let written = ty.to_string();
             let pointer = written.replacen(inner, &format!("{inner}*"), 1);
-            return Err(Diag::error(field.ty.span, format!("{kind} `{name}` contains itself, so it has no finite size"))
-                .hint(format!("put it behind a pointer: `{pointer} {}`", field.name)));
+            return Err(diag.hint(format!("put it behind a pointer: `{pointer} {}`", field.name)));
         }
     }
     Ok(())
@@ -5412,7 +5441,7 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(subject.span, "a place in raw memory is not lent yet: the checker cannot follow how long it lives")
                         .hint("copy it out first: `var item = unsafe ...`"));
                 }
-                if let Some(diag) = not_lent(subject, self.structs, self.src) {
+                if let Some(diag) = not_lent(subject, self.structs, self.src, true) {
                     return Err(diag);
                 }
                 let mutable = this == Some(This::Ref) && writable && self.readonly(subject).is_none();
@@ -5593,6 +5622,25 @@ impl<'a> Checker<'a> {
 
     /// An error about writing through a `read` borrow, said of a `shared` value when the
     /// place is reached through one.
+    /// For an item written through a local that borrows to read (`var part = xs[1..3]`, then
+    /// `part[0] = 7`), the hint that lends it with `ref` where it is made (#37).
+    fn lent_with_ref(&mut self, place: &Expr) -> Option<String> {
+        let mut root = place;
+        while let ExprKind::Index { recv, .. } | ExprKind::Field { recv, .. } = &root.kind {
+            root = recv;
+        }
+        let ExprKind::Var(name) = &root.kind else { return None };
+        let src = self.src;
+        let var = self.find(name)?;
+        if var.param || !matches!(var.declared, Ty::Read(_)) {
+            return None;
+        }
+        let [loan] = var.loans.as_slice() else { return None };
+        let lent = src.get(loan.span.start..loan.span.end)?.trim();
+        let lent = lent.strip_prefix("read ").unwrap_or(lent);
+        Some(format!("lend it with `ref` where it is made: `var {name} = ref {lent}`"))
+    }
+
     fn read_only(&self, place: &Expr, mut diag: Diag) -> Diag {
         if !through_shared(place) {
             return diag;
@@ -6847,7 +6895,10 @@ impl<'a> Checker<'a> {
                             init.ty = (*inner).clone();
                             *inner
                         }
-                        Ty::Void => return Err(Diag::error(init.span, "this call does not return a value")),
+                        Ty::Void => {
+                            let text = &self.src[init.span.start..init.span.end];
+                            return Err(Diag::error(init.span, "this call does not return a value").hint(format!("call it on a line of its own: `{text}`")));
+                        }
                         Ty::Null => {
                             return Err(Diag::error(init.span, "`var` cannot find a type from `null` alone")
                                 .hint(format!("write the type, for example `int? {name} = null`")))
@@ -6986,8 +7037,10 @@ impl<'a> Checker<'a> {
                                     .hint(format!("read it, change the copy and write it back: `var part = unsafe {text}`, then `{text} = part`")));
                             }
                             if op.is_some() {
+                                // Inside `unsafe { }` the read needs no word of its own (#42).
+                                let read = if self.unsafe_at.is_some() { "" } else { "unsafe " };
                                 return Err(Diag::error(target.span, "a field of a union is read inside `unsafe`, so it is not changed in place")
-                                    .hint(format!("`{text} = unsafe {text} + ...`")));
+                                    .hint(format!("`{text} = {read}{text} + ...`")));
                             }
                         }
                         if !writable && self.is_entry_key(target) {
@@ -6995,8 +7048,8 @@ impl<'a> Checker<'a> {
                                 .hint("remove the entry and add it under the new key: `map.remove(key)`, `map.add(key, value)`"));
                         }
                         if !writable && target.in_item() {
-                            return Err(self.read_only(target, Diag::error(target.span, "this item is reached through a `read` borrow and cannot be written")
-                                .hint("take the value as `ref` instead of `read`")));
+                            let hint = self.lent_with_ref(target).unwrap_or_else(|| "take the value as `ref` instead of `read`".to_string());
+                            return Err(self.read_only(target, Diag::error(target.span, "this item is reached through a `read` borrow and cannot be written").hint(hint)));
                         }
                         if !writable {
                             return Err(self.read_only(target, Diag::error(target.span, "this field is reached through a `read` borrow and cannot be written")
@@ -7088,6 +7141,8 @@ impl<'a> Checker<'a> {
                             diag.hint(format!("change the number it holds in a block: `ref {text} as n {{ n {symbol}= {value_text} }}`"))
                         }
                         Ty::Shared(held, false) if matches!(**held, Ty::Int(_) | Ty::Float(_)) => diag.note("what a `shared` value holds is only read; a number that changes is `shared checked`, or `shared locked` for several tasks"),
+                        // A number behind `new` (#37).
+                        Ty::Ptr(inner) if inner.is_number() => number_behind_new(diag, inner),
                         _ => diag,
                     });
                 }
@@ -7781,7 +7836,7 @@ impl<'a> Checker<'a> {
         let value = result?;
         if !used {
             return Err(Diag::error(word, "nothing here needs `unsafe`")
-                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a call of a C function, a variable of C and `string.fromCString`")
+                .note("`unsafe` is for what the checker cannot follow, such as an item of raw memory (`p[i]`), a field of a union read, `Memory.free` or a call of a C function; `sg help unsafe` lists every case")
                 .hint("leave `unsafe` out"));
         }
         Ok(value)
@@ -8536,6 +8591,8 @@ impl<'a> Checker<'a> {
             (Ty::Result(ok, _), _) if **ok == *expected => {
                 mismatch(Some(format!("open the `Result` first: `try {text}`, `{text} ?? ...` or `match`")))
             }
+            // `Point* p = Point { ... }`: a value is put on the heap only where `new` says so (#37).
+            (_, Ty::Ptr(inner)) if found == **inner => mismatch(Some(format!("a `{expected}` is made with `new`: `new {text}`"))),
             _ => mismatch(None),
         }
     }
@@ -10257,7 +10314,7 @@ impl<'a> Checker<'a> {
                         false => diag.hint(format!("copy it out: `var item = unsafe {text}`")),
                     });
                 }
-                if let Some(diag) = not_lent(inner, self.structs, self.src) {
+                if let Some(diag) = not_lent(inner, self.structs, self.src, *mutable) {
                     return Err(diag);
                 }
                 if matches!(ty, Ty::Void | Ty::Never) {
@@ -10378,7 +10435,7 @@ impl<'a> Checker<'a> {
         // A range lends the items where they lie: not inside a `packed` struct, where they may
         // lie where their type cannot be reached.
         if is_place {
-            if let Some(diag) = not_lent(recv, self.structs, self.src) {
+            if let Some(diag) = not_lent(recv, self.structs, self.src, true) {
                 return Err(diag);
             }
         }
@@ -11769,6 +11826,24 @@ impl<'a> Checker<'a> {
                     .hint(format!("lend the number it holds for a block: `read {text} as n {{ ... {written} ... }}`")));
             }
         }
+        // `==` and the order look through a `T*` to what it owns, as they look through `read`
+        // (`Equatable` and `Hashable` details, #15): a side that is a pointer is lent as a
+        // `read` of its value.
+        let (mut left_ty, mut right_ty) = (left_ty, right_ty);
+        if op.is_comparison() && left_ty != Ty::Null && right_ty != Ty::Null {
+            for (side, ty) in [(&mut *left, &mut left_ty), (&mut *right, &mut right_ty)] {
+                while let Ty::Ptr(inner) = ty.strip_borrow() {
+                    let inner = (**inner).clone();
+                    if !ty.is_borrow() {
+                        wrap(side, |held| ExprKind::Borrow { mutable: false, expr: held });
+                        side.ty = Ty::Read(Box::new(ty.clone()));
+                    }
+                    wrap(side, ExprKind::Unbox);
+                    side.ty = Ty::Read(Box::new(inner));
+                    *ty = side.ty.clone();
+                }
+            }
+        }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -11785,6 +11860,10 @@ impl<'a> Checker<'a> {
                     return Err(diag
                         .note("`==` looks at what two `shared` values point to; `same` tells whether they point to one object")
                         .hint(format!("`{not}same({a}, {b})`, or add `Equatable` to the definition: `{name} : Equatable`")));
+                }
+                // A union cannot be `Equatable` (#42): what it holds is compared.
+                if self.structs.get(name).is_some_and(|info| info.shape.union) {
+                    return Err(diag.note("a union does not know which of its fields it holds, so it is not compared by them").hint("read the field it holds inside `unsafe` and compare that"));
                 }
                 return Err(diag.hint(format!("add it to the definition: `{name} : Equatable`")));
             }
@@ -12045,6 +12124,8 @@ impl<'a> Checker<'a> {
                     _ => undefined().hint(format!("a `bool` is not a number; as one it is `{operand} ? 1 : 0`")),
                 })
             }
+            // `count + 1` on a `var count = new 5` (#37).
+            (Ty::Ptr(inner), _) | (_, Ty::Ptr(inner)) if inner.is_number() => Err(number_behind_new(undefined(), inner)),
             _ => Err(undefined()),
         }
     }
@@ -12121,6 +12202,9 @@ impl<'a> Checker<'a> {
             Ty::Void => Err(Diag::error(span, "this call does not return a value, and one is needed here")),
             Ty::Nullable(_) => Err(Diag::error(span, format!("this is `{ty}` and may be `null`; there is no text for `null`"))
                 .hint("give a fallback with `??`, or test with `is null`")),
+            // A `Result<void, E>` has no value to give instead, so `??` is not offered (#45).
+            Ty::Result(ok, _) if **ok == Ty::Void => Err(Diag::error(span, format!("this is `{ty}`: success with nothing, or an error"))
+                .hint("open it first with `try` or `match`")),
             Ty::Result(..) => Err(Diag::error(span, format!("this is `{ty}`: either a value or an error"))
                 .hint("open it first with `try`, `??` or `match`")),
             // A collection is written item by item, so the items must have a text.
@@ -13725,7 +13809,7 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(args[0].span, format!("`Memory.{name}` reaches a place by its address, and a bit field has none"))
                         .hint(format!("{} the struct that holds it whole: `{text}`", if writes { "write" } else { "read" })));
                 }
-                if let Some(diag) = not_lent(&args[0], self.structs, self.src).filter(|_| union_field(&args[0], self.structs).is_none()) {
+                if let Some(diag) = not_lent(&args[0], self.structs, self.src, writes).filter(|_| union_field(&args[0], self.structs).is_none()) {
                     return Err(diag);
                 }
                 if matches!(found, Ty::Atomic(_)) {
@@ -14912,7 +14996,9 @@ impl<'a> Checker<'a> {
                 .hint(format!("copy it out first: `var item = unsafe {text}`, then `item.{name}(...)`")));
         }
         if is_place && matches!(recv_ty.strip_borrow(), Ty::Struct(_) | Ty::Array(..)) {
-            if let Some(diag) = not_lent(recv, self.structs, self.src) {
+            // An array is changed only by these; `length` and the others only read (#42).
+            let writes = !matches!(recv_ty.strip_borrow(), Ty::Array(..)) || matches!(name, "sort" | "reverse" | "copyFrom");
+            if let Some(diag) = not_lent(recv, self.structs, self.src, writes) {
                 return Err(diag.note("a method is lent the value it is called on"));
             }
         }
@@ -17357,8 +17443,9 @@ fn bit_field_at(place: &Expr, structs: &HashMap<String, StructInfo>) -> Option<S
 
 /// Why a place is not lent: a field of a union (which field it holds is not known), a bit
 /// field (it has no address), or a field of a `packed` struct whose type needs an alignment
-/// the field may not have. `None` when it is lent.
-fn not_lent(place: &Expr, structs: &HashMap<String, StructInfo>, src: &str) -> Option<Diag> {
+/// the field may not have. `None` when it is lent. `writes`: the place would be changed, so the
+/// copy is written back.
+fn not_lent(place: &Expr, structs: &HashMap<String, StructInfo>, src: &str, writes: bool) -> Option<Diag> {
     let text = &src[place.span.start..place.span.end];
     if let Some((field, _)) = union_field(place, structs) {
         let field = &src[field.start..field.end];
@@ -17381,7 +17468,7 @@ fn not_lent(place: &Expr, structs: &HashMap<String, StructInfo>, src: &str) -> O
                         if align > 1 {
                             let field = &src[at.span.start..at.span.end];
                             return Some(Diag::error(place.span, format!("a field of a `packed` struct is not lent: `{field}` may lie where a `{}` cannot be reached", info.fields[*index].1))
-                                .hint(format!("copy it out: `var part = {field}`, and write it back whole")));
+                                .hint(format!("copy it out: `var part = {field}`{}", if writes { ", and write it back whole" } else { "" })));
                         }
                     }
                 }

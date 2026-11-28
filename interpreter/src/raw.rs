@@ -6,7 +6,10 @@
 //! every block `Memory.allocate` gave, and each pointer carries the block it was made from, so
 //! that a read outside the block, after `Memory.free`, or through `null` is a readable panic
 //! instead of undefined behaviour. A pointer that was read back out of raw memory finds its
-//! block again by its address; one that came from elsewhere is not checked.
+//! block again by its address; one that C gave is not checked. A pointer made from a number,
+//! or read out of a union, takes the block of the pointer that was made into that number, or
+//! the block it lies in; one the interpreter cannot place reaches nothing (`UNKNOWN`), and
+//! neither does the address `Memory.addressOf` gave (`TOKEN`).
 //!
 //! The memory comes from C's `calloc` and goes back with C's `free`, as in compiled code, so
 //! that what C gave with `malloc` can be given back with `Memory.free`, and the other way round.
@@ -69,7 +72,16 @@ unsafe fn aligned_free(p: *mut c_void) {
     _aligned_free(p);
 }
 
-/// An address and the block it was made from, if the interpreter knows it.
+/// The block of a pointer made from a number that the interpreter cannot place: no pointer was
+/// made into that number, and it lies in no block of `Memory.allocate`. Reaching memory through
+/// it is a panic (#42).
+pub const UNKNOWN: u64 = u64::MAX;
+/// The block of the address `Memory.addressOf` gave: it names a value of the interpreter, whose
+/// bytes do not lie there (#45).
+pub const TOKEN: u64 = u64::MAX - 1;
+
+/// An address and the block it was made from, if the interpreter knows it: `None` for memory C
+/// gave, which is not checked, or `UNKNOWN` or `TOKEN`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RawPtr {
     pub addr: usize,
@@ -98,7 +110,22 @@ struct Blocks {
     by_id: HashMap<u64, Block>,
     /// The blocks that are live, by where they start.
     live: BTreeMap<usize, u64>,
+    /// The last block given back that started at each place.
+    dead: BTreeMap<usize, u64>,
+    /// Each address a pointer was made into a number at (`(nuint)p`, or the bytes of a union),
+    /// with the block of the last such pointer, so that a pointer made from the number again
+    /// is checked as that one was.
+    numbers: HashMap<usize, Option<u64>>,
     next: u64,
+}
+
+impl Blocks {
+    /// The block that holds `addr` among `blocks` (the live or the dead ones).
+    fn holding(&self, blocks: &BTreeMap<usize, u64>, addr: usize) -> Option<u64> {
+        let (_, id) = blocks.range(..=addr).next_back()?;
+        let block = &self.by_id[id];
+        (addr < block.base + block.size.max(1)).then_some(*id)
+    }
 }
 
 /// Every block of every program run in this process; a block is never named again once it is
@@ -138,6 +165,7 @@ pub fn allocate(count: usize, size: usize, align: usize) -> Result<RawPtr, Alloc
     blocks.next += 1;
     blocks.by_id.insert(id, Block { base, size: bytes, live: true, aligned });
     blocks.live.insert(base, id);
+    blocks.dead.remove(&base);
     Ok(RawPtr { addr: base, block: Some(id) })
 }
 
@@ -151,6 +179,10 @@ pub enum FreeError {
     /// pointer to one that is not, or the other way round: compiled code on Windows gives the two
     /// back in two ways. The alignment it was made with, if beyond `BLOCK_ALIGN`.
     Aligned { made: Option<usize> },
+    /// An address `Memory.addressOf` gave.
+    Token,
+    /// A pointer made from a number the interpreter cannot place.
+    Unknown,
 }
 
 /// Gives back the block that `p` is the start of; `null` is let be. `align` is the alignment of
@@ -158,6 +190,11 @@ pub enum FreeError {
 pub fn free(p: RawPtr, align: usize) -> Result<(), FreeError> {
     if p.addr == 0 {
         return Ok(());
+    }
+    match p.block {
+        Some(TOKEN) => return Err(FreeError::Token),
+        Some(UNKNOWN) => return Err(FreeError::Unknown),
+        _ => {}
     }
     let mut blocks = BLOCKS.lock().unwrap();
     let id = match p.block.or_else(|| blocks.live.get(&p.addr).copied()) {
@@ -184,6 +221,7 @@ pub fn free(p: RawPtr, align: usize) -> Result<(), FreeError> {
     block.live = false;
     let base = block.base;
     blocks.live.remove(&base);
+    blocks.dead.insert(base, id);
     // SAFETY: the block came from `calloc` or `aligned_alloc`, and has not been given back.
     unsafe {
         match given {
@@ -198,6 +236,10 @@ pub fn free(p: RawPtr, align: usize) -> Result<(), FreeError> {
 pub enum Fault {
     Null,
     Freed,
+    /// Through an address `Memory.addressOf` gave.
+    Token,
+    /// Through a pointer made from a number the interpreter cannot place.
+    Unknown,
     /// Outside the block: how many bytes from its start the access begins, and its size.
     Outside { at: i128, block: usize },
 }
@@ -207,7 +249,12 @@ pub fn check(p: RawPtr, size: usize) -> Result<(), Fault> {
     if p.addr == 0 {
         return Err(Fault::Null);
     }
-    let Some(id) = p.block else { return Ok(()) };
+    let id = match p.block {
+        None => return Ok(()),
+        Some(TOKEN) => return Err(Fault::Token),
+        Some(UNKNOWN) => return Err(Fault::Unknown),
+        Some(id) => id,
+    };
     let blocks = BLOCKS.lock().unwrap();
     let block = &blocks.by_id[&id];
     if !block.live {
@@ -223,9 +270,12 @@ pub fn check(p: RawPtr, size: usize) -> Result<(), Fault> {
 /// How many bytes lie at `p` before a zero byte. In a block of `Memory.allocate` the zero byte
 /// must come before the end of the block; elsewhere C said it is there.
 pub fn text_length(p: RawPtr) -> Result<usize, Fault> {
-    let Some(id) = p.block else {
+    let id = match p.block {
         // SAFETY: the program says, inside `unsafe`, that a text C ended lies there.
-        return Ok(unsafe { std::ffi::CStr::from_ptr(p.addr as *const std::ffi::c_char) }.to_bytes().len());
+        None => return Ok(unsafe { std::ffi::CStr::from_ptr(p.addr as *const std::ffi::c_char) }.to_bytes().len()),
+        Some(TOKEN) => return Err(Fault::Token),
+        Some(UNKNOWN) => return Err(Fault::Unknown),
+        Some(id) => id,
     };
     let blocks = BLOCKS.lock().unwrap();
     let block = &blocks.by_id[&id];
@@ -295,9 +345,31 @@ pub fn block_at(addr: usize) -> Option<u64> {
         return None;
     }
     let blocks = BLOCKS.lock().unwrap();
-    let (_, id) = blocks.live.range(..=addr).next_back()?;
-    let block = &blocks.by_id[id];
-    (addr < block.base + block.size.max(1)).then_some(*id)
+    blocks.holding(&blocks.live, addr)
+}
+
+/// A pointer is made into a number (`(nuint)p`) or into the bytes of a union: the number is
+/// kept with its block, for `from_number`.
+pub fn remember(p: RawPtr) {
+    if p.addr != 0 {
+        BLOCKS.lock().unwrap().numbers.insert(p.addr, p.block);
+    }
+}
+
+/// The pointer a number stands for (`(raw T)n`, a pointer read out of a union): the block of
+/// the pointer last made into that number; else the live block it lies in; else the block given
+/// back that it lay in; else `UNKNOWN`, through which nothing is reached. A pointer read out
+/// of raw memory is not looked up here, since C may have written it there (`block_at`).
+pub fn from_number(addr: usize) -> RawPtr {
+    if addr == 0 {
+        return RawPtr::NULL;
+    }
+    let blocks = BLOCKS.lock().unwrap();
+    let block = match blocks.numbers.get(&addr) {
+        Some(block) => *block,
+        None => Some(blocks.holding(&blocks.live, addr).or_else(|| blocks.holding(&blocks.dead, addr)).unwrap_or(UNKNOWN)),
+    };
+    RawPtr { addr, block }
 }
 
 /// How C lays out a struct or a union of plain data, beyond the types of its fields.
