@@ -1,0 +1,7 @@
+// A static is not taken as `ref`: one that changes is `atomic` or `locked`.
+static List<string> Names = List<string> { "a" }
+
+void main() {
+    Names.add("b")
+    print(Names)
+}

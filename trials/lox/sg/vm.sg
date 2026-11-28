@@ -823,7 +823,6 @@ int run(ref Vm vm, read Program p) {
             }
         }
     }
-    return InterpretOk
 }
 
 int interpret(ref Vm vm, ref Program p, List<byte> source, bool ipLocal) {

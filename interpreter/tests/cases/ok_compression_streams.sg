@@ -297,7 +297,6 @@ Result<void, CompressError> streamed(read string path, ref Crc32 crc) {
         }
         crc.update(buffer[..count])
     }
-    return Ok()
 }
 
 Result<void, IoError> main(List<string> args) {

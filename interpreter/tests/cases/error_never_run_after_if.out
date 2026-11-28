@@ -1,0 +1,5 @@
+error: this line is never run: both branches of the `if` before it leave
+  --> error_never_run_after_if.sg:7:5
+ 7 |     return "zero"
+   |     ^^^^^^^^^^^^^
+  hint: take it away, with the lines after it in the block

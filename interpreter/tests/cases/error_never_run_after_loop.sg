@@ -1,0 +1,15 @@
+// A `while true` that no `break` leaves never ends: the line after it never runs.
+int first(read List<int> xs) {
+    var i = 0
+    while true {
+        if xs[i] > 0 {
+            return xs[i]
+        }
+        i += 1
+    }
+    return 0
+}
+
+void main() {
+    print(first(List<int> { 0, 2 }))
+}

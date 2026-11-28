@@ -1,0 +1,5 @@
+error: there is no type named `File`
+  `File` is not a type but a set of functions: a file open to read is a `StreamReader`, one open to write a `StreamWriter`
+  --> error_file_not_type.sg:1:8
+ 1 | static File Log = File.create("log.txt")
+   |        ^^^^

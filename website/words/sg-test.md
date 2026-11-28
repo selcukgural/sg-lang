@@ -108,7 +108,7 @@ ok    twenty percent
 checking a third
 FAIL  a third
 panic: assert failed: withTax(999, 33) == 1329
-  left: 1328
+  left:  1328
   right: 1329
   --> tax.sg:11:5
  11 |     assert(withTax(999, 33) == 1329)

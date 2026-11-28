@@ -1,0 +1,5 @@
+error: this line is never run: the `break` before it leaves the loop
+  --> error_never_run_after_break.sg:5:13
+ 5 |             print("never")
+   |             ^^^^^^^^^^^^^^
+  hint: take it away, with the lines after it in the block

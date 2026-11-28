@@ -199,7 +199,7 @@ void main() {
 
 ```text
 panic: assert failed: line == expected
-  left: Line { item = "tea", count = 2, price = Money { cents = 900, currency = 'E' } }
+  left:  Line { item = "tea", count = 2, price = Money { cents = 900, currency = 'E' } }
   right: Line { item = "tea", count = 2, price = Money { cents = 950, currency = 'E' } }
   --> example.sg:19:5
  19 |     assert(line == expected)

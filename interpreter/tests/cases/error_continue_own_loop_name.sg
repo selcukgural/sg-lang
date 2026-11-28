@@ -1,0 +1,10 @@
+void main() {
+    var i = 0
+    rounds: while i < 3 {
+        i += 1
+        if i == 2 {
+            continue rounds
+        }
+        print(i)
+    }
+}

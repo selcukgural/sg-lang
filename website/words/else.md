@@ -235,7 +235,7 @@ error: `grade` does not return a value on every path; it must return `string`
 A score under 50 reaches the end of the function with nothing to return. An `else { return "F" }` makes it
 whole.
 
-### A value the `else` cannot trust
+### A value that is `null` in the `else`
 
 ```sg error
 void greet(read string? name) {
@@ -252,10 +252,10 @@ void main() {
 ```
 
 ```text
-error: this is `read string?` and may be `null`; `.length()` needs a value
+error: `name` is `null` here, as the `if` around it tested; `.length()` needs a value
   --> example.sg:5:15
  5 |         print(name.length())
    |               ^^^^
 ```
 
-In `else`, the test `name is not null` failed: `name` is `null` there.
+In `else`, the test `name is not null` failed: `name` is `null` there, and the message says so.

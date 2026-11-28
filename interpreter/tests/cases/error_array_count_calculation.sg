@@ -1,0 +1,7 @@
+const int Rows = 2
+const int Cols = 3
+
+void main() {
+    int[Rows * Cols] grid = int[Rows * Cols](1)
+    print(grid.length())
+}

@@ -26,7 +26,6 @@ async int consume(shared locked Jobs jobs) {
         }
         sum += next
     }
-    return sum
 }
 
 async void produce(shared locked Jobs jobs, int count) {

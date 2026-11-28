@@ -439,6 +439,7 @@ impl<'a> Parser<'a> {
                 // `int[8]` is an array, `byte[]` a slice.
                 Tok::LBracket => {
                     self.bump();
+                    let start_of_count = self.i;
                     match *self.peek() {
                         Tok::RBracket => suffixes.push(Suffix::Slice),
                         Tok::Int(length) => {
@@ -448,7 +449,7 @@ impl<'a> Parser<'a> {
                             suffixes.push(Suffix::Array(length));
                             self.bump();
                             if *self.peek() != Tok::RBracket {
-                                return Err(self.unexpected("`]`"));
+                                return Err(self.count_not_written(start_of_count));
                             }
                         }
                         // `byte[BlockSize]`: the count an integer const holds. A const of a block
@@ -463,7 +464,7 @@ impl<'a> Parser<'a> {
                             let full = self.local_const(&name).unwrap_or_else(|| self.map.full_name(&name));
                             suffixes.push(Suffix::Named(full, Span::new(at.start, self.prev_end())));
                             if *self.peek() != Tok::RBracket {
-                                return Err(self.unexpected("`]`"));
+                                return Err(self.count_not_written(start_of_count));
                             }
                         }
                         _ => {
@@ -1496,10 +1497,56 @@ impl<'a> Parser<'a> {
                 Tok::Star | Tok::Question => n += 1,
                 Tok::LBracket if *self.peek_at(n + 1) == Tok::RBracket => n += 2,
                 Tok::LBracket if matches!(self.peek_at(n + 1), Tok::Int(_) | Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::RBracket => n += 3,
+                Tok::LBracket if self.type_word(first) => match self.count_len(n) {
+                    Some(len) => n += len,
+                    None => break,
+                },
                 _ => break,
             }
         }
         Some(n - start)
+    }
+
+    /// Whether the name `n` tokens ahead is one of a type, as far as the parser can tell: a
+    /// type of the language written in small letters (`int`, `byte`), or a name that starts with
+    /// a capital letter, as the names of types do and those of variables do not.
+    fn type_word(&self, n: usize) -> bool {
+        match self.peek_at(n) {
+            Tok::Ident(word) => Ty::from_name(word).is_some() || word.starts_with(|c: char| c.is_ascii_uppercase()),
+            _ => false,
+        }
+    }
+
+    /// How many tokens `[ ... ]` takes, `n` tokens ahead, when what is inside is more than a
+    /// number or a name on one line (`[Rows * Cols]`); `None` otherwise.
+    fn count_len(&self, n: usize) -> Option<usize> {
+        let mut depth = 0;
+        let mut at = n + 1;
+        loop {
+            match self.peek_at(at) {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen => depth -= 1,
+                Tok::RBracket if depth == 0 => break,
+                Tok::RBracket => depth -= 1,
+                Tok::Newline | Tok::Eof | Tok::LBrace | Tok::RBrace | Tok::Comma | Tok::Assign => return None,
+                _ => {}
+            }
+            at += 1;
+        }
+        (at - n > 2).then_some(at - n + 1)
+    }
+
+    /// The count of an array written as more than a number or the name of a const, from token
+    /// `start` (just after `[`) to the `]`.
+    fn count_not_written(&self, start: usize) -> Diag {
+        let mut end = self.i;
+        while end + 1 < self.toks.len() && !matches!(self.toks[end].tok, Tok::RBracket | Tok::Newline | Tok::Eof) {
+            end += 1;
+        }
+        let span = Span::new(self.toks[start].span.start, self.toks[end.max(start + 1) - 1].span.end);
+        let written = &self.src[span.start..span.end];
+        Diag::error(span, "the count of an array is a number or the name of a const, not a calculation")
+            .hint(format!("give it a name first: `const int Count = {written}`, then `[Count]`"))
     }
 
     /// The type comes first: `int x = 1`, `Node*? list = null`, `Result<int, E> r = f()`. A

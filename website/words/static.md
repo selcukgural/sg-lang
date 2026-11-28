@@ -449,6 +449,77 @@ error: a static cannot hold a `StreamWriter`: a static is never dropped, so it w
   hint: open it where it is used and lend it to the functions that need it, as a parameter
 ```
 
+### A type that is not one
+
+```sg error
+static File Log = File.create("log.txt")
+
+void main() {
+}
+```
+
+```text
+error: there is no type named `File`
+  `File` is not a type but a set of functions: a file open to read is a `StreamReader`, one open to write a `StreamWriter`
+  --> example.sg:1:8
+ 1 | static File Log = File.create("log.txt")
+   |        ^^^^
+```
+
+### A static of a block that reads a variable
+
+```sg error
+void main() {
+    var n = 3
+    static int Twice = n * 2
+    print(Twice)
+}
+```
+
+```text
+error: there is no variable named `n`
+  a static sees consts and other statics, not variables: its value is found once, the first time it is read
+  --> example.sg:3:24
+ 3 |     static int Twice = n * 2
+   |                        ^
+```
+
+### A static of a block that nothing uses
+
+```sg error
+void main() {
+    static atomic int Calls = atomic 0
+    print("x")
+}
+```
+
+```text
+error: `Calls` is never used
+  --> example.sg:2:23
+ 2 |     static atomic int Calls = atomic 0
+   |                       ^^^^^
+  hint: take the line away: a static of a block is seen only by the lines after it in the block
+```
+
+### A method that changes it
+
+```sg error
+static List<string> Names = List<string> { "a" }
+
+void main() {
+    Names.add("b")
+    print(Names)
+}
+```
+
+```text
+error: `add` changes the list, but it is reached through the static `Names`
+  a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block
+  --> example.sg:4:5
+ 4 |     Names.add("b")
+   |     ^^^^^
+```
+
 ### A local with the name of a static
 
 ```sg error

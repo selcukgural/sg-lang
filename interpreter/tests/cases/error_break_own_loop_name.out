@@ -1,0 +1,5 @@
+error: this `break` is in the loop named `outer` itself, where a plain `break` does the same
+  --> error_break_own_loop_name.sg:5:15
+ 5 |         break outer
+   |               ^^^^^
+  hint: write `break`, and take `outer:` away if no loop inside it names it

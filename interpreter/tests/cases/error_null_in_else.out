@@ -1,0 +1,4 @@
+error: `name` is `null` here, as the `if` around it tested; `.length()` needs a value
+  --> error_null_in_else.sg:7:15
+ 7 |         print(name.length())
+   |               ^^^^

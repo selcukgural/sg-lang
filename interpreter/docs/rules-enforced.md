@@ -101,7 +101,11 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   and so is every other use, a method called on it and `ref x` among them. A parameter is not looked at, nor a
   variable of a `Disposable` type or of a struct that holds one. The name of a `for`, of a pattern and of an
   `as` or `lock` block is held to it too; `_` stands for one that is not needed. A write to a copy of a struct
-  has the borrow as its hint (`var p = ref rect.corner`).
+  has the borrow as its hint (`var p = ref rect.corner`). A `const` or `static` of a block that no line after
+  it in the block names is an error too.
+- A line after one that always leaves (`return`, `break`, `continue`, `panic`, `exit`, an `if` or `match` whose
+  every way leaves, a `while true` no `break` leaves) is an error: "this line is never run".
+- `break name` or `continue name` in the loop of that name itself is an error: the plain word does the same.
 - `try` needs a function that can pass the error on: one that returns a `Result` (or a `T?` for `try` on a
   `T?`). With a different error type, `try` wraps the error in the one variant of the caller's error type that
   carries it; none or more than one is an error.

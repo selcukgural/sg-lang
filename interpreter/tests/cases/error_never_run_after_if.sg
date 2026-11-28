@@ -1,0 +1,12 @@
+string sign(int n) {
+    if n < 0 {
+        return "minus"
+    } else {
+        return "plus"
+    }
+    return "zero"
+}
+
+void main() {
+    print(sign(3))
+}

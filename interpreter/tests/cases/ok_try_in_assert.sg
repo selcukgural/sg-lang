@@ -1,0 +1,37 @@
+Result<string, string> name(bool good) {
+    if !good {
+        return Error($"no name: {good}".toString())
+    }
+    return Ok("ada".clone())
+}
+
+Result<List<int>, string> list(bool good) {
+    if !good {
+        return Error($"no list: {good}".toString())
+    }
+    return Ok(List<int> { 1, 2 })
+}
+
+// A side of `assert` that is text or a list, with a `try` in it: each side is kept under a
+// name before the next is computed, so the `try` can leave from either.
+Result<void, string> check(int fails) {
+    assert(try name(fails != 1) == "ada")
+    assert("ada".clone() == try name(fails != 2))
+    assert(try list(fails != 3) == List<int> { 1, 2 })
+    assert(List<int> { 1, 2 } == try list(fails != 4))
+    print("all hold")
+    return Ok()
+}
+
+void report(Result<void, string> result) {
+    match result {
+        Ok => print("ok")
+        Error(e) => print($"error: {e}")
+    }
+}
+
+void main() {
+    for fails in 0..5 {
+        report(check(fails))
+    }
+}

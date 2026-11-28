@@ -178,7 +178,6 @@ long work(shared locked Jobs jobs) {
         }
         sum += job * job
     }
-    return sum
 }
 
 void main() {
@@ -235,7 +234,6 @@ async int collect(shared locked Mailbox box) {
             return count
         }
     }
-    return count
 }
 
 async void main() {

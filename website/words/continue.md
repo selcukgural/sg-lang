@@ -246,7 +246,50 @@ error: no loop around this `continue` is named `outer`
   --> example.sg:4:22
  4 |             continue outer
    |                      ^^^^^
-  hint: name the loop it goes on with: `outer: for ...`
+  hint: a plain `continue` goes on with the loop it is in
+```
+
+### The name of the loop it is in
+
+```sg error
+void main() {
+    rounds: for i in 0..4 {
+        if i == 2 {
+            continue rounds
+        }
+        print(i)
+    }
+}
+```
+
+```text
+error: this `continue` is in the loop named `rounds` itself, where a plain `continue` does the same
+  --> example.sg:4:22
+ 4 |             continue rounds
+   |                      ^^^^^^
+  hint: write `continue`, and take `rounds:` away if no loop inside it names it
+```
+
+### A line after `continue`
+
+```sg error
+void main() {
+    for i in 0..3 {
+        if i == 1 {
+            continue
+            print("never")
+        }
+        print(i)
+    }
+}
+```
+
+```text
+error: this line is never run: the `continue` before it goes on with the next turn of the loop
+  --> example.sg:5:13
+ 5 |             print("never")
+   |             ^^^^^^^^^^^^^^
+  hint: take it away, with the lines after it in the block
 ```
 
 ### A value given away, then `continue`

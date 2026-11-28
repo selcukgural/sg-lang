@@ -1,0 +1,5 @@
+error: this line is never run: the loop before it never ends, since no `break` leaves it
+  --> error_never_run_after_loop.sg:10:5
+ 10 |     return 0
+    |     ^^^^^^^^
+  hint: take it away, with the lines after it in the block

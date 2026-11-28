@@ -1,0 +1,7 @@
+// `break outer` in `outer` itself is a plain `break`: the name is for a loop inside it.
+void main() {
+    outer: for i in 0..3 {
+        print(i)
+        break outer
+    }
+}

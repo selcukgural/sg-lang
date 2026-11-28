@@ -308,7 +308,43 @@ WHAT THE COMPILER REFUSES
            --> example.sg:4:15
           4 |         break outer
             |               ^^^^^
-           hint: name the loop it leaves: `outer: for ...`
+           hint: a plain `break` leaves the loop it is in
+
+   The name of the loop it is in
+         void main() {
+             outer: for i in 0..3 {
+                 print(i)
+                 break outer
+             }
+         }
+
+         error: this `break` is in the loop named `outer` itself, where a plain `break` does the same
+           --> example.sg:4:15
+          4 |         break outer
+            |               ^^^^^
+           hint: write `break`, and take `outer:` away if no loop inside it names it
+
+     A loop needs a name only for a loop inside it to leave it.
+
+   A line after break
+         void main() {
+             for i in 0..3 {
+                 if i == 1 {
+                     break
+                     print("never")
+                 }
+                 print(i)
+             }
+         }
+
+         error: this line is never run: the `break` before it leaves the loop
+           --> example.sg:5:13
+          5 |             print("never")
+            |             ^^^^^^^^^^^^^^
+           hint: take it away, with the lines after it in the block
+
+     There are no warnings: a line that can never run is an error, as an arm
+     of a match that never runs is.
 
    The name of a loop around it, again
          void main() {

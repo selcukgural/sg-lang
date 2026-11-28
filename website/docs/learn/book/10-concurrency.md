@@ -248,7 +248,6 @@ long take(shared locked Queue queue) {
         }
         sum += item
     }
-    return sum
 }
 
 void main() {

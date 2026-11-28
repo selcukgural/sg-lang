@@ -1,0 +1,9 @@
+// A line after `return` never runs: an error of its own, not "does not return on every path".
+int f() {
+    return 1
+    print("never")
+}
+
+void main() {
+    print(f())
+}

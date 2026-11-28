@@ -1,5 +1,5 @@
-error: `sort` changes the array, but it is reached through a `read` borrow
+error: `sort` changes the array, but it is reached through the const `Masks`
   --> error_const_sort.sg:4:5
  4 |     Masks.sort()
    |     ^^^^^
-  hint: take the value as `ref` instead of `read`
+  hint: change a copy of it: `var copy = Masks`

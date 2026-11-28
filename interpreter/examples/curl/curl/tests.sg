@@ -28,7 +28,6 @@ Result<void, IoError> serve(TcpListener listener) {
             return Ok()
         }
     }
-    return Ok()
 }
 
 // Reads one request and answers it; gives whether it asked the server to stop. `/slow` is

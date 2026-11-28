@@ -130,7 +130,6 @@ Result<void, string> skipBlocks(read byte[] data, ref nint at) {
         }
         try skip(data, ref at, n)
     }
-    return Ok()
 }
 
 Result<List<byte>, string> joinBlocks(read byte[] data, ref nint at) {
@@ -144,7 +143,6 @@ Result<List<byte>, string> joinBlocks(read byte[] data, ref nint at) {
         try skip(data, ref at, n)
         out.addAll(data[from..at])
     }
-    return Ok(out)
 }
 
 // The whole GIF but its pixels; whatever is not as GIF has it is an error.

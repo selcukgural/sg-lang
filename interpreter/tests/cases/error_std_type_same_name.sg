@@ -1,0 +1,10 @@
+// The program's `Duration` is not the language's, though both are written `Duration`.
+struct Duration {
+    int days
+}
+
+void main() {
+    var d = Duration { days = 2 }
+    var later = Instant.now().plus(d)
+    print(later.elapsed())
+}

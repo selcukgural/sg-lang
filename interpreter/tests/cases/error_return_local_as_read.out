@@ -1,0 +1,6 @@
+error: expected `read string`, found `string`
+  `text` is a variable of the function, gone when it returns: a borrow of it would outlive it
+  --> error_return_local_as_read.sg:4:12
+ 4 |     return text
+   |            ^^^^
+  hint: return the value itself: `string made(...)`

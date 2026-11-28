@@ -164,7 +164,7 @@ $ ./tests
 ok    twenty percent
 FAIL  a third
 panic: assert failed: withTax(999, 33) == 1329
-  left: 1328
+  left:  1328
   right: 1329
   --> tax.sg:10:5
  10 |     assert(withTax(999, 33) == 1329)
@@ -174,7 +174,7 @@ $ ./tests --only 0; echo $?
 0
 $ ./tests --only 1; echo $?
 panic: assert failed: withTax(999, 33) == 1329
-  left: 1328
+  left:  1328
   right: 1329
   --> tax.sg:10:5
  10 |     assert(withTax(999, 33) == 1329)

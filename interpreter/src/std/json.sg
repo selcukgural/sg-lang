@@ -610,7 +610,6 @@ Result<JsonValue, JsonFault> jsonArray(read string text, read byte[] bytes, ref 
         }
         return Error(jsonUnexpected(bytes, position))
     }
-    return Error(jsonUnexpected(bytes, position))
 }
 
 Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref nint position, int depth, int limit) {
@@ -652,7 +651,6 @@ Result<JsonValue, JsonFault> jsonObject(read string text, read byte[] bytes, ref
         }
         return Error(jsonUnexpected(bytes, position))
     }
-    return Error(jsonUnexpected(bytes, position))
 }
 
 // The array or the object whose `[` or `{` is at `position`, inside `depth` others, read where the
@@ -815,7 +813,6 @@ Result<JsonValue, JsonFault> jsonValueDeep(read string text, read byte[] bytes, 
             return Error(jsonUnexpected(bytes, position))
         }
     }
-    return Error(jsonUnexpected(bytes, position))
 }
 
 // The item that starts with `first`: an empty array or object when `empty`, whose bytes are read,
@@ -999,7 +996,6 @@ Result<string, JsonFault> jsonString(read string text, read byte[] bytes, ref ni
         }
         run = position
     }
-    return Error(jsonFault(position, JsonErrorKind.UnexpectedEnd))
 }
 
 bool jsonIsDigit(read byte[] bytes, nint position) {

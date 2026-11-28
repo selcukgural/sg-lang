@@ -1,0 +1,5 @@
+error: `for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap`, a `HashSet`, a `Channel` or an iterator such as `text.chars()` or `reader.lines()`, found `int`
+  --> error_for_over_int.sg:3:14
+ 3 |     for i in count {
+   |              ^^^^^
+  hint: the numbers from 0 up to it: `for i in 0..count`

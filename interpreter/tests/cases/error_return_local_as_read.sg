@@ -1,0 +1,9 @@
+// A variable of the function is gone when it returns: the hint is to return the value.
+read string made() {
+    var text = "Pasha".clone()
+    return text
+}
+
+void main() {
+    print(made())
+}

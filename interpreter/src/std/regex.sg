@@ -2913,7 +2913,6 @@ int regexFromInner(read Regex re, ref RegexCache c, read byte[] text, nint from,
         }
         at = found + regexWidthAt(text, found)
     }
-    return 0
 }
 
 // The leftmost match from `from` that the pattern prefers, by the two DFAs, written to `found`

@@ -1,5 +1,5 @@
 error: there is no type named `Product`
-  built-in types for now: the integer types, float, double, bool, char, string
+  a type is one of the language, such as `int`, `string`, `List<T>` or `Duration`, one of the program, or a `public` one of a module named with `use`
   --> error_missing_use_type.sg:2:10
  2 |     List<Product> products = List<Product>()
    |          ^^^^^^^

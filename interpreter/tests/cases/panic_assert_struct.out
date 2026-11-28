@@ -1,5 +1,5 @@
 panic: assert failed: a == Point { x = 1, y = 3 }
-  left: Point { x = 1, y = 2 }
+  left:  Point { x = 1, y = 2 }
   right: Point { x = 1, y = 3 }
   --> panic_assert_struct.sg:8:5
  8 |     assert(a == Point { x = 1, y = 3 })

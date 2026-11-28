@@ -1,0 +1,8 @@
+// In one loop, a plain `continue` does what a name would.
+void main() {
+    var i = 0
+    while i < 3 {
+        i += 1
+        continue inner
+    }
+}
