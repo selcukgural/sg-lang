@@ -1,0 +1,5 @@
+// A number in a `shared` value is lent for a block to compute with.
+void main() {
+    var seen = new shared 0
+    print(seen + 1)
+}

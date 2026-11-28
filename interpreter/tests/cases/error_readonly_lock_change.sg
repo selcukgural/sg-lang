@@ -1,0 +1,18 @@
+// What a `readonly` field holds is only read in a `lock` block: no change goes through the field.
+struct Folder {
+    string name
+}
+
+struct Holder {
+    readonly shared locked Folder folder
+}
+
+void main() {
+    var h = Holder { folder = new shared locked Folder { name = "a".clone() } }
+    lock h.folder as f {
+        f.name = "b".clone()
+    }
+    lock h.folder as g {
+        print(g.name)
+    }
+}

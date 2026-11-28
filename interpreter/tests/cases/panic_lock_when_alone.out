@@ -6,4 +6,4 @@ panic: this task waits until `q.items.length() > 0 || q.done`, and no other task
   --> panic_lock_when_alone.sg:28:20
  28 |     var consumer = Task.run(consume, share jobs)
     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  hint: a task with no more to give says so inside the value before it lets it go, `lock jobs as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
+  hint: a task with no more to give says so inside the value before it lets it go, in a field such as `done`: `lock jobs as q { q.done = true }`, and the condition looks at it: `when ... || q.done`

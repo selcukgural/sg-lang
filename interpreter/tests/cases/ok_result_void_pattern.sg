@@ -1,0 +1,22 @@
+// `Ok()` of a `Result<void, E>` is matched as it is built (`return Ok()`), and so is `Ok`.
+Result<void, string> step(bool good) {
+    if good {
+        return Ok()
+    }
+    return Error("bad")
+}
+
+void main() {
+    match step(true) {
+        Ok() => print("ok")
+        Error(e) => print(e)
+    }
+    match step(false) {
+        Ok => print("ok")
+        Error(e) => print(e)
+    }
+    if step(false) is Ok() {
+        print("not here")
+    }
+    print(step(true) is Ok())
+}

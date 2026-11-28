@@ -26,7 +26,10 @@ inside the module or outside, in a function or in a method of its own type.
 The rule goes all the way down: nothing behind a `readonly` field changes either. A `readonly List` cannot be
 added to or sorted, a `readonly string` cannot be written to, a field of a `readonly` struct cannot be assigned,
 and an item of a `readonly` array cannot be set. The field cannot be lent as `ref`, a range of it neither, and
-a method that takes `ref this` cannot be called on it, since any of these could change it. `take()` and
+a method that takes `ref this` cannot be called on it, since any of these could change it. A `readonly`
+`shared locked` or `shared checked` field is read in a `lock` block, whose name then only reads, or in
+`read ... as`, and is not opened with `ref ... as`. An owner taken with `share` is one more owner, and changes
+the value as every owner does: `readonly` covers the field, not the value's other owners. `take()` and
 `replace` leave another value in the field, so they are refused too. A `read` borrow, `.clone()` and the methods
 that only look are all allowed. The owner of a value may still move a field's value out, as from any field:
 the value is then not used as a whole again until it is replaced.
@@ -437,3 +440,33 @@ error: an `atomic long` field is not `readonly`: its methods change it through a
    |                          ^^^^^^^^
   hint: keep the field to its module and give a method that reads it: `long requests(read this) { return this.requests.load() }`
 ```
+
+### Changing a shared value through the field
+
+```sg error
+struct Folder {
+    string name
+}
+
+struct Holder {
+    readonly shared locked Folder folder
+}
+
+void main() {
+    var h = Holder { folder = new shared locked Folder { name = "a".clone() } }
+    lock h.folder as f {
+        f.name = "b".clone()
+    }
+}
+```
+
+```text
+error: `f` only reads what `h.folder` holds, since `folder` is `readonly`
+  `readonly` stops every change made through the field, a `lock` block's too
+  --> example.sg:12:9
+ 12 |         f.name = "b".clone()
+    |         ^^^^^^
+```
+
+`lock h.folder as f { print(f.name) }` reads it. Another owner, `var owner = share h.folder`, may change it in
+a `lock` block of its own, as any owner of the value may.

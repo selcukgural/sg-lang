@@ -308,9 +308,15 @@ error: this borrows what a `shared checked` value holds, and such a borrow ends 
   --> example.sg:3:16
  3 |     var slot = counts.getOrAdd("tea", 0)
    |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> example.sg:3:16
+ 3 |     var slot = counts.getOrAdd("tea", 0)
+   |                ^^^^^^
+  hint: lend it for a block instead: `ref counts as value { var slot = value.getOrAdd("tea", 0) ... }`
 ```
 
-Here the block is `ref counts as table { ... }`, since the count is changed.
+The block is `ref`, since `getOrAdd` and `slot += 1` change the map; inside it, `slot` keeps the borrow to the
+`}`.
 
 ### A `lock` without a name
 

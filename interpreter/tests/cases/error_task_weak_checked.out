@@ -1,0 +1,5 @@
+error: `peek` takes a `weak checked Counter` here, which cannot go to another task: a `weak checked Counter` is checked within one task; a look at one that several tasks change is `weak locked`
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_weak_checked.sg:11:28
+ 11 |     var t = Task.run(peek, weak c)
+    |                            ^^^^^^

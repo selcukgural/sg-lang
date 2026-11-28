@@ -1,0 +1,17 @@
+void bump(shared atomic int ready, shared locked int total) {
+    lock total as t {
+        t += 0
+    }
+    _ = ready.fetchAdd(1)
+}
+
+void main() {
+    var ready = new shared atomic 0
+    var total = new shared locked 0
+    var task = Task.run(bump, share ready, share total)
+    lock total as t when ready.load() > 0 {
+        t += 1
+    }
+    task.wait()
+    print("done")
+}

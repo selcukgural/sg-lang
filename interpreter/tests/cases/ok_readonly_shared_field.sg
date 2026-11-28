@@ -1,0 +1,35 @@
+// A `readonly` field that holds a `shared locked` or a `shared checked` value: what it holds is
+// read through the field, in a `lock` block or a `read ... as` block, and changed by none of
+// them. Another owner, taken with `share`, changes it as every owner does.
+struct Folder {
+    string name
+}
+
+struct Holder {
+    readonly shared locked Folder inbox
+    readonly shared checked Folder outbox
+}
+
+void main() {
+    var h = Holder {
+        inbox = new shared locked Folder { name = "a".clone() },
+        outbox = new shared checked Folder { name = "c".clone() },
+    }
+    lock h.inbox as f {
+        print(f.name)
+    }
+    read h.outbox as f {
+        print(f.name)
+    }
+    print(h.outbox.name)
+    var owner = share h.inbox
+    lock owner as f {
+        f.name = "b".clone()
+    }
+    lock h.inbox as f {
+        print(f.name)
+    }
+    var other = share h.outbox
+    other.name = "d".clone()
+    print(h.outbox.name)
+}

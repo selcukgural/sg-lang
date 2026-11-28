@@ -7,3 +7,4 @@ error: this function value could be `bump`, which waits, and a `lock` block does
   --> error_lock_function_value.sg:2:5
  2 |     lock counter as c {
    |     ^^^^^^^^^^^^^^^^^^^
+  hint: call it before the block or after it

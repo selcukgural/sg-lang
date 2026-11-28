@@ -1,0 +1,12 @@
+// A task is not put in a `shared locked` value: nobody the compiler sees would wait for it.
+int work() {
+    return 1
+}
+
+void main() {
+    var t = Task.run(work)
+    var total = new shared locked t
+    lock total as n {
+        print(n)
+    }
+}

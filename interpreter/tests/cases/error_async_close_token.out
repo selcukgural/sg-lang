@@ -1,4 +1,4 @@
-error: `closeAsync` takes 0 argument(s), 1 given
+error: `closeAsync` takes 0 arguments, 1 given
   closing is not cancelled, so it takes no token: what the writer holds is written and the file is closed
   --> error_async_close_token.sg:4:15
  4 |     try await w.closeAsync(read source.token())

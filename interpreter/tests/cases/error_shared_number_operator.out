@@ -1,0 +1,5 @@
+error: operator `+` is not defined for `shared int` and `int`
+  --> error_shared_number_operator.sg:4:11
+ 4 |     print(seen + 1)
+   |           ^^^^^^^^
+  hint: lend the number it holds for a block: `read seen as n { ... n + 1 ... }`

@@ -1,0 +1,9 @@
+panic: this `Account` is being changed, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_list_same_owner_lent_twice.sg:18:31
+ 18 |     transfer(ref accounts[0], ref accounts[1], 30)
+    |                               ^^^^^^^^^^^^^^^
+  it is being changed from here:
+  --> panic_checked_list_same_owner_lent_twice.sg:18:14
+ 18 |     transfer(ref accounts[0], ref accounts[1], 30)
+    |              ^^^^^^^^^^^^^^^

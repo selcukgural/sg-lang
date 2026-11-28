@@ -1,0 +1,17 @@
+// A field of a `shared checked` value read in a text, after another text on the same line: a
+// borrow to read changes nothing beside it, so compiled code writes the line as it is.
+struct Folder {
+    string name
+    int files
+}
+
+void main() {
+    var root = new shared checked Folder { name = "home".clone(), files = 2 }
+    var a = "x"
+    print($"{a}/{root.name}")
+    print($"{a}/{root.name}/{root.name}: {root.files}")
+    var line = $"{root.name} {a} {root.files}".toString()
+    print(line)
+    root.name = "work".clone()
+    print($"{a}/{root.name}")
+}

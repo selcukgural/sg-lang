@@ -7,3 +7,4 @@ error: this call of C may call `compareSlowly` back, which waits, and a `lock` b
   --> error_callback_waits_in_lock.sg:11:17
  11 |     return task.wait()
     |                 ^^^^
+  hint: call it before the block or after it

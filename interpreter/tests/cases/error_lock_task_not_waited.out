@@ -1,0 +1,6 @@
+error: `u` is not waited for before its block ends
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_lock_task_not_waited.sg:12:13
+ 12 |         var u = Task.run(count, share hits)
+    |             ^
+  hint: a `lock` block does not wait: add the task to a list made before the block, `var tasks = List<Task<void>>()`, and `Task.whenAll(tasks).wait()` after it

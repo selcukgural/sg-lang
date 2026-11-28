@@ -1,0 +1,40 @@
+// `.clone()` of a `shared` value is one more owner of the same value, whatever the value is:
+// a list, a map, a set, text or a struct. Each owner lets go on its own, and the value goes with
+// the last one, so the leak check at the end sees nothing left.
+struct Folder {
+    string name
+    List<string> files
+}
+
+shared List<int> keep(read shared List<int> numbers) {
+    return numbers.clone()
+}
+
+void main() {
+    var numbers = new shared List<int> { 1, 2 }
+    var other = numbers.clone()
+    print(same(numbers, other))
+    print(other[1])
+    var kept = keep(read numbers)
+    print(same(kept, numbers))
+
+    var ages = new shared HashMap<string, int>()
+    var again = ages.clone()
+    print(same(ages, again))
+    print(again.length())
+
+    var seen = new shared HashSet<int>()
+    print(same(seen.clone(), seen))
+
+    var folder = new shared Folder { name = "home".clone(), files = List<string>() }
+    var copy = folder.clone()
+    print(same(folder, copy))
+    print(copy.name)
+
+    // An owner given away: `copy` moves into the list, the others stay.
+    var list = List<shared Folder>()
+    list.add(folder.clone())
+    list.add(copy)
+    print(list.length())
+    print(list[1].name)
+}

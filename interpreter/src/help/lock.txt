@@ -31,7 +31,9 @@ DESCRIPTION
      lock therefore always lets it go, and locks cannot deadlock. Values
      needed together are locked in one block: lock a as x, b as y takes them
      in the order of their addresses, whatever order it names them in, so two
-     tasks never hold one each.
+     tasks never hold one each. A task may be started in a lock block; since
+     it is not waited for there, it goes into a list of tasks or a TaskGroup
+     made before the block, and is waited for after it.
 
      when waits before the block, not in it. The condition is computed under
      the lock, with each name lent to read; while it fails the lock is let go
@@ -287,7 +289,7 @@ WHAT STOPS THE PROGRAM
            --> example.sg:7:26
           7 |     lock queue as q when q.items.length() > 0 {
             |                          ^^^^^^^^^^^^^^^^^^^^
-           hint: a task with no more to give says so inside the value before it lets it go, `lock queue as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
+           hint: a task with no more to give says so inside the value before it lets it go, in a field such as `done`: `lock queue as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
 
      In the interpreter and in compiled code alike, a task that would wait for
      ever is stopped with the line it waits on.
@@ -362,6 +364,7 @@ WHAT THE COMPILER REFUSES
            --> example.sg:7:17
           7 |     return task.wait()
             |                 ^^^^
+           hint: call `ask` before the block or after it
 
      The compiler follows the calls, and shows where the wait is.
 
@@ -445,6 +448,7 @@ WHAT THE COMPILER REFUSES
             |                                                  ^^^^
            hint: keep what the condition looks at inside the locked value, and change it in a `lock` block
 
+     A shared atomic given to the task is refused there too, as is any atomic.
      The clock, random bytes and input or output are refused there for the
      same reason.
 

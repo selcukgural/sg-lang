@@ -1,0 +1,5 @@
+error: a `string` field cannot be moved out of a `shared checked` value: its other owners still look at it
+  --> error_checked_text_field_kept.sg:9:17
+ 9 |     var title = doc.title
+   |                 ^^^^^^^^^
+  hint: copy it: `doc.title.clone()`; or swap it with `doc.title.replace(value)`

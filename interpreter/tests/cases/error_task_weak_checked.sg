@@ -1,0 +1,13 @@
+// A `weak checked` value does not go to another task; a look at a value several tasks change is `weak locked`.
+struct Counter {
+    int n
+}
+
+void peek(weak checked Counter counter) {
+}
+
+void main() {
+    var c = new shared checked Counter { n = 0 }
+    var t = Task.run(peek, weak c)
+    t.wait()
+}

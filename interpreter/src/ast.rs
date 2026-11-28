@@ -179,6 +179,8 @@ fn bound_of(end: &Expr) -> Bound {
 /// Known once the checker has set the types and the kinds of the indexes.
 pub fn window_step(borrow: &Expr) -> Option<WindowStep<'_>> {
     let place = match &borrow.kind {
+        // `ref accounts[i]` of a `List<shared checked Account>` lent as a `ref Account`.
+        ExprKind::Unbox(inner) if matches!(inner.kind, ExprKind::Borrow { .. }) => return window_step(inner),
         ExprKind::Borrow { expr, .. } => &**expr,
         ExprKind::Slice { .. } if borrow.ty.is_borrow() => borrow,
         _ => return None,

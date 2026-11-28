@@ -1,0 +1,9 @@
+error: this borrows what a `shared checked` value holds, and such a borrow ends with its line; `slot` would keep it
+  --> error_checked_kept_changed.sg:4:16
+ 4 |     var slot = counts.getOrAdd("tea", 0)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_checked_kept_changed.sg:4:16
+ 4 |     var slot = counts.getOrAdd("tea", 0)
+   |                ^^^^^^
+  hint: lend it for a block instead: `ref counts as value { var slot = value.getOrAdd("tea", 0) ... }`

@@ -1,0 +1,5 @@
+error: `Hits` is a `static locked` value: it is there for the whole run and has no owners, so there is no owner for `weak` to look at
+  --> error_weak_static_locked.sg:5:21
+ 5 |     var look = weak Hits
+   |                     ^^^^
+  hint: reach it where it is needed: `lock Hits as name { ... }`

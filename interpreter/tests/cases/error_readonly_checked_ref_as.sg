@@ -1,0 +1,15 @@
+// A `readonly` field that holds a `shared checked` value is not opened with `ref`.
+struct Folder {
+    string name
+}
+
+struct Holder {
+    readonly shared checked Folder folder
+}
+
+void main() {
+    var h = Holder { folder = new shared checked Folder { name = "a".clone() } }
+    ref h.folder as f {
+        f.name = "b".clone()
+    }
+}

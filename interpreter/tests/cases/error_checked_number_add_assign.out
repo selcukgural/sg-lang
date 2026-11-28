@@ -1,0 +1,5 @@
+error: `+=` needs a number on the left, found `shared checked int`
+  --> error_checked_number_add_assign.sg:4:5
+ 4 |     hits += 1
+   |     ^^^^^^^^^
+  hint: change the number it holds in a block: `ref hits as n { n += 1 }`

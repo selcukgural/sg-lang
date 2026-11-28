@@ -1,0 +1,4 @@
+error: this is reached through a `read` borrow and cannot be lent as `ref`
+  --> error_checked_owner_ref_through_read.sg:12:15
+ 12 |     reset(ref account)
+    |               ^^^^^^^

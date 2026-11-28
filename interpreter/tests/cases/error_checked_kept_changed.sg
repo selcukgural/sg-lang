@@ -1,0 +1,6 @@
+// A borrow to change, kept in a variable: the hint lends it with `ref`, not `read`.
+void main() {
+    var counts = new shared checked HashMap<string, int>()
+    var slot = counts.getOrAdd("tea", 0)
+    slot += 1
+}

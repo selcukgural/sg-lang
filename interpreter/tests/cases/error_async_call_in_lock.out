@@ -7,3 +7,4 @@ error: `slow` waits, and a `lock` block does not wait
   --> error_async_call_in_lock.sg:6:5
  6 |     await Task.delay(1)
    |     ^^^^^^^^^^^^^^^^^^^
+  hint: call `slow` before the block or after it

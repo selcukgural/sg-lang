@@ -1,0 +1,6 @@
+error: operator `==` is not defined for `weak City` and `weak City`
+  a `weak` value shows nothing: what it looks at may be gone
+  --> error_weak_compared.sg:10:11
+ 10 |     print(look == other)
+    |           ^^^^^^^^^^^^^
+  hint: ask for an owner first: `share look`, which is `null` if it is gone

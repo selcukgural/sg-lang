@@ -1,0 +1,10 @@
+// A field of an owner made on the line: the owner is named first, so the borrow has one.
+struct Site {
+    string host
+}
+
+void main() {
+    var owner = new shared Site { host = "a".clone() }
+    var look = weak owner
+    print((share look)?.host ?? "gone")
+}

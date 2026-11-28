@@ -1,0 +1,8 @@
+// The `lock` block lends `hits` as `h`, and the hint says so.
+void main() {
+    var hits = new shared locked 0
+    lock hits as h {
+        h += 1
+        print(hits)
+    }
+}

@@ -1,0 +1,5 @@
+error: a `string` field cannot be moved out of a `shared` value: its other owners still look at it
+  --> error_shared_field_of_new_owner.sg:9:11
+ 9 |     print((share look)?.host ?? "gone")
+   |           ^^^^^^^^^^^^^^^^^^
+  hint: give the owner a name first, `var owner = share look`, then borrow it: `read owner?.host`

@@ -1,0 +1,26 @@
+// A task may be started in a `lock` block: a `lock` block does not wait, so the task is kept in
+// a list or a group made before the block, and waited for after it.
+void count(shared locked int hits) {
+    lock hits as h {
+        h += 1
+    }
+}
+
+void main() {
+    var hits = new shared locked 0
+    var tasks = List<Task<void>>()
+    lock hits as h {
+        tasks.add(Task.run(count, share hits))
+        h += 10
+    }
+    Task.whenAll(tasks).wait()
+    var group = TaskGroup()
+    lock hits as h {
+        group.add(Task.run(count, share hits))
+        h += 10
+    }
+    group.whenAll().wait()
+    lock hits as h {
+        print(h)
+    }
+}

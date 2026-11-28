@@ -1,4 +1,4 @@
-error: `view` takes 2 argument(s), 1 given
+error: `view` takes 2 arguments, 1 given
   `Memory.view(p, count)` looks at `count` items from `p`
   --> error_raw_view_arguments.sg:3:18
  3 |     print(unsafe Memory.view(p).length())

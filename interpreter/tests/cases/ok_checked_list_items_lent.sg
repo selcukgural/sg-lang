@@ -1,0 +1,41 @@
+// Items of a `List<shared checked Account>` lent as `ref`: two of them to one call, left to run
+// time as for any list (see panic_checked_list_item_lent_twice), and through a `read` borrow of
+// the list or of an owner, since what is borrowed is the owner, not what it points to.
+struct Account {
+    long balance
+}
+
+void transfer(ref Account from, ref Account to, long amount) {
+    from.balance -= amount
+    to.balance += amount
+}
+
+void take(ref Account from, long amount) {
+    from.balance -= amount
+}
+
+void charge(read List<shared checked Account> accounts, int i) {
+    accounts[i].balance -= 1
+    take(ref accounts[i], 3)
+}
+
+void chargeOne(read shared checked Account account) {
+    take(ref account, 5)
+}
+
+void main() {
+    var accounts = List<shared checked Account>()
+    accounts.add(new shared checked Account { balance = 100 })
+    accounts.add(new shared checked Account { balance = 50 })
+    transfer(ref accounts[0], ref accounts[1], 30)
+    print(accounts[0].balance)
+    print(accounts[1].balance)
+    var i = 0
+    var j = 1
+    transfer(ref accounts[j], ref accounts[i], 10)
+    print(accounts[0].balance)
+    charge(read accounts, 1)
+    print(accounts[1].balance)
+    chargeOne(read accounts[0])
+    print(accounts[0].balance)
+}

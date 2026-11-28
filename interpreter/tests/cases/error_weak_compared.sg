@@ -1,0 +1,11 @@
+// Two `weak` values compared: a `weak` value shows nothing, an owner does.
+struct City {
+    string name
+}
+
+void main() {
+    var c = new shared City { name = "a".clone() }
+    var look = weak c
+    var other = weak c
+    print(look == other)
+}

@@ -1,0 +1,6 @@
+error: a `Task` or a `TaskGroup` is not put in `new shared locked`: it is kept only in a local variable, a parameter or a return value; a task also in a `List<Task<R>>` or a `TaskGroup`
+  every task is waited for, and the compiler sees that only where the task stays in one function's hands
+  --> error_new_shared_locked_task.sg:8:35
+ 8 |     var total = new shared locked t
+   |                                   ^
+  hint: wait for it, and put what it gives there: `new shared locked t.wait()`

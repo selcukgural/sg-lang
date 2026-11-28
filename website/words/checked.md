@@ -37,7 +37,10 @@ where it lasts to the `}`. The receiver of a method that changes it is lent to r
 computed, and to change after them: `a.items.add(a.items.length())` works.
 
 A conflict the compiler can see, through the same variable and the same fields, is a compile error: the line
-would stop the program every time it ran. One through another owner is found when it happens, and the program
+would stop the program every time it ran. Items of a list are left to run time, as for any list:
+`transfer(ref accounts[i], ref accounts[j], 30)` on a `List<shared checked Account>` runs, and stops when `i`
+and `j` are the same. `ref x` also works through a `read` borrow of an owner, or of a list of owners, since what
+is borrowed is the owner and not what it points to. One through another owner is found when it happens, and the program
 stops with the line of the access and the line where the borrow began. The checks are made in the interpreter
 and in every compiled build, release too, as an index is checked: they keep memory safe. They cost 16 bytes in
 front of the counts of owners, for the borrows in progress, and a write on each borrow.
@@ -431,7 +434,7 @@ error: this borrows what a `shared checked` value holds, and such a borrow ends 
   --> example.sg:7:21
  7 |     var jobs = read queue.jobs
    |                     ^^^^^
-  hint: lend it for a block instead: `read queue as value { ... }`
+  hint: lend it for a block instead: `read queue as value { var jobs = read value.jobs ... }`
 ```
 
 A variable would look at the list while another owner changes or frees it. The block shows how long the

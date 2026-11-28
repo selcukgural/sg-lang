@@ -1,4 +1,4 @@
-error: `nextLong` takes 2 argument(s), 0 given
+error: `nextLong` takes 2 arguments, 0 given
   --> error_random_next_long.sg:3:11
  3 |     print(r.nextLong())
    |           ^^^^^^^^^^^^

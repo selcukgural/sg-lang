@@ -1605,6 +1605,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             sigs: &sigs,
             scopes: vec![Scope { consts: decl.visible.clone(), ..Scope::default() }],
             locks: Vec::new(),
+            lock_blocks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
@@ -1688,6 +1689,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             sigs: &sigs,
             scopes: vec![first],
             locks: Vec::new(),
+            lock_blocks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
@@ -2561,6 +2563,7 @@ fn check_tests(
             sigs,
             scopes: vec![Scope::default()],
             locks: Vec::new(),
+            lock_blocks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
@@ -3318,6 +3321,14 @@ fn task_inside(ty: &Ty) -> bool {
     }
 }
 
+/// A count of arguments as a message says it: `1 argument`, `2 arguments`.
+fn arguments(count: usize) -> String {
+    match count {
+        1 => "1 argument".to_string(),
+        count => format!("{count} arguments"),
+    }
+}
+
 /// A `Task` written where the compiler could not see it waited for.
 fn task_kept(span: Span) -> Diag {
     Diag::error(span, "a `Task` or a `TaskGroup` is kept only in a local variable, a parameter or a return value; a task also in a `List<Task<R>>` or a `TaskGroup`")
@@ -3454,7 +3465,8 @@ fn holds_writer(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<
 /// Why the part `stays` found does not go to another task.
 fn why_it_stays(part: &Ty, names: &Names) -> String {
     match part {
-        Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
+        Ty::Shared(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
+        Ty::Weak(..) => format!("a `{part}` is checked within one task; a look at one that several tasks change is `weak locked`"),
         Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
         Ty::Group => "a group of tasks is waited for by the task that made it, and by no other".to_string(),
         Ty::Raw(_) => "the checker does not follow a raw pointer, and two tasks could reach what it points at at once; a struct that keeps what it reaches safe for several tasks says so with `: unsafe Sendable`".to_string(),
@@ -4461,6 +4473,8 @@ struct Checker<'a> {
     scopes: Vec<Scope>,
     /// The collections the enclosing `for` loops are going over.
     locks: Vec<Lock>,
+    /// The `lock` blocks the code being checked is in, the innermost last: each value as written and the name it is lent as.
+    lock_blocks: Vec<Vec<(String, String)>>,
     borrows: Borrows,
     loops: usize,
     /// The enclosing loops, the innermost last.
@@ -4843,6 +4857,22 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// `weak Hits` or `share Hits` of a `static locked` value: a static is there for the whole
+    /// run, kept by no owners, so there is no owner to add and nothing that could be gone.
+    fn not_a_static_owner(&self, inner: &Expr, word: &str) -> Res<()> {
+        let ExprKind::Var(name) = &inner.kind else { return Ok(()) };
+        if self.var_named(name).is_some() {
+            return Ok(());
+        }
+        let Some(full) = self.static_named(name, inner.span)? else { return Ok(()) };
+        if !self.names.locked_statics.contains(&full) {
+            return Ok(());
+        }
+        let what = if word == "weak" { "there is no owner for `weak` to look at" } else { "`share` has no owner to add" };
+        Err(Diag::error(inner.span, format!("`{name}` is a `static locked` value: it is there for the whole run and has no owners, so {what}"))
+            .hint(format!("reach it where it is needed: `lock {name} as name {{ ... }}`")))
+    }
+
     /// The error for a static written or lent to change.
     fn static_changed(name: &str, span: Span) -> Diag {
         Diag::error(span, format!("`{name}` is a static, and a static is never assigned: it is read by every task"))
@@ -4991,8 +5021,16 @@ impl<'a> Checker<'a> {
     /// What a `shared locked` value holds, reached outside a `lock` block.
     fn locked_outside(&self, span: Span) -> Diag {
         let text = &self.src[span.start..span.end];
-        Diag::error(span, "what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it")
-            .hint(format!("`lock {text} as name {{ ... }}`"))
+        let diag = Diag::error(span, "what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it");
+        match self.locked_as(text) {
+            Some(name) => diag.hint(format!("this `lock` block lends it as `{name}`: write `{name}` in its place")),
+            None => diag.hint(format!("`lock {text} as name {{ ... }}`")),
+        }
+    }
+
+    /// The name an enclosing `lock` block lends this value as, written as it is here.
+    fn locked_as(&self, text: &str) -> Option<&str> {
+        self.lock_blocks.iter().rev().flatten().find(|(value, _)| value == text).map(|(_, name)| name.as_str())
     }
 
     /// A program started with `start`, kept in `var`, is not waited for where its scope ends: it
@@ -5021,6 +5059,9 @@ impl<'a> Checker<'a> {
     fn unwaited(&self, var: &Var, exit: Option<(Span, &str)>) -> Diag {
         let name = &var.name;
         let ends = if var.param { "the function ends" } else { "its block ends" };
+        // Made in a `lock` block, which does not wait: kept in what is made before the block,
+        // and waited for after it.
+        let in_lock = !self.lock_blocks.is_empty() && exit.is_none() && var.moved.whole.is_none();
         if var.declared == Ty::Group {
             let diag = match (exit, var.moved.whole.is_some()) {
                 (_, true) => Diag::error(var.at, format!("the tasks of `{name}` are waited for on some paths but not on all of them"))
@@ -5033,9 +5074,11 @@ impl<'a> Checker<'a> {
                 Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the tasks off"),
                 _ => diag.note("every task is waited for: a group lets go of each task that ends, and `whenAll` waits for the rest"),
             };
-            return diag.hint(match self.is_async {
-                true => format!("`await {name}.whenAll()`; to cut them after a time, `await {name}.whenAll(read token)`"),
-                false => format!("`{name}.whenAll().wait()`"),
+            return diag.hint(match (self.is_async, in_lock) {
+                (true, true) => format!("a `lock` block does not wait: make `{name}` before the block, and `await {name}.whenAll()` after it"),
+                (false, true) => format!("a `lock` block does not wait: make `{name}` before the block, and `{name}.whenAll().wait()` after it"),
+                (true, false) => format!("`await {name}.whenAll()`; to cut them after a time, `await {name}.whenAll(read token)`"),
+                (false, false) => format!("`{name}.whenAll().wait()`"),
             });
         }
         if task_list(&var.declared) {
@@ -5050,6 +5093,9 @@ impl<'a> Checker<'a> {
                 Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the tasks off"),
                 _ => diag.note(format!("a list of tasks is given to `Task.whenAll`, or emptied by a loop `while {name}.length() > 0` that takes them with `Task.whenAny`")),
             };
+            if in_lock {
+                return diag.hint(format!("a `lock` block does not wait: make `{name}` before the block, and {} after it", when_all(&var.declared, name, self.is_async)));
+            }
             return diag.hint(when_all(&var.declared, name, self.is_async));
         }
         let diag = match (exit, var.moved.whole.is_some()) {
@@ -5063,6 +5109,10 @@ impl<'a> Checker<'a> {
             Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the task off"),
             _ => diag.note("every task is waited for: its error is not lost, and no work is cut off"),
         };
+        if in_lock {
+            let list = Ty::List(Box::new(var.declared.clone()));
+            return diag.hint(format!("a `lock` block does not wait: add the task to a list made before the block, `var tasks = {list}()`, and {} after it", when_all(&list, "tasks", self.is_async)));
+        }
         match self.is_async {
             true => diag.hint(format!("`await {name}`")),
             false => diag.hint(format!("`{name}.wait()`")),
@@ -6946,13 +6996,24 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `bool`", op.symbol()))
                         .hint(format!("for two `bool`s write `{text} = {text} {own} {value_text}`")));
                 } else if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
-                    return Err(Diag::error(
+                    let diag = Diag::error(
                         stmt_span,
                         match op.expect("checked") {
                             op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) => format!("`{}=` needs a number on the left, found `{target_ty}`", op.symbol()),
                             op => format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()),
                         },
-                    ));
+                    );
+                    // A number in a `shared checked` value is changed for a block.
+                    let text = &self.src[target.span.start..target.span.end];
+                    let value_text = &self.src[value.span.start..value.span.end];
+                    let symbol = op.expect("checked").symbol();
+                    return Err(match target_ty.strip_borrow() {
+                        Ty::Shared(held, true) if matches!(**held, Ty::Int(_) | Ty::Float(_)) && is_simple(target) => {
+                            diag.hint(format!("change the number it holds in a block: `ref {text} as n {{ n {symbol}= {value_text} }}`"))
+                        }
+                        Ty::Shared(held, false) if matches!(**held, Ty::Int(_) | Ty::Float(_)) => diag.note("what a `shared` value holds is only read; a number that changes is `shared checked`, or `shared locked` for several tasks"),
+                        _ => diag,
+                    });
                 }
                 match (*op, &target_ty) {
                     // `x <<= n`: the count is any integer, as in `x << n`.
@@ -7416,6 +7477,12 @@ impl<'a> Checker<'a> {
                 if *mutable && !checked {
                     return Err(Diag::error(value.span, format!("`ref ... as` changes what it holds, and a `{found}` is only read")).note(SHARED_READ_ONLY));
                 }
+                // No change goes through a `readonly` field (choice 2151).
+                if *mutable {
+                    if let Some(diag) = self.readonly(value) {
+                        return Err(diag.note("so what it holds is not opened with `ref` either").hint(format!("to read it, `read {text} as {name} {{ ... }}`")));
+                    }
+                }
                 let ty = match mutable {
                     true => Ty::Ref(Box::new(inner)),
                     false => Ty::Read(Box::new(inner)),
@@ -7443,6 +7510,8 @@ impl<'a> Checker<'a> {
                 }
                 let mut binds = Vec::new();
                 let mut loans = Vec::new();
+                // The names that lend what a `readonly` field holds: the name, the value, why.
+                let mut only_read: Vec<(String, String, String)> = Vec::new();
                 for position in 0..items.len() {
                     let item = &mut items[position];
                     // `lock Settings as s`: a `static locked` value.
@@ -7500,15 +7569,28 @@ impl<'a> Checker<'a> {
                     if item.value.is_place() {
                         loans.extend(self.place_loans(&item.value, false, item.value.span));
                     }
-                    binds.push((item.name.clone(), Ty::Ref(Box::new(inner)), item.name_span));
+                    // Reached through a `readonly` field, what it holds is only read here: no
+                    // change goes through the field (choice 2151).
+                    let lent = match self.readonly(&item.value) {
+                        Some(diag) => {
+                            only_read.push((item.name.clone(), self.src[item.value.span.start..item.value.span.end].to_string(), diag.msg));
+                            Ty::Read(Box::new(inner))
+                        }
+                        None => Ty::Ref(Box::new(inner)),
+                    };
+                    binds.push((item.name.clone(), lent, item.name_span));
                 }
+                // What each name stands for, for the hints of a value reached in the block.
+                let named: Vec<(String, String)> = items.iter().map(|item| (self.src[item.value.span.start..item.value.span.end].to_string(), item.name.clone())).collect();
                 // `when`: computed under the locks, each name lent to read.
                 if let Some(when) = when {
+                    self.lock_blocks.push(named.clone());
                     self.scopes.push(Scope::default());
                     self.borrows.binds = loans.clone();
                     let reads = binds.iter().map(|(name, ty, span): &(String, Ty, Span)| (name.clone(), Ty::Read(Box::new(ty.strip_borrow().clone())), *span)).collect();
                     let checked = self.declare_binds(reads).and_then(|()| self.typed(when, &Ty::Bool));
                     // The names are lent to read here, whatever the parameters are.
+                    self.lock_blocks.pop();
                     checked.map_err(|mut diag| {
                         if diag.hint.as_deref() == Some("take the value as `ref` instead of `read`") {
                             diag.hint = Some("the condition only looks at what is locked; change it in the block".to_string());
@@ -7520,7 +7602,21 @@ impl<'a> Checker<'a> {
                 // Each name borrows what its value holds, so the values stay where they are.
                 self.borrows.binds = loans;
                 self.borrows.opening = true;
-                self.block_with(body, &[], binds)?;
+                self.lock_blocks.push(named);
+                let result = self.block_with(body, &[], binds);
+                self.lock_blocks.pop();
+                // A change through a name that is only read: said in the words of `readonly`.
+                result.map_err(|mut diag| {
+                    let written = &self.src[diag.span.start..diag.span.end];
+                    let named = only_read.iter().find(|(name, _, _)| written.strip_prefix(name.as_str()).is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')));
+                    if let (Some((name, value, why)), true) = (named, diag.msg.contains("a `read` borrow")) {
+                        let field = why.split('`').nth(1).unwrap_or(value);
+                        diag.msg = format!("`{name}` only reads what `{value}` holds, since `{field}` is `readonly`");
+                        diag.hint = None;
+                        diag = diag.note("`readonly` stops every change made through the field, a `lock` block's too");
+                    }
+                    diag
+                })?;
             }
             StmtKind::Unsafe(body) => {
                 self.enter_unsafe(stmt_span)?;
@@ -8212,7 +8308,14 @@ impl<'a> Checker<'a> {
             // copied out, or `null` (choice 1446); any other is only lent.
             (Ty::Read(inner) | Ty::Ref(inner), Ty::Nullable(_)) if **inner == *expected => {
                 if !inner.is_copyable(self.copyable) {
-                    return mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it: `{text}?.clone()`")));
+                    // One more look or one more owner, not a copy (`weak` and `shared` have no
+                    // `clone` of their own to call through `?.`).
+                    let copy = match expected {
+                        Ty::Nullable(held) if matches!(**held, Ty::Weak(..)) => format!("`weak {text}`"),
+                        Ty::Nullable(held) if matches!(**held, Ty::Shared(..)) => format!("`share {text}`"),
+                        _ => format!("`{text}?.clone()`"),
+                    };
+                    return mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it: {copy}")));
                 }
                 wrap(expr, ExprKind::Load);
                 expr.ty = expected.clone();
@@ -8227,6 +8330,10 @@ impl<'a> Checker<'a> {
             // One more owner of a `shared` value is made with `share`, where it can be seen.
             (Ty::Read(inner) | Ty::Ref(inner), Ty::Shared(..)) if **inner == *expected => {
                 mismatch(Some(format!("`{found}` only borrows it; one more owner is made with `share`: `share {text}`")))
+            }
+            // And one more look at it with `weak`.
+            (Ty::Read(inner) | Ty::Ref(inner), Ty::Weak(..)) if **inner == *expected => {
+                mismatch(Some(format!("`{found}` only borrows it; one more look is made with `weak`: `weak {text}`")))
             }
             // A borrow of a copyable value stands in for the value.
             (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && inner.is_copyable(self.copyable) => {
@@ -8248,7 +8355,11 @@ impl<'a> Checker<'a> {
                     _ => text,
                 };
                 let word = if matches!(expected, Ty::Ref(_)) { "ref " } else { "" };
-                Err(self.locked_outside(expr.span).hint(format!("lend what it holds inside a `lock` block: `lock {shared} as v {{ ... {word}v ... }}`")))
+                let hint = match self.locked_as(shared) {
+                    Some(name) => format!("this `lock` block lends it as `{name}`: write `{word}{name}` in its place"),
+                    None => format!("lend what it holds inside a `lock` block: `lock {shared} as v {{ ... {word}v ... }}`"),
+                };
+                Err(self.locked_outside(expr.span).hint(hint))
             }
             // A borrow of a `shared T` stands in for a `read` of the `T` it points to.
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if matches!(&**from, Ty::Shared(inner, _) if inner == to) => {
@@ -8708,15 +8819,37 @@ impl<'a> Checker<'a> {
             part = recv;
         }
         if let ExprKind::Field { recv, .. } = &expr.kind {
+            // A copy is the way out that works anywhere: a borrow of a `shared checked` value
+            // ends with its line, and one of a value with no name ends with it too.
+            let copy = can_clone(ty, &self.names.clonable, self.copyable).then(|| format!("`{}.clone()`", if is_simple(expr) { text.to_string() } else { format!("({text})") }));
             if through_shared(recv) {
-                return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `shared` value: its other owners still look at it"))
-                    .hint(format!("borrow it instead: `read {text}`")));
+                // `(share look)?.host`: the owner made on the line goes with it, so it is named first.
+                let mut root = &**recv;
+                while let ExprKind::Field { recv, .. } = &root.kind {
+                    root = recv;
+                }
+                let named = self.src[root.span.start..root.span.end].chars().all(|c| c.is_alphanumeric() || c == '_');
+                let hint = match named {
+                    true => format!("borrow it instead: `read {text}`"),
+                    false => {
+                        let owner = self.src[root.span.start..root.span.end].trim_start_matches('(').trim_end_matches(')');
+                        let rest = &self.src[root.span.end..span.end];
+                        let rest = rest.trim_start_matches(')');
+                        format!("give the owner a name first, `var owner = {owner}`, then borrow it: `read owner{rest}`")
+                    }
+                };
+                let hint = match copy {
+                    Some(copy) if named => format!("{hint}, or copy it: {copy}"),
+                    _ => hint,
+                };
+                return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `shared` value: its other owners still look at it")).hint(hint));
             }
             // Through `shared checked` the field can be swapped, so that no owner sees a hole.
             if through_holder(recv, true) {
-                let hint = match ty {
-                    Ty::Nullable(_) => format!("take it with `{text}.take()`, which leaves `null` there, or borrow it: `read {text}`"),
-                    _ => format!("swap it with `{text}.replace(value)`, or borrow it: `read {text}`"),
+                let hint = match (ty, copy) {
+                    (Ty::Nullable(_), _) => format!("take it with `{text}.take()`, which leaves `null` there, or borrow it for this line: `read {text}`"),
+                    (_, Some(copy)) => format!("copy it: {copy}; or swap it with `{text}.replace(value)`"),
+                    _ => format!("swap it with `{text}.replace(value)`, or borrow it for this line: `read {text}`"),
                 };
                 return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `shared checked` value: its other owners still look at it")).hint(hint));
             }
@@ -9020,6 +9153,8 @@ impl<'a> Checker<'a> {
                 return Err(match (access, whole) {
                     (Access::Move, _) | (_, None) => diag.hint(format!("the {what} cannot both look at `{earlier}` and take `{text}`: give it a copy of one of them")),
                     (_, Some(Expr { kind: ExprKind::Borrow { mutable: true, .. }, .. })) => diag.hint("a `ref` borrow must be the only one of its place: lend it once"),
+                    // `ref alice` of a `shared checked` value is kept as a borrow of what it points to.
+                    (_, Some(Expr { kind: ExprKind::Unbox(inner), .. })) if matches!(inner.kind, ExprKind::Borrow { mutable: true, .. }) => diag.hint("a `ref` borrow must be the only one of its place: lend it once"),
                     (_, Some(whole)) => {
                         let whole = self.src[whole.span.start..whole.span.end].trim();
                         diag.hint(format!("compute it before the {what}: `var value = {whole}`, then give it `value`"))
@@ -9753,7 +9888,19 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, found `{ty}`")));
                 }
                 if task_inside(&ty) {
-                    return Err(task_kept(inner.span));
+                    let word = match (checked, locked) {
+                        (_, true) => "new shared locked",
+                        (true, _) => "new shared checked",
+                        _ => "new shared",
+                    };
+                    let diag = Diag::error(inner.span, format!("a `Task` or a `TaskGroup` is not put in `{word}`: it is kept only in a local variable, a parameter or a return value; a task also in a `List<Task<R>>` or a `TaskGroup`"))
+                        .note("every task is waited for, and the compiler sees that only where the task stays in one function's hands");
+                    // What the task gives can be shared, once it is waited for.
+                    let text = &self.src[inner.span.start..inner.span.end];
+                    return Err(match &ty {
+                        Ty::Task(result) if **result != Ty::Void && is_simple(inner) => diag.hint(format!("wait for it, and put what it gives there: `{word} {text}.wait()`")),
+                        _ => diag,
+                    });
                 }
                 if let Ty::Shared(..) | Ty::Weak(..) | Ty::Ptr(_) | Ty::Nullable(_) = ty {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, and this is a `{ty}`"))
@@ -9804,6 +9951,7 @@ impl<'a> Checker<'a> {
                 atomic_of(ty, span)
             }
             ExprKind::Share(inner) => {
+                self.not_a_static_owner(inner, "share")?;
                 let found = self.operand(inner, None)?;
                 match found.strip_borrow() {
                     Ty::Shared(behind, checked) => Ok(Ty::Shared(behind.clone(), *checked)),
@@ -9818,6 +9966,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::WeakOf(inner) => {
+                self.not_a_static_owner(inner, "weak")?;
                 let found = self.operand(inner, None)?;
                 match found.strip_borrow() {
                     Ty::Shared(behind, checked) | Ty::Weak(behind, checked) => Ok(Ty::Weak(behind.clone(), *checked)),
@@ -9885,6 +10034,17 @@ impl<'a> Checker<'a> {
                     return Err(diag.note("so it cannot be lent as `ref` either"));
                 }
                 if !writable {
+                    // A `shared checked` owner reached through a `read` borrow (`read FolderRef
+                    // folder`, an item of a `read List<FolderRef>`): what is borrowed is the
+                    // owner, so what it points to is lent to be changed, checked when the
+                    // program runs; the owner itself never is (ownership.md#what-checked-changes).
+                    let owner_wanted = matches!(expected, Some(Ty::Ref(wanted)) if **wanted == *base);
+                    if let (Ty::Shared(held, true), false) = (&*base, owner_wanted) {
+                        let held = (**held).clone();
+                        expr.ty = Ty::Ref(base);
+                        wrap(expr, ExprKind::Unbox);
+                        return Ok(Ty::Ref(Box::new(held)));
+                    }
                     return Err(self.read_only(inner, Diag::error(inner.span, "this is reached through a `read` borrow and cannot be lent as `ref`")));
                 }
                 self.not_locked(inner, Access::Write)?;
@@ -9898,7 +10058,14 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(span, "a raw pointer is not a `T?`: it is an address, compared with `null`").hint(format!("`{text} {op} null`")));
                 }
                 if !matches!(ty.strip_borrow(), Ty::Nullable(_) | Ty::Null) {
-                    return Err(Diag::error(inner.span, format!("this is `{ty}`, which is never `null`")).note("only a `T?` can be `null`"));
+                    let diag = Diag::error(inner.span, format!("this is `{ty}`, which is never `null`")).note("only a `T?` can be `null`");
+                    // Whether what a `weak` value looks at is gone: the owner `share` asks for is `null` then.
+                    if matches!(ty.strip_borrow(), Ty::Weak(..)) {
+                        let text = &self.src[inner.span.start..inner.span.end];
+                        let word = if *negated { "is not null" } else { "is null" };
+                        return Err(diag.hint(format!("to know whether what it looks at is gone: `share {text} {word}`")));
+                    }
+                    return Err(diag);
                 }
                 Ok(Ty::Bool)
             }
@@ -10348,6 +10515,11 @@ impl<'a> Checker<'a> {
         *index = position;
         let fields = &variants[position].1;
         let names = fields.iter().map(|(field, _)| field.as_str()).collect::<Vec<_>>().join(", ");
+        // `Ok()` of a `Result<void, E>` matches as it is built, `return Ok()`; the same as `Ok`
+        // (choice 2150).
+        if name == "Ok" && fields.is_empty() && owner.starts_with("Result<") && args.as_ref().is_some_and(|args| args.is_empty()) {
+            *args = None;
+        }
         let Some(args) = args else {
             if fields.is_empty() {
                 return Ok(());
@@ -11337,6 +11509,23 @@ impl<'a> Checker<'a> {
                     .hint(format!("{}; or give a fallback with `??`", self.test_first(side, &side.ty))));
             }
         }
+        // A `weak` value shows nothing: an owner, asked for with `share`, does
+        // (ownership.md#a-weak-value-shows-nothing).
+        if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(side.ty.strip_borrow(), Ty::Weak(..))) {
+            let text = self.src[side.span.start..side.span.end].trim();
+            return Err(Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
+                .note("a `weak` value shows nothing: what it looks at may be gone")
+                .hint(format!("ask for an owner first: `share {text}`, which is `null` if it is gone")));
+        }
+        // A number in a `shared` value is reached for a block: `read seen as n { ... n + 1 ... }`.
+        if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(side.ty.strip_borrow(), Ty::Shared(held, _) if matches!(**held, Ty::Int(_) | Ty::Float(_) | Ty::Char))) {
+            let text = self.src[side.span.start..side.span.end].trim();
+            if is_simple(side) {
+                let written = format!("{}n{}", &self.src[span.start..side.span.start], &self.src[side.span.end..span.end]);
+                return Err(Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
+                    .hint(format!("lend the number it holds for a block: `read {text} as n {{ ... {written} ... }}`")));
+            }
+        }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -11687,7 +11876,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if args.len() < required || args.len() > sig.params.len() {
-            return Err(Diag::error(span, format!("`{name}` takes {required} to {} argument(s), {} given", sig.params.len(), args.len()))
+            return Err(Diag::error(span, format!("`{name}` takes {required} to {}, {} given", arguments(sig.params.len()), args.len()))
                 .note(format!("the last {} have default values", sig.params.len() - required)));
         }
         let at = Span::new(span.end, span.end);
@@ -11711,7 +11900,7 @@ impl<'a> Checker<'a> {
 
     fn args(&mut self, name: &str, args: &mut [Expr], params: &[Ty], span: Span) -> Res<()> {
         if args.len() != params.len() {
-            return Err(Diag::error(span, format!("`{name}` takes {} argument(s), {} given", params.len(), args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(params.len()), args.len())));
         }
         for (arg, param) in args.iter_mut().zip(params) {
             self.typed(arg, param)?;
@@ -11725,7 +11914,7 @@ impl<'a> Checker<'a> {
             if args.len() == count {
                 Ok(())
             } else {
-                Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
+                Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len())))
             }
         };
         // A variable that holds a function value is called like a function; it wins over a
@@ -11766,6 +11955,12 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Never)
             }
             "assert" => {
+                // The condition is the message; a text of one's own goes to `panic`.
+                if args.len() == 2 {
+                    let condition = &self.src[args[0].span.start..args[0].span.end];
+                    let message = &self.src[args[1].span.start..args[1].span.end];
+                    arity(1).map_err(|diag| diag.note("`assert` writes the condition as its message").hint(format!("for a message of your own: `if !({condition}) {{ panic({message}) }}`")))?;
+                }
                 arity(1)?;
                 self.typed(&mut args[0], &Ty::Bool)?;
                 Ok(Ty::Void)
@@ -11780,7 +11975,7 @@ impl<'a> Checker<'a> {
             // ends (1716); `whenRoom` waits while `limit` of them run (1719).
             "TaskGroup" => {
                 if args.len() > 1 {
-                    return Err(Diag::error(span, format!("`TaskGroup` takes 0 or 1 argument(s), {} given", args.len()))
+                    return Err(Diag::error(span, format!("`TaskGroup` takes 0 or 1 argument, {} given", args.len()))
                         .hint("`TaskGroup()` has no limit; `TaskGroup(1000)` has `whenRoom` wait while 1,000 of its tasks run"));
                 }
                 let limited = args.len() == 1;
@@ -11905,7 +12100,7 @@ impl<'a> Checker<'a> {
         let short = short_name(name);
         if sig.variadic {
             if args.len() < sig.params.len() {
-                return Err(Diag::error(span, format!("`{short}` takes at least {} argument(s), {} given", sig.params.len(), args.len())));
+                return Err(Diag::error(span, format!("`{short}` takes at least {}, {} given", arguments(sig.params.len()), args.len())));
             }
             self.needs_unsafe(span, &format!("`{short}` is a function of C, and the checker cannot see what it does"))?;
             let (fixed, more) = args.split_at_mut(sig.params.len());
@@ -11919,7 +12114,7 @@ impl<'a> Checker<'a> {
             return Ok(sig.ret.clone());
         }
         if args.len() != sig.params.len() {
-            return Err(Diag::error(span, format!("`{short}` takes {} argument(s), {} given", sig.params.len(), args.len())));
+            return Err(Diag::error(span, format!("`{short}` takes {}, {} given", arguments(sig.params.len()), args.len())));
         }
         self.needs_unsafe(span, &format!("`{short}` is a function of C, and the checker cannot see what it does"))?;
         self.c_args(args, &sig.params)?;
@@ -11930,7 +12125,7 @@ impl<'a> Checker<'a> {
     /// A call through a `CFunc`: it may reach any function of C, so it is a call of C.
     fn c_value_call(&mut self, name: &str, args: &mut [Expr], params: &[Ty], span: Span) -> Res<()> {
         if args.len() != params.len() {
-            return Err(Diag::error(span, format!("`{name}` takes {} argument(s), {} given", params.len(), args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(params.len()), args.len())));
         }
         self.needs_unsafe(span, &format!("`{name}` points at a function of C, and the checker cannot see what it does"))?;
         self.c_args(args, params)
@@ -12034,7 +12229,7 @@ impl<'a> Checker<'a> {
                 .hint("memory that C keeps is taken with `Memory.allocate<T>(count)`"));
         }
         if !args.is_empty() {
-            return Err(Diag::error(span, format!("`pointer` takes 0 argument(s), {} given", args.len())));
+            return Err(Diag::error(span, format!("`pointer` takes 0 arguments, {} given", args.len())));
         }
         if let Some(part) = not_plain(&item, self.structs) {
             let diag = Diag::error(recv.span, format!("C is given the address of plain data, and the items are `{item}`"));
@@ -12314,7 +12509,7 @@ impl<'a> Checker<'a> {
         // ends early when the token is cancelled, and says which way it ended.
         if name == "delay" {
             if args.is_empty() || args.len() > 2 {
-                return Err(Diag::error(span, format!("`Task.delay` takes 1 or 2 argument(s), {} given", args.len()))
+                return Err(Diag::error(span, format!("`Task.delay` takes 1 or 2 arguments, {} given", args.len()))
                     .hint("`Task.delay(100)` ends after 100 milliseconds; `Task.delay(100, read token)` ends early when the token is cancelled"));
             }
             self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| {
@@ -12370,7 +12565,7 @@ impl<'a> Checker<'a> {
         };
         let func = self.src[first.span.start..first.span.end].to_string();
         if rest.len() != params.len() {
-            return Err(Diag::error(span, format!("`{func}` takes {} argument(s), {} given after it", params.len(), rest.len())));
+            return Err(Diag::error(span, format!("`{func}` takes {}, {} given after it", arguments(params.len()), rest.len())));
         }
         for (position, param) in params.iter().enumerate() {
             if let Some((part, at)) = stays(param, self.structs, self.enums, self.names, &mut Vec::new()) {
@@ -12454,9 +12649,9 @@ impl<'a> Checker<'a> {
     fn orders(&mut self, op: AtomicOp, args: &mut Vec<Expr>, values: usize, most: usize, span: Span) -> Res<Vec<(Order, Span)>> {
         let name = op.name();
         if args.len() < values || args.len() > values + most {
-            let diag = Diag::error(span, format!("`{name}` takes {} argument(s), {} given", match most {
-                0 => values.to_string(),
-                _ => format!("{values} to {}", values + most),
+            let diag = Diag::error(span, format!("`{name}` takes {}, {} given", match most {
+                0 => arguments(values),
+                _ => format!("{values} to {}", arguments(values + most)),
             }, args.len()));
             return Err(match op {
                 AtomicOp::CompareExchange(_) => diag.note(format!("`{name}(expected, desired)`, then the order it keeps and the one it keeps when it fails, if not `SequentiallyConsistent`")),
@@ -12612,7 +12807,7 @@ impl<'a> Checker<'a> {
         }
         if name == "linked" {
             if args.len() != 1 {
-                return Err(Diag::error(span, format!("`CancellationSource.linked` takes 1 argument(s), {} given", args.len())));
+                return Err(Diag::error(span, format!("`CancellationSource.linked` takes 1 argument, {} given", args.len())));
             }
             self.token_arg(&mut args[0])?;
             *callee = Callee::Cancel(CancelCall::Linked);
@@ -12627,7 +12822,7 @@ impl<'a> Checker<'a> {
             });
         }
         if args.len() != 1 {
-            return Err(Diag::error(span, format!("`CancellationSource.after` takes 1 argument(s), {} given", args.len())));
+            return Err(Diag::error(span, format!("`CancellationSource.after` takes 1 argument, {} given", args.len())));
         }
         self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`CancellationSource.after(ms)` takes the milliseconds as an `int`"))?;
         *callee = Callee::Cancel(CancelCall::After);
@@ -12670,12 +12865,12 @@ impl<'a> Checker<'a> {
         };
         if call == CancelCall::CancelAfter {
             if args.len() != 1 {
-                return Err(Diag::error(span, format!("`cancelAfter` takes 1 argument(s), {} given", args.len()))
+                return Err(Diag::error(span, format!("`cancelAfter` takes 1 argument, {} given", args.len()))
                     .hint(format!("`{}.cancelAfter(30000)` cancels it 30 seconds from now", &self.src[recv.span.start..recv.span.end])));
             }
             self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`cancelAfter(ms)` takes the milliseconds as an `int`"))?;
         } else if !args.is_empty() {
-            return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), {} given", args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes 0 arguments, {} given", args.len())));
         }
         *callee = Callee::Cancel(call);
         Ok(match call {
@@ -12797,7 +12992,7 @@ impl<'a> Checker<'a> {
         match call {
             GroupCall::Add => {
                 if args.len() != 1 {
-                    return Err(Diag::error(span, format!("`add` takes 1 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`add` takes 1 argument, {} given", args.len())));
                 }
                 let task = Ty::Task(Box::new(Ty::Void));
                 self.args(name, args, std::slice::from_ref(&task), span).map_err(|diag| match args[0].ty.strip_borrow() {
@@ -12812,7 +13007,7 @@ impl<'a> Checker<'a> {
             }
             GroupCall::Count => {
                 if !args.is_empty() {
-                    return Err(Diag::error(span, format!("`count` takes 0 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`count` takes 0 arguments, {} given", args.len())));
                 }
                 self.touch(recv, Access::Read);
                 *callee = Callee::Group(GroupCall::Count, false);
@@ -12820,7 +13015,7 @@ impl<'a> Checker<'a> {
             }
             GroupCall::WhenRoom | GroupCall::WhenAll => {
                 if args.len() > 1 {
-                    return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), or 1 with a token; {} given", args.len())));
+                    return Err(Diag::error(span, format!("`{name}` takes 0 arguments, or 1 with a token; {} given", args.len())));
                 }
                 let told = match args.first_mut() {
                     Some(token) => {
@@ -12904,9 +13099,9 @@ impl<'a> Checker<'a> {
         let count = params.len();
         match waits {
             true if args.len() != count && args.len() != count + 1 => {
-                return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+                return Err(Diag::error(span, format!("`{name}` takes {}, or {} with a token last; {} given", arguments(count), count + 1, args.len())));
             }
-            false if args.len() != count => return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len()))),
+            false if args.len() != count => return Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len()))),
             _ => {}
         }
         let (given, token) = args.split_at_mut(count);
@@ -13008,7 +13203,7 @@ impl<'a> Checker<'a> {
                         .hint("`flushAsync()` writes what it holds through a borrow"));
                 }
                 if !args.is_empty() {
-                    return Err(Diag::error(span, format!("`closeAsync` takes 0 argument(s), {} given", args.len()))
+                    return Err(Diag::error(span, format!("`closeAsync` takes 0 arguments, {} given", args.len()))
                         .note("closing is not cancelled, so it takes no token: what the writer holds is written and the file is closed"));
                 }
                 0
@@ -13034,7 +13229,7 @@ impl<'a> Checker<'a> {
             }
         };
         if args.len() != count && args.len() != count + 1 {
-            return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes {}, or {} with a token last; {} given", arguments(count), count + 1, args.len())));
         }
         let (given, token) = match args.len() == count + 1 {
             true => args.split_at_mut(count),
@@ -13117,7 +13312,7 @@ impl<'a> Checker<'a> {
             "sizeOf" | "alignOf" => Err(Diag::error(name_span, format!("`Memory.{name}` names the type it measures")).hint(format!("`Memory.{name}<int>()`"))),
             "free" => {
                 if args.len() != 1 {
-                    return Err(Diag::error(span, format!("`free` takes 1 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`free` takes 1 argument, {} given", args.len())));
                 }
                 pointer(self, &mut args[0], "what `Memory.free` gives back")?;
                 self.needs_unsafe(span, "`Memory.free` gives memory back, and a pointer to it may still be used")?;
@@ -13126,7 +13321,7 @@ impl<'a> Checker<'a> {
             }
             "copy" => {
                 if args.len() != 3 {
-                    return Err(Diag::error(span, format!("`copy` takes 3 argument(s), {} given", args.len()))
+                    return Err(Diag::error(span, format!("`copy` takes 3 arguments, {} given", args.len()))
                         .note("`Memory.copy(source, target, count)` copies `count` items"));
                 }
                 let source = pointer(self, &mut args[0], "what `Memory.copy` copies from")?;
@@ -13146,7 +13341,7 @@ impl<'a> Checker<'a> {
             // `Memory.addressOf(ref state)`: what a callback is given back by C.
             "addressOf" => {
                 if args.len() != 1 {
-                    return Err(Diag::error(span, format!("`addressOf` takes 1 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`addressOf` takes 1 argument, {} given", args.len())));
                 }
                 let named = |expr: &Expr| {
                     let mut at = expr;
@@ -13180,7 +13375,7 @@ impl<'a> Checker<'a> {
                 let writes = name == "viewRef";
                 let call = format!("Memory.{name}");
                 if args.len() != 2 {
-                    return Err(Diag::error(span, format!("`{name}` takes 2 argument(s), {} given", args.len()))
+                    return Err(Diag::error(span, format!("`{name}` takes 2 arguments, {} given", args.len()))
                         .note(format!("`{call}(p, count)` {} `count` items from `p`", if writes { "writes" } else { "looks at" })));
                 }
                 let named = |expr: &Expr| {
@@ -13227,7 +13422,7 @@ impl<'a> Checker<'a> {
                 let writes = name == "writeVolatile";
                 let wanted = if writes { 2 } else { 1 };
                 if args.len() != wanted {
-                    let diag = Diag::error(span, format!("`{name}` takes {wanted} argument(s), {} given", args.len()));
+                    let diag = Diag::error(span, format!("`{name}` takes {}, {} given", arguments(wanted), args.len()));
                     return Err(diag.note(if writes { "`Memory.writeVolatile(p[0], value)` writes the item at `p`" } else { "`Memory.readVolatile(p[0])` reads the item at `p`" }));
                 }
                 self.needs_unsafe(span, &format!("`Memory.{name}` {} raw memory, which the checker does not follow", if writes { "writes" } else { "reads" }))?;
@@ -13270,7 +13465,7 @@ impl<'a> Checker<'a> {
             // because nothing reads them afterwards. A window is checked, so no `unsafe`.
             "zeroSecurely" => {
                 if args.len() != 1 {
-                    return Err(Diag::error(span, format!("`zeroSecurely` takes 1 argument(s), {} given", args.len()))
+                    return Err(Diag::error(span, format!("`zeroSecurely` takes 1 argument, {} given", args.len()))
                         .note("`Memory.zeroSecurely(ref buffer)` writes zeros over the items"));
                 }
                 let found = self.expr(&mut args[0], None)?;
@@ -13304,7 +13499,7 @@ impl<'a> Checker<'a> {
                 let writes = name == "writeUnaligned";
                 let wanted = if writes { 2 } else { 1 };
                 if args.len() != wanted {
-                    let diag = Diag::error(span, format!("`{name}` takes {wanted} argument(s), {} given", args.len()));
+                    let diag = Diag::error(span, format!("`{name}` takes {}, {} given", arguments(wanted), args.len()));
                     return Err(diag.note(if writes { "`Memory.writeUnaligned(p, value)` writes the item at `p`" } else { "`Memory.readUnaligned(p)` reads the item at `p`" }));
                 }
                 let found = pointer(self, &mut args[0], &format!("what `Memory.{name}` {}", if writes { "writes" } else { "reads" }))?;
@@ -13683,7 +13878,7 @@ impl<'a> Checker<'a> {
             return self.token_arg(&mut token[0]);
         }
         if args.len() != params.len() {
-            return Err(Diag::error(span, format!("`{name}` takes {} argument(s), or {} with a token last; {} given", params.len(), params.len() + 1, args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes {}, or {} with a token last; {} given", arguments(params.len()), params.len() + 1, args.len())));
         }
         self.args(name, args, params, span)
     }
@@ -13871,10 +14066,10 @@ impl<'a> Checker<'a> {
         let count = params.len();
         if is_async {
             if args.len() != count && args.len() != count + 1 {
-                return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+                return Err(Diag::error(span, format!("`{name}` takes {}, or {} with a token last; {} given", arguments(count), count + 1, args.len())));
             }
         } else if args.len() != count {
-            return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len())));
         }
         let (given, token) = args.split_at_mut(count);
         if call == NetCall::Receive {
@@ -13954,7 +14149,7 @@ impl<'a> Checker<'a> {
         if args.len() != params.len() {
             return Err(match params.len() {
                 0 => Diag::error(span, format!("`{name}` takes no arguments, {} given", args.len())),
-                count => Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())),
+                count => Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len())),
             });
         }
         self.args(name, args, &params, span)?;
@@ -13986,7 +14181,7 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         let base = name.strip_suffix("Async").expect("an async name");
         if args.len() > 1 {
-            return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), or 1 with a token last; {} given", args.len())));
+            return Err(Diag::error(span, format!("`{name}` takes 0 arguments, or 1 with a token last; {} given", args.len())));
         }
         self.stream_method(recv, target, writable, borrowed, base, name, name_span, &mut [], callee, span)?;
         if let Some(token) = args.first_mut() {
@@ -14109,7 +14304,7 @@ impl<'a> Checker<'a> {
                 .note("a connection read by one task and sent on by another is not here yet"));
         }
         if args.len() > 1 {
-            return Err(Diag::error(span, format!("`reader` takes 0 argument(s), or 1 (the longest line it reads, in bytes); {} given", args.len())));
+            return Err(Diag::error(span, format!("`reader` takes 0 arguments, or 1 (the longest line it reads, in bytes); {} given", args.len())));
         }
         self.args(name, args, &[Ty::Int(IntTy::Nint)][..args.len()], span)?;
         self.touch(recv, Access::Read);
@@ -14313,7 +14508,7 @@ impl<'a> Checker<'a> {
                 // `string.fromCString(p)`: a copy of the text C ends with a zero byte, if it is text.
                 if owner == "string" && name == "fromCString" {
                     if args.len() != 1 {
-                        return Err(Diag::error(span, format!("`fromCString` takes 1 argument(s), {} given", args.len())));
+                        return Err(Diag::error(span, format!("`fromCString` takes 1 argument, {} given", args.len())));
                     }
                     let found = self.expr(&mut args[0], None)?;
                     // A `CString` is a text with its zero byte: reading it needs no `unsafe`. One
@@ -14463,7 +14658,7 @@ impl<'a> Checker<'a> {
                     .note("`wait` waits for the task and gives what its function returned"));
             }
             if !args.is_empty() {
-                return Err(Diag::error(span, format!("`wait` takes 0 argument(s), {} given", args.len())));
+                return Err(Diag::error(span, format!("`wait` takes 0 arguments, {} given", args.len())));
             }
             if self.is_async {
                 let task = &self.src[recv.span.start..recv.span.end];
@@ -14501,7 +14696,7 @@ impl<'a> Checker<'a> {
         if name == "clone" {
             if let Ty::Shared(..) = recv_ty.strip_borrow() {
                 if !args.is_empty() {
-                    return Err(Diag::error(span, format!("`clone` takes 0 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`clone` takes 0 arguments, {} given", args.len())));
                 }
                 *callee = Callee::Plain;
                 return Ok(recv_ty.strip_borrow().clone());
@@ -14513,7 +14708,7 @@ impl<'a> Checker<'a> {
             if let Ty::Shared(inner, checked) = recv_ty.strip_borrow() {
                 let text = &self.src[recv.span.start..recv.span.end];
                 if !args.is_empty() {
-                    return Err(Diag::error(span, format!("`makeUnique` takes 0 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`makeUnique` takes 0 arguments, {} given", args.len())));
                 }
                 if *checked || matches!(**inner, Ty::Locked(_)) {
                     return Err(Diag::error(name_span, format!("`makeUnique` is for a `shared` value, which is only read; a `{}` is changed where it is", recv_ty.strip_borrow()))
@@ -14559,7 +14754,7 @@ impl<'a> Checker<'a> {
             };
             if made {
                 if !args.is_empty() {
-                    return Err(Diag::error(span, format!("`clone` takes 0 argument(s), {} given", args.len())));
+                    return Err(Diag::error(span, format!("`clone` takes 0 arguments, {} given", args.len())));
                 }
                 if !can_clone(target, &self.names.clonable, self.copyable) {
                     let diag = Diag::error(name_span, format!("a `{target}` cannot be cloned: what it holds cannot be copied"));
@@ -14819,7 +15014,7 @@ impl<'a> Checker<'a> {
             if args.len() == count {
                 Ok(())
             } else {
-                Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
+                Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len())))
             }
         };
         // A number behind a pointer is read out first: `count.wrappingAdd(1)` with `int* count`.
@@ -15409,7 +15604,7 @@ impl<'a> Checker<'a> {
             if args.len() == count {
                 Ok(())
             } else {
-                Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
+                Err(Diag::error(span, format!("`{name}` takes {}, {} given", arguments(count), args.len())))
             }
         };
         let what = match shown {
@@ -15721,7 +15916,7 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         let arity = |count: usize| match args.len() == count {
             true => Ok(()),
-            false => Err(Diag::error(span, format!("`{shown}` takes {count} argument(s), {} given", args.len()))),
+            false => Err(Diag::error(span, format!("`{shown}` takes {}, {} given", arguments(count), args.len()))),
         };
         let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let call = match (target, name) {
@@ -15983,7 +16178,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Res<Ty> {
         if !args.is_empty() {
-            return Err(Diag::error(span, format!("`take` takes 0 argument(s), {} given", args.len())));
+            return Err(Diag::error(span, format!("`take` takes 0 arguments, {} given", args.len())));
         }
         if !is_place {
             return Err(Diag::error(recv.span, "`take` needs a variable or a field: it leaves `null` there"));
@@ -16029,7 +16224,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Res<Ty> {
         if args.len() != 1 {
-            let diag = Diag::error(span, format!("`replace` takes 1 argument(s), {} given", args.len()));
+            let diag = Diag::error(span, format!("`replace` takes 1 argument, {} given", args.len()));
             if args.len() == 2 && is_text_value(recv_ty) {
                 let text = &self.src[recv.span.start..recv.span.end];
                 let (old, new) = (&self.src[args[0].span.start..args[0].span.end], &self.src[args[1].span.start..args[1].span.end]);

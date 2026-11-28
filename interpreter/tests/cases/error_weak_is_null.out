@@ -1,0 +1,6 @@
+error: this is `weak City`, which is never `null`
+  only a `T?` can be `null`
+  --> error_weak_is_null.sg:9:11
+ 9 |     print(look is null)
+   |           ^^^^
+  hint: to know whether what it looks at is gone: `share look is null`

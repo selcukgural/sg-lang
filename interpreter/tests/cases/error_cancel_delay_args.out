@@ -1,4 +1,4 @@
-error: `Task.delay` takes 1 or 2 argument(s), 3 given
+error: `Task.delay` takes 1 or 2 arguments, 3 given
   --> error_cancel_delay_args.sg:3:15
  3 |     _ = await Task.delay(10, read token, 3)
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

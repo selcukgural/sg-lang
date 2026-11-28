@@ -1,0 +1,6 @@
+error: `folder` is `readonly`: it is given when the value is built and not changed afterwards
+  so what it holds is not opened with `ref` either
+  --> error_readonly_checked_ref_as.sg:12:11
+ 12 |     ref h.folder as f {
+    |           ^^^^^^
+  hint: to read it, `read h.folder as f { ... }`

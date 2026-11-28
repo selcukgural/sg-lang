@@ -2218,6 +2218,10 @@ impl<'a> Parser<'a> {
                     if checked || locked {
                         self.bump();
                     }
+                    if self.at_word("checked") || self.at_word("locked") {
+                        return Err(Diag::error(self.span(), "a value with several owners is `checked` or `locked`, not both")
+                            .note("`checked` lets one task change it, each access checked; `locked` lets several tasks change it, inside a `lock` block"));
+                    }
                     let operand = self.nest(|parser| parser.unary())?;
                     let span = start.to(operand.span);
                     return Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::NewShared { value: Box::new(operand), checked, locked }, span });
@@ -2256,6 +2260,18 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::WeakOf, operand))
+            }
+            // `locked 0` for `new shared locked 0`: a value with several owners is made with
+            // `new shared`, and the hint shows the value as written.
+            Tok::Ident(word) if word == "checked" || word == "locked" => {
+                let word = word.clone();
+                self.bump();
+                let written = match self.nest(|parser| parser.unary()) {
+                    Ok(operand) => self.src[operand.span.start..operand.span.end].to_string(),
+                    Err(_) => "...".to_string(),
+                };
+                Err(Diag::error(start, format!("a `{word}` value has several owners, and is made with `new shared {word}`"))
+                    .hint(format!("`new shared {word} {written}`")))
             }
             // `await select { ... }`: the select waits as part of the task.
             Tok::Ident(word) if word == "await" && matches!(self.peek_at(1), Tok::Ident(next) if next == "select") && self.at_select(1) => {

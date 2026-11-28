@@ -2,4 +2,4 @@ error: a `string` field cannot be moved out of a `shared checked` value: its oth
   --> error_checked_move_field.sg:31:16
  31 |     var name = folder.name
     |                ^^^^^^^^^^^
-  hint: swap it with `folder.name.replace(value)`, or borrow it: `read folder.name`
+  hint: copy it: `folder.name.clone()`; or swap it with `folder.name.replace(value)`
