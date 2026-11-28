@@ -1,0 +1,13 @@
+// A pattern of a `match` has no `not`: the arm of `Off` first, then `_`.
+enum Light {
+    Off
+    On
+}
+
+void main() {
+    Light light = Light.On
+    match light {
+        not Off => print(1)
+        _ => print(2)
+    }
+}

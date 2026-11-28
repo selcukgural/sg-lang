@@ -1,0 +1,6 @@
+error: expected an expression, found `readonly`
+  `readonly` is written on a field of a struct; a value that does not change is a `const`, or a variable that is not assigned again
+  --> error_readonly_local.sg:3:5
+ 3 |     readonly int limit = 3
+   |     ^^^^^^^^
+  hint: `const int limit = 3`

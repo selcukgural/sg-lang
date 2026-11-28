@@ -1,0 +1,5 @@
+error: `NodePtr` is `Node*`, which is not built this way
+  --> error_alias_pointer_built.sg:9:20
+ 9 |     var node = new NodePtr { v = 1 }
+   |                    ^^^^^^^^^^^^^^^^^
+  hint: `new Node { v = 1 }`

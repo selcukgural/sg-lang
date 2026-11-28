@@ -1,0 +1,3 @@
+Label { text = "a", size = 20 }
+Point { x = 20, y = 2 }
+Label { text = "b", size = 30 }

@@ -1,0 +1,5 @@
+error: there is no type named `Formattable`
+  `Formattable` is an interface, and an interface is not a type: it is written after the name of a struct or an enum, `struct Label : Formattable`, and a parameter takes a type
+  --> error_interface_as_type.sg:2:11
+ 2 | void show(read Formattable value) {
+   |           ^^^^^^^^^^^^^^^^

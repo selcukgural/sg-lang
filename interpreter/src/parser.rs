@@ -171,7 +171,54 @@ impl<'a> Parser<'a> {
 
     fn unexpected(&self, wanted: &str) -> Diag {
         let diag = Diag::error(self.span(), format!("expected {wanted}, found {}", self.peek().describe()));
+        let span = self.span();
+        // Words of other languages between two conditions, where a value has just ended.
+        let joins = self.after_value() && !wanted.contains("name");
         match self.peek() {
+            Tok::Or if joins => {
+                return diag
+                    .note("`or` joins patterns, after `is` and in an arm of a `match`; two conditions are joined with `||`")
+                    .hint(format!("`{}`", self.line_with(span.start, span.end, "||")));
+            }
+            Tok::Ident(word) if joins && word == "and" => {
+                return diag
+                    .note("two conditions are joined with `&&`")
+                    .hint(format!("`{}`", self.line_with(span.start, span.end, "&&")));
+            }
+            // `readonly int limit = 3` in a function.
+            Tok::Readonly if wanted == "an expression" => {
+                return diag
+                    .note("`readonly` is written on a field of a struct; a value that does not change is a `const`, or a variable that is not assigned again")
+                    .hint(format!("`{}`", self.line_with(span.start, span.end, "const")));
+            }
+            Tok::Ident(word) if joins && word == "when" => {
+                return diag
+                    .note("`when` is the condition of an arm of a `match`; after `is`, a condition is joined with `&&`")
+                    .hint(format!("`{}`", self.line_with(span.start, span.end, "&&")));
+            }
+            _ => {}
+        }
+        // `if not ready`: `not` is a word only after `is`, so here it was read as a name.
+        if self.i >= 1 && matches!(&self.toks[self.i - 1].tok, Tok::Ident(word) if word == "not")
+            && (self.i < 2 || self.toks[self.i - 2].tok != Tok::Is)
+            && self.starts_value()
+        {
+            let not = self.toks[self.i - 1].span;
+            let found = &self.src[span.start..span.end];
+            if wanted == "`=>`" {
+                return diag
+                    .note("`not` is written only right after `is`, as in `is not null`; a pattern of a `match` has no `not`")
+                    .hint(format!("an arm for `{found}` first, then one for the rest: `{found} => ...` and `_ => ...`"));
+            }
+            return diag
+                .note("`not` is written only right after `is`, as in `is not null`; a condition is turned around with `!`")
+                .hint(format!("`{}`", self.line_with(not.start, span.start, "!")));
+        }
+        match self.peek() {
+            // An interface of one's own was put off with generics (12 November), in the language.
+            Tok::Ident(name) if name == "interface" => diag.note(
+                "an `interface` of your own is not in the language yet: it was put off with generics; the built-in ones are written after the name of a struct or an enum: `struct Label : Formattable`",
+            ),
             Tok::Ident(name) if NOT_YET.contains(&name.as_str()) => {
                 diag.note(format!("`{name}` is not in the interpreter yet"))
             }
@@ -228,6 +275,45 @@ impl<'a> Parser<'a> {
             }
             _ => diag,
         }
+    }
+
+    /// Whether the token before the next one ends a value: a name, a literal, `)` or `]`.
+    fn after_value(&self) -> bool {
+        self.i >= 1
+            && match &self.toks[self.i - 1].tok {
+                Tok::Ident(name) => !WORDS.contains(&name.as_str()),
+                Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::Interp(_) | Tok::Char(_) => true,
+                Tok::True | Tok::False | Tok::Null | Tok::RParen | Tok::RBracket => true,
+                _ => false,
+            }
+    }
+
+    /// Whether the next token can start a value.
+    fn starts_value(&self) -> bool {
+        matches!(
+            self.peek(),
+            Tok::Ident(_) | Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::Interp(_) | Tok::Char(_) | Tok::True | Tok::False | Tok::LParen | Tok::Bang
+        )
+    }
+
+    /// The line the next token is on, without its indent and a `{` at its end, with the text
+    /// from `from` to `to` written `with` instead: what a hint shows of the user's own line.
+    fn line_with(&self, from: usize, to: usize, with: &str) -> String {
+        let start = self.src[..from].rfind('\n').map_or(0, |at| at + 1);
+        let end = self.src[to..].find('\n').map_or(self.src.len(), |at| to + at);
+        let before = self.src[start..from].trim_start();
+        let after = self.src[to..end].trim_end();
+        let after = after.strip_suffix('{').unwrap_or(after).trim_end();
+        let (before, after) = match with {
+            "!" => (before.to_string(), after.trim_start().to_string()),
+            _ => {
+                let (before, after) = (before.trim_end(), after.trim_start());
+                let before = if before.is_empty() { String::new() } else { format!("{before} ") };
+                let after = if after.is_empty() { String::new() } else { format!(" {after}") };
+                (before, after)
+            }
+        };
+        format!("{before}{with}{after}")
     }
 
     /// Whether the next token is the word `word` (one of `WORDS`).
@@ -536,7 +622,7 @@ impl<'a> Parser<'a> {
         self.bump();
         let (name, name_span) = self.ident("the new name of the type")?;
         if *self.peek() == Tok::Lt {
-            return Err(Diag::error(self.span(), "an alias with type parameters is not in the interpreter yet")
+            return Err(Diag::error(self.span(), "an alias with type parameters is not in the language yet")
                 .note("generics of your own are deferred: `alias Link<T> = ...` comes with them"));
         }
         self.expect(Tok::Assign, "`=`").map_err(|d| d.note("an alias is written `alias NodeRef = shared Node`"))?;
@@ -675,7 +761,7 @@ impl<'a> Parser<'a> {
                 program.funcs.push(init);
             } else {
                 let ret = self.type_expr().map_err(|d| {
-                    d.hint("only structs, enums, consts, statics, functions and tests are written at the top level: `void main() { ... }`")
+                    d.hint("only `use` lines, structs, enums, aliases, consts, statics, functions, `extern` blocks and tests are written at the top level: `void main() { ... }`")
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
                 let mut func = self.func(ret, name, name_span, false)?;
@@ -2445,11 +2531,14 @@ impl<'a> Parser<'a> {
                     && *self.peek_at(2) == Tok::RParen
                     && matches!(self.peek_at(3), Tok::Ident(_) | Tok::Int(_)) =>
                 {
+                    // The checker tells an alias of a number type from anything else (choice 2214).
                     let Tok::Ident(name) = self.peek_at(1).clone() else { unreachable!("tested above") };
-                    let span = Span::new(start.start, self.toks[self.i + 2].span.end);
-                    Err(Diag::error(span, format!("a value is cast to a number type or to `char`, and `{name}` is neither"))
-                        .note("not every number is the number of a variant")
-                        .hint(format!("the variant of an enum with numbers that has the number, or `null`: `{name}.fromValue(n)`")))
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    let operand = self.nest(|parser| parser.unary())?;
+                    let span = start.to(operand.span);
+                    Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Cast { ty: Ty::Struct(name), expr: Box::new(operand) }, span })
                 }
                 None => self.postfix(),
             },
@@ -2818,12 +2907,25 @@ impl<'a> Parser<'a> {
 
     /// `{ value = 1, next = null }`; fields are separated by commas, line ends do not matter.
     fn struct_fields(&mut self) -> Res<Vec<FieldInit>> {
+        let name = match &self.toks[self.i.saturating_sub(1)].tok {
+            Tok::Ident(name) => name.clone(),
+            _ => String::new(),
+        };
         self.bump();
         let fields = self.bracketed(|p| {
             let mut fields = Vec::new();
             p.skip_newlines();
             while *p.peek() != Tok::RBrace {
-                let (name, span) = p.ident("a field name")?;
+                // `Scores { 1, 2 }` with `alias Scores = List<int>`: items, not fields.
+                let items = fields.is_empty() && name.starts_with(char::is_uppercase)
+                    && (matches!(p.peek(), Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::Interp(_) | Tok::Char(_) | Tok::True | Tok::False | Tok::Minus)
+                        || matches!(p.peek(), Tok::Ident(_)) && matches!(p.peek_at(1), Tok::Comma | Tok::RBrace));
+                let (name, span) = p.ident("a field name").map_err(|diag| match items {
+                    true => diag.note(format!(
+                        "`{name} {{ ... }}` builds a struct, one `field = value` at a time; a collection is built by the name of its type, not by an alias: `List<int> {{ 1, 2 }}`"
+                    )),
+                    false => diag,
+                })?;
                 p.expect(Tok::Assign, "`=`")?;
                 let value = p.expr()?;
                 fields.push(FieldInit { name, span, value, index: 0 });

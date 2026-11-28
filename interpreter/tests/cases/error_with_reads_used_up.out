@@ -1,0 +1,5 @@
+error: `with` uses `title` up before the new values are worked out, and the value of `size` reads it
+  --> error_with_reads_used_up.sg:9:38
+ 9 |     var bigger = title with { size = title.size * 2 }
+   |                                      ^^^^^
+  hint: read it into a variable first: `var size = title.size * 2`, then `title with { size = size }`

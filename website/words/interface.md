@@ -40,7 +40,9 @@ has the interface too: a `Formattable` struct is written the way it is built, tw
 when their fields are, and `.clone()` clones field by field. A type may write the method itself instead,
 `format`, `equals` or `clone`, with the form the table shows. `Comparable` is always written, since an order
 made from the order of the fields is rarely the one that is meant; an enum with numbers that writes none is
-ordered by its numbers. A `Hashable` type takes its `equals` and its hash from its fields for now.
+ordered by its numbers. A `Hashable` type takes its `equals` and its hash from its fields for now. The `equals`
+the compiler writes is called by name too: `a.equals(read b)` is `a == b`. The hash it writes serves `HashMap`
+and `HashSet` only and is not called by name, since the number it gives is no part of the language.
 
 `Copyable` has no method: it asks that every field is a number, a `bool`, a `char` or another `Copyable` type.
 A `string` or a `List` owns memory on the heap, and copying it means allocating, which is written `.clone()`.
@@ -263,10 +265,11 @@ void main() {
 
 ```text
 error: expected a type name, found `interface`
-  `interface` is not in the interpreter yet
+  an `interface` of your own is not in the language yet: it was put off with generics; the built-in ones are written after the name of a struct or an enum: `struct Label : Formattable`
   --> example.sg:1:1
  1 | interface Shape {
    | ^^^^^^^^^
+  hint: only `use` lines, structs, enums, aliases, consts, statics, functions, `extern` blocks and tests are written at the top level: `void main() { ... }`
 ```
 
 Interfaces of your own were put off with generics, so `interface` starts nothing yet. A method that every
@@ -287,7 +290,7 @@ void main() {
 
 ```text
 error: there is no interface named `Printable`
-  interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the interpreter yet
+  interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the language yet
   --> example.sg:1:17
  1 | struct Square : Printable {
    |                 ^^^^^^^^^
@@ -309,7 +312,7 @@ void main() {
 
 ```text
 error: there is no type named `Formattable`
-  built-in types for now: the integer types, float, double, bool, char, string
+  `Formattable` is an interface, and an interface is not a type: it is written after the name of a struct or an enum, `struct Label : Formattable`, and a parameter takes a type
   --> example.sg:1:11
  1 | void show(read Formattable value) {
    |           ^^^^^^^^^^^^^^^^

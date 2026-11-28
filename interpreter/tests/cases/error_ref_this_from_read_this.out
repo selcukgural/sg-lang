@@ -1,0 +1,5 @@
+error: `grow` takes `ref this`, but this value is reached through a `read` borrow
+  --> error_ref_this_from_read_this.sg:10:9
+ 10 |         this.grow()
+    |         ^^^^
+  hint: make `look` take `ref this` instead of `read this`

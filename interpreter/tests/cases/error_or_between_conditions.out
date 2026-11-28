@@ -1,0 +1,6 @@
+error: expected `{`, found `or`
+  `or` joins patterns, after `is` and in an arm of a `match`; two conditions are joined with `||`
+  --> error_or_between_conditions.sg:5:14
+ 5 |     if ready or late {
+   |              ^^
+  hint: `if ready || late`

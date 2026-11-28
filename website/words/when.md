@@ -38,6 +38,10 @@ block runs under the lock. The condition reads only the locked values.
 
 `when` has no place in an `is`: an `if` joins a test and a condition with `&&`.
 
+`when` is a word only in those two places, after the pattern of an arm and after what a `lock` holds.
+Elsewhere it is a name like any other: `var when = DateTime.fromUnixSeconds(0)` is a variable, and
+`_ when when > 2 => ...` reads it.
+
 ## Examples
 
 ### A condition on an arm
@@ -216,7 +220,9 @@ void main() {
 ```
 
 Both patterns fit `Two(2, 7)`. The first gives `x = 2`, and the condition is computed once, with that `x`; it
-fails, so the arm below runs. The second pattern, with `x = 7`, is not tried.
+fails, so the arm below runs. The second pattern, with `x = 7`, is not tried. So a pattern of an `or` that the
+patterns before it take is an error with a `when` too: `Two(x, _) or Two(_, x) when x > 5` takes every pair
+by its first pattern, and the condition never sees the `x` of the second.
 
 ### Looking in the condition, taking in the arm
 
@@ -414,9 +420,11 @@ void main() {
 
 ```text
 error: this is `read string?` and may be `null`; `.length()` needs a value
+  the arm `null` above has a `when`, so it does not take `null` away: its condition may be false
   --> example.sg:4:18
  4 |         var n => n.length()
    |                  ^
+  hint: test it first: `if n is not null { ... }`
 ```
 
 The arm `null` has a condition, so `null` may still reach `var n`. A plain `null => 0` makes `n` a
@@ -440,9 +448,11 @@ void main() {
 
 ```text
 error: expected `{`, found `when`
+  `when` is the condition of an arm of a `match`; after `is`, a condition is joined with `&&`
   --> example.sg:8:23
  8 |     if s is Circle(r) when r > 2 {
    |                       ^^^^
+  hint: `if s is Circle(r) && r > 2`
 ```
 
 In an `if`, the test and the condition are joined with `&&`: `if s is Circle(r) && r > 2`.

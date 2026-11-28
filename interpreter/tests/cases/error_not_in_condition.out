@@ -1,0 +1,6 @@
+error: expected `{`, found `ready`
+  `not` is written only right after `is`, as in `is not null`; a condition is turned around with `!`
+  --> error_not_in_condition.sg:4:12
+ 4 |     if not ready {
+   |            ^^^^^
+  hint: `if !ready`

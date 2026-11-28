@@ -329,18 +329,103 @@ fn is_module_name(name: &str) -> bool {
     chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// The words in front of a name that do not declare it: `share x`, `await t`, `lock x as c`.
+const NOT_DECLARING: &[&str] = &[
+    "share", "weak", "shared", "checked", "locked", "lock", "await", "async", "raw", "unsafe", "extern", "export", "atomic", "const", "static", "alias", "using", "not", "when", "take",
+];
+
+/// The variables declared so far in the blocks open at a point of a file, as far as the words
+/// show them (choice 2215): `var x`, `Point x`, `List<int> x`, `int? x`, a parameter, `for x in`
+/// and `as x`. A name in front of a dot that is one of them is that variable, which wins over a
+/// module (see "Which name wins"), so no folder is read for it. A declaration the words do not
+/// show (the names of a pattern) leaves the name a module, as before.
+struct Declared {
+    /// One set for each block open, with whether it is the body of a struct or an enum, where
+    /// `int x` is a field and declares no variable.
+    blocks: Vec<(HashSet<String>, bool)>,
+    /// The parameters of the function being written, for the block that opens it.
+    params: HashSet<String>,
+    /// A `struct` or an `enum` was written, and its body has not opened yet.
+    type_ahead: bool,
+    parens: usize,
+}
+
+impl Declared {
+    fn new() -> Declared {
+        Declared { blocks: Vec::new(), params: HashSet::new(), type_ahead: false, parens: 0 }
+    }
+
+    fn holds(&self, name: &str) -> bool {
+        self.blocks.iter().any(|(names, _)| names.contains(name))
+    }
+
+    /// Where no block of code is open: the top of a file, or the body of a type.
+    fn outside_code(&self) -> bool {
+        self.blocks.last().is_none_or(|(_, body)| *body)
+    }
+
+    /// Looks at the token at `i`, after the ones before it.
+    fn see(&mut self, toks: &[crate::lexer::Token], i: usize) {
+        match &toks[i].tok {
+            Tok::Struct | Tok::Enum => self.type_ahead = true,
+            Tok::LBrace => {
+                let body = std::mem::take(&mut self.type_ahead);
+                let names = if body { HashSet::new() } else { std::mem::take(&mut self.params) };
+                self.blocks.push((names, body));
+            }
+            Tok::RBrace => {
+                self.blocks.pop();
+            }
+            Tok::LParen => self.parens += 1,
+            Tok::RParen => self.parens = self.parens.saturating_sub(1),
+            Tok::Newline if self.parens == 0 && self.outside_code() => self.params.clear(),
+            Tok::Ident(name) if i > 0 && declares(toks, i) => {
+                if self.outside_code() {
+                    if self.parens > 0 {
+                        self.params.insert(name.clone());
+                    }
+                } else if let Some((names, _)) = self.blocks.last_mut() {
+                    names.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether the name at `i` is declared there by the words before it.
+fn declares(toks: &[crate::lexer::Token], i: usize) -> bool {
+    if matches!(toks.get(i + 1).map(|tok| &tok.tok), Some(Tok::Dot | Tok::LParen)) {
+        return false;
+    }
+    match &toks[i - 1].tok {
+        Tok::Var | Tok::For => true,
+        Tok::Ident(word) if word == "as" => true,
+        Tok::Ident(word) => !NOT_DECLARING.contains(&word.as_str()),
+        Tok::Gt | Tok::Question | Tok::Star | Tok::RBracket => true,
+        _ => false,
+    }
+}
+
 /// The modules a file names: after `use`, or in front of a dot (`billing.Line`). Every chain of
-/// names is tried; whether a folder of that name exists is asked by the caller.
+/// names is tried; whether a folder of that name exists is asked by the caller. A name in front
+/// of a dot that a variable declared before it in an open block has is not a module.
 fn named_paths(text: &str, range: Span) -> Vec<String> {
     let Ok(toks) = lex(text, range, false) else { return Vec::new() };
     let mut paths = Vec::new();
+    let mut declared = Declared::new();
     let mut i = 0;
     while i < toks.len() {
+        declared.see(&toks, i);
         let Tok::Ident(first) = &toks[i].tok else {
             i += 1;
             continue;
         };
         let after_use = i > 0 && toks[i - 1].tok == Tok::Use;
+        if !after_use && declared.holds(first) {
+            i += 1;
+            continue;
+        }
         let mut chain = vec![first.as_str()];
         i += 1;
         while i + 1 < toks.len() && toks[i].tok == Tok::Dot {

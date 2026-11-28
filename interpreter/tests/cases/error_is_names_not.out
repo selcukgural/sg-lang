@@ -1,5 +1,5 @@
 error: nothing here can use the names in this pattern
-  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in the second arm of its `?:`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
   this `if` has no `else`, and the code after it also runs when the block has run
   --> error_is_names_not.sg:8:15
  8 |     if !(s is Circle(r)) {

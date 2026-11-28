@@ -365,6 +365,7 @@ WHAT THE COMPILER REFUSES
          }
 
          error: `coupon` is `readonly`: it is given when the value is built and not changed afterwards
+           `take` puts `null` in its place
            --> example.sg:7:22
           7 |     var code = order.coupon.take()
             |                      ^^^^^^
@@ -380,9 +381,11 @@ WHAT THE COMPILER REFUSES
          }
 
          error: expected an expression, found `readonly`
+           `readonly` is written on a field of a struct; a value that does not change is a `const`, or a variable that is not assigned again
            --> example.sg:2:5
           2 |     readonly int limit = 3
             |     ^^^^^^^^
+           hint: `const int limit = 3`
 
      readonly goes on a field of a struct. A local that never changes is a var
      not assigned again, or a const int Limit = 3.

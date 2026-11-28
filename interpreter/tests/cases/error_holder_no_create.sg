@@ -1,0 +1,13 @@
+// A method of `read shared Team this` called on a plain `Team`; `Team` has no `create`.
+struct Team {
+    int size
+
+    void grow(read shared Team this) {
+        print(this.size)
+    }
+}
+
+void main() {
+    var team = Team { size = 1 }
+    team.grow()
+}

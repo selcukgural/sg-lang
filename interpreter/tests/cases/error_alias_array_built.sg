@@ -1,0 +1,7 @@
+// An alias of an array is not built by its name; the hint builds the array.
+alias Grid = int[3]
+
+void main() {
+    var grid = Grid(0)
+    print(grid[0])
+}

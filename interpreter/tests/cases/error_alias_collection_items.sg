@@ -1,0 +1,7 @@
+// A collection is built by the name of its type, not by an alias.
+alias Scores = List<int>
+
+void main() {
+    var scores = Scores { 1, 2 }
+    print(scores.length())
+}

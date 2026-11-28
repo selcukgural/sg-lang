@@ -1,0 +1,5 @@
+error: `with` takes the value of `label`, which is lent here, and a `Label` is not `Copyable`
+  --> error_with_clone_derived.sg:8:12
+ 8 |     return label with { size = label.size * 2 }
+   |            ^^^^^
+  hint: make a copy: `label.clone() with { ... }`

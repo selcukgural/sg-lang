@@ -320,6 +320,34 @@ error: `with` makes a new value of a struct from another, and this is a `Shape`
 
 A variant is built again instead: `Shape.Rect(5, 4)`.
 
+### A `T*` or a `shared` value
+
+```sg error
+struct Point : Copyable, Formattable {
+    int x
+    int y
+}
+
+void main() {
+    var origin = new shared Point { x = 1, y = 2 }
+    var moved = origin with { x = 20 }
+    print(moved)
+}
+```
+
+```text
+error: `with` makes a new value of a struct from another, and this is a `shared Point`
+  the other owners of a `shared` value still look at it; `with` takes a copy of it, inside a block that opens it
+  --> example.sg:8:17
+ 8 |     var moved = origin with { x = 20 }
+   |                 ^^^^^^
+  hint: `read origin as point { ... point with { ... } ... }`
+```
+
+`with` takes a struct. What a `shared` value holds stays with its other owners, and what a `T*` points at with
+its owner, so `with` takes a copy: inside `read origin as point { }`, `point with { x = 20 }`; for a `T*`,
+`label.clone() with { ... }`.
+
 ### The old value used after it was moved
 
 ```sg error
@@ -365,14 +393,11 @@ void main() {
 ```
 
 ```text
-error: `title` was moved and can no longer be used
+error: `with` uses `title` up before the new values are worked out, and the value of `size` reads it
   --> example.sg:8:35
  8 |     var big = title with { size = title.size * 2 }
    |                                   ^^^^^
-  it was moved here:
-  --> example.sg:8:15
- 8 |     var big = title with { size = title.size * 2 }
-   |               ^^^^^
+  hint: read it into a variable first: `var size = title.size * 2`, then `title with { size = size }`
 ```
 
 The left side runs first and moves `title`. `var size = title.size * 2` on the line before, and

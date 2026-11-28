@@ -1,0 +1,6 @@
+error: expected `{`, found `when`
+  `when` is the condition of an arm of a `match`; after `is`, a condition is joined with `&&`
+  --> error_when_after_is.sg:9:23
+ 9 |     if s is Circle(r) when r > 2.0 {
+   |                       ^^^^
+  hint: `if s is Circle(r) && r > 2.0`

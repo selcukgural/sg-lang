@@ -15,6 +15,9 @@ SYNOPSIS
      alias P = Point, then P { x = 1, y = 2 }, P(1, 2), P.origin()
             it builds what its type builds
 
+     alias Big = long, then (Big)n, Big.MaxValue, Big.parse(text)
+            an alias of a built-in type casts and has its functions
+
      alias NodeRef = shared Node, then new NodeRef { ... }
             new NodeRef is new shared Node
 
@@ -37,7 +40,9 @@ DESCRIPTION
      P.origin(); for an enum its variants, Why.Empty; for a shared type, new
      NodeRef { ... } or new NodeRef(args). A collection is the exception: it
      is built by the name of its type, List<int> { 1, 2 }, not by its alias.
-     In a pattern a variant is named alone, as always.
+     In a pattern a variant is named alone, as always. An alias of a number
+     type, char, bool or string is that type in a cast and in front of a dot:
+     (Big)n, Count.parse(text), Big.MaxValue, Text.join(", ", read parts).
 
      An alias is written at the top level of a file, one on a line, and is
      seen by every file of its module, in any order. Like a type, it stays in
@@ -123,6 +128,29 @@ EXAMPLES
      P { ... } builds field by field, P(3, 4) calls create, and P.origin() is
      the function of Point. The value prints as a Point, since that is what it
      is.
+
+   A built-in type under a second name
+         alias Big = long
+         alias Count = int
+         alias Text = string
+
+         void main() {
+             int n = 5
+             Big total = (Big)n * 1000000000000
+             print(total)
+             print(Big.MaxValue)
+             print(Count.parse("12") ?? 0)
+             var parts = List<string> { "a", "b" }
+             print(Text.join(", ", read parts))
+         }
+
+         5000000000000
+         9223372036854775807
+         12
+         a, b
+
+     (Big)n is (long)n, and Big.MaxValue is long.MaxValue: the alias stands
+     for its type there too.
 
    The type of a function
          alias Op = Func<int, int, int>

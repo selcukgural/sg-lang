@@ -1,0 +1,5 @@
+error: expected a field name, found `1`
+  `Scores { ... }` builds a struct, one `field = value` at a time; a collection is built by the name of its type, not by an alias: `List<int> { 1, 2 }`
+  --> error_alias_collection_items.sg:5:27
+ 5 |     var scores = Scores { 1, 2 }
+   |                           ^

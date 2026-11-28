@@ -1,0 +1,11 @@
+// An arm `null` with `when` does not take `null` away from the names below it.
+int size(string? name) {
+    return match name {
+        null when 1 > 2 => 0
+        var text => text.length()
+    }
+}
+
+void main() {
+    print(size("ab"))
+}

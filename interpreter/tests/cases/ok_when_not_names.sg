@@ -1,0 +1,28 @@
+// `when` and `not` are words only in their places (choice 2210): `when` after the pattern of an
+// arm of a `match` and after the items of `lock`, `not` right after `is`. Elsewhere they are
+// names, as `alias` is (choice 1919).
+enum Light {
+    Off
+    On
+}
+
+int negate(int when) {
+    for not in (List<int> { 1, 2 }) {
+        print(not)
+    }
+    return -when
+}
+
+void main() {
+    var when = 3
+    int not = 4
+    print(when + not)
+    print(negate(when))
+    var k = match when {
+        _ when when > 2 => when * 10
+        _ => 0
+    }
+    print(k)
+    Light light = Light.On
+    print(light is not Off)
+}

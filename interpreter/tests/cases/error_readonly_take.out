@@ -1,0 +1,5 @@
+error: `name` is `readonly`: it is given when the value is built and not changed afterwards
+  `take` puts `null` in its place
+  --> error_readonly_take.sg:8:20
+ 8 |     var name = box.name.take()
+   |                    ^^^^

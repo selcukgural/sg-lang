@@ -1,0 +1,12 @@
+// `when` is the condition of an arm of a `match`; after `is` a condition is joined with `&&`.
+enum Shape {
+    Circle(double radius)
+    Square(double side)
+}
+
+void main() {
+    Shape s = Shape.Circle(3.0)
+    if s is Circle(r) when r > 2.0 {
+        print(r)
+    }
+}

@@ -1,0 +1,6 @@
+error: expected end of line, found `or`
+  `or` joins patterns, after `is` and in an arm of a `match`; two conditions are joined with `||`
+  --> error_or_in_declaration.sg:5:24
+ 5 |     var either = ready or late
+   |                        ^^
+  hint: `var either = ready || late`

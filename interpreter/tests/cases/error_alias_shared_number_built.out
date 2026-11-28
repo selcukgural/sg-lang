@@ -1,0 +1,5 @@
+error: `Cell` is `shared int`, which is not built this way
+  --> error_alias_shared_number_built.sg:5:20
+ 5 |     var cell = new Cell(3)
+   |                    ^^^^^^^
+  hint: `new shared 3`

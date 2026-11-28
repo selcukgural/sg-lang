@@ -1,0 +1,7 @@
+// `not` is a word only right after `is`; a condition is turned around with `!`.
+void main() {
+    bool ready = true
+    if not ready {
+        print(1)
+    }
+}

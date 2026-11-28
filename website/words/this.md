@@ -321,7 +321,7 @@ error: this field is reached through a `read` borrow and cannot be written
   --> example.sg:5:9
  5 |         this.count += 1
    |         ^^^^^^^^^^
-  hint: take the value as `ref` instead of `read`
+  hint: make `bump` take `ref this` instead of `read this`
 ```
 
 `int bump(ref this)` makes the program right.
@@ -472,6 +472,7 @@ error: `spend` takes `this` by value and uses it up, but this value is only borr
   --> example.sg:9:15
  9 |         print(this.spend())
    |               ^^^^
+  hint: make `spend` take `read this` if it only looks, or make `redeem` take `this` by value
 ```
 
 `redeem` borrows the ticket, so it cannot give it away. Either `redeem` takes `this` too, or `spend` takes

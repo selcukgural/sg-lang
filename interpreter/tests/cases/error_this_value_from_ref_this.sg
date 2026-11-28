@@ -1,0 +1,17 @@
+// A method that uses `this` up, called on the `this` of a `ref this` one.
+struct Team {
+    int size
+
+    void spend(this) {
+        print(this.size)
+    }
+
+    void look(ref this) {
+        this.spend()
+    }
+}
+
+void main() {
+    var team = Team { size = 1 }
+    team.look()
+}

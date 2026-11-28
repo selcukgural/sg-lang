@@ -1,0 +1,14 @@
+// A struct that is `Clonable` without a `clone` of its own gets the hint to copy it too.
+struct Label : Formattable, Clonable {
+    string text
+    int size
+}
+
+Label bigger(read Label label) {
+    return label with { size = label.size * 2 }
+}
+
+void main() {
+    var l = Label { text = "a".clone(), size = 1 }
+    print(bigger(read l))
+}

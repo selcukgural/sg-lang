@@ -76,6 +76,9 @@ struct Names {
     kinds: HashMap<String, TypeKind>,
     /// Types written with `: Hashable`: they can be the key of a `HashMap`.
     keys: HashSet<String>,
+    /// The aliases resolved so far, by their full names, so that a chain of aliases is
+    /// resolved once and not again at every link.
+    resolved_aliases: std::cell::RefCell<HashMap<String, Ty>>,
     /// Types written with `: Clonable`: `.clone()` makes a copy of them, field by field unless
     /// they write their own `clone` (choice 1818).
     clonable: HashSet<String>,
@@ -121,8 +124,9 @@ struct Names {
 }
 
 thread_local! {
-    /// The aliases being resolved, the outer first: one that names itself is found here.
-    static RESOLVING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The aliases being resolved, the outer first, and the same names as a set: one that
+    /// names itself is found here.
+    static RESOLVING: std::cell::RefCell<(Vec<String>, HashSet<String>)> = std::cell::RefCell::new((Vec::new(), HashSet::new()));
 }
 
 impl Names {
@@ -1088,8 +1092,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 "Clonable" => names.clonable.insert(name.clone()),
                 "Comparable" => comparable.insert(name.clone()),
                 "Disposable" | "Closable" if prog.enums.iter().any(|decl| decl.name == *name) => {
+                    let method = if interface == "Closable" { "close" } else { "dispose" };
                     return Err(Diag::error(*span, format!("an enum cannot be `{interface}` for now: a struct can"))
-                        .note("a struct that holds the enum can be, and its `dispose` sees the enum whole"));
+                        .note(format!("a struct that holds the enum can be, and its `{method}` sees the enum whole")));
                 }
                 "Disposable" | "Closable" => false,
                 "unsafe Sendable" => names.sendable.insert(name.clone()),
@@ -1102,14 +1107,14 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                         .note("the other interfaces are checked by the compiler, so they need no promise"));
                 }
                 _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
-                    return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
+                    return Err(Diag::error(*span, format!("`{interface}` is not in the language yet"))
                         .note("interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`"));
                 }
                 _ => {
                     let diag = Diag::error(*span, format!("there is no interface named `{interface}`"));
                     return Err(match nearest(interface, INTERFACES.iter().copied()) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the interpreter yet"),
+                        None => diag.note("interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the language yet"),
                     });
                 }
             };
@@ -1384,7 +1389,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 
     // Every alias names a type, also one that nothing uses yet.
     for alias in &prog.aliases {
-        let ty = resolve_type(&alias.ty, &names, false)?;
+        let ty = resolve_type(&alias.ty, &names, false).map_err(alias_names_nothing)?;
         if alias.public && !module_of(&alias.name).is_empty() {
             exposes(short_name(&alias.name), alias.name_span, &ty, &names)?;
         }
@@ -1632,6 +1637,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             awaiting: false,
             unsafe_at: None,
             log_guarded: HashSet::new(),
+            null_under_condition: Vec::new(),
+            equals_made: false,
+            settling_recv: false,
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -1722,6 +1730,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             awaiting: false,
             unsafe_at: None,
             log_guarded: HashSet::new(),
+            null_under_condition: Vec::new(),
+            equals_made: false,
+            settling_recv: false,
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -2596,6 +2607,9 @@ fn check_tests(
             awaiting: false,
             unsafe_at: None,
             log_guarded: HashSet::new(),
+            null_under_condition: Vec::new(),
+            equals_made: false,
+            settling_recv: false,
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -2754,10 +2768,17 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                     return Err(Diag::error(ty.span, format!("`{}` is an alias and takes no types between `<` and `>`", ty.name)));
                 }
                 let target = &names.aliases[&full];
-                let circle = RESOLVING.with(|stack| {
-                    let stack = stack.borrow();
-                    stack.iter().position(|name| *name == full).map(|at| stack[at..].iter().map(|name| format!("`{}`", short_name(name))).collect::<Vec<_>>())
-                });
+                let known = names.resolved_aliases.borrow().get(&full).cloned();
+                let circle = match known {
+                    Some(_) => None,
+                    None => RESOLVING.with(|stack| {
+                        let stack = stack.borrow();
+                        match stack.1.contains(&full) {
+                            true => stack.0.iter().position(|name| *name == full).map(|at| stack.0[at..].iter().map(|name| format!("`{}`", short_name(name))).collect::<Vec<_>>()),
+                            false => None,
+                        }
+                    }),
+                };
                 if let Some(circle) = circle {
                     let msg = match circle.len() {
                         1 => format!("the alias {} names itself", circle[0]),
@@ -2766,10 +2787,25 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                     };
                     return Err(Diag::error(target.span, msg).note("an alias is another name for a type that is written out in the end"));
                 }
-                RESOLVING.with(|stack| stack.borrow_mut().push(full.clone()));
-                let resolved = resolve_type(target, names, false);
-                RESOLVING.with(|stack| stack.borrow_mut().pop());
-                let resolved = resolved?;
+                let resolved = match known {
+                    Some(resolved) => resolved,
+                    None => {
+                        RESOLVING.with(|stack| {
+                            let mut stack = stack.borrow_mut();
+                            stack.0.push(full.clone());
+                            stack.1.insert(full.clone());
+                        });
+                        let resolved = resolve_type(target, names, false).map_err(alias_names_nothing);
+                        RESOLVING.with(|stack| {
+                            let mut stack = stack.borrow_mut();
+                            stack.0.pop();
+                            stack.1.remove(&full);
+                        });
+                        let resolved = resolved?;
+                        names.resolved_aliases.borrow_mut().insert(full.clone(), resolved.clone());
+                        resolved
+                    }
+                };
                 if ty.holder.is_some() && matches!(resolved, Ty::Shared(..) | Ty::Weak(..)) {
                     return Err(Diag::error(ty.span, format!("`{}` is already `{resolved}`", ty.name)));
                 }
@@ -2793,6 +2829,13 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             }
             if let Some(hint) = names.use_hint(&ty.name, ty.span) {
                 return Err(diag.hint(hint));
+            }
+            // `read Formattable value`: an interface is written after the name of a type.
+            if INTERFACES.contains(&ty.name.as_str()) {
+                return Err(diag.note(format!(
+                    "`{0}` is an interface, and an interface is not a type: it is written after the name of a struct or an enum, `struct Label : {0}`, and a parameter takes a type",
+                    ty.name
+                )));
             }
             let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "double", "bool", "char", "string"]);
             return Err(match nearest(&ty.name, known) {
@@ -2857,6 +2900,12 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                     .note("an atomic pointer may be `null`: `atomic raw Node`"));
             }
             Suffix::Nullable if matches!(resolved, Ty::Nullable(_)) => {
+                // `MaybeInt?` with `alias MaybeInt = int?`: nobody wrote `??`.
+                let alias = names.full(&ty.name, ty.span)?.is_some_and(|full| names.kinds.get(&full) == Some(&TypeKind::Alias));
+                if alias {
+                    return Err(Diag::error(ty.span, format!("`{}` is `{resolved}` already, and a value is either there or `null`", ty.name))
+                        .hint(format!("`{}`", ty.name)));
+                }
                 return Err(Diag::error(ty.span, "`??` is not a type: a value is either there or `null`"));
             }
             Suffix::Nullable => Ty::Nullable(Box::new(resolved)),
@@ -4560,6 +4609,15 @@ struct Checker<'a> {
     /// The calls `Log.debug(text)` and the others already put inside `if Log.isOn(...)`, by
     /// where they start (choice 1447).
     log_guarded: HashSet<usize>,
+    /// The names of the arms being checked that take a `T?` below an arm `null` with `when`:
+    /// they stay `T?`, and the message that meets one says why.
+    null_under_condition: Vec<String>,
+    /// Set by `method` for `a.equals(read b)` on a type whose `equals` the language makes: the
+    /// call is then written `a == b`, which is what it is short for.
+    equals_made: bool,
+    /// Set while `settle` looks at what is written in front of a dot: there an alias of a
+    /// built-in type stands for the type (`Count.parse(text)`).
+    settling_recv: bool,
     consts: &'a ConstTable,
     /// The initializer of a const is being checked: what it is made of is known when the
     /// program is compiled.
@@ -4834,7 +4892,7 @@ fn condition_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
 
 /// Where the names of `is` are seen, for the notes of the errors about them.
 const NAMES_SEEN: &str = "the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, in the first arm of its `?:`, and after an `if` whose `else` leaves";
-const NOT_NAMES_SEEN: &str = "the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends";
+const NOT_NAMES_SEEN: &str = "the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in the second arm of its `?:`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends";
 
 /// `x is Circle(r)` or `x is not Circle(r)` (`Some(false)`), or one of them under `!`
 /// (`Some(true)`).
@@ -5326,7 +5384,10 @@ impl<'a> Checker<'a> {
         if !self.unqualify(expr) {
             if let ExprKind::Field { recv, .. } | ExprKind::Method { recv, .. } = &mut expr.kind {
                 if matches!(recv.kind, ExprKind::Var(_) | ExprKind::Field { .. }) {
-                    self.settle(recv)?;
+                    let outer = std::mem::replace(&mut self.settling_recv, true);
+                    let settled = self.settle(recv);
+                    self.settling_recv = outer;
+                    settled?;
                 }
             }
         }
@@ -5338,6 +5399,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         let is_var = matches!(expr.kind, ExprKind::Var(_));
+        let as_recv = std::mem::take(&mut self.settling_recv);
         // A const: a text is the text itself, as if it were written here; anything else names it.
         if is_var {
             if let Some(full) = self.const_named(&written.clone(), span)? {
@@ -5373,6 +5435,8 @@ impl<'a> Checker<'a> {
         if let Some(target) = self.alias_target(name, span)? {
             match target {
                 Ty::Struct(full) | Ty::Enum(full) => *name = full,
+                // `Count.parse(text)`, `Big.MaxValue`, `Text.join(...)`: the type itself (choice 2214).
+                other if is_var && as_recv && (other.is_number() || matches!(other, Ty::Str | Ty::Char | Ty::Bool)) => *name = other.to_string(),
                 Ty::Shared(behind, _) => {
                     let written = short_name(name).to_string();
                     return Err(Diag::error(span, format!("`{written}` is `shared {behind}`, which is made with `new`"))
@@ -5382,7 +5446,15 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(span, format!("`{}` is `{other}`; a collection is built by the name of its type", short_name(name)))
                         .hint(format!("`{other}()`")));
                 }
-                other => return Err(Diag::error(span, format!("`{}` is `{other}`, which is not built this way", short_name(name)))),
+                other => {
+                    let diag = Diag::error(span, format!("`{}` is `{other}`, which is not built this way", short_name(name)));
+                    let rest = after_name(&self.src[span.start..span.end]);
+                    return Err(match (&other, is_var) {
+                        (Ty::Ptr(inner), false) => diag.hint(format!("`new {inner}{rest}`")),
+                        (Ty::Array(..), false) => diag.hint(format!("`{other}{rest}`")),
+                        _ => diag,
+                    });
+                }
             }
         }
         Ok(())
@@ -5613,7 +5685,19 @@ impl<'a> Checker<'a> {
                     *name = target;
                     Ok(Some((false, true)))
                 }
-                other => Err(Diag::error(span, format!("`{}` is `shared {other}`, which is not built this way", short_name(&full)))),
+                other => {
+                    let diag = Diag::error(span, format!("`{}` is `shared {other}`, which is not built this way", short_name(&full)));
+                    let rest = after_name(&self.src[span.start..span.end]);
+                    let words = match (&other, checked) {
+                        (Ty::Locked(_), _) => "shared locked",
+                        (_, true) => "shared checked",
+                        _ => "shared",
+                    };
+                    Err(match rest.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+                        Some(value) if matches!(inner.kind, ExprKind::Call { .. }) && !value.trim().is_empty() => diag.hint(format!("`new {words} {}`", value.trim())),
+                        _ => diag,
+                    })
+                }
             },
             Some(Ty::Weak(..)) => Err(Diag::error(span, "a `weak` value is not made with `new`: it looks at a `shared` one")),
             _ => Ok(None),
@@ -5643,6 +5727,15 @@ impl<'a> Checker<'a> {
 
     fn read_only(&self, place: &Expr, mut diag: Diag) -> Diag {
         if !through_shared(place) {
+            // In a method that takes `read this`, what is changed through `this` asks for `ref this`.
+            let mut root = place;
+            while let ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } = &root.kind {
+                root = recv;
+            }
+            let this_read = matches!(&root.kind, ExprKind::Var(var) if var == "this") && self.var_named("this").is_some_and(|var| matches!(var.declared, Ty::Read(_)));
+            if this_read && diag.hint.as_deref() == Some("take the value as `ref` instead of `read`") {
+                diag.hint = Some(format!("make `{}` take `ref this` instead of `read this`", short_name(&self.func_name)));
+            }
             return diag;
         }
         diag.msg = diag.msg.replace("a `read` borrow", "a `shared` value, which is only read");
@@ -8294,6 +8387,55 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// `p with { ... }` on a `T*` or a `shared T`: the struct behind it is not used up, its owner
+    /// or its other owners keep it; a copy of it is what `with` takes.
+    fn with_behind(&self, diag: Diag, base: &Expr, ty: &Ty) -> Diag {
+        let text = self.src[base.span.start..base.span.end].trim();
+        let (inner, shared) = match ty {
+            Ty::Ptr(inner) => (&**inner, None),
+            Ty::Shared(inner, _) => match &**inner {
+                Ty::Locked(inner) => (&**inner, Some("lock")),
+                inner => (inner, Some("read")),
+            },
+            _ => return diag.note("a struct is copied with its fields changed: `p with { x = 3 }`"),
+        };
+        let Ty::Struct(name) = inner else {
+            return diag.note("a struct is copied with its fields changed: `p with { x = 3 }`");
+        };
+        let short = short_name(name);
+        let copyable = inner.is_copyable(self.copyable);
+        let clonable = copyable || self.names.clonable.contains(name) || self.structs.get(name).is_some_and(|info| info.methods.contains_key("clone"));
+        match shared {
+            None => {
+                let diag = diag.note("the struct a `T*` points at stays with its owner; `with` takes a copy of it");
+                match clonable {
+                    true => diag.hint(format!("`{text}.clone() with {{ ... }}`")),
+                    false => diag.hint(format!("make `{short}` `Clonable` (`{short} : Clonable`), then `{text}.clone() with {{ ... }}`")),
+                }
+            }
+            Some(word) => {
+                let lower = short[..1].to_lowercase() + &short[1..];
+                let value = if lower == text { "value".to_string() } else { lower };
+                let diag = diag.note("the other owners of a `shared` value still look at it; `with` takes a copy of it, inside a block that opens it");
+                match (copyable, clonable) {
+                    (true, _) => diag.hint(format!("`{word} {text} as {value} {{ ... {value} with {{ ... }} ... }}`")),
+                    (false, true) => diag.hint(format!("`{word} {text} as {value} {{ ... {value}.clone() with {{ ... }} ... }}`")),
+                    (false, false) => diag.hint(format!("make `{short}` `Clonable` (`{short} : Clonable`), then `{word} {text} as {value} {{ ... {value}.clone() with {{ ... }} ... }}`")),
+                }
+            }
+        }
+    }
+
+    /// A name an arm takes below an arm `null` with `when` is still a `T?`: the note says why.
+    fn null_arm_note(&self, recv: &Expr, diag: Diag) -> Diag {
+        match &recv.kind {
+            ExprKind::Var(var) if self.null_under_condition.contains(var) => {
+                diag.note("the arm `null` above has a `when`, so it does not take `null` away: its condition may be false")
+            }
+            _ => diag,
+        }
+    }
+
     /// How a `T?` that is not narrowed is tested before it is used: a variable in place; anything
     /// else in a variable first: a copy if `T` is `Copyable`, one more owner of a `shared` or
     /// `weak` value (`share`), or else lent with `read`, which leaves the value where it is (`var
@@ -8711,7 +8853,7 @@ impl<'a> Checker<'a> {
                         }
                         Ty::Nullable(_) => {
                             let diag = Diag::error(recv.span, format!("this is `{ty}` and may be `null`; `.{name}` needs a value"));
-                            return Err(diag.hint(self.test_first(recv, &ty)));
+                            return Err(self.null_arm_note(recv, diag).hint(self.test_first(recv, &ty)));
                         }
                         Ty::Enum(_) => {
                             return Err(Diag::error(*name_span, format!("`{ty}` is an enum; what it carries depends on the variant"))
@@ -9962,6 +10104,27 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Binary(op, left, right) => self.binary(*op, left, right, expected, span),
             ExprKind::Cast { ty, expr: operand } => {
+                // `(Big)n`: an alias of a number type, or of `char`, casts as its type does.
+                if let Ty::Struct(written) = &*ty {
+                    let written = written.clone();
+                    let close = self.src[span.start..operand.span.start].rfind(')').map_or(operand.span.start, |at| span.start + at + 1);
+                    let cast_span = Span::new(span.start, close);
+                    let full = self.names.full(&written, cast_span)?.unwrap_or_else(|| written.clone());
+                    match self.alias_target(&full, cast_span)? {
+                        Some(target) if target.is_number() || target == Ty::Char => *ty = target,
+                        _ => {
+                            let text = self.src[operand.span.start..operand.span.end].trim();
+                            let diag = Diag::error(cast_span, format!("a value is cast to a number type or to `char`, and `{written}` is neither"));
+                            let numbered = self.enums.get(full.as_str()).is_some_and(|info| info.numbers.is_some());
+                            return Err(match numbered {
+                                true => diag
+                                    .note("not every number is the number of a variant")
+                                    .hint(format!("the variant of an enum with numbers that has the number, or `null`: `{written}.fromValue({text})`")),
+                                false => diag,
+                            });
+                        }
+                    }
+                }
                 let mut found = self.operand(operand, None)?;
                 let mut from = found.strip_borrow().clone();
                 // `(byte)block`: the number of its variant, read where the value is; then the
@@ -10036,7 +10199,30 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { name, name_span, args, callee } => self.call(name, *name_span, args, callee, span),
             ExprKind::Method { recv, name, name_span, args, callee } => {
-                self.method(recv, name, *name_span, args, callee, span)
+                let ty = self.method(recv, name, *name_span, args, callee, span)?;
+                // `a.equals(read b)` made by the language is `a == b` (choice 2213).
+                if std::mem::take(&mut self.equals_made) {
+                    let ExprKind::Method { recv, mut args, .. } = std::mem::replace(&mut expr.kind, ExprKind::Null) else { unreachable!("a method call") };
+                    let other = args.pop().expect("one argument");
+                    let other = match other.kind {
+                        ExprKind::Borrow { expr: inner, mutable: false } => *inner,
+                        kind => Expr { kind, ..other },
+                    };
+                    // Through a `T*`, the `T` is compared, lent as a `read` borrow.
+                    let mut recv = recv;
+                    if let Ty::Ptr(inner) = recv.ty.strip_borrow() {
+                        let ty = Ty::Read(inner.clone());
+                        if !recv.ty.is_borrow() {
+                            let lent = Ty::Read(Box::new(recv.ty.clone()));
+                            wrap(&mut recv, |inner| ExprKind::Borrow { mutable: false, expr: inner });
+                            recv.ty = lent;
+                        }
+                        wrap(&mut recv, ExprKind::Unbox);
+                        recv.ty = ty;
+                    }
+                    expr.kind = ExprKind::Binary(BinOp::Eq, recv, Box::new(other));
+                }
+                Ok(ty)
             }
             ExprKind::StructLit { name, name_span, fields } => {
                 let Some(info) = self.structs.get(name.as_str()) else {
@@ -10105,15 +10291,15 @@ impl<'a> Checker<'a> {
                 let name = match found.strip_borrow() {
                     Ty::Struct(name) => name.clone(),
                     other => {
-                        return Err(Diag::error(base.span, format!("`with` makes a new value of a struct from another, and this is a `{other}`"))
-                            .note("a struct is copied with its fields changed: `p with { x = 3 }`"));
+                        let diag = Diag::error(base.span, format!("`with` makes a new value of a struct from another, and this is a `{other}`"));
+                        return Err(self.with_behind(diag, base, other));
                     }
                 };
                 let info = &self.structs[name.as_str()];
                 if found.is_borrow() && !found.strip_borrow().is_copyable(self.copyable) {
                     let text = &self.src[base.span.start..base.span.end];
                     let diag = Diag::error(base.span, format!("`with` takes the value of `{text}`, which is lent here, and a `{}` is not `Copyable`", short_name(&name)));
-                    return Err(match info.methods.contains_key("clone") {
+                    return Err(match info.methods.contains_key("clone") || self.names.clonable.contains(&name) {
                         true => diag.hint(format!("make a copy: `{text}.clone() with {{ ... }}`")),
                         false => diag,
                     });
@@ -10127,7 +10313,24 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(span, "`with { }` changes nothing").hint("write at least one field: `p with { x = 3 }`"));
                 }
                 self.built_here(&name, info, base.span, "copied with `with`")?;
-                self.field_values(&name, info, fields)?;
+                // `title with { size = title.size * 2 }`: `with` has used `title` up already.
+                let used_up = match &base.kind {
+                    ExprKind::Var(var) if base.moved => Some(var.clone()),
+                    _ => None,
+                };
+                let base_text = self.src[base.span.start..base.span.end].trim().to_string();
+                let src = self.src;
+                self.field_values(&name, info, fields).map_err(|mut diag| {
+                    let Some(var) = &used_up else { return diag };
+                    if diag.msg != format!("`{var}` was moved and can no longer be used") || diag.related.as_ref().map(|related| related.0) != Some(base.span) {
+                        return diag;
+                    }
+                    let Some(field) = fields.iter().find(|field| field.value.span.start <= diag.span.start && diag.span.end <= field.value.span.end) else { return diag };
+                    let value = src[field.value.span.start..field.value.span.end].trim();
+                    diag.related = None;
+                    diag.msg = format!("`with` uses `{var}` up before the new values are worked out, and the value of `{}` reads it", field.name);
+                    diag.hint(format!("read it into a variable first: `var {0} = {value}`, then `{base_text} with {{ {0} = {0} }}`", field.name))
+                })?;
                 Ok(Ty::Struct(name))
             }
             ExprKind::New(inner) => {
@@ -11220,12 +11423,16 @@ impl<'a> Checker<'a> {
         // On a `T?`, whether an arm without a condition has taken `null`: a name below it
         // takes a value that is not `null`.
         let mut null_taken = false;
+        // Whether an arm `null` with `when` came first: it does not take `null` away.
+        let mut null_under_condition = false;
         // `a?.b` where no `T?` is expected gives the type of `b`, made a `T?`.
         let mut result: Option<Ty> = expected.filter(|ty| held.is_none() || without_null(ty).is_some()).cloned();
         let before = self.moves();
         let mut after: Option<Moves> = None;
+        let under_condition = self.null_under_condition.len();
         for (arm_index, arm) in arms.iter_mut().enumerate() {
             self.set_moves(&before);
+            self.null_under_condition.truncate(under_condition);
             self.scopes.push(Scope::default());
             self.borrows.branches.push((node, arm_index));
             self.const_patterns(&mut arm.pattern, &subject_ty, true)?;
@@ -11236,8 +11443,13 @@ impl<'a> Checker<'a> {
                 Some(Literal::Other) => {
                     let mut binds = Vec::new();
                     self.inner_pattern(&mut arm.pattern, &subject_ty, None, &mut binds)?;
-                    if let (PatternKind::Bind(_), true) = (&arm.pattern.kind, null_taken) {
-                        binds[0].1 = not_null(&subject_ty);
+                    match (&arm.pattern.kind, null_taken) {
+                        (PatternKind::Bind(_), true) => binds[0].1 = not_null(&subject_ty),
+                        (PatternKind::Bind(name), false) if null_under_condition => self.null_under_condition.push(name.clone()),
+                        _ => {}
+                    }
+                    if arm.guard.is_some() && takes_null(&arm.pattern) {
+                        null_under_condition = true;
                     }
                     binds
                 }
@@ -11349,6 +11561,7 @@ impl<'a> Checker<'a> {
             }
         }
 
+        self.null_under_condition.truncate(under_condition);
         // With an `or`, a range, `null`, `true` or `false`, the search tells what is missing.
         let missing = match (handled_all, nested && number.is_some()) {
             (false, true) => exhaust::useful(&rows, &[exhaust::Pat::Any]).map(|found| exhaust::show(&found[0])),
@@ -11365,14 +11578,22 @@ impl<'a> Checker<'a> {
                 });
             }
             (Some(value), _) if value != "_" => {
-                return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
-                    .note(format!("no arm takes `{value}`"))
-                    .hint("add `_ => ...` for everything else"));
+                let diag = Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
+                    .note(format!("no arm takes `{value}`"));
+                return Err(match guarded {
+                    true => diag.note("an arm with `when` does not settle what it matches: the condition may be false"),
+                    false => diag,
+                }
+                .hint("add `_ => ...` for everything else"));
             }
             (None, Some(_)) if nested => {}
             _ if !handled_all && number.is_some() => {
-                return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
-                    .hint("add `_ => ...` for everything else"));
+                let diag = Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"));
+                return Err(match guarded {
+                    true => diag.note("an arm with `when` does not settle what it matches: the condition may be false"),
+                    false => diag,
+                }
+                .hint("add `_ => ...` for everything else"));
             }
             _ => {}
         }
@@ -11804,9 +12025,9 @@ impl<'a> Checker<'a> {
         if !matches!(op, BinOp::Eq | BinOp::Ne) {
             if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(peel(&side.ty), Ty::Nullable(_))) {
                 let text = self.src[side.span.start..side.span.end].trim();
-                return Err(Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
-                    .note(format!("`{text}` may be `null`"))
-                    .hint(format!("{}; or give a fallback with `??`", self.test_first(side, &side.ty))));
+                let diag = Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
+                    .note(format!("`{text}` may be `null`"));
+                return Err(self.null_arm_note(side, diag).hint(format!("{}; or give a fallback with `??`", self.test_first(side, &side.ty))));
             }
         }
         // A `weak` value shows nothing: an owner, asked for with `share`, does
@@ -15179,6 +15400,23 @@ impl<'a> Checker<'a> {
                     false => diag.hint("to end it sooner, hand it to a function or a method that takes it by value; it ends where that one does"),
                 });
             }
+            // The `equals` and `hash` the language makes for `Equatable` and `Hashable`.
+            let own = self.methods_of(owner).contains_key(name);
+            if name == "equals" && !own && self.equatable.contains(owner) {
+                self.args(name, args, &[Ty::Read(Box::new(target.clone()))], span)?;
+                self.equals_made = true;
+                return Ok(Ty::Bool);
+            }
+            if name == "hash" && !own && self.names.keys.contains(owner) {
+                let text = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, format!("the `hash` of `{}` is made by the language for `HashMap` and `HashSet`, and is not called by name", short_name(owner)))
+                    .note("the number it gives is not part of the language: it may change from one build to the next")
+                    .hint(format!("to tell two values apart, compare them: `{text} == ...`")));
+            }
+            if name == "clone" && !own {
+                return Err(Diag::error(name_span, format!("type `{}` has no method `clone`", short_name(owner)))
+                    .hint(format!("add `Clonable` to the definition, and the language makes it: `{} : Clonable`", short_name(owner))));
+            }
             if let Some(sig) = self.methods_of(owner).get(name) {
                 if !sig.public && !self.inside(owner) {
                     return Err(self.not_public(name, owner, name_span));
@@ -15193,7 +15431,10 @@ impl<'a> Checker<'a> {
                         let short = short_name(owner);
                         return Err(Diag::error(recv.span, format!("`{name}` is called on a `{written}`, and this is `{recv_ty}`"))
                             .note(format!("it takes the value that holds the `{short}`, so that it can write `share this` and `weak this`"))
-                            .hint(format!("make the `{short}` with `new {written}(...)`")));
+                            .hint(match self.methods_of(owner).contains_key("create") {
+                                true => format!("make the `{short}` with `new {written}(...)`"),
+                                false => format!("make the `{short}` with `new {written} {{ ... }}`"),
+                            }));
                     }
                     match this {
                         This::Value if !is_place || recv_ty.is_borrow() => {
@@ -15242,7 +15483,12 @@ impl<'a> Checker<'a> {
                         if through_holder(recv, true) {
                             return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is reached through a `shared checked` value, which its other owners still look at")));
                         }
-                        return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is only borrowed")));
+                        let diag = Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is only borrowed"));
+                        let on_this = matches!(&recv.kind, ExprKind::Var(var) if var == "this");
+                        return Err(match on_this {
+                            true => diag.hint(format!("make `{name}` take `read this` if it only looks, or make `{}` take `this` by value", short_name(&self.func_name))),
+                            false => diag.hint(format!("make `{name}` take `read this` if it only looks")),
+                        });
                     }
                     This::Value if is_place => {
                         self.move_out(recv, &recv_ty)?;
@@ -15842,7 +16088,7 @@ impl<'a> Checker<'a> {
             }
             (Ty::Nullable(_), _) => {
                 let diag = Diag::error(recv.span, format!("this is `{recv_ty}` and may be `null`; `.{name}()` needs a value"));
-                Err(diag.hint(self.test_first(recv, &recv_ty)))
+                Err(self.null_arm_note(recv, diag).hint(self.test_first(recv, &recv_ty)))
             }
             _ => {
                 let diag = Diag::error(name_span, format!("type `{target}` has no method `{name}`"));
@@ -16565,7 +16811,7 @@ impl<'a> Checker<'a> {
                 .hint(format!("to put another value in its place: `{text}.replace(value)`")));
         }
         if let Some(diag) = self.readonly(recv) {
-            return Err(diag);
+            return Err(diag.note("`take` puts `null` in its place"));
         }
         if !writable {
             return Err(self.read_only(recv, Diag::error(recv.span, "this is reached through a `read` borrow, so nothing can be taken out of it")
@@ -16608,7 +16854,7 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(recv.span, "`replace` needs a variable or a field to put the new value in"));
         }
         if let Some(diag) = self.readonly(recv) {
-            return Err(diag);
+            return Err(diag.note("`replace` puts the new value in its place"));
         }
         if !writable {
             return Err(self.read_only(recv, Diag::error(recv.span, "this is reached through a `read` borrow and cannot be replaced")
@@ -17514,6 +17760,21 @@ fn wrap(expr: &mut Expr, build: impl FnOnce(Box<Expr>) -> ExprKind) {
     let span = expr.span;
     let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span, ty: Ty::Void, moved: false });
     expr.kind = build(Box::new(inner));
+}
+
+/// `alias X = Nothing`: the note says what an alias can name, in place of the list of the
+/// built-in types.
+fn alias_names_nothing(mut diag: Diag) -> Diag {
+    if diag.msg.starts_with("there is no type named") && diag.hint.is_none() {
+        diag.notes.clear();
+        return diag.note("an alias names a type that is there: a built-in one such as `int` or `string`, a struct, an enum, or another alias");
+    }
+    diag
+}
+
+/// What is written after the name a value is built by: `(0)` of `Grid(0)`, ` { }` of `Node { }`.
+fn after_name(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 /// Whether control never reaches the end of the block: it ends in `return` or `panic` on

@@ -1,0 +1,10 @@
+// `replace` on a `readonly` field: the note says what `replace` would change.
+struct Box {
+    readonly string name
+}
+
+void main() {
+    var box = Box { name = "a".clone() }
+    var old = box.name.replace("b".clone())
+    print(old)
+}

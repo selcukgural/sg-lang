@@ -422,10 +422,11 @@ void main() {
 ```
 
 ```text
-error: `??` is not a type: a value is either there or `null`
+error: `MaybeInt` is `int?` already, and a value is either there or `null`
   --> example.sg:4:5
  4 |     MaybeInt? count = null
    |     ^^^^^^^^^
+  hint: `MaybeInt`
 ```
 
 A value is there or it is not; a second `?` would say nothing more.

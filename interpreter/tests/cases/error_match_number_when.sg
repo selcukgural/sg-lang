@@ -1,0 +1,8 @@
+// An arm `_` with `when` does not take every number: the note says why the `match` is not whole.
+void main() {
+    int n = 3
+    var k = match n {
+        _ when n > 2 => 1
+    }
+    print(k)
+}

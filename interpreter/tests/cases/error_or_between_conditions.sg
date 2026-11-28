@@ -1,0 +1,8 @@
+// `or` joins patterns; two conditions are joined with `||`, and the hint writes the line so.
+void main() {
+    bool ready = true
+    bool late = false
+    if ready or late {
+        print(1)
+    }
+}

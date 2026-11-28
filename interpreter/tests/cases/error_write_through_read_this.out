@@ -1,0 +1,5 @@
+error: this field is reached through a `read` borrow and cannot be written
+  --> error_write_through_read_this.sg:6:9
+ 6 |         this.size = 0
+   |         ^^^^^^^^^
+  hint: make `reset` take `ref this` instead of `read this`

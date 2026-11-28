@@ -1,0 +1,5 @@
+error: `MaybeInt` is `int?` already, and a value is either there or `null`
+  --> error_alias_nullable_twice.sg:5:5
+ 5 |     MaybeInt? b = null
+   |     ^^^^^^^^^
+  hint: `MaybeInt`
