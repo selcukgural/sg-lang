@@ -153,6 +153,11 @@ This is how a module keeps a rule true: no code outside `stock` can make a quant
 code outside can write it. A `public` name cannot show a type that is not public either: a `public` function
 that returns a private struct is an error, with the hint to make both public or neither.
 
+The line is drawn by the folder, not by the file: every file of `stock` sees `quantity`. There is no `private`
+for a field that only its own type should touch. When a type needs that, it gets a folder of its own, a module
+under the first (`stock/counter/`), and the files beside it see only what it makes `public`. Writing
+`private int quantity` is refused with that hint.
+
 ## `readonly`
 
 `readonly` on a field means it is given when the value is built and never changed afterwards, from inside the
@@ -186,7 +191,10 @@ error: `vat` exists in `stock` and `billing`
 ```
 
 A name of the file's own module comes before the names brought in by `use`, and a variable comes before both,
-so adding a name to a module never breaks the files that use it.
+so adding a name to a module never breaks the files that use it. The types of the language come last, so a
+program may have a `File`, a `List` or an `IoError` of its own; the language's is then written with its module
+in front, `std.File.readText(path)` or `std.List<int>()`. Only the words of the language (`int`, `string`,
+`bool`, ...) and `Result`, `Task` and `Func`, which its syntax makes, keep their names.
 
 Without any `use`, the compiler still helps when a name is missing:
 

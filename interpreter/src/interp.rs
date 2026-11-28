@@ -250,7 +250,7 @@ enum Timer {
 
 /// The `Cancelled { }` that a cancelled wait gives.
 fn cancelled() -> Value {
-    Value::Struct("Cancelled".into(), Fields::plain(Vec::new()))
+    Value::Struct("std.Cancelled".into(), Fields::plain(Vec::new()))
 }
 
 /// A task. Every task that runs code is a fiber: a thread of its own, of which one runs at a
@@ -1980,27 +1980,27 @@ fn already_in_map(shown: &str, span: Span) -> Diag {
 /// `IoError.Cancelled(Cancelled { })`
 /// `IoError.HostNotFound`: the host could not be found, or the address is not `host:port`.
 fn io_host_not_found() -> Value {
-    Value::Enum("IoError".into(), 10, Rc::new(Vec::new()))
+    Value::Enum("std.IoError".into(), 10, Rc::new(Vec::new()))
 }
 
 /// `IoError.LineTooLong`: the reader of a connection met a line, or a text, longer than its
 /// limit.
 fn io_line_too_long() -> Value {
-    Value::Enum("IoError".into(), 11, Rc::new(Vec::new()))
+    Value::Enum("std.IoError".into(), 11, Rc::new(Vec::new()))
 }
 
 /// `IoError.NotAFile`: `File.openRegular` met a pipe, a device or a socket (1873).
 fn io_not_a_file() -> Value {
-    Value::Enum("IoError".into(), 20, Rc::new(Vec::new()))
+    Value::Enum("std.IoError".into(), 20, Rc::new(Vec::new()))
 }
 
 /// `IoError.TooLong`: `fill` on a reader whose block holds its limit already.
 fn io_too_long() -> Value {
-    Value::Enum("IoError".into(), 18, Rc::new(Vec::new()))
+    Value::Enum("std.IoError".into(), 18, Rc::new(Vec::new()))
 }
 
 fn io_cancelled() -> Value {
-    Value::Enum("IoError".into(), 6, Rc::new(vec![cell(cancelled())]))
+    Value::Enum("std.IoError".into(), 6, Rc::new(vec![cell(cancelled())]))
 }
 
 /// Whether `compareExchange` finds the value it expects: the same bits, as C compares them, so
@@ -2025,7 +2025,7 @@ fn failed(cause: Value) -> Value {
 
 /// The `IoError` for what the system said, its variant told by the code (`sys::io_kind`).
 fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
-    let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
+    let variant = |at: usize, fields: Vec<Value>| Value::Enum("std.IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
     match code {
         Some(code) => match crate::sys::io_kind(code) {
             5 => variant(5, vec![Value::Int(IntTy::Int, code as i128)]),
@@ -2047,7 +2047,7 @@ trait InvalidText {
 impl InvalidText for Value {
     /// `IoError.InvalidText(at)`
     fn invalid_text(self, at: u64) -> Value {
-        Value::Enum("IoError".into(), 4, Rc::new(vec![cell(Value::Int(IntTy::Long, at as i128))]))
+        Value::Enum("std.IoError".into(), 4, Rc::new(vec![cell(Value::Int(IntTy::Long, at as i128))]))
     }
 }
 
@@ -6370,7 +6370,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                         Err(error) => {
                             let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                            let cause = Value::Struct("std.TextError".into(), Fields::plain(vec![position]));
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
                     });
@@ -6392,7 +6392,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                     Err(error) => {
                         let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        let cause = Value::Struct("std.TextError".into(), Fields::plain(vec![position]));
                         Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                     }
                 })
@@ -6404,7 +6404,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(made) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::CStr(Rc::new(made)))])),
                     Err(error) => {
                         let position = cell(Value::Int(IntTy::Nint, error.nul_position() as i128));
-                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        let cause = Value::Struct("std.TextError".into(), Fields::plain(vec![position]));
                         Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                     }
                 })
@@ -6493,7 +6493,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                     Err(error) => {
                         let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                        let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                        let cause = Value::Struct("std.TextError".into(), Fields::plain(vec![position]));
                         Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                     }
                 })
@@ -6563,8 +6563,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(value) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)])),
                     Err(error) => {
                         let cause = match error {
-                            Some(position) => Value::Enum("NumberError".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Nint, position as i128))])),
-                            None => Value::Enum("NumberError".into(), 1, Rc::new(Vec::new())),
+                            Some(position) => Value::Enum("std.NumberError".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Nint, position as i128))])),
+                            None => Value::Enum("std.NumberError".into(), 1, Rc::new(Vec::new())),
                         };
                         Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                     }
@@ -7707,7 +7707,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         continue;
                     }
                     // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
-                    if &**name == "IoError" {
+                    if &**name == "std.IoError" {
                         out.push_str(crate::check::IO_ERROR_TEXTS[index]);
                         if let 4 | 5 = index {
                             left.extend(fields.iter().rev().cloned().map(Writing::Part));
@@ -8291,7 +8291,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             let Value::Reader(reader) = &values[0] else { unreachable!("the checker makes it a reader") };
             let info = match &reader.borrow().file {
                 Some(block) => block.get_ref().metadata(),
-                None => return Ok(failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new())))),
+                None => return Ok(failed(Value::Enum("std.IoError".into(), 15, Rc::new(Vec::new())))),
             };
             return Ok(match info {
                 Ok(info) => status_fields(&info, &values[1]),
@@ -8474,7 +8474,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::MapRead => {
                 let file = match crate::sys::open_regular(&text(0)) {
                     Ok(Some(file)) => file,
-                    Ok(None) => return Ok(failed(Value::Enum("IoError".into(), 20, Rc::new(Vec::new())))),
+                    Ok(None) => return Ok(failed(Value::Enum("std.IoError".into(), 20, Rc::new(Vec::new())))),
                     Err(error) => return Ok(done(Err(error))),
                 };
                 let mut bytes = Vec::new();
@@ -9426,7 +9426,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
                 },
                 // Not a file opened to be read too.
-                _ => failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new()))),
+                _ => failed(Value::Enum("std.IoError".into(), 15, Rc::new(Vec::new()))),
             });
         }
         if let Value::Reader(reader) = &stream {
@@ -9644,7 +9644,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             StreamCall::TryLockShared => 3,
             _ => 4,
         };
-        let not_a_file = || failed(Value::Enum("IoError".into(), 20, Rc::new(Vec::new())));
+        let not_a_file = || failed(Value::Enum("std.IoError".into(), 20, Rc::new(Vec::new())));
         let flushed = match stream {
             Value::Writer(writer) if kind == 4 && matches!(writer.borrow().sink, Sink::File(Some(_))) && !writer.borrow().pipe => Some(self.write_stream(writer, &[], true)?),
             _ => None,
@@ -9696,7 +9696,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             return Ok(match file_of_writer {
                 true => flushed,
                 false if matches!(&flushed, Value::Enum(_, 1, _)) => flushed,
-                false => failed(Value::Enum("IoError".into(), 15, Rc::new(Vec::new()))),
+                false => failed(Value::Enum("std.IoError".into(), 15, Rc::new(Vec::new()))),
             });
         }
         let mut writer = writer.borrow_mut();
@@ -9715,7 +9715,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// bytes or made longer with zeros. A standard stream or the input of another program is
     /// `NotSeekable`; a length below 0 is `InvalidInput`.
     fn set_length(&mut self, writer: &Rc<RefCell<Writer>>, length: i64) -> Res<Value> {
-        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        let io_variant = |at: usize| failed(Value::Enum("std.IoError".into(), at, Rc::new(Vec::new())));
         {
             let writer = writer.borrow();
             if !matches!(writer.sink, Sink::File(_)) || writer.pipe {
@@ -9745,7 +9745,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// buffer holds further; nothing is moved or written. What `seek` cannot move has no place.
     fn position(&self, stream: &Value) -> Value {
         use std::io::Seek;
-        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        let io_variant = |at: usize| failed(Value::Enum("std.IoError".into(), at, Rc::new(Vec::new())));
         let place = |at: std::io::Result<u64>, ahead: i128| match at {
             Ok(at) => ok(Value::Int(IntTy::Long, (i128::from(at) + ahead).clamp(0, i128::from(i64::MAX)))),
             Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
@@ -9784,7 +9784,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// holds, is `InvalidInput`; a stream that is not a file opened to seek is `NotSeekable`.
     fn seek(&mut self, stream: Value, kind: usize, offset: i64) -> Res<Value> {
         use std::io::Seek;
-        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        let io_variant = |at: usize| failed(Value::Enum("std.IoError".into(), at, Rc::new(Vec::new())));
         let io_failed = |error: std::io::Error| failed(io_cause(Some(&error), error.raw_os_error()));
         let place = |base: Option<i64>| match base.and_then(|base| base.checked_add(offset)) {
             Some(at) if at >= 0 => Ok(at as u64),

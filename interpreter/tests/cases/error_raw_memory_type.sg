@@ -1,7 +1,0 @@
-// `Memory` is a built-in name.
-struct Memory {
-    int size
-}
-
-void main() {
-}

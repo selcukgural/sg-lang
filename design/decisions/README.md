@@ -314,3 +314,4 @@ while the slice was built and how it was tested. This folder is that record, one
 | [Statements, names and the messages around them](2026-11-28.md#statements-names-and-the-messages-around-them) | A line that never runs, the types of `std` named again, `try` in a new list, `assert` lined up | 2190–2194 |
 | [`T?`, `null` and `?:`](2026-11-28.md#t-null-and-) | `==` on `T?`, narrowing kept by an assignment and below `Go(null)`, `?:` | 2130–2133 |
 | [The commands](2026-11-28.md#the-commands) | A failed build says whose mistake it is, a shared library is linked by its own name, `sg build .` names the program after the folder, the program of tests refuses what it cannot read | 2230–2242 |
+| [The names of the language a program may take, and `private`](2026-11-28.md#the-names-of-the-language-a-program-may-take-and-private) | Only the words, `Result`, `Task` and `Func` keep their names; `std.X` reaches the language's; no `private` | 2250–2254 |

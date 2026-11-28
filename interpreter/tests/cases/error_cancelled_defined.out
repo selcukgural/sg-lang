@@ -1,4 +1,0 @@
-error: `Cancelled` is a built-in type and cannot be redefined
-  --> error_cancelled_defined.sg:1:8
- 1 | struct Cancelled {
-   |        ^^^^^^^^^

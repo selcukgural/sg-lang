@@ -1,0 +1,7 @@
+private int twice(int x) {
+    return x * 2
+}
+
+void main() {
+    print(twice(2))
+}

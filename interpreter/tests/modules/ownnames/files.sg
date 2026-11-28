@@ -1,0 +1,18 @@
+// A module's own `File` and `TcpStream` hide the language's in the module; the language's are
+// `std.File` and `std.TcpStream`.
+public struct File {
+    public string path
+}
+
+struct TcpStream {
+    int port
+}
+
+public File named(string path) {
+    var stream = TcpStream { port = 80 }
+    return File { path = $"{path}:{stream.port}".toString() }
+}
+
+public bool hostsThere() {
+    return std.File.exists(read "/no/such/file")
+}

@@ -180,6 +180,12 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   a `public` `create`.
 - A name that two modules named with `use` both have is an error where it is used; the hint is the full
   name (`stock.Point`). A name that is not found but is `public` in some module gets the hint `use stock`.
+- A type of the program may have the name of a type of the language, which is then written `std.List<int>`,
+  `std.File.readText(path)`; a program's `List` written with `<...>` is an error with that hint. A type, const
+  or static named as a word of the language (`int`, `string`, ...), and a type or function named `Result`,
+  `Task`, `Func`, `Stdin`, `Stdout` or `Stderr`, is an error (2250-2252).
+- `private` before a field, a function, a method or a type is an error: a name without `public` stays in its
+  module, and a folder of its own hides it from the files beside it too (2254).
   `use` of a folder that is not there, `use` written twice and `use` below the first definition are errors.
 - A `public` function, field or method of a module that shows a type which is not `public` is an error
   that shows both places.

@@ -1,0 +1,9 @@
+error: `List` is the program's own type here, which takes no types between `<` and `>`
+  --> error_language_type_hidden_with_types.sg:8:5
+ 8 |     List<int> xs = std.List<int>()
+   |     ^^^^^^^^^
+  the program's type:
+  --> error_language_type_hidden_with_types.sg:3:8
+ 3 | struct List {
+   |        ^^^^
+  hint: the language's is written with its module: `std.List<int>`

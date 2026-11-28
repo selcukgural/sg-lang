@@ -1,4 +1,0 @@
-error: `NumberError` is a built-in type and cannot be redefined
-  --> error_number_error_defined.sg:1:6
- 1 | enum NumberError {
-   |      ^^^^^^^^^^^

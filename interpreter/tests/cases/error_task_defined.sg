@@ -1,0 +1,7 @@
+// `Task` is what `async` makes, so it keeps its name.
+struct Task {
+    int id
+}
+
+void main() {
+}

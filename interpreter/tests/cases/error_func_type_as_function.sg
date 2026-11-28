@@ -1,0 +1,7 @@
+// `Func` is the type of a function used as a value, so nothing else takes its name.
+int Func() {
+    return 1
+}
+
+void main() {
+}

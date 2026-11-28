@@ -30,10 +30,29 @@ const INTERFACES: &[&str] = &["Copyable", "Clonable", "Formattable", "Equatable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language itself defines, which the checker, the interpreter and the C back end
-/// know by these names; a program cannot define another one under them. A type written in SG
-/// in the language's own module (`Duration`, `Path`, `Hex`) is not here: a type of the program
-/// with its name is the program's, and the other is written `std.Duration` (choice 2192).
+/// know by these names. Only those of `RESERVED_TYPES` keep them: for the others a type of the
+/// program with the name is the program's, and the language's is written `std.File` (choice
+/// 2250), as for a type written in SG in the language's own module (`Duration`, 2192). A folder
+/// still cannot be named as one of them (1591, 2253).
 const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "OperatingSystem", "Channel", "Sender", "Atomic"];
+
+/// The types no program can name again (choice 2250): the words of the language, whose values
+/// the syntax itself writes (the types of numbers, `bool`, `char`, `string`, `void`), and the
+/// three types made by syntax: `Result` by `try`, `Ok` and `Error`, `Task` by `async`, `Func` by
+/// a function's name used as a value. Every other type of the language is found after the
+/// program's own names, and is reached as `std.X` where the program has an `X` of its own.
+const RESERVED_TYPES: [&str; 3] = ["Result", "Task", "Func"];
+
+pub(crate) fn is_reserved_type(name: &str) -> bool {
+    RESERVED_TYPES.contains(&name) || matches!(Ty::from_name(name), Some(Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Void))
+}
+
+/// Whether the checker knows a type of the language by this name, as written without a
+/// module: `List`, `File`, `TcpStream`. One that is not reserved gives way to a type of the
+/// program with its name, and `std.File` is the language's.
+pub(crate) fn is_builtin_name(name: &str) -> bool {
+    BUILTIN_TYPES.contains(&name) || Ty::from_name(name).is_some()
+}
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -180,9 +199,6 @@ impl Names {
         if self.known(&own) {
             return Ok(Some(own));
         }
-        if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR || written == CANCELLED {
-            return Ok(Some(written.to_string()));
-        }
         let mut found: Vec<String> = Vec::new();
         let mut closed = None;
         for (used, _) in uses {
@@ -196,7 +212,7 @@ impl Names {
         // The types of the language's own module are seen from every module, after the module's
         // own names and those of the modules it names with `use`: a type the program wrote is
         // never taken for one the language adds later (choice 1456); `std.Log` reaches it.
-        if found.is_empty() && std_types().any(|name| name == written) {
+        if found.is_empty() && (std_types().any(|name| name == written) || ERROR_TYPES.contains(&written)) {
             let full = format!("{STD_MODULE}.{written}");
             if self.known(&full) {
                 return Ok(Some(full));
@@ -212,6 +228,29 @@ impl Names {
                 let modules: Vec<String> = found.iter().map(|full| format!("`{}`", module_of(full))).collect();
                 Err(Diag::error(at, format!("`{written}` exists in {}", modules.join(" and ")))
                     .hint(format!("write the module in front: `{}`", found[0])))
+            }
+        }
+    }
+
+    /// The type of the program a name written without a module stands for, if there is one:
+    /// one of the file's own module or one a `use` brings. A type of the program with the name of
+    /// a type of the language comes first, as a type of `std` written in SG does (choice 2250).
+    /// A type that is not `public` in a module named with `use` is not seen, and does not hide
+    /// the language's; two that are is an error, as for any name.
+    fn program_type(&self, written: &str, at: Span) -> Res<Option<String>> {
+        let (module, uses) = self.file(at).map_or(("", &[][..]), |file| (file.module.as_str(), file.uses.as_slice()));
+        let own = if module.is_empty() { written.to_string() } else { format!("{module}.{written}") };
+        if module != STD_MODULE && self.kinds.contains_key(&own) {
+            return Ok(Some(own));
+        }
+        let found: Vec<String> = uses.iter().map(|(used, _)| format!("{used}.{written}")).filter(|full| self.kinds.contains_key(full) && self.public.contains(full)).collect();
+        match found.len() {
+            0 => Ok(None),
+            1 => Ok(found.into_iter().next()),
+            _ => {
+                let modules: Vec<String> = found.iter().map(|full| format!("`{}`", module_of(full))).collect();
+                Err(Diag::error(at, format!("`{written}` exists in {}", modules.join(" and ")))
+                    .hint(format!("write the module in front: `{}`, or `{}` for the language's", found[0], crate::diag::language_type(written))))
             }
         }
     }
@@ -564,8 +603,18 @@ fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
     }
 }
 
+/// The errors the language gives, kept in its own module as the types written in SG there are:
+/// a program's own `IoError` is its own, and the language's is `std.IoError` (choice 2250).
+pub(crate) const ERROR_TYPES: [&str; 4] = ["TextError", "NumberError", "IoError", "Cancelled"];
+
+/// Whether `full` is one of the errors the language gives, which a program builds and takes
+/// apart as its own types (`Cancelled { }`), though they are kept in the language's module.
+fn is_error_type(full: &str) -> bool {
+    [TEXT_ERROR, NUMBER_ERROR, IO_ERROR, CANCELLED].contains(&full)
+}
+
 /// What `string.fromUtf8` gives when the bytes are not text.
-const TEXT_ERROR: &str = "TextError";
+pub const TEXT_ERROR: &str = "std.TextError";
 
 /// The built-in `struct TextError : Copyable, Formattable, Equatable { public readonly nint
 /// position }`: where the first byte lies that is not valid UTF-8. It is put among the structs
@@ -579,7 +628,7 @@ fn text_error() -> StructDecl {
 }
 
 /// What `int.parse` and the other `parse` functions give when the text is not a number.
-const NUMBER_ERROR: &str = "NumberError";
+pub const NUMBER_ERROR: &str = "std.NumberError";
 
 /// The built-in `enum NumberError : Copyable, Formattable, Equatable { Invalid(nint position),
 /// OutOfRange }`: the text is not a number from the byte at `position` on (the length of the
@@ -597,7 +646,7 @@ fn number_error() -> EnumDecl {
 }
 
 /// What a cancelled wait gives: `token.check()`, `Task.delay(ms, read token)`.
-const CANCELLED: &str = "Cancelled";
+pub const CANCELLED: &str = "std.Cancelled";
 
 /// The built-in `struct Cancelled : Copyable, Formattable, Equatable { }`: the token of the
 /// work was cancelled. It carries nothing; `Cancelled { }` makes one.
@@ -608,7 +657,7 @@ fn cancelled() -> StructDecl {
 }
 
 /// What reading or writing a file, or the input of the program, gives when it fails.
-const IO_ERROR: &str = "IoError";
+pub const IO_ERROR: &str = "std.IoError";
 
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
@@ -1020,8 +1069,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)))
         .chain(prog.aliases.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Alias)));
     for (name, span, kind) in declared {
-        if (BUILTIN_TYPES.contains(&short_name(name)) || Ty::from_name(short_name(name)).is_some()) && module_of(name) != STD_MODULE {
+        if is_reserved_type(short_name(name)) && module_of(name) != STD_MODULE {
             return Err(Diag::error(span, format!("`{}` is a built-in type and cannot be redefined", short_name(name))));
+        }
+        // `Stdout.write(...)` is always the stream every function has, so a type of that name
+        // could not be reached by it.
+        if let Some(stream) = std_stream(short_name(name)) {
+            return Err(Diag::error(span, format!("`{}` is {stream} every function has, so a type cannot have its name", short_name(name))));
         }
         if names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
@@ -1035,13 +1089,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
     for decl in &prog.statics {
         let short = decl.local.as_deref().unwrap_or_else(|| short_name(&decl.name));
-        if BUILTINS.contains(&short) || BUILTIN_TYPES.contains(&short) || Ty::from_name(short).is_some() {
+        if BUILTINS.contains(&short) || is_reserved_type(short) || std_stream(short).is_some() {
             return Err(Diag::error(decl.name_span, format!("`{short}` is a name of the language, so a static cannot have it")));
         }
     }
     for decl in &prog.consts {
         let short = decl.local.as_deref().unwrap_or_else(|| short_name(&decl.name));
-        if BUILTINS.contains(&short) || BUILTIN_TYPES.contains(&short) || Ty::from_name(short).is_some() {
+        if BUILTINS.contains(&short) || is_reserved_type(short) || std_stream(short).is_some() {
             return Err(Diag::error(decl.name_span, format!("`{short}` is a name of the language, so a const cannot have it")));
         }
     }
@@ -1331,8 +1385,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         if BUILTINS.contains(&short) {
             return Err(Diag::error(func.name_span, format!("`{short}` is a built-in function and cannot be redefined")));
         }
-        if BUILTIN_TYPES.contains(&short) {
+        // `int double(int x)` is a function: a word of the language is a type only where a type
+        // is written.
+        if RESERVED_TYPES.contains(&short) {
             return Err(Diag::error(func.name_span, format!("`{short}` is a built-in type, so a function cannot have its name")));
+        }
+        if let Some(stream) = std_stream(short) {
+            return Err(Diag::error(func.name_span, format!("`{short}` is {stream} every function has, so a function cannot have its name")));
         }
         if names.kinds.contains_key(func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
@@ -1380,7 +1439,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     for var in &prog.cvars {
         let ty = resolve_type(&var.ty, &names, false)?;
         let c_name = short_name(&var.name);
-        if BUILTINS.contains(&c_name) || BUILTIN_TYPES.contains(&c_name) || names.kinds.contains_key(var.name.as_str()) {
+        if BUILTINS.contains(&c_name) || RESERVED_TYPES.contains(&c_name) || std_stream(c_name).is_some() || names.kinds.contains_key(var.name.as_str()) {
             return Err(Diag::error(var.name_span, format!("`{c_name}` is already the name of a type or a built-in function")));
         }
         if ty == Ty::Void || matches!(ty, Ty::Read(_) | Ty::Ref(_)) || not_plain(&ty, &structs).is_some() {
@@ -2672,6 +2731,33 @@ fn check_tests(
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
+    // `std.List<int>`, `std.StreamReader`: the language's type, also where the program has a
+    // type of that name (choice 2251).
+    let language;
+    let mut own = false;
+    let ty = match ty.name.strip_prefix("std.") {
+        // The errors are types of `std` by their full name, `std.IoError`, and found as written.
+        Some(rest) if is_builtin_name(rest) && !ERROR_TYPES.contains(&rest) && !matches!(Ty::from_name(rest), Some(Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Void)) => {
+            language = TypeExpr { name: rest.to_string(), ..ty.clone() };
+            &language
+        }
+        _ if ty.name.starts_with("std.") => ty,
+        // A type of the program with the name of one of the language's is the program's (2250).
+        _ if is_builtin_name(&ty.name) && !is_reserved_type(&ty.name) => match names.program_type(&ty.name, ty.span)? {
+            Some(full) => {
+                if !ty.args.is_empty() {
+                    let args = ty.args.iter().map(|arg| arg.name.as_str()).collect::<Vec<_>>().join(", ");
+                    return Err(Diag::error(ty.span, format!("`{}` is the program's own type here, which takes no types between `<` and `>`", short_name(&full)))
+                        .related(names.spans.get(&full).copied().unwrap_or(ty.span), "the program's type")
+                        .hint(format!("the language's is written with its module: `{}<{args}>`", crate::diag::language_type(&ty.name))));
+                }
+                own = true;
+                ty
+            }
+            None => ty,
+        },
+        _ => ty,
+    };
     if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "CFunc" | "Task" | "Channel" | "Sender") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
             .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `Func<A, R>`, `Task<R>`, `Channel<T>` and `Sender<T>`"));
@@ -2681,7 +2767,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             .note("it needs the borrow check, which is not here yet")),
         None => Ok(()),
     };
-    let mut resolved = match Ty::from_name(&ty.name) {
+    let mut resolved = match Ty::from_name(&ty.name).filter(|_| !own) {
         // What a task started with `Task.run` gives when it is waited for.
         _ if ty.name == "Task" => {
             let [result] = ty.args.as_slice() else {
@@ -2692,7 +2778,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             Ty::Task(Box::new(resolve_type(result, names, true)?))
         }
         // The two ends of a channel. An item is never `null`, which `receive` gives at the end.
-        _ if ty.name == "Channel" || ty.name == "Sender" => {
+        _ if !own && (ty.name == "Channel" || ty.name == "Sender") => {
             let [item] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, format!("`{0}` is written with the type of its items: `{0}<T>`", ty.name)));
             };
@@ -2707,7 +2793,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 _ => Ty::Sender(Box::new(item_ty)),
             }
         }
-        _ if ty.name == "List" => {
+        _ if !own && ty.name == "List" => {
             let [item] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`List` is written with the type of its items: `List<T>`"));
             };
@@ -2737,7 +2823,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         }
         // A pointer to a function as C calls it: what it takes, then what it returns, all of
         // them types of C (checked once the fields of every type are known).
-        _ if ty.name == "CFunc" => {
+        _ if !own && ty.name == "CFunc" => {
             let Some((ret, params)) = ty.args.split_last() else {
                 return Err(Diag::error(ty.span, "`CFunc` is written with the types of the parameters and then the return type: `CFunc<raw void, raw void, int>`")
                     .note("a function of C that takes nothing and returns nothing is a `CFunc<void>`"));
@@ -2756,7 +2842,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             CFUNCS.with(|found_all| found_all.borrow_mut().push((found.clone(), ty.span)));
             found
         }
-        _ if ty.name == "HashSet" => {
+        _ if !own && ty.name == "HashSet" => {
             let [item] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`HashSet` is written with the type of its items: `HashSet<T>`"));
             };
@@ -2767,7 +2853,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             }
             Ty::Set(Box::new(item_ty))
         }
-        _ if ty.name == "HashMap" => {
+        _ if !own && ty.name == "HashMap" => {
             let [key, value] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`HashMap` is written with two types: `HashMap<K, V>`")
                     .note("`K` is the key, `V` is what is kept under it"));
@@ -5438,6 +5524,11 @@ impl<'a> Checker<'a> {
             return None;
         }
         let path = crate::parser::dotted(expr)?;
+        // `std.File`, `std.List`: the language's own module is there for every file, also when
+        // none of its files written in SG is read (choice 2251).
+        if path == STD_MODULE {
+            return Some(path);
+        }
         let full = match self.names.file(expr.span) {
             Some(file) => file.map.full(&path),
             None => path,
@@ -5452,7 +5543,7 @@ impl<'a> Checker<'a> {
     /// front, becomes one name. Gives whether it was one.
     fn unqualify(&mut self, expr: &mut Expr) -> bool {
         let (ExprKind::Field { recv, .. } | ExprKind::Method { recv, .. }) = &mut expr.kind else { return false };
-        let module = match self.names.modules.is_empty() {
+        let module = match self.names.modules.is_empty() && !matches!(&recv.kind, ExprKind::Var(name) if name == STD_MODULE) {
             true => None,
             false => self.module_named(recv),
         };
@@ -5701,7 +5792,7 @@ impl<'a> Checker<'a> {
         // A struct of options (`JsonOptions`) has every field public and none `readonly`: the
         // program writes what it wants. The others of `std` are made by their functions.
         let options = !info.open.is_empty() && info.open.iter().all(|open| *open) && !info.readonly.iter().any(|readonly| *readonly);
-        if module_of(name) == STD_MODULE && !options {
+        if module_of(name) == STD_MODULE && !options && !is_error_type(name) {
             return Err(Diag::error(span, format!("a `{short}` is made by its functions, not field by field")).hint(std_makers(short)));
         }
         if let Some(position) = info.open.iter().position(|open| !open) {
@@ -10190,6 +10281,11 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Collection { ty, args, items } => {
                 let built = resolve_type(ty, self.names, false)?;
+                // `std.List<int>()` is written as the interpreter and the back end read it: a
+                // type of the program never takes types between `<` and `>` (choice 2251).
+                if let Some(rest) = ty.name.strip_prefix("std.") {
+                    ty.name = rest.to_string();
+                }
                 if matches!(built, Ty::Channel(_) | Ty::Sender(_)) {
                     return self.new_channel(&built, ty.span, args, items.is_some(), span);
                 }
@@ -12688,7 +12784,7 @@ impl<'a> Checker<'a> {
             }
             (Ty::Raw(_), _) | (_, Ty::Raw(_)) => Err(undefined().note("a raw pointer is compared with `==` and `!=`, and moved by a count of items with `+` and `-`")),
             // Time is added and taken away by methods: the language defines no operators.
-            (Ty::Struct(name), _) if module_of(name) == STD_MODULE && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
+            (Ty::Struct(name), _) if module_of(name) == STD_MODULE && !is_error_type(name) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
                 let (a, b) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
                 let call = match (op, short_name(name)) {
                     (BinOp::Add, _) => format!("`{a}.plus({b})`"),
@@ -12915,6 +13011,13 @@ impl<'a> Checker<'a> {
             *callee = Callee::Value;
             return Ok(*ret);
         }
+        // `std.TaskGroup()`: the language's type, also beside a type of the program with its
+        // name, which `TaskGroup()` makes then (choices 2250, 2251).
+        let (name, language) = match name.strip_prefix("std.") {
+            Some(rest) if matches!(rest, "CancellationSource" | "TaskGroup" | "CancellationToken") => (rest, true),
+            _ => (name, false),
+        };
+        let builtin = language || !(self.structs.contains_key(name) || self.enums.contains_key(name));
         match name {
             // `printError(x)` writes like `print`, to the standard error.
             "print" | "printError" => {
@@ -12943,14 +13046,14 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Void)
             }
             // `CancellationSource()`: a source that nothing has cancelled yet.
-            "CancellationSource" => {
+            "CancellationSource" if builtin => {
                 arity(0).map_err(|diag| diag.hint("`CancellationSource.after(ms)` cancels itself after that many milliseconds"))?;
                 *callee = Callee::Cancel(CancelCall::New);
                 Ok(Ty::Source)
             }
             // `TaskGroup()`, `TaskGroup(limit)`: a group of tasks that lets go of each as it
             // ends (1716); `whenRoom` waits while `limit` of them run (1719).
-            "TaskGroup" => {
+            "TaskGroup" if builtin => {
                 if args.len() > 1 {
                     return Err(Diag::error(span, format!("`TaskGroup` takes 0 or 1 argument, {} given", args.len()))
                         .hint("`TaskGroup()` has no limit; `TaskGroup(1000)` has `whenRoom` wait while 1,000 of its tasks run"));
@@ -12974,7 +13077,7 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Group(GroupCall::New(limited), false);
                 Ok(Ty::Group)
             }
-            "CancellationToken" => Err(Diag::error(name_span, "a token is not made by itself: it comes from its source")
+            "CancellationToken" if builtin => Err(Diag::error(name_span, "a token is not made by itself: it comes from its source")
                 .hint("`source.token()` gives a token of `source`; `CancellationToken.None` is never cancelled")),
             // `same(a, b)`: whether two `shared` values point to one object. It only looks at
             // them, as `print` does.
@@ -13020,7 +13123,7 @@ impl<'a> Checker<'a> {
             }
             // `T(args)` is short for `T.create(args)`.
             _ if self.structs.contains_key(name) => {
-                if !self.structs[name].methods.contains_key("create") && module_of(name) == STD_MODULE {
+                if !self.structs[name].methods.contains_key("create") && module_of(name) == STD_MODULE && !is_error_type(name) {
                     let short = short_name(name);
                     return Err(Diag::error(name_span, format!("a `{short}` is made by its functions, not with `{short}(...)`")).hint(std_makers(short)));
                 }
@@ -15373,7 +15476,15 @@ impl<'a> Checker<'a> {
                 return Ok(built);
             }
         }
-        // A type name in front of the dot: `Stack.create()`.
+        // A type name in front of the dot: `Stack.create()`. `std.File.readText(path)`: the
+        // language's type, also beside a type of the program with its name (choice 2251).
+        let mut language = false;
+        if let ExprKind::Var(owner) = &mut recv.kind {
+            if let Some(rest) = owner.strip_prefix("std.").filter(|rest| is_builtin_name(rest) && !ERROR_TYPES.contains(rest)) {
+                *owner = rest.to_string();
+                language = true;
+            }
+        }
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
                 // `IoError.fromCode(n)`: the error for a code of the system (`C.lastError()`);
@@ -15394,7 +15505,7 @@ impl<'a> Checker<'a> {
                     *callee = Callee::Memory(if name == "fromCode" { MemoryCall::IoErrorOf } else { MemoryCall::IoErrorOfErrno });
                     return Ok(Ty::Enum(IO_ERROR.to_string()));
                 }
-                if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) {
+                if !language && (self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str())) {
                     return self.static_call(owner, name, name_span, args, callee, span, awaited);
                 }
                 if owner == "File" {

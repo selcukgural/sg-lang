@@ -1,7 +1,0 @@
-// `StreamReader` is a type the language itself defines: it keeps its name.
-struct StreamReader {
-    int lines
-}
-
-void main() {
-}

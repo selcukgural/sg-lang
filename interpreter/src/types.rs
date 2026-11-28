@@ -284,7 +284,7 @@ impl TextIter {
     pub fn item(self) -> Ty {
         match self {
             TextIter::Chars => Ty::Char,
-            TextIter::ReadLines => Ty::Result(Box::new(Ty::Str), Box::new(Ty::Enum("IoError".to_string()))),
+            TextIter::ReadLines => Ty::Result(Box::new(Ty::Str), Box::new(Ty::Enum("std.IoError".to_string()))),
             _ => Ty::Read(Box::new(Ty::Str)),
         }
     }
