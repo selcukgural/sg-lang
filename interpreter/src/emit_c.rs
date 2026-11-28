@@ -6521,16 +6521,27 @@ static inline sg_cancel* sg_cancel_more(sg_cancel* c) {
     return c;
 }
 static void sg_cancel_free(sg_cancel* c, bool held);
-static void sg_cancel_unheld(sg_cancel* c);
+static void sg_cancel_last(sg_cancel* c);
 /* A source the clock alone still holds, set to cancel itself later, can be seen by no one: no
    variable, token or linked source is left to look at it. It leaves the clock and is freed now,
    not when its time comes (a server that sets a source of each connection to 60 seconds would
-   otherwise keep every connection's source, and its place on the clock, that long). */
+   otherwise keep every connection's source, and its place on the clock, that long).
+   A reference that may be the last but the clock's is let go under the clock's lock
+   (`sg_cancel_last`), and nothing of the source is read after it is let go: once it is, the
+   clock may cancel the source and free it at any moment. Any other reference goes in one
+   atomic step, without a lock. */
 static inline void sg_cancel_less(sg_cancel* c) {
     if (!c) return;
-    int64_t left = __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL);
-    if (left == 0) sg_cancel_free(c, false);
-    else if (left == 1 && __atomic_load_n(&c->armed, __ATOMIC_SEQ_CST) != 0) sg_cancel_unheld(c);
+    int64_t refs = __atomic_load_n(&c->refs, __ATOMIC_RELAXED);
+    while (refs > 1) {
+        if (refs == 2 && __atomic_load_n(&c->armed, __ATOMIC_SEQ_CST) != 0) {
+            sg_cancel_last(c);
+            return;
+        }
+        if (__atomic_compare_exchange_n(&c->refs, &refs, refs - 1, true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return;
+    }
+    /* The only reference: no one else can take another. */
+    if (__atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) sg_cancel_free(c, false);
 }
 static inline void sg_drop_source(sg_cancel** p) { sg_cancel_less(*p); *p = NULL; }
 static inline sg_cancel* sg_move_source(sg_cancel** p) { sg_cancel* c = *p; *p = NULL; return c; }
@@ -6624,11 +6635,17 @@ static void sg_cancel_free(sg_cancel* c, bool held) {
     sg_mtx_destroy(&c->lock);
     free(c);
 }
-/* Under the clock's lock the clock either holds the source on its heap, and so has not taken it
-   off to cancel it, or has let it go already. */
-static void sg_cancel_unheld(sg_cancel* c) {
+/* A reference to a source on the clock goes, which may leave the clock its only holder. Under
+   the clock's lock the clock is not in the middle of cancelling the source (it does that under
+   the lock): it holds the source on its heap, and so has not taken it off to cancel it, or has
+   let it go already. The reference let go here kept the source alive until the lock was held. */
+static void sg_cancel_last(sg_cancel* c) {
     sg_mtx_lock(&sg_clock_lock);
-    if (c->clock.at >= 0 && __atomic_load_n(&c->refs, __ATOMIC_ACQUIRE) == 1) {
+    int64_t left = __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL);
+    if (left == 0) {
+        sg_cancel_free(c, true);
+    } else if (left == 1 && c->clock.at >= 0) {
+        /* On the heap, the clock holds a reference: the one left is the clock's. */
         sg_heap_remove(&c->clock);
         __atomic_store_n(&c->armed, 0, __ATOMIC_SEQ_CST);
         __atomic_store_n(&c->refs, 0, __ATOMIC_RELEASE);
@@ -6658,6 +6675,9 @@ static void sg_cancel_arm(sg_cancel* c, const char* loc) {
 }
 static void sg_cancel_clock_over(sg_delay* d) {
     sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, clock));
+    /* In the tests with pauses: a reference to the source let go now finds the clock between
+       taking the source off and cancelling it (`ok_cancel_let_go_as_it_fires`). */
+    SG_WAKE_PAUSE();
     if (!c->cancelled && __atomic_load_n(&c->want, __ATOMIC_SEQ_CST) > d->due) {
         sg_cancel_arm(c, NULL);
         return;

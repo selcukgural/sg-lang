@@ -1290,6 +1290,54 @@ fn compiled_small_pools() {
     assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
 
+/// A source made with `after` let go while the clock cancels it (`tests/clock/let_go.sg`), with
+/// the pauses of `-DSG_PAUSE_WAKES`, under the address sanitizer and the thread sanitizer: the
+/// clock waits between taking the source off and cancelling it, and the program lets the source
+/// go there, in every round. The two then agree on which of them frees it, and it is freed once
+/// and read by neither after that. Compiled only: the interpreter's clock cancels a source when a
+/// task waits, not while a loop looks at it.
+#[test]
+fn compiled_source_let_go_as_it_fires() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Err(error) = sg::cc::compiler() {
+        panic!("{error}: the back end cannot be tested");
+    }
+    let work = root.join("target").join("compiled-clock");
+    std::fs::create_dir_all(&work).unwrap();
+    let source = std::fs::read_to_string(root.join("tests/clock/let_go.sg")).unwrap();
+    let c_file = work.join("let_go.c");
+    std::fs::write(&c_file, sg::emit_c(&source, "let_go.sg", true).unwrap()).unwrap();
+    let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
+    // (the label, the flags of the sanitizer)
+    let mut builds: Vec<(&str, Vec<String>)> = vec![("plain", Vec::new())];
+    if sanitizers {
+        builds.push(("paused-address", sanitizer_flags(&work)));
+        if !cfg!(windows) {
+            builds.push(("paused-thread", vec!["-fsanitize=thread".to_string()]));
+        }
+    }
+    let failures: Vec<String> = in_parallel(&builds, |(label, flags)| {
+        let binary = program_at(&work, &format!("let_go-{label}"));
+        let mut cc = c_command();
+        cc.args(["-std=c11", "-O1", "-g"]);
+        if label.starts_with("paused") {
+            cc.arg("-DSG_PAUSE_WAKES");
+        }
+        let built = cc.args(flags).arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+        assert!(built.status.success(), "the C compiler rejected let_go.sg ({label}):\n{}", String::from_utf8_lossy(&built.stderr));
+        let run = output_within(&mut std::process::Command::new(&binary), &format!("let_go-{label}"));
+        let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+        (actual != "20 rounds\ndone\n").then(|| format!("--- let_go ({label})\n{actual}"))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    if sanitizers && cfg!(windows) {
+        eprintln!("thread sanitizer: not on Windows; the source let go as it fires ran under the others");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The test command on compiled code. Every program of tests is built into the program that
 /// runs its `test` blocks, each in a process of its own, and what that program writes is
 /// compared with what the test command of the interpreter writes: the same `.out` files. It
