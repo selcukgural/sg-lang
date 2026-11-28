@@ -1,0 +1,6 @@
+// There is no `??=`.
+void main() {
+    int? limit = null
+    limit ??= 3
+    print(limit ?? 0)
+}

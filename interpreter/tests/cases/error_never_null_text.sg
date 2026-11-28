@@ -1,0 +1,7 @@
+// `is null` on a text: an empty text was meant.
+void main() {
+    string word = ""
+    if word is not null {
+        print(word)
+    }
+}

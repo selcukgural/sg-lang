@@ -1,0 +1,4 @@
+error: expected `int`, found `read string?`
+  --> error_borrowed_nullable_other_type.sg:5:16
+ 5 |     int kept = first
+   |                ^^^^^

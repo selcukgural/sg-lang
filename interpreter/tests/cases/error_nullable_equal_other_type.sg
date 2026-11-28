@@ -1,0 +1,6 @@
+// A `T?` is compared with a `T?` or a `T` of the same type.
+void main() {
+    int? a = 1
+    long? b = 1
+    print(a == b)
+}

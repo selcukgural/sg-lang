@@ -1,0 +1,15 @@
+// A `T?` assigned to a narrowed variable ends the narrowing (2130).
+int? find(int n) {
+    if n > 0 {
+        return n
+    }
+    return null
+}
+
+void main() {
+    int? count = 5
+    if count is not null {
+        count = find(2)
+        print(count + 1)
+    }
+}

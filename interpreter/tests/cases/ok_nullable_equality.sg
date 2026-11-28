@@ -1,0 +1,101 @@
+// `==` and `!=` with a `T?` on a side (2131): equal when both are `null` or both hold equal
+// values; the other side is a `T?` or a `T`, lent, owned, a call or an item.
+struct Point : Equatable {
+    int x
+    int y
+}
+
+enum Shape : Equatable {
+    Circle(int r)
+    Empty
+}
+
+int? find(int n) {
+    if n > 0 {
+        return n
+    }
+    return null
+}
+
+string? label(int n) {
+    if n > 0 {
+        return $"n{n}".toString()
+    }
+    return null
+}
+
+bool alike(read int? a, read string? s, string? t) {
+    return a == 3 && s == t
+}
+
+struct Node : Equatable {
+    int v
+}
+
+void main() {
+    Node*? first = new Node { v = 1 }
+    Node* second = new Node { v = 1 }
+    Node*? none = null
+    print(first == second)
+    print(first == none)
+    print(none != first)
+    int? a = 1
+    int? b = 1
+    int? c = null
+    int? d = null
+    print(a == b)
+    print(a != b)
+    print(a == c)
+    print(c == d)
+    print(c != d)
+    print(a == 1)
+    print(1 == a)
+    print(c == 1)
+    print(find(3) == find(3))
+    print(find(0) == find(0))
+    print(find(3) == a)
+    byte? small = 4
+    print(small == 4)
+    string? name = "Ada".clone()
+    string? other = null
+    string plain = "Ada".clone()
+    print(name == plain)
+    print(plain == name)
+    print(name == other)
+    print(name == "Ada")
+    print(label(1) == label(1))
+    print(label(1) == "n1")
+    print(label(0) == other)
+    Point? p = Point { x = 1, y = 2 }
+    Point q = Point { x = 1, y = 2 }
+    print(p == q)
+    print(p != q)
+    Shape? s = Shape.Circle(3)
+    print(s == Shape.Circle(3))
+    print(s == Shape.Empty)
+    List<int?> items = List<int?> { 90, null, 75 }
+    print(items[1] == c)
+    print(items[0] == 90)
+    List<string> names = List<string> { "Ada" }
+    print(names.get(0) == name)
+    print(names.get(1) == other)
+    print(names.get(1) == name)
+    double? f = 0.5
+    print(f == 0.5)
+    char? letter = 'a'
+    print(letter == 'a')
+    bool? flag = true
+    print(flag == true)
+    assert(a == b)
+    assert(c != a)
+    int? three = 3
+    if three is not null && name is not null {
+        print(three == a)
+        print(a == three)
+        print(name == "Ada")
+    }
+    print(alike(read three, read name, "Ada".clone()))
+    print(alike(null, null, null))
+    print(name ?? "none")
+    print(plain)
+}

@@ -1,0 +1,6 @@
+panic: assert failed: count == 3
+  left: null
+  right: 3
+  --> panic_assert_nullable_equal.sg:9:5
+ 9 |     assert(count == 3)
+   |     ^^^^^^^^^^^^^^^^^^

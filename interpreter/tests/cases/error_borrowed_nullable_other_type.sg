@@ -1,0 +1,6 @@
+// The types differ, so no hint speaks of borrowing.
+void main() {
+    List<string> names = List<string> { "Ada" }
+    var first = names.get(0)
+    int kept = first
+}

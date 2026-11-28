@@ -28,12 +28,15 @@ missing is written `Node*?`; compiled, its `null` is the address zero.
 `null` has no type of its own. It takes the type of the place it goes to, as a number does: a variable with its
 type written, a `return`, an argument, a field. So `var x = null` is an error: nothing says what `x` would hold.
 
-A `T?` is tested with `is null` and `is not null`, never with `==`. The test narrows the variable: where `x is
-not null` holds, `x` is a `T`. In a `match`, an arm `null` takes the missing value, and a name in an arm below it
-is a `T`. The one value compared with `== null` is a `raw` pointer, which is an address as in C and is not a `T?`.
+A `T?` is tested with `is null` and `is not null`, never with `== null`. The test narrows the variable: where `x
+is not null` holds, `x` is a `T`, and it stays one when a `T` is assigned to it; a `T?` or `null` assigned ends
+that. In a `match`, an arm `null` takes the missing value, and a name in an arm below it is a `T`; so is a name
+below `Go(null)`, in the same place of `Go`. Two `T?` values, or a `T?` and a `T`, are compared with `==`: they are
+equal when both are `null` or both hold equal values. The one value compared with `== null` is a `raw` pointer,
+which is an address as in C and is not a `T?`.
 
 `null` is written as text only inside a value that is printed, such as a list or a struct: `[90, null, 75]`.
-Alone, it has no text, and a `T?` is given a fallback with `??` before it is printed. `share` on a `weak` look
+A `T?` alone is not written: it is given a fallback with `??`, or tested, before it is printed. `share` on a `weak` look
 gives `null` once the value it looked at is gone.
 
 ## Examples
@@ -91,7 +94,7 @@ void run(read Command command) {
     match command {
         Go(null) => print("go where?")
         Go("home") => print("going home")
-        Go(target) => print($"going to {target ?? ""}")
+        Go(target) => print($"going to {target}")
         Stop => print("stopping")
     }
 }
@@ -125,8 +128,8 @@ welcome back, Ada
 hello, Grace, 5 letters
 ```
 
-In `greeting`, `other` is below the arm `null`, so it is a `read string` with a `length()`. Inside a variant the
-name is not narrowed: `target` is still a `read string?`, and `??` gives it a fallback that never runs.
+In `greeting`, `other` is below the arm `null`, so it is a `read string` with a `length()`. In `run`, `target` is
+below `Go(null)`, so it is a `read string` too, and is written with no fallback.
 
 ### Written as text
 
@@ -276,9 +279,10 @@ error: this is `nint`, which is never `null`
   --> example.sg:4:8
  4 |     if count is null {
    |        ^^^^^
+  hint: to test for zero: `count == 0`
 ```
 
-An empty list has the length 0: `count == 0`.
+An empty list has the length 0.
 
 ### An arm `null` on a value that has none
 

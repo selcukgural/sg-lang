@@ -1,0 +1,8 @@
+// The first arm gives the type of `?:`; the hint widens it.
+void main() {
+    bool exact = true
+    int small = 1
+    long big = 5
+    var either = exact ? small : big
+    print(either)
+}

@@ -1,0 +1,28 @@
+// `c ? 1 : null` and `c ? null : 1` are `int?` (1912); a number that fits an `int` beside one
+// that does not is a `long`, either way round; `?:` stands bare after `for ... in`, and a line
+// may end with its `:`.
+void main() {
+    int n = 3
+    var some = n > 2 ? 1 : null
+    var none = n > 5 ? 1 : null
+    var other = n > 2 ? null : 1
+    print(some ?? 0)
+    print(none ?? 0)
+    print(other ?? 0)
+    var big = n < 2 ? 2147483647 : 5000000000
+    var small = n > 2 ? 7 : 5000000000
+    var minus = n > 2 ? -1 : -5000000000
+    long check = big + small + minus
+    print(check)
+    var y = n > 2 ? 10 :
+        20
+    print(y)
+    List<int> xs = List<int> { 1 }
+    List<int> ys = List<int> { 2, 3 }
+    for item in n > 2 ? read xs : read ys {
+        print(item)
+    }
+    for item in n > 5 ? read xs : read ys {
+        print(item)
+    }
+}

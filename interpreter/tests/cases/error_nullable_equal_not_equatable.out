@@ -1,0 +1,5 @@
+error: `==` compares the values, and `Box` is not `Equatable`
+  --> error_nullable_equal_not_equatable.sg:9:11
+ 9 |     print(a == b)
+   |           ^^^^^^
+  hint: add it to the definition: `Box : Equatable`

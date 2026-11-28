@@ -1,0 +1,5 @@
+// `n ?? 0 == 4` is `n ?? (0 == 4)`: the hint puts the parentheses where the comparison was meant.
+void main() {
+    int? n = 4
+    print(n ?? 0 == 4)
+}

@@ -28,9 +28,10 @@ other way. The condition must be a `bool`, as the condition of an `if`.
 Both arms have one type, as the arms of a `match`. The first arm sets it, and the second must fit it the way a
 value fits a variable of that type: after a `long`, an `int` arm is taken, but not a `long` after an `int`. When
 the type is written where the result goes (`long sum = c ? small : big`), both arms are checked against it. An arm
-that is only a number takes the type of the other arm, so `c ? 1 : 2.5` is a `double`. An arm that is only `null`
-does too, and makes the result a `T?`: `c ? "Pasha" : null` is a `string?`. Two arms that are only `null` and a
-number need the type written where the result goes: `int? limit = c ? null : 10`.
+that is only a number takes the type of the other arm, so `c ? 1 : 2.5` is a `double`, and `c ? 1 : 5000000000`
+a `long`, as `var big = 5000000000` is. An arm that is only `null` does too, and makes the result a `T?`:
+`c ? "Pasha" : null` is a `string?`, and `c ? null : 10` an `int?`. Two arms that are only `null` need the type
+written where the result goes: `int? limit = c ? null : null`.
 
 `?:` binds more loosely than any other operator, `??`, `&&` and `||` too: `verbose ?? false ? a : b` is
 `(verbose ?? false) ? a : b`, and `1 + (c ? 10 : 20)` needs its parentheses. It groups to the right, so
@@ -43,7 +44,7 @@ after `name is not null`, `name` is a `string` in the first arm. The second arm 
 and what a failed test narrows. A name of an `is` is never seen in the other arm.
 
 An owned value in an arm is moved, as `var y = x` would move it. The compiler does not know which arm runs, so a
-name moved in either arm can no longer be used after the line. `read x` in an arm looks without moving; while the result
+name moved in either arm may have been moved, and can no longer be used after the line. `read x` in an arm looks without moving; while the result
 is used, the names of both arms stay lent, whichever arm ran, and so does what an `is` in the condition looked
 into (after `var t = r is Ok(s) ? s : "none"`, `r` cannot be moved while `t` is used).
 
@@ -385,16 +386,18 @@ error: expected `int`, found `long`
   --> example.sg:5:34
  5 |     var either = exact ? small : big
    |                                  ^^^
+  hint: the first arm gives the type of both: widen it, `exact ? (long)small : big`, or give the result the type `long` where it goes
 ```
 
-The first arm made it an `int`. `long either = exact ? small : big` gives both arms the type `long`.
+The first arm made it an `int`, and `?:` does not widen it afterwards, as the first arm of a `match` gives the
+type of the others. `long either = exact ? small : big` gives both arms the type `long`.
 
-### `null` and a number, with no type written
+### `null` and `null`, with no type written
 
 ```sg error
 void main() {
     var exact = true
-    var limit = exact ? null : 10
+    var limit = exact ? null : null
     print(limit ?? 0)
 }
 ```
@@ -402,11 +405,12 @@ void main() {
 ```text
 error: the type of this `?:` cannot be found from `null` alone
   --> example.sg:3:25
- 3 |     var limit = exact ? null : 10
+ 3 |     var limit = exact ? null : null
    |                         ^^^^
 ```
 
-Each arm waits for the type of the other. `int? limit = exact ? null : 10` writes it.
+Each arm waits for the type of the other. `int? limit = exact ? null : null` writes it; `exact ? null : 10` needs
+nothing written, and is an `int?`.
 
 ### Inside `{ }` without parentheses
 
@@ -463,11 +467,11 @@ void main() {
 ```
 
 ```text
-error: `other` was moved and can no longer be used
+error: `other` may have been moved and can no longer be used
   --> example.sg:7:11
  7 |     print(other)
    |           ^^^^^
-  it was moved here:
+  it is moved here, on one of the ways to this line:
   --> example.sg:5:30
  5 |     var kept = first ? cat : other
    |                              ^^^^^
@@ -492,4 +496,23 @@ error: a line cannot start with `?`
  4 |         ? "file" : "files"
    |         ^
   hint: the statement ended on the previous line; to continue it, put `?` at the end of that line
+```
+
+A line that starts with `:` gets the same message, with `:`.
+
+### A `T?` as the condition
+
+```sg error
+void main() {
+    string? name = null
+    print(name ? "named" : "nameless")
+}
+```
+
+```text
+error: expected `bool`, found `string?`
+  --> example.sg:3:11
+ 3 |     print(name ? "named" : "nameless")
+   |           ^^^^
+  hint: `name is not null` tells whether it holds a value; in a condition it also makes `name` a `string` where the test holds
 ```

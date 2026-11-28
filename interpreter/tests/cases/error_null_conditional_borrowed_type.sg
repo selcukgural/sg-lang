@@ -1,0 +1,10 @@
+// The types named are those of the whole `?.`, a `string?` and a `read string?`.
+struct Person {
+    string name
+}
+
+void main() {
+    Person? p = Person { name = "Ada".clone() }
+    string? name = p?.name
+    print(name ?? "")
+}

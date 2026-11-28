@@ -344,12 +344,15 @@ void main() {
 ```
 
 ```text
-error: expected `string`, found `read string`
+error: expected `string?`, found `read string?`
   --> example.sg:7:20
  7 |     string? name = p?.name
    |                    ^^^^^^^
-  hint: `read string` only borrows the text; to own a copy write `p?.name.clone()`
+  hint: `read string?` only borrows the text; to own a copy write `p?.name.clone()`
 ```
+
+The types named are those of the whole `p?.name`. A method that gives another type is named the same way:
+`int? n = name?.length()` is refused as ``expected `int?`, found `nint?` ``.
 
 ### Assigning through `?.`
 
@@ -365,10 +368,26 @@ void main() {
 ```
 
 ```text
-error: the left side of an assignment must be a variable, a field or an item
+error: `?.` only reads: a field is written through a value that is there
   --> example.sg:7:5
  7 |     p?.x = 5
    |     ^^^^
+  hint: test it first: `if p is not null { p.x = 5 }`
 ```
 
-A field of a `T?` is changed after a test: `if p is not null { p.x = 5 }`.
+### An item through `?.`
+
+```sg error
+void main() {
+    List<int>? ys = List<int> { 1 }
+    print(ys?[0])
+}
+```
+
+```text
+error: there is no `?[i]`: `?.` reaches fields and methods, not items
+  --> example.sg:3:11
+ 3 |     print(ys?[0])
+   |           ^^^^^^
+  hint: `ys?.get(0)` gives `null` when `ys` is `null` or has no such item; or test it first: `if ys is not null { ... ys[0] ... }`
+```

@@ -1,0 +1,5 @@
+error: expected `ref int?`, found `ref int`
+  --> error_ref_narrowed.sg:9:15
+ 9 |         clear(ref a)
+   |               ^^^^^
+  hint: a test made `a` an `int` here, and a `ref int?` could write `null` into it: lend it where it is not narrowed, before or after the test

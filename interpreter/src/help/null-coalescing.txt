@@ -267,6 +267,7 @@ WHAT THE COMPILER REFUSES
            --> example.sg:3:11
           3 |     print(nickname ?? "nobody")
             |           ^^^^^^^^
+           hint: `??` takes what `nickname` holds; to look at it without taking it: `read nickname ?? ...`
 
      read nickname ?? "nobody" looks, as in the example above.
 
@@ -277,11 +278,14 @@ WHAT THE COMPILER REFUSES
          }
 
          error: expected `int`, found `bool`
+           `??` binds more loosely than `==`: this reads `n ?? (0 == 4)`
            --> example.sg:3:16
           3 |     print(n ?? 0 == 4)
             |                ^^^^^^
+           hint: to compare the value, write `(n ?? 0) == 4`
 
-     It reads as n ?? (0 == 4). (n ?? 0) == 4 is the comparison.
+     n == 4 alone compares too: a T? is compared with a T as a value that is
+     there, and null is equal to nothing but null.
 
    break on the right
          void main() {
@@ -293,13 +297,27 @@ WHAT THE COMPILER REFUSES
              print(total)
          }
 
-         error: expected an expression, found `break`
+         error: `break` cannot stand on the right of `??`: only `return` leaves from there
            --> example.sg:4:36
           4 |         var n = int.parse(text) ?? break
             |                                    ^^^^^
+           hint: test it with `is`: on a `Result`, `if int.parse(text) is not Ok(n) { break }`; on a `T?`, `var n = int.parse(text)`, then `if n is null { break }`
 
-     Only return leaves from the right of ??. A loop tests the value with is:
-     if int.parse(text) is not Ok(n) { break }.
+     int.parse gives a Result, so the first form of the hint is the one here;
+     after that if, n is an int.
+
+   ??=
+         void main() {
+             int? limit = null
+             limit ??= 10
+             print(limit ?? 0)
+         }
+
+         error: there is no `??=`
+           --> example.sg:3:11
+          3 |     limit ??= 10
+            |           ^^^
+           hint: `limit = limit ?? 10`
 
 SEE ALSO
      sg help nullable, sg help null, sg help try, sg help return, sg help is,

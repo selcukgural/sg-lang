@@ -228,24 +228,23 @@ error: expected `bool`, found `int`
 
 `while true` is the loop that runs until a `break`.
 
-### A `bool?` compared with `true`
+### A `bool?` as the condition
 
 ```sg error
 void main() {
     bool? answer = true
-    if answer == true {
+    if answer {
         print("yes")
     }
 }
 ```
 
 ```text
-error: operator `==` is not defined for `bool?` and `bool`
-  `answer` may be `null`
+error: expected `bool`, found `bool?`
   --> example.sg:3:8
- 3 |     if answer == true {
-   |        ^^^^^^^^^^^^^^
-  hint: `null` counts as `false` with `??`: `answer ?? false`
+ 3 |     if answer {
+   |        ^^^^^^
+  hint: it may be `null`: give a fallback with `answer ?? ...`, or test it with `is null`
 ```
 
-`answer ?? false` is `true` only when `answer` holds `true`.
+`answer ?? false` and `answer == true` are `true` only when `answer` holds `true`.

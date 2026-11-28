@@ -1,0 +1,5 @@
+error: expected `bool`, found `string?`
+  --> error_nullable_condition.sg:4:8
+ 4 |     if name {
+   |        ^^^^
+  hint: `name is not null` tells whether it holds a value; in a condition it also makes `name` a `string` where the test holds

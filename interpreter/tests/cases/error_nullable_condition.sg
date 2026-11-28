@@ -1,0 +1,7 @@
+// A `T?` is no condition; the hint tests it, which also narrows it.
+void main() {
+    string? name = null
+    if name {
+        print(1)
+    }
+}

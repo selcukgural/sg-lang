@@ -173,7 +173,6 @@ WHAT THE COMPILER REFUSES
            --> example.sg:2:11
           2 |     print((int)true + 1)
             |           ^^^^^^^^^
-           hint: a `bool` is not a number: `true ? 1 : 0`
 
      (true ? 1 : 0) + 1 is 2.
 
@@ -193,26 +192,24 @@ WHAT THE COMPILER REFUSES
            --> example.sg:3:11
           3 |     while 1 {
             |           ^
-           hint: a `bool` is `true` or `false`: write `true`
 
      while true is the loop that runs until a break.
 
-   A bool? compared with true
+   A bool? as the condition
          void main() {
              bool? answer = true
-             if answer == true {
+             if answer {
                  print("yes")
              }
          }
 
-         error: operator `==` is not defined for `bool?` and `bool`
-           `answer` may be `null`
+         error: expected `bool`, found `bool?`
            --> example.sg:3:8
-          3 |     if answer == true {
-            |        ^^^^^^^^^^^^^^
-           hint: `null` counts as `false` with `??`: `answer ?? false`
+          3 |     if answer {
+            |        ^^^^^^
+           hint: it may be `null`: give a fallback with `answer ?? ...`, or test it with `is null`
 
-     answer ?? false is true only when answer holds true.
+     answer ?? false and answer == true are true only when answer holds true.
 
 SEE ALSO
      sg help bool, sg help false, sg help if, sg help while, sg help match, sg

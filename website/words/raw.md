@@ -307,7 +307,7 @@ error: a raw pointer can be `null` already, so it is not written with `?`
   --> example.sg:2:5
  2 |     raw int? missing = null
    |     ^^^^^^^^
-  hint: compare it: `p == null`
+  hint: write `raw int`, and compare it with `null` using `==` or `!=`
 ```
 
 ### An item of raw memory lent

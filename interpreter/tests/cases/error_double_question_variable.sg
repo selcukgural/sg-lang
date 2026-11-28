@@ -1,0 +1,4 @@
+// `T??` is no type, written out as well as through an alias.
+void main() {
+    int?? count = null
+}

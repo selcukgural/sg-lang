@@ -1,0 +1,6 @@
+error: this is `string`, which is never `null`
+  only a `T?` can be `null`
+  --> error_never_null_text.sg:4:8
+ 4 |     if word is not null {
+   |        ^^^^
+  hint: to test for an empty text: `word.length() != 0`

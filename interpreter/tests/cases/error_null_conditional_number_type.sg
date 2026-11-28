@@ -1,0 +1,6 @@
+// `int?` and `nint?`, and a hint that keeps the cast out of the chain.
+void main() {
+    string? name = "Ada".clone()
+    int? n = name?.length()
+    print(n ?? 0)
+}

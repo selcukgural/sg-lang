@@ -1,0 +1,7 @@
+// A line cannot start with `:`, as it cannot with `?`.
+void main() {
+    var x = 3
+    var y = x > 0 ? 1
+        : 2
+    print(y)
+}

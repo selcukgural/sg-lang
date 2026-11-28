@@ -1,0 +1,10 @@
+// A failed `assert(a == b)` with a `T?` on a side writes both sides, `null` for one that is
+// missing (2131).
+void main() {
+    string? name = "Ada".clone()
+    string? other = "Ada".clone()
+    assert(name == other)
+    int? count = null
+    assert(count != 3)
+    assert(count == 3)
+}

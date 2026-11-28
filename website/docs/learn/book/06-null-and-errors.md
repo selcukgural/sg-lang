@@ -45,6 +45,8 @@ Amazing Grace
 ```
 
 `T?` is a `T` or `null`, and `null` is written only where a `T?` goes. `x is null` and `x is not null` test it.
+`a == b` compares two `T?` values, or a `T?` and a `T`: they are equal when both are `null` or both hold equal
+values.
 `a ?? b` gives `a` when it holds a value and `b` when it is `null`. A `Node*?` takes no more room than a
 pointer; an `int?` is the number and a flag beside it.
 
@@ -102,7 +104,8 @@ a long enough name
 ```
 
 On the right of `||`, `name` is no longer `null`, or the left side would have been true. After the `if`, which
-returns, it is not `null` either. Narrowing also works under `!` and after `while x is null { ... }`.
+returns, it is not `null` either. Narrowing also works under `!` and after `while x is null { ... }`. Assigning a
+value that is never `null` to a narrowed variable keeps it narrowed; assigning `null` or another `T?` ends it.
 
 Only local variables and parameters are narrowed. A field could be changed between the test and the use (by a
 method called in between, for one), so the compiler does not trust a test of it; you borrow the field into a

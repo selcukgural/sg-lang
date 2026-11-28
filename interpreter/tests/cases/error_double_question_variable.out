@@ -1,0 +1,5 @@
+error: `??` is not a type: a value is either there or `null`
+  --> error_double_question_variable.sg:3:8
+ 3 |     int?? count = null
+   |        ^^
+  hint: one `?`: `int?`

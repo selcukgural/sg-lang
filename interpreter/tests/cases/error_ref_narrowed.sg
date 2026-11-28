@@ -1,0 +1,11 @@
+// A narrowed variable is a `T` here, and a `ref T?` could write `null` into it.
+void clear(ref int? slot) {
+    slot = null
+}
+
+void main() {
+    int? a = 4
+    if a is not null {
+        clear(ref a)
+    }
+}

@@ -366,11 +366,12 @@ void main() {
 ```
 
 ```text
-error: this is `read int?` and may be `null`; there is no text for `null`
+error: this is `int?` and may be `null`; a `T?` alone is not written as text
+  inside a list or a struct a missing value is written `null`
   --> example.sg:3:21
  3 |     print($"third: {scores.get(2)}")
    |                     ^^^^^^^^^^^^^
-  hint: give a fallback with `??`, or test with `is null`
+  hint: give a fallback, `scores.get(2) ?? ...`, or keep it in a variable and test that: `var value = scores.get(2)`, then `if value is not null { ... }`
 ```
 
 `{scores.get(2) ?? 0}` writes `0`.

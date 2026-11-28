@@ -1,0 +1,6 @@
+// A `read string?` where a `string` goes: it may be `null`, and it is only lent.
+void main() {
+    List<string> names = List<string> { "Ada" }
+    var first = names.get(0)
+    string kept = first
+}

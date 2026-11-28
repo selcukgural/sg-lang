@@ -1,8 +1,8 @@
-error: `item` was moved and can no longer be used
+error: `item` may have been moved and can no longer be used
   --> error_select_sent_moved.sg:9:11
  9 |     print(item)
    |           ^^^^
-  it was moved here:
+  it is moved here, on one of the ways to this line:
   --> error_select_sent_moved.sg:6:17
  6 |         tx.send(item) => print("sent")
    |                 ^^^^

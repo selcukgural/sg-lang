@@ -1,0 +1,14 @@
+// `Go(null, 1)` does not take every `Go` whose target is `null`, so `target` below may be `null`.
+enum Command {
+    Go(string? target, int? speed)
+    Stop
+}
+
+void main() {
+    var command = Command.Go("home".clone(), null)
+    match command {
+        Go(null, 1) => print("nowhere")
+        Go(target, _) => print($"going to {target}")
+        Stop => print("stop")
+    }
+}

@@ -1,0 +1,6 @@
+// A borrow of an `int?` is named `int?`, as in the other messages.
+void main() {
+    HashMap<string, int> ages = HashMap<string, int>()
+    var age = ages.get("Ada")
+    print(age + 1)
+}

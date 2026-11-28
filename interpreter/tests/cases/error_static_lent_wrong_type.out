@@ -2,4 +2,3 @@ error: expected `int`, found `read Point`
   --> error_static_lent_wrong_type.sg:11:13
  11 |     int n = read Home
     |             ^^^^^^^^^
-  hint: `read Point` only borrows the value; `int` needs to own it

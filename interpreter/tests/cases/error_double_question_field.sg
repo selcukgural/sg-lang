@@ -1,0 +1,6 @@
+struct Slot {
+    int?? count
+}
+
+void main() {
+}
