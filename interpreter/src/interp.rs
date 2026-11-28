@@ -3095,6 +3095,18 @@ fn from_end(expr: &Expr) -> Option<&Expr> {
     }
 }
 
+/// The panic of a count from the end outside `length` (an end of a range: `bound`), with what
+/// may be counted, as compiled code says it.
+fn from_end_panic(span: Span, count: i128, length: i128, bound: bool) -> Diag {
+    let (what, hint) = match (bound, length) {
+        (true, _) => ("range bound", format!("an end of a range goes from `^0`, the end, to `^{length}`, the start")),
+        (false, 0) => ("index", "it is empty, so there is nothing to count from the end".to_string()),
+        (false, 1) => ("index", "from the end, `^1` is the only one".to_string()),
+        (false, _) => ("index", format!("from the end, `^1` is the last and `^{length}` the first")),
+    };
+    Diag::panic(span, format!("{what} ^{count} is out of range: the length is {length}")).hint(hint)
+}
+
 /// The length `^n` counts back from: of a text in bytes, of a list, an array or a slice in items.
 fn length_of(holder: &Value) -> i128 {
     match holder {
@@ -5252,7 +5264,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let length = length_of(&holder);
                         let count = self.int(count, frame)?;
                         if count < 1 || count > length {
-                            return Err(Diag::panic(expr.span, format!("index ^{count} is out of range: the length is {length}")).into());
+                            return Err(from_end_panic(expr.span, count, length, false).into());
                         }
                         Value::Int(IntTy::Nint, length - count)
                     }
@@ -5788,7 +5800,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let Some(count) = from_end(end) else { return this.int(end, frame) };
                 let count = this.int(count, frame)?;
                 if count < 0 || count > length {
-                    return Err(Diag::panic(expr.span, format!("range bound ^{count} is out of range: the length is {length}")).into());
+                    return Err(from_end_panic(expr.span, count, length, true).into());
                 }
                 Ok(length - count)
             };
@@ -7221,7 +7233,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Some(count) => {
                         let count = self.int(count, frame)?;
                         if count < 1 || count > *length as i128 {
-                            return Err(Diag::panic(expr.span, format!("index ^{count} is out of range: the length is {length}")).into());
+                            return Err(from_end_panic(expr.span, count, *length as i128, false).into());
                         }
                         *length as i128 - count
                     }

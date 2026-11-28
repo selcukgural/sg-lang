@@ -1,0 +1,5 @@
+error: type `formatted text` has no method `length`
+  --> error_formatted_method.sg:3:18
+ 3 |     print($"{n}".length())
+   |                  ^^^^^^
+  hint: make it a `string` first: `$"{n}".toString().length()`

@@ -34,8 +34,9 @@ operand, as after `-`: a sum goes in parentheses, `xs[^(k + 1)]`. The count is a
 `nint`.
 
 A count that is a constant is checked when the program is compiled: `^0` as an index, a negative number after
-`^`, and `^4` on an `int[3]` are errors. A count that is known only when the program runs is checked then, in
-every build, and a count outside the items stops the program with what was written: `index ^4 is out of range`.
+`^`, and `^4` on an `int[3]` are errors, and so is Python's `xs[-1]`, with the hint `^1`. A count that is known
+only when the program runs is checked then, in every build, and a count outside the items stops the program with
+what was written, `index ^4 is out of range`, and a hint that says what may be counted.
 A `HashMap` has no end to count from, since its keys are not places in a row. There is no `last()`:
 `xs.get(xs.length() - 1)` reads the last item, or `null` for an empty list.
 
@@ -225,9 +226,13 @@ void main() {
 
 ```text
 panic: index ^4 is out of range: the length is 3
+  --> example.sg:4:11
+ 4 |     print(xs[^back])
+   |           ^^^^^^^^^
+  hint: from the end, `^1` is the last and `^3` the first
 ```
 
-The message names the place as it was written, `^4`, not `-1`.
+The message names the place as it was written, `^4`, not `-1`, and the hint what may be counted.
 
 ### The last item of an empty list
 
@@ -240,6 +245,10 @@ void main() {
 
 ```text
 panic: index ^1 is out of range: the length is 0
+  --> example.sg:3:11
+ 3 |     print(xs[^1])
+   |           ^^^^^^
+  hint: it is empty, so there is nothing to count from the end
 ```
 
 `xs.get(xs.length() - 1) ?? ...` reads the last item where the list may be empty. For a count that may be 0 or
@@ -257,6 +266,10 @@ void main() {
 
 ```text
 panic: range bound ^4 is out of range: the length is 3
+  --> example.sg:4:11
+ 4 |     print(xs[^keep..])
+   |           ^^^^^^^^^^^
+  hint: an end of a range goes from `^0`, the end, to `^3`, the start
 ```
 
 At an end of a range a count from 0 to the length is valid.
@@ -337,10 +350,31 @@ error: `^` counts one operand from the end; what it counts is put in parentheses
   --> example.sg:4:14
  4 |     print(xs[^k + 1])
    |              ^^^^^^
-  hint: `^(k + 1)`
+  hint: `^(k + 1)` counts `k + 1` from the end; 1 after `^k` is `^(k - 1)`
 ```
 
-`^k + 1` could be read as `(length - k) + 1` or as `length - (k + 1)`, so neither is guessed.
+`^k + 1` could be read as `length - (k + 1)` or as `(length - k) + 1`, so neither is guessed: the hint gives
+both. Where one reading gives no item, as `^(1 - 1)` for `xs[^1 - 1]`, the hint gives the other alone: `^2`.
+
+### A negative index
+
+```sg error
+void main() {
+    var xs = List<int> { 10, 20, 30 }
+    print(xs[-1])
+}
+```
+
+```text
+error: an index cannot be negative
+  --> example.sg:3:14
+ 3 |     print(xs[-1])
+   |              ^^
+  hint: count from the end with `^`: `^1`
+```
+
+Python's `xs[-1]` is `xs[^1]` here. A negative number written as an index or an end of a range of a list, an
+array, a slice or a text is refused; one known only when the program runs stops it.
 
 ### `^` outside the brackets
 

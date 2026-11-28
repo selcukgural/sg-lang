@@ -2,3 +2,4 @@ panic: range bound ^4 is out of range: the length is 3
   --> panic_from_end_bound.sg:4:11
  4 |     print(xs[..^k].length())
    |           ^^^^^^^^
+  hint: an end of a range goes from `^0`, the end, to `^3`, the start

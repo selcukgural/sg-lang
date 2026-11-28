@@ -1,0 +1,6 @@
+void main() {
+    var ready = true
+    var ok = false
+    ready &= ok
+    print(ready)
+}

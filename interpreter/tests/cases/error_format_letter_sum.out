@@ -1,0 +1,5 @@
+error: `F` writes a fractional number with so many digits after the point, and `cents / 100` is an `int`
+  --> error_format_letter_sum.sg:3:25
+ 3 |     print($"{cents / 100:F2}")
+   |                         ^^^
+  hint: make it a `double` first: `{(double)(cents / 100):F2}`

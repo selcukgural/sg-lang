@@ -1,0 +1,5 @@
+error: there is no variable or type named `Math`
+  --> error_math_type.sg:3:11
+ 3 |     print(Math.sqrt(side * side))
+   |           ^^^^
+  hint: math is a method of the number: `(side * side).sqrt()`

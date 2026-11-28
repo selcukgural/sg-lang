@@ -143,6 +143,7 @@ void main() {
 
 ```text
 error: expected a variable name, found `in`
+  `in` is a word of the language, not a name
   --> example.sg:2:9
  2 |     var in = 3
    |         ^^

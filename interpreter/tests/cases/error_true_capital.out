@@ -1,0 +1,5 @@
+error: there is no variable named `True`
+  --> error_true_capital.sg:2:18
+ 2 |     bool ready = True
+   |                  ^^^^
+  hint: a `bool` is written in lower case: `true`

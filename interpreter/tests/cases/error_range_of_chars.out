@@ -1,0 +1,5 @@
+error: the start of the range must be an integer, found `char`
+  --> error_range_of_chars.sg:2:14
+ 2 |     for c in 'a'..'e' {
+   |              ^^^
+  hint: a `for` counts integers: `for c in (int)'a'..(int)'e'`, and `(char)c` is the character

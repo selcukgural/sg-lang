@@ -382,7 +382,8 @@ error: a range in a pattern ends with a number or a character
    |             ^^^
 ```
 
-The ends of a pattern are written as they are, so that the compiler can count what the arms take.
+The ends of a pattern are written as they are, so that the compiler can count what the arms take. A constant
+such as `int.MaxValue` is refused the same way, with a note that it is not an end of a range yet.
 
 ### A range kept in a variable
 
@@ -397,12 +398,35 @@ void main() {
 
 ```text
 error: expected end of line, found `..`
+  a range is not a value: it is written at the head of a `for` (`for i in 0..5`) or between the brackets of an index (`xs[1..3]`)
   --> example.sg:2:23
  2 |     var firstThree = 0..3
    |                       ^^
 ```
 
 A range is not a value: it is written where it is used, at the head of the `for`.
+
+### `reversed` on a part of a list
+
+```sg error
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    for x in xs[1..].reversed() {
+        print(x)
+    }
+}
+```
+
+```text
+error: `int[]` has no method `reversed`
+  --> example.sg:3:22
+ 3 |     for x in xs[1..].reversed() {
+   |                      ^^^^^^^^
+  hint: `reversed` goes over a range from its end: `for i in (0..xs[1..].length()).reversed()`; `xs[1..].reverse()` turns the items round in place
+```
+
+`(a..b).reversed()` is written at the head of a `for`, on a range of numbers. A list, an array and a slice have
+`reverse`, which changes the order of their items.
 
 ### A range of characters
 
@@ -419,10 +443,11 @@ error: the start of the range must be an integer, found `char`
   --> example.sg:2:14
  2 |     for c in 'a'..'e' {
    |              ^^^
+  hint: a `for` counts integers: `for c in (int)'a'..(int)'e'`, and `(char)c` is the character
 ```
 
-A `for` counts integers. The bytes of the letters are `(byte)'a'..(byte)'e'`, and the characters of a text
-`"abcd".chars()`.
+A `for` counts integers: the codes of the letters, made characters again with `(char)`. The characters of a
+text are gone over with `"abcd".chars()`.
 
 ### Ends whose types do not mix
 

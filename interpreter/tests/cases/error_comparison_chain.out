@@ -1,0 +1,5 @@
+error: operator `<` is not defined for `bool` and `int`
+  --> error_comparison_chain.sg:3:8
+ 3 |     if 18 <= age < 65 {
+   |        ^^^^^^^^^^^^^^
+  hint: compare twice: `18 <= age && age < 65`

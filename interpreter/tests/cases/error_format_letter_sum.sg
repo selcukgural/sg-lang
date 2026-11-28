@@ -1,0 +1,4 @@
+void main() {
+    int cents = 1905
+    print($"{cents / 100:F2}")
+}

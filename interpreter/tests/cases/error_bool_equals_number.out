@@ -1,0 +1,5 @@
+error: operator `==` is not defined for `bool` and `int`
+  --> error_bool_equals_number.sg:3:8
+ 3 |     if done == 0 {
+   |        ^^^^^^^^^
+  hint: a `bool` is a test by itself: `!done`

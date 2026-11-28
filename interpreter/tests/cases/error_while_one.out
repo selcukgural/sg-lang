@@ -1,0 +1,5 @@
+error: expected `bool`, found `int`
+  --> error_while_one.sg:3:11
+ 3 |     while 1 {
+   |           ^
+  hint: a `bool` is `true` or `false`: write `true`

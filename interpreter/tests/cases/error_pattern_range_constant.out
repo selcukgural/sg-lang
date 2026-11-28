@@ -1,0 +1,5 @@
+error: a range in a pattern ends with a number or a character
+  a constant such as `int.MaxValue` is not an end of a range yet; write its number
+  --> error_pattern_range_constant.sg:3:13
+ 3 |         0..=int.MaxValue => "not negative"
+   |             ^^^^^^^^^^^^

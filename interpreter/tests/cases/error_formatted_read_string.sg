@@ -1,0 +1,8 @@
+void show(read string text) {
+    print(text)
+}
+
+void main() {
+    var n = 1
+    show($"n = {n}")
+}

@@ -1,0 +1,7 @@
+void main() {
+    var name = "Ada".clone()
+    var line = $"hi {name}"
+    var taken = name
+    print(taken)
+    print(line)
+}

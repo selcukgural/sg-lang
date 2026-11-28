@@ -2665,7 +2665,13 @@ SG_COLD static _Noreturn void sg_item_fail(long long at, long long len, const ch
 SG_COLD static _Noreturn void sg_end_fail(long long count, long long len, bool bound, const char* loc) {
     SG_PANIC_START();
     fprintf(stderr, "panic: %s ^%lld is out of range: the length is %lld\n", bound ? "range bound" : "index", count, len);
-    sg_die(loc);
+    /* What may be counted from the end, as the interpreter says it. */
+    char hint[96];
+    if (bound) snprintf(hint, sizeof hint, "an end of a range goes from `^0`, the end, to `^%lld`, the start", len);
+    else if (len == 0) snprintf(hint, sizeof hint, "it is empty, so there is nothing to count from the end");
+    else if (len == 1) snprintf(hint, sizeof hint, "from the end, `^1` is the only one");
+    else snprintf(hint, sizeof hint, "from the end, `^1` is the last and `^%lld` the first", len);
+    sg_die_hint(loc, hint);
 }
 static inline int64_t sg_from_end(int64_t count, int64_t len, const char* loc) {
     if (__builtin_expect((uint64_t)count - 1 >= (uint64_t)len, 0)) sg_end_fail(count, len, false, loc);

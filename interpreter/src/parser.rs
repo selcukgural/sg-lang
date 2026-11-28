@@ -178,6 +178,12 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) if WORDS.contains(&name.as_str()) => {
                 diag.note(format!("`{name}` is a word of the language, not a name"))
             }
+            // `var r = 0..5`, `print(0..5)`: a range is not a value.
+            Tok::DotDot => diag.note("a range is not a value: it is written at the head of a `for` (`for i in 0..5`) or between the brackets of an index (`xs[1..3]`)"),
+            // `void read(...)`: a word that has a token of its own, where a name was wanted.
+            word if word.is_word() && wanted.ends_with("name") => {
+                diag.note(format!("{} is a word of the language, not a name", word.describe()))
+            }
             _ => diag,
         }
     }
@@ -1887,6 +1893,12 @@ impl<'a> Parser<'a> {
         if end(&low).is_none() {
             return Err(Diag::error(low.span.to(dots), "a range in a pattern goes from a number or a character to another"));
         }
+        // `0..=int.MaxValue`: a constant is not an end of a range yet.
+        if let (Tok::Ident(owner), Tok::Dot, Tok::Ident(name)) = (self.peek(), self.peek_at(1), self.peek_at(2)) {
+            let span = self.span().to(self.toks[self.i + 2].span);
+            return Err(Diag::error(span, "a range in a pattern ends with a number or a character")
+                .note(format!("a constant such as `{owner}.{name}` is not an end of a range yet; write its number")));
+        }
         let high = self.pattern_at(inside)?;
         if end(&high).is_none() {
             return Err(Diag::error(high.span, "a range in a pattern ends with a number or a character"));
@@ -1952,6 +1964,12 @@ impl<'a> Parser<'a> {
             }
             Tok::Ident(_) => {
                 let (name, _) = self.ident("a variant name")?;
+                // `int.MinValue..=0`: a constant is not an end of a range yet.
+                if let (Tok::Dot, Tok::Ident(constant), Tok::DotDot | Tok::DotDotEq) = (self.peek(), self.peek_at(1), self.peek_at(2)) {
+                    let span = start.to(self.toks[self.i + 1].span);
+                    return Err(Diag::error(span, "a range in a pattern goes from a number or a character to another")
+                        .note(format!("a constant such as `{name}.{constant}` is not an end of a range yet; write its number")));
+                }
                 if *self.peek() == Tok::Dot {
                     let diag = Diag::error(start.to(self.span()), "a pattern names the variant alone, without its enum");
                     return Err(match self.peek_at(1) {
@@ -2093,7 +2111,14 @@ impl<'a> Parser<'a> {
             } else {
                 return Ok(left);
             };
-            self.bump();
+            let op_span = self.bump().span;
+            // `ready &&= ok`, from Ruby and JavaScript: there is no such assignment.
+            if matches!(op, BinOp::And | BinOp::Or) && *self.peek() == Tok::Assign && self.span().start == op_span.end {
+                let symbol = if op == BinOp::And { "&&" } else { "||" };
+                let text = &self.src[left.span.start..left.span.end];
+                return Err(Diag::error(op_span.to(self.span()), format!("there is no `{symbol}=`"))
+                    .hint(format!("write it out: `{text} = {text} {symbol} ...`")));
+            }
             // Each operator of a chain nests the tree one more: `a + b + c` is `(a + b) + c`.
             self.deeper()?;
             let right = self.binary(level + 1)?;
@@ -2282,7 +2307,7 @@ impl<'a> Parser<'a> {
                 let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Borrow { mutable: true, expr: e }, operand))
             }
-            // `(int)x`, `(char)code`: a number type or `char` alone in parentheses is a cast.
+            // `(int)x`, `(char)code`: a number type, `char` or `bool` alone in parentheses is a cast.
             Tok::LParen => match self.cast_type() {
                 Some(ty) => {
                     self.bump();
@@ -2324,7 +2349,8 @@ impl<'a> Parser<'a> {
         if *self.peek_at(2) != Tok::RParen {
             return None;
         }
-        Ty::from_name(name).filter(|ty| ty.is_number() || *ty == Ty::Char)
+        // `(bool)n` is read as a cast too, for the checker to say that a number is not a `bool`.
+        Ty::from_name(name).filter(|ty| ty.is_number() || matches!(ty, Ty::Char | Ty::Bool))
     }
 
     fn postfix(&mut self) -> Res<Expr> {
@@ -2475,9 +2501,8 @@ impl<'a> Parser<'a> {
             self.i = at;
             if let Ok(whole) = self.expr() {
                 if matches!(self.peek(), Tok::RBracket | Tok::DotDot | Tok::DotDotEq) {
-                    let text = &self.src[whole.span.start..whole.span.end];
-                    return Err(Diag::error(mark.to(whole.span), "`^` counts one operand from the end; what it counts is put in parentheses")
-                        .hint(format!("`^({text})`")));
+                    let diag = Diag::error(mark.to(whole.span), "`^` counts one operand from the end; what it counts is put in parentheses");
+                    return Err(diag.hint(self.counted_back_hint(&whole)));
                 }
             }
             self.i = at;
@@ -2487,6 +2512,40 @@ impl<'a> Parser<'a> {
         let end = Expr { ty: Ty::Void, moved: false, kind: ExprKind::End, span: mark };
         let span = mark.to(count.span);
         Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Binary(BinOp::Sub, Box::new(end), Box::new(count)), span })
+    }
+
+    /// The hint for `xs[^k - 1]`, which reads two ways: `^(k - 1)` counts `k - 1` from the end,
+    /// and one before `^k` is `^(k + 1)`. A reading that gives no item (`^(1 - 1)` is `^0`) is
+    /// left out, and a count of numbers is worked out.
+    fn counted_back_hint(&self, whole: &Expr) -> String {
+        let text = &self.src[whole.span.start..whole.span.end];
+        let first = format!("`^({text})` counts `{text}` from the end");
+        let ExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), left, right) = &whole.kind else { return format!("`^({text})`") };
+        if matches!(left.kind, ExprKind::Binary(..)) {
+            return format!("`^({text})`");
+        }
+        let (l, r) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+        let (word, back) = if *op == BinOp::Sub { ("before", "+") } else { ("after", "-") };
+        let numbers = match (&left.kind, &right.kind) {
+            (ExprKind::Int(a, _), ExprKind::Int(b, _)) => Some((*a, *b)),
+            _ => None,
+        };
+        let (whole_count, other) = match numbers {
+            Some((a, b)) => {
+                let (whole_count, other) = if *op == BinOp::Sub { (a - b, a + b) } else { (a + b, a - b) };
+                (Some(whole_count), match other > 0 {
+                    true => format!("`^{other}`"),
+                    false => String::new(),
+                })
+            }
+            None => (None, format!("`^({l} {back} {r})`")),
+        };
+        let second = format!("{r} {word} `^{l}` is {other}");
+        match (whole_count.is_some_and(|count| count <= 0), other.is_empty()) {
+            (true, false) => second,
+            (false, true) | (true, true) => first,
+            (false, false) => format!("{first}; {second}"),
+        }
     }
 
     /// Runs `inner` between brackets, where a struct literal is always unambiguous.

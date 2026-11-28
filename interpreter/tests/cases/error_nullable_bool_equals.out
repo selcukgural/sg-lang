@@ -1,0 +1,6 @@
+error: operator `==` is not defined for `bool?` and `bool`
+  `answer` may be `null`
+  --> error_nullable_bool_equals.sg:3:8
+ 3 |     if answer == true {
+   |        ^^^^^^^^^^^^^^
+  hint: `null` counts as `false` with `??`: `answer ?? false`

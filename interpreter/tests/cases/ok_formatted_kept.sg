@@ -1,0 +1,22 @@
+struct Point : Formattable {
+    int x
+    int y
+}
+
+void main() {
+    var name = "Ada".clone()
+    var p = Point { x = 1, y = 2 }
+    var count = 3
+    var line = $"{name} at {p}, {count} of {10} {-2} {int.MaxValue} {"!"} {true}"
+    print(line)
+    print(line)
+    var nested = $"[{line}]"
+    print(nested)
+    // The borrows end with the last use of `line` and `nested`.
+    count = 4
+    var taken = name
+    print($"{taken} {count}")
+    var kept = $"{taken}".toString()
+    taken = "Bob".clone()
+    print($"{kept} {taken}")
+}

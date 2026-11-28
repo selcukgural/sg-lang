@@ -1,0 +1,5 @@
+error: `^` counts one operand from the end; what it counts is put in parentheses
+  --> error_from_end_minus.sg:3:14
+ 3 |     print(xs[^1 - 1])
+   |              ^^^^^^
+  hint: 1 before `^1` is `^2`

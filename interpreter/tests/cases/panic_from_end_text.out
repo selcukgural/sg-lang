@@ -2,3 +2,4 @@ panic: index ^0 is out of range: the length is 3
   --> panic_from_end_text.sg:4:11
  4 |     print(s[^k])
    |           ^^^^^
+  hint: from the end, `^1` is the last and `^3` the first

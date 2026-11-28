@@ -1,0 +1,10 @@
+string kind(int n) {
+    return match n {
+        0..=int.MaxValue => "not negative"
+        _ => "negative"
+    }
+}
+
+void main() {
+    print(kind(3))
+}

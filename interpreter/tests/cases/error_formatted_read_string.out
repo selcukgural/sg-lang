@@ -1,0 +1,5 @@
+error: expected `read string`; `$"..."` does not become a `string` on its own
+  --> error_formatted_read_string.sg:7:10
+ 7 |     show($"n = {n}")
+   |          ^^^^^^^^^^
+  hint: make the `string` and lend it: `read $"n = {n}".toString()`; that is where the allocation shows

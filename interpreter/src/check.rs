@@ -389,6 +389,13 @@ fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
     }
 }
 
+/// The methods of a fractional number that an integer does not have either.
+const FRACTIONAL: &[&str] = &[
+    "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan",
+    "atan2", "pow", "fusedMultiplyAdd", "hypot", "copySign", "ieeeRemainder", "scaleByPowerOfTwo", "exponent", "isFinite",
+    "isSignNegative", "isNaN", "isInfinite",
+];
+
 /// The methods of `float` and `double` that take nothing and give the same type: the rest of
 /// `<math.h>` after the ones of 162.
 pub const FLOAT_ONE: &[&str] = &[
@@ -718,7 +725,8 @@ fn std_stream(name: &str) -> Option<&'static str> {
 /// Whether a value of this type is a borrow or carries one inside.
 fn lends(ty: &Ty, names: &Names) -> bool {
     match ty {
-        Ty::Read(_) | Ty::Ref(_) | Ty::TextIter(_) | Ty::Reader(true) => true,
+        // A formatted text looks at its values until it is written (text.md, text formatting).
+        Ty::Read(_) | Ty::Ref(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Fmt => true,
         Ty::Struct(name) | Ty::Enum(name) => names.carriers.contains_key(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => lends(inner, names),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => lends(a, names) || lends(b, names),
@@ -4118,6 +4126,62 @@ fn unnamed_owner(expr: &Expr) -> bool {
     }
 }
 
+/// The hint for a number where a `bool` goes (`text` is how it is written): `0` and `1` are
+/// `false` and `true`, any other number is compared with 0, `n != 0`, or under a `!`
+/// (`negated`) `n == 0`.
+fn number_as_bool(expr: &Expr, text: &str, negated: bool) -> String {
+    if let ExprKind::Int(value @ (0 | 1), _) = expr.kind {
+        let meant = (value == 1) != negated;
+        return format!("a `bool` is `true` or `false`: write `{meant}`");
+    }
+    let text = match expr.kind {
+        ExprKind::Coalesce { .. } | ExprKind::Cond { .. } => format!("({text})"),
+        _ => text.to_string(),
+    };
+    let op = if negated { "==" } else { "!=" };
+    format!("a number is not a condition; compare it: `{text} {op} 0`")
+}
+
+/// How an expression is written as one operand in a hint, say after `!` or before `.`: in
+/// parentheses, unless it is a name, a call, an item, a number that is not negative, or is
+/// written in parentheses already.
+fn as_operand(expr: &Expr, text: &str) -> String {
+    let simple = matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Index { .. } | ExprKind::Bool(_))
+        || (matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) && !text.starts_with('-'));
+    let mut depth = 0;
+    let wrapped = text.starts_with('(')
+        && text.ends_with(')')
+        && text.char_indices().all(|(at, found)| {
+            match found {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            depth > 0 || at == text.len() - 1
+        });
+    match simple || wrapped {
+        true => text.to_string(),
+        false => format!("({text})"),
+    }
+}
+
+/// The hint for `xs.reversed()`: a range is gone over from its end, and `reverse` turns the
+/// items round in place.
+fn reversed_hint(text: &str) -> String {
+    format!("`reversed` goes over a range from its end: `for i in (0..{text}.length()).reversed()`; `{text}.reverse()` turns the items round in place")
+}
+
+/// Whether an expression is a literal or a constant (`3`, `-1.5`, `'a'`, `"text"`, `true`,
+/// `int.MaxValue`): a value that is no variable's and that lasts for the run.
+fn literal_value(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) | ExprKind::Null => true,
+        ExprKind::Const(_) | ExprKind::Constant { .. } => true,
+        ExprKind::Load(inner) | ExprKind::Widen(_, inner) | ExprKind::Unary(UnOp::Neg, inner) => literal_value(inner),
+        _ => false,
+    }
+}
+
 /// What a variable that holds a borrow has borrowed: the place it was lent from.
 #[derive(Clone)]
 struct Loan {
@@ -5032,6 +5096,10 @@ impl<'a> Checker<'a> {
         if let Some(hint) = self.names.use_hint(name, span) {
             return diag.hint(hint);
         }
+        // `True` of Python, `TRUE` of C's macros.
+        if let Some(value) = ["true", "false"].into_iter().find(|value| name.eq_ignore_ascii_case(value)) {
+            return diag.hint(format!("a `bool` is written in lower case: `{value}`"));
+        }
         if let Some((_, at, fails)) = self.is_names.iter().rev().find(|(named, at, _)| named == name && at.start < span.start) {
             return diag
                 .related(*at, format!("`{name}` is named by this `is`"))
@@ -5748,11 +5816,21 @@ impl<'a> Checker<'a> {
                 self.loans_of(inner, mutable)
             }
             ExprKind::Open { inner, .. } | ExprKind::Within(inner) => self.loans_of(inner, mutable),
-            // A text being formatted looks at its values until it is written.
-            ExprKind::Interp(parts) if matches!(expr.ty, Ty::Fmt) => union(&mut parts.iter().filter_map(|part| match part {
-                InterpPart::Expr(inner, _) => Some(inner),
-                _ => None,
-            })),
+            // A text being formatted looks at its values until it is written (text.md, text
+            // formatting): each is lent to it, as with `read`. A value with no name is gone when
+            // the line ends, so a formatted text kept in a variable cannot look at one; a
+            // literal is not a value of the function and stays.
+            ExprKind::Interp(parts) if matches!(expr.ty, Ty::Fmt) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    InterpPart::Expr(inner, _) => Some(inner),
+                    _ => None,
+                })
+                .flat_map(|inner| match literal_value(inner) {
+                    true => Vec::new(),
+                    false => self.place_loans(inner, false, inner.span),
+                })
+                .collect(),
             // A number, a `bool`, a text that lasts for the run, a raw pointer, a value of C or a
             // const: nothing that borrows from a variable of the function.
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Interp(_) | ExprKind::Null | ExprKind::End => Vec::new(),
@@ -6853,6 +6931,20 @@ impl<'a> Checker<'a> {
                         return Err(Diag::error(stmt_span, format!("`{}=` is not defined for `{}`: C's `{}` is 32 bits on Windows and 64 elsewhere, so the same sum would overflow on one system only", op.symbol(), ty.name(), c_spelling(*ty)))
                             .hint(format!("compute in `{partner}`: `{text} = ({})(({partner}){text} {} {value_text})`", ty.name(), op.symbol())));
                     }
+                } else if let (Some(op @ (BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)), Ty::Bool) = (*op, &target_ty) {
+                    // `ready &= ok`, from C#: two `bool`s have operators of their own.
+                    let text = &self.src[target.span.start..target.span.end];
+                    let value_text = match &value.kind {
+                        ExprKind::Binary(..) | ExprKind::Cond { .. } | ExprKind::Coalesce { .. } => format!("({})", &self.src[value.span.start..value.span.end]),
+                        _ => self.src[value.span.start..value.span.end].to_string(),
+                    };
+                    let own = match op {
+                        BinOp::BitAnd => "&&",
+                        BinOp::BitOr => "||",
+                        _ => "!=",
+                    };
+                    return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `bool`", op.symbol()))
+                        .hint(format!("for two `bool`s write `{text} = {text} {own} {value_text}`")));
                 } else if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
                     return Err(Diag::error(
                         stmt_span,
@@ -7084,7 +7176,18 @@ impl<'a> Checker<'a> {
             }
             StmtKind::For { var, var_span, from, to, body, label, .. } => {
                 self.forget_narrowing_of_assigned(body, None);
-                let from_ty = self.int_operand(from, None, "the start of the range")?;
+                let src = self.src;
+                // `for c in 'a'..'e'`: a `for` counts integers, the codes of the characters.
+                let from_ty = self.int_operand(from, None, "the start of the range").map_err(|diag| match diag.msg.ends_with("found `char`") {
+                    true => {
+                        let (a, b) = (&src[from.span.start..from.span.end], &src[to.span.start..to.span.end]);
+                        match var.as_str() {
+                            "_" => diag.hint(format!("a `for` counts integers: `for _ in (int){a}..(int){b}`")),
+                            _ => diag.hint(format!("a `for` counts integers: `for {var} in (int){a}..(int){b}`, and `(char){var}` is the character")),
+                        }
+                    }
+                    false => diag,
+                })?;
                 let to_ty = self.int_operand(to, Some(from_ty), "the end of the range")?;
                 let common = self.common_int(from, Ty::Int(from_ty), to, Ty::Int(to_ty))?;
                 // The counter of a range is added to, which C's `long` is not.
@@ -8060,10 +8163,7 @@ impl<'a> Checker<'a> {
                 mismatch(Some(format!("a character is written in single quotes: `'{written}'`")))
             }
             // The habit from C: `if flags & 2 {`.
-            (Ty::Int(_) | Ty::Float(_), Ty::Bool) => {
-                let text = if matches!(expr.kind, ExprKind::Coalesce { .. } | ExprKind::Cond { .. }) { format!("({text})") } else { text.to_string() };
-                mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
-            }
+            (Ty::Int(_) | Ty::Float(_), Ty::Bool) => mismatch(Some(number_as_bool(expr, text, false))),
             (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_) | Ty::Raw(_) | Ty::CFunc(..)) => Ok(()),
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
                 .hint(format!("a value that may be missing has the type `{expected}?`"))),
@@ -8106,6 +8206,8 @@ impl<'a> Checker<'a> {
             }
             (Ty::Fmt, Ty::Str) => Err(Diag::error(expr.span, "expected `string`; `$\"...\"` does not become a `string` on its own")
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
+            (Ty::Fmt, Ty::Read(inner)) if **inner == Ty::Str => Err(Diag::error(expr.span, "expected `read string`; `$\"...\"` does not become a `string` on its own")
+                .hint(format!("make the `string` and lend it: `read {text}.toString()`; that is where the allocation shows"))),
             // A borrow of a `T?` where a `T?` goes (`int? first = xs.get(0)`): a copyable value is
             // copied out, or `null` (choice 1446); any other is only lent.
             (Ty::Read(inner) | Ty::Ref(inner), Ty::Nullable(_)) if **inner == *expected => {
@@ -8429,7 +8531,7 @@ impl<'a> Checker<'a> {
                 }
                 match inner {
                     Ty::Str => {
-                        self.index(index, "an index")?;
+                        self.item_index(index, "an index")?;
                         *kind = IndexKind::Text;
                         Ok(Some((Ty::Int(IntTy::Byte), false)))
                     }
@@ -8442,7 +8544,7 @@ impl<'a> Checker<'a> {
                             }))
                     }
                     Ty::List(item) => {
-                        self.index(index, "an index")?;
+                        self.item_index(index, "an index")?;
                         *kind = IndexKind::List;
                         Ok(Some(((**item).clone(), writable)))
                     }
@@ -8457,7 +8559,7 @@ impl<'a> Checker<'a> {
                         Ok(Some(((**value).clone(), writable)))
                     }
                     Ty::Array(item, length) => {
-                        self.index(index, "an index")?;
+                        self.item_index(index, "an index")?;
                         // Both are known here, so it is not left to run time.
                         if let Some(at) = known_int(index).filter(|at| *at < 0 || *at >= *length as i128) {
                             return Err(Diag::error(span, format!("index {at} is out of range: the length is {length}"))
@@ -8471,7 +8573,7 @@ impl<'a> Checker<'a> {
                         Ok(Some(((**item).clone(), writable)))
                     }
                     Ty::Slice(item) => {
-                        self.index(index, "an index")?;
+                        self.item_index(index, "an index")?;
                         *kind = IndexKind::Array;
                         Ok(Some(((**item).clone(), writable)))
                     }
@@ -9390,7 +9492,15 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Unary(UnOp::Not, operand) => {
-                self.typed(operand, &Ty::Bool)?;
+                let found = self.expr(operand, Some(&Ty::Bool))?;
+                // C's `!n` is `n == 0`, the opposite of the test a number gets elsewhere.
+                if matches!(found.strip_borrow(), Ty::Int(_) | Ty::Float(_)) {
+                    let text = &self.src[operand.span.start..operand.span.end];
+                    let whole = &self.src[span.start..span.end];
+                    return Err(Diag::error(operand.span, format!("expected `bool`, found `{found}`"))
+                        .hint(format!("{}, in place of `{whole}`", number_as_bool(operand, text, true))));
+                }
+                self.coerce(operand, found, &Ty::Bool)?;
                 Ok(Ty::Bool)
             }
             ExprKind::Unary(UnOp::BitNot, operand) => {
@@ -9448,12 +9558,19 @@ impl<'a> Checker<'a> {
                 // A `char` is converted to and from integers only: its code.
                 let fits = match (&from, &*ty) {
                     (Ty::Char, Ty::Int(_) | Ty::Char) | (Ty::Int(_), Ty::Char) => true,
-                    (Ty::Char, _) | (_, Ty::Char) => false,
+                    (Ty::Char, _) | (_, Ty::Char) | (_, Ty::Bool) => false,
                     _ => from.is_number(),
                 };
                 if !fits {
                     let diag = Diag::error(span, format!("a `{from}` value cannot be converted to `{ty}`"));
+                    let text = &self.src[operand.span.start..operand.span.end];
                     return Err(match (&from, &*ty) {
+                        // A `bool` is not a number, and a number is not a `bool`.
+                        (Ty::Bool, Ty::Int(_)) => diag.hint(format!("a `bool` is not a number: `{text} ? 1 : 0`")),
+                        (Ty::Bool, Ty::Float(_)) => diag.hint(format!("a `bool` is not a number: `{text} ? 1.0 : 0.0`")),
+                        (Ty::Int(_) | Ty::Float(_), Ty::Bool) => diag.hint(number_as_bool(operand, text, false)),
+                        (Ty::Str, Ty::Bool) => diag.hint(format!("compare the text: `{text} == \"true\"`")),
+                        (Ty::Bool, Ty::Bool) => diag.hint(format!("it is a `bool` already: `{text}`")),
                         (Ty::Char, Ty::Float(_)) | (Ty::Float(_), Ty::Char) => diag.note("a `char` becomes an integer, its code, and an integer becomes a `char`"),
                         (Ty::Str, Ty::Char) => diag.hint("the characters of a text: `for c in text.chars()`"),
                         (Ty::Char, Ty::Str) => diag.hint("`c.toString()`"),
@@ -9888,10 +10005,10 @@ impl<'a> Checker<'a> {
             }
         };
         if let Some(from) = from {
-            self.index(from, "the start of the range")?;
+            self.item_index(from, "the start of the range")?;
         }
         if let Some(to) = to {
-            self.index(to, "the end of the range")?;
+            self.item_index(to, "the end of the range")?;
         }
         Ok((Ty::Read(Box::new(window)), writable && (is_place || ty.is_borrow())))
     }
@@ -9921,6 +10038,17 @@ impl<'a> Checker<'a> {
         }
         let ty = self.int_operand(expr, Some(IntTy::Nint), what)?;
         self.coerce(expr, Ty::Int(ty), &Ty::Int(IntTy::Nint))
+    }
+
+    /// An index or an end of a range of a list, an array, a slice or a text, whose items are at
+    /// 0 and after: a negative number written there is never one of them.
+    fn item_index(&mut self, expr: &mut Expr, what: &str) -> Res<()> {
+        self.index(expr, what)?;
+        // `xs[-1]`, from Python: a place counted from the end is written `xs[^1]` (1921).
+        match known_int(expr).filter(|value| *value < 0) {
+            Some(value) => Err(Diag::error(expr.span, format!("{what} cannot be negative")).hint(format!("count from the end with `^`: `^{}`", -value))),
+            None => Ok(()),
+        }
     }
 
     // ---- enums ----
@@ -11308,6 +11436,12 @@ impl<'a> Checker<'a> {
             (Ty::Str | Ty::Fmt, Ty::Str | Ty::Fmt) if op == BinOp::Add => {
                 Err(undefined().hint("strings are joined with `$\"{a}{b}\"`"))
             }
+            // `$"a" == "a"`: a formatted text is written out before it is compared.
+            (Ty::Str | Ty::Fmt, Ty::Str | Ty::Fmt) if op.is_comparison() => {
+                let side = if left_ty.strip_borrow() == &Ty::Fmt { &*left } else { &*right };
+                let text = &self.src[side.span.start..side.span.end];
+                Err(undefined().hint(format!("make it a `string` first: `{text}.toString()`")))
+            }
             // `p < q`: the order of two addresses, as numbers. Nothing is read.
             (Ty::Raw(a), Ty::Raw(b)) if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) => match a == b {
                 true => {
@@ -11413,6 +11547,37 @@ impl<'a> Checker<'a> {
                 let text = &self.src[tested.span.start..tested.span.end];
                 Err(Diag::error(span, format!("`null` is not compared with `{}`", op.symbol())).hint(format!("write `{text} {word}`")))
             }
+            // `18 <= age < 65`, from Python: two comparisons joined with `&&`.
+            (Ty::Bool, Ty::Int(_) | Ty::Float(_)) if op.is_comparison() && !matches!(op, BinOp::Eq | BinOp::Ne) && matches!(&left.kind, ExprKind::Binary(inner, ..) if inner.is_comparison() && !matches!(inner, BinOp::Eq | BinOp::Ne)) && !self.src[left.span.start..left.span.end].starts_with('(') => {
+                let ExprKind::Binary(_, _, middle) = &left.kind else { unreachable!("tested above") };
+                let (first, middle, last) = (&self.src[left.span.start..left.span.end], &self.src[middle.span.start..middle.span.end], &self.src[right.span.start..right.span.end]);
+                Err(undefined().hint(format!("compare twice: `{first} && {middle} {} {last}`", op.symbol())))
+            }
+            // `answer == true` on a `bool?`: what `null` counts as is said with `??`.
+            (Ty::Nullable(inner), Ty::Bool) | (Ty::Bool, Ty::Nullable(inner)) if **inner == Ty::Bool && matches!(op, BinOp::Eq | BinOp::Ne) => {
+                let (maybe, value) = if matches!(left_ty.strip_borrow(), Ty::Nullable(_)) { (&*left, &*right) } else { (&*right, &*left) };
+                let text = as_operand(maybe, &self.src[maybe.span.start..maybe.span.end]);
+                let hint = match value.kind {
+                    ExprKind::Bool(wanted) if wanted == (op == BinOp::Eq) => format!("`null` counts as `false` with `??`: `{text} ?? false`"),
+                    ExprKind::Bool(_) if op == BinOp::Eq => format!("`null` counts as `true` with `??`: `!({text} ?? true)`"),
+                    ExprKind::Bool(_) => format!("`null` counts as `false` with `??`: `!({text} ?? false)`"),
+                    _ => format!("say what `null` counts as with `??`: `{text} ?? false`"),
+                };
+                Err(undefined().note(format!("`{text}` may be `null`")).hint(hint))
+            }
+            // `done == 1`, from C: a `bool` is tested alone.
+            (Ty::Bool, Ty::Int(_)) | (Ty::Int(_), Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => {
+                let (tested, number) = if left_ty.strip_borrow() == &Ty::Bool { (&*left, &*right) } else { (&*right, &*left) };
+                let text = &self.src[tested.span.start..tested.span.end];
+                let operand = as_operand(tested, text);
+                Err(match number.kind {
+                    ExprKind::Int(value @ (0 | 1), _) => match (value == 1) == (op == BinOp::Eq) {
+                        true => undefined().hint(format!("a `bool` is a test by itself: `{text}`")),
+                        false => undefined().hint(format!("a `bool` is a test by itself: `!{operand}`")),
+                    },
+                    _ => undefined().hint(format!("a `bool` is not a number; as one it is `{operand} ? 1 : 0`")),
+                })
+            }
             _ => Err(undefined()),
         }
     }
@@ -11448,6 +11613,8 @@ impl<'a> Checker<'a> {
             inner = behind.strip_borrow();
         }
         let text = &self.src[value.span.start..value.span.end];
+        // A cast is put in front of the whole value: `(double)(cents / 100)`, not `(double)cents / 100`.
+        let operand = as_operand(value, text);
         let spec = &self.src[span.start..span.end];
         let what = match letter {
             Letter::Hex | Letter::HexUpper => "an integer in hex",
@@ -11463,10 +11630,10 @@ impl<'a> Checker<'a> {
         let diag = || Diag::error(span, format!("`{name}` writes {what}, and `{text}` is {article} `{shown}`"));
         match (letter, inner) {
             (letter, Ty::Float(_)) if letter.fractional() => Ok(()),
-            (letter, Ty::Int(_)) if letter.fractional() => Err(diag().hint(format!("make it a `double` first: `{{(double){text}{spec}}}`"))),
+            (letter, Ty::Int(_)) if letter.fractional() => Err(diag().hint(format!("make it a `double` first: `{{(double){operand}{spec}}}`"))),
             (letter, _) if letter.fractional() => Err(diag()),
             (_, Ty::Int(_)) => Ok(()),
-            (_, Ty::Char) => Err(diag().hint(format!("the code of the character: `{{(int){text}{spec}}}`"))),
+            (_, Ty::Char) => Err(diag().hint(format!("the code of the character: `{{(int){operand}{spec}}}`"))),
             (Letter::Decimal, Ty::Float(_)) => Err(diag().hint("`F0` writes it with no digits after the point")),
             (_, _) => Err(diag()),
         }
@@ -14183,6 +14350,41 @@ impl<'a> Checker<'a> {
                     *callee = Callee::Join;
                     return Ok(Ty::Str);
                 }
+                // `bool.parse(text)`, from C#: a `bool` is a test, and a text is compared.
+                if owner == "bool" {
+                    let diag = Diag::error(name_span, format!("`bool` has no function `{name}`"));
+                    if name != "parse" {
+                        return Err(diag);
+                    }
+                    let text = match args.as_slice() {
+                        [arg] => &self.src[arg.span.start..arg.span.end],
+                        _ => "text",
+                    };
+                    return Err(diag.hint(format!("compare the text: `{text} == \"true\"`")));
+                }
+                // `Math.sqrt(x)`, from C# and Java: math is a method of the number, `x.sqrt()`.
+                if owner == "Math" && !args.is_empty() {
+                    let diag = Diag::error(recv.span, "there is no variable or type named `Math`");
+                    let mut chars = name.chars();
+                    let method: String = chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default();
+                    let found = self.expr(&mut args[0], None)?;
+                    let first = &args[0];
+                    let operand = as_operand(first, &self.src[first.span.start..first.span.end]);
+                    let rest: Vec<&str> = args[1..].iter().map(|arg| &self.src[arg.span.start..arg.span.end]).collect();
+                    let rest = rest.join(", ");
+                    let fractional = FRACTIONAL.contains(&method.as_str()) || FLOAT_ONE.contains(&method.as_str());
+                    let both = matches!(method.as_str(), "abs" | "min" | "max" | "clamp");
+                    let receiver = match found.strip_borrow() {
+                        Ty::Float(_) if fractional || both => Some(operand),
+                        Ty::Int(_) if both => Some(operand),
+                        Ty::Int(_) if fractional => Some(format!("((double){operand})")),
+                        _ => None,
+                    };
+                    return Err(match receiver {
+                        Some(receiver) => diag.hint(format!("math is a method of the number: `{receiver}.{method}({rest})`")),
+                        None => diag.note("there is no `Math`: math is a method of the number, written after it with a dot"),
+                    });
+                }
                 let diag = Diag::error(recv.span, format!("there is no variable or type named `{owner}`"));
                 if let Some(hint) = self.names.use_hint(owner, recv.span) {
                     return Err(diag.hint(hint));
@@ -14602,6 +14804,7 @@ impl<'a> Checker<'a> {
                 return Err(match name {
                     "add" | "addAll" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
                     "copyFromSlice" | "copy_from_slice" => diag.hint("`copyFrom`"),
+                    "reversed" => diag.hint(reversed_hint(&self.src[recv.span.start..recv.span.end])),
                     _ => match search_name(name).or_else(|| nearest(name, ["length", "get", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "reverse", "copyFrom"].into_iter())) {
                         Some(close) => diag.hint(format!("`{close}`")),
                         None => diag.note("methods for now: length, get, indexOf, contains, binarySearch, lowerBound, upperBound, sort, reverse, copyFrom"),
@@ -15078,11 +15281,6 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let diag = Diag::error(name_span, format!("type `{target}` has no method `{name}`"));
-                const FRACTIONAL: &[&str] = &[
-                    "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan",
-                    "atan2", "pow", "fusedMultiplyAdd", "hypot", "copySign", "ieeeRemainder", "scaleByPowerOfTwo", "exponent", "isFinite",
-                    "isSignNegative", "isNaN", "isInfinite",
-                ];
                 if matches!(target, Ty::Int(_)) && (FRACTIONAL.contains(&name) || FLOAT_ONE.contains(&name)) {
                     let text = &self.src[recv.span.start..recv.span.end];
                     let given = if matches!(name, "atan2" | "pow" | "fusedMultiplyAdd" | "hypot" | "copySign" | "ieeeRemainder" | "scaleByPowerOfTwo") { "..." } else { "" };
@@ -15156,6 +15354,11 @@ impl<'a> Checker<'a> {
                 }
                 if matches!(target, Ty::Char | Ty::Str) {
                     return Err(text_method_hint(diag, target, name));
+                }
+                // `$"...".length()`: a formatted text has `toString` alone.
+                if *target == Ty::Fmt {
+                    let (text, call) = (&self.src[recv.span.start..recv.span.end], &self.src[name_span.start..span.end]);
+                    return Err(diag.hint(format!("make it a `string` first: `{text}.toString().{call}`")));
                 }
                 let (Ty::Struct(owner) | Ty::Enum(owner)) = target else {
                     return Err(if name.starts_with("try") { diag.note(format!("`{name}` is not in the interpreter yet")) } else { diag });
@@ -15488,6 +15691,9 @@ impl<'a> Checker<'a> {
                 }
                 if let (Ty::List(_), "withCapacity" | "reserve" | "ensureCapacity") = (target, name) {
                     return Err(diag.hint(format!("room is taken when the list is made: `{}.withCapacity(n)`", target.strip_borrow())));
+                }
+                if let (Ty::List(_), "reversed") = (target, name) {
+                    return Err(diag.hint(reversed_hint(&self.src[recv.span.start..recv.span.end])));
                 }
                 Err(match other_name.or_else(|| nearest(name, known.iter().copied())) {
                     Some(close) => diag.hint(format!("`{close}`")),

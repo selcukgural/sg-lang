@@ -1,0 +1,5 @@
+error: this borrows from `count + 1`, a value with no name: it is gone when the line ends, and `line` would still look at it
+  --> error_formatted_kept_unnamed.sg:3:16
+ 3 |     var line = $"next = {count + 1}"
+   |                ^^^^^^^^^^^^^^^^^^^^^
+  hint: give the value a name first: `var value = count + 1`

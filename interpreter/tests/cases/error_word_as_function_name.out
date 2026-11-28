@@ -1,0 +1,5 @@
+error: expected a function name, found `read`
+  `read` is a word of the language, not a name
+  --> error_word_as_function_name.sg:1:6
+ 1 | void read(read string text) {
+   |      ^^^^

@@ -499,6 +499,25 @@ error: type `int` has no method `sqrt`
   hint: it is a method of `double`: `((double)area).sqrt()`
 ```
 
+### `Math.sqrt`
+
+```sg error
+void main() {
+    double side = 2.0
+    print(Math.sqrt(side * side))
+}
+```
+
+```text
+error: there is no variable or type named `Math`
+  --> example.sg:3:11
+ 3 |     print(Math.sqrt(side * side))
+   |           ^^^^
+  hint: math is a method of the number: `(side * side).sqrt()`
+```
+
+There is no `Math` of C# and Java: `sqrt`, `pow`, `abs`, `min`, `max` and the others are methods of the number.
+
 ### Bits of a `double`
 
 ```sg error

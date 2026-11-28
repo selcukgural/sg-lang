@@ -1,0 +1,5 @@
+error: there is no `&&=`
+  --> error_and_and_assign.sg:3:11
+ 3 |     ready &&= false
+   |           ^^^
+  hint: write it out: `ready = ready && ...`
