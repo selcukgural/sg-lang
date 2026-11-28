@@ -616,9 +616,120 @@ fn builds_a_program() {
     let (code, out, _) = ran(&Command::new(program(&dir, "check")).output().unwrap());
     assert_eq!(code, 0);
     assert!(out.ends_with("2 test(s) passed\n"), "{out}");
+    // The program of tests takes no word but `--only N`, N one of its tests (choice 2233): each
+    // other is told, with 2, and no test runs.
+    assert_eq!(ran(&Command::new(program(&dir, "check")).args(["--only", "1"]).output().unwrap()), (0, String::new(), String::new()));
+    for words in [&["--only", "x"][..], &["--only", "2"], &["--only", "-1"], &["--only", "1x"], &["--only", ""], &["--only", "99999999999999999999"]] {
+        let (code, out, err) = ran(&Command::new(program(&dir, "check")).args(words).output().unwrap());
+        assert_eq!((code, out.as_str(), err.as_str()), (2, "", "error: `--only` takes the number of a test, from 0 to 1\n"), "{words:?}");
+    }
+    for words in [&["extra"][..], &["--only"], &["--only", "0", "more"]] {
+        let (code, out, err) = ran(&Command::new(program(&dir, "check")).args(words).output().unwrap());
+        assert_eq!((code, out.as_str()), (2, ""), "{words:?}");
+        assert!(err.starts_with("usage: ") && err.contains(" [--only N]   runs every test, or test N alone (0 is the first)\n"), "{words:?}: {err}");
+    }
     let (code, _, err) = ran(&sg(&dir, &["build", "missing.sg"]));
     assert_eq!(code, 2);
     assert!(err.starts_with("error: cannot read missing.sg"), "{err}");
+    // A folder's program is named after the folder, `.` too (choice 2232).
+    let shop = dir.join("shop");
+    std::fs::create_dir_all(&shop).unwrap();
+    write(&shop, "main.sg", HELLO);
+    assert_eq!(ran(&sg(&shop, &["build", "."])), (0, String::new(), String::new()));
+    assert_eq!(ran(&Command::new(program(&shop, "shop")).output().unwrap()).1, "hello\n");
+    assert!(!program(&shop, "a.out").exists());
+}
+
+/// A file of a folder given alone, where a name it uses is in a file beside it (choice 2242): the
+/// hint names that file and the folder, which is the program, for `sg`, `sg test` and `sg build`.
+#[test]
+fn a_file_of_a_folder_given_alone() {
+    let dir = work("a_file_of_a_folder_given_alone");
+    let shop = dir.join("shop");
+    std::fs::create_dir_all(shop.join("stock")).unwrap();
+    write(&shop, "main.sg", "void main() {\n    print(price(2))\n}\n");
+    write(&shop, "prices.sg", "int price(int n) {\n    return n * 3\n}\n");
+    write(&shop, "checks.sg", "test \"three\" {\n    assert(price(1) == 3)\n}\n");
+    write(&shop.join("stock"), "stock.sg", "public int left() {\n    return 4\n}\n");
+    let hint = "  hint: `price` is in `shop/prices.sg`; the files of a folder are one program: name the folder, `shop`, in place of the file\n";
+    for words in [&["shop/main.sg"][..], &["test", "shop/checks.sg"], &["emit-c", "shop/main.sg"]] {
+        let (code, out, err) = ran(&sg(&dir, words));
+        assert_eq!((code, out.as_str()), (1, ""), "{words:?}");
+        assert!(err.starts_with("error: there is no function named `price`") && err.ends_with(hint), "{words:?}: {err}");
+    }
+    // From inside the folder, the folder is `.`.
+    let (_, _, err) = ran(&sg(&shop, &["main.sg"]));
+    assert!(err.ends_with("  hint: `price` is in `prices.sg`; the files of a folder are one program: name the folder, `.`, in place of the file\n"), "{err}");
+    // The folder is the program.
+    assert_eq!(ran(&sg(&dir, &["shop"])), (0, "6\n".into(), String::new()));
+    // A `main` the file lacks is no name it uses: its own hint stays.
+    let (_, _, err) = ran(&sg(&dir, &["shop/checks.sg"]));
+    assert!(err.starts_with("error: there is no `main` function") && err.ends_with("`sg test <file>`\n"), "{err}");
+    // A name no file beside declares gets no such hint.
+    write(&shop, "main.sg", "void main() {\n    print(cost(2))\n}\n");
+    let (_, _, err) = ran(&sg(&dir, &["shop/main.sg"]));
+    assert!(err.starts_with("error: there is no function named `cost`") && !err.contains("one program"), "{err}");
+}
+
+/// `sg emit-c` takes `--shared`, which prints the C of `--library`, and its hint for a library or an
+/// object read as a program names `sg emit-c` (choice 2240).
+#[test]
+fn emit_c_names_its_own_command() {
+    let dir = work("emit_c_names_its_own_command");
+    let temps = dir.join("temps");
+    std::fs::create_dir_all(&temps).unwrap();
+    write(&temps, "temps.sg", "export double toFahrenheit(double celsius) {\n    return celsius * 9.0 / 5.0 + 32.0\n}\n");
+    let (code, out, err) = ran(&sg(&dir, &["emit-c", "temps"]));
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.ends_with("  hint: a library that C calls through its `export` functions is printed with `sg emit-c <folder> --library`\n"), "{err}");
+    let (code, _, err) = ran(&sg(&dir, &["temps"]));
+    assert_eq!(code, 1);
+    assert!(err.ends_with("is built with `sg build <folder> --library`, or `--shared`\n"), "{err}");
+    let library = ran(&sg(&dir, &["emit-c", "temps", "--library"]));
+    assert_eq!(library.0, 0);
+    assert_eq!(ran(&sg(&dir, &["emit-c", "temps", "--shared"])), library);
+    write(&dir, "board.sg", "export long start() {\n    return 42\n}\n\nvoid onPanic(read string message) {\n}\n");
+    let (code, _, err) = ran(&sg(&dir, &["emit-c", "board.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.ends_with("is printed with `sg emit-c <folder> --freestanding`\n"), "{err}");
+}
+
+/// What the C compiler refuses is told by whose mistake it is (choice 2230): a C file of the
+/// program's own, with the compiler's first error said again; a compiler that names no error, or
+/// ends with 0 and writes nothing, as one that may not be a C compiler.
+#[test]
+fn a_c_compiler_that_fails_is_told_by_whose_mistake_it_is() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("a_c_compiler_that_fails_is_told_by_whose_mistake_it_is");
+    write(&dir, "twice.c", "#include <stdint.h>\n\nint64_t twice(int64_t x) {\n    return x * 2\n}\n");
+    write(&dir, "main.sg", "extern \"./twice.c\" {\n    long twice(long x)\n}\n\nvoid main() {\n    print(unsafe twice(4))\n}\n");
+    write(&dir, "header.c", "#include <stdint.h>\n#include \"missing_header.h\"\n\nint64_t twice(int64_t x) {\n    return x * 2;\n}\n");
+    write(&dir, "header.sg", "extern \"./header.c\" {\n    long twice(long x)\n}\n\nvoid main() {\n    print(unsafe twice(4))\n}\n");
+    write(&dir, "hello.sg", HELLO);
+    let (code, out, err) = ran(&sg(&dir, &["build", "main.sg", "-o", "main"]));
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    let told = err.lines().position(|line| line == "error: the C compiler did not accept twice.c, a file of C of the program; the mistake is in that file").expect(&err);
+    // What the compiler wrote comes first, and its first error again under sg's line.
+    assert!(told > 0 && err.lines().nth(told + 1).is_some_and(|line| line.starts_with("  twice.c:4:") && line.contains("error:")), "{err}");
+    assert!(!err.contains("mistake in sg"), "{err}");
+    let (code, _, err) = ran(&sg(&dir, &["build", "header.sg", "-o", "header"]));
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("error: the C compiler did not accept header.c, a file of C of the program; the mistake is in that file\n  header.c:2:"), "{err}");
+    #[cfg(unix)]
+    {
+        let with_cc = |cc: &str, out: &str| {
+            let built = Command::new(env!("CARGO_BIN_EXE_sg")).args(["build", "hello.sg", "-o", out]).env("CC", cc).current_dir(&dir).stdin(Stdio::null()).finished();
+            ran(&built)
+        };
+        assert_eq!(with_cc("false", "x"), (1, String::new(), "error: the C compiler `false` ended with 1 and named no error; is `false` a C compiler? `CC` names it\n".into()));
+        assert_eq!(with_cc("true", "x2"), (1, String::new(), "error: the C compiler `true` ended without writing x2; is `true` a C compiler? `CC` names it\n".into()));
+        assert!(!dir.join("x2").exists());
+        // A program built before is not taken for one this compiler wrote.
+        assert_eq!(ran(&sg(&dir, &["build", "hello.sg", "-o", "x3"])).0, 0);
+        assert_eq!(with_cc("true", "x3").0, 1);
+    }
 }
 
 /// Calls nested past the stack, in `main` and in a task: compiled code has a stack of 1 GB
@@ -747,6 +858,25 @@ fn builds_a_library() {
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.starts_with(&format!("built {shared_name}")), "{out}");
     assert!(dir.join(shared_name).exists() && dir.join("calc.h").exists());
+    // `-l` is made of the name `-o` gives (choice 2231), and a name `-l` cannot find is linked by
+    // its path; a program of C links it as the line says.
+    if !cfg!(windows) {
+        let ending = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        write(&dir, "main.c", "#include <stdio.h>\n#include \"calc.h\"\n\nint main(void) {\n    printf(\"%d\\n\", add(2, 3));\n    return 0;\n}\n");
+        for (file, linked) in [(format!("libscore.{ending}"), "-Lout -lscore".to_string()), (format!("score.{ending}"), format!("out/score.{ending}"))] {
+            let (code, out, err) = ran(&sg(&dir, &["build", "calc.sg", "--shared", "-o", &format!("out/{file}")]));
+            assert_eq!((code, err.as_str()), (0, ""), "{file}");
+            assert!(out.starts_with(&format!("built out/{file} and out/calc.h; a program links it with `{linked}`")), "{out}");
+            let mut cc = Command::new(sg::cc::compiler().unwrap());
+            cc.args(["-Iout", "main.c", "-o", "linked"]).args(linked.split(' ')).arg(format!("-Wl,-rpath,{}", dir.join("out").display())).current_dir(&dir);
+            let built = cc.finished();
+            assert!(built.status.success(), "{file}: {}", text(&built.stderr));
+            assert_eq!(ran(&Command::new(dir.join("linked")).current_dir(&dir).finished()).1, "5\n", "{file}");
+        }
+        let (_, out, _) = ran(&sg(&dir, &["build", "calc.sg", "--shared", "-o", &format!("out/score.{ending}")]));
+        assert!(out.ends_with(&format!("its path, since `-l` finds only a name like `libname.{ending}`\n")), "{out}");
+    }
     // A library has no `main`.
     let (code, _, err) = ran(&sg(&dir, &["build", "hello.sg", "--library"]));
     assert_eq!(code, 1);
@@ -843,7 +973,13 @@ fn builds_with_flags_of_c() {
         assert_eq!(said.len(), 2, "{err}");
         assert!(said[0].starts_with("warning: -ffast-math: fractional results may differ from the interpreter's and between machines"), "{err}");
         assert!(said[1].starts_with("warning: -DSG_THREAD_STACK=((size_t)8<<20): it changes a setting of SG's runtime"), "{err}");
+        // Clang's warning at each `NAN` and `INFINITY` of the runtime is not said too (choice 2235).
+        assert!(!err.contains("nan-infinity-disabled"), "{err}");
     }
+    write(&dir, "nan.sg", "void main() {\n    double x = double.NaN\n    print(x.isNaN())\n    print(double.Infinity > 1.0)\n}\n");
+    let (code, _, err) = ran(&sg(&dir, &["build", "nan.sg", "--", "-ffast-math"]));
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("nan-infinity-disabled"), "{err}");
     // Refused before anything is compiled.
     for flag in ["-o", "-c", "-std=c99", "-shared", "-m32", "-funsigned-char", "--target=x86_64-linux-gnu"] {
         let (code, out, err) = ran(&sg(&dir, &["build", "hello.sg", "-o", "refused", "--", flag, "x"]));
@@ -3540,6 +3676,13 @@ fn help_from_sg_itself() {
     let (code, _, err) = ran(&sg(&dir, &["help", "read", "ref"]));
     assert_eq!(code, 2);
     assert!(err.starts_with("usage: sg ") && err.contains("sg help [name | index]"), "{err}");
+    // An empty name is told as one, not between empty backticks (choice 2238).
+    for empty in ["", " "] {
+        assert_eq!(
+            ran(&sg(&dir, &["help", empty])),
+            (2, String::new(), "error: `sg help` takes a name, and this one is empty; `sg help` alone lists the commands and the words with a page\n".into())
+        );
+    }
 }
 
 /// `sg --help` and `sg <command> --help` (or `-h`) print the page of the command (choice 2088), as `sg help` does;

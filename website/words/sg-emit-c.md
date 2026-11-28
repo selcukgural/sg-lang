@@ -14,6 +14,7 @@ learn: ../docs/learn/book/14-building.md#the-c-that-sg-writes
 | `sg emit-c path --release` | the C of a release build: overflow wraps, and no check of a debug build is in it |
 | `sg emit-c path --test` | the C of the program that runs the tests, in place of `main` |
 | `sg emit-c path --library` | the C of a library: the program's `export` functions, with no `main` |
+| `sg emit-c path --shared` | the same C as `--library`, which a static and a shared library share |
 | `sg emit-c path --freestanding` | the C of an object for a machine without an operating system |
 | `sg emit-c path -L folder`, `-Lfolder` | looks for the libraries of `extern` blocks in that folder too; given once for each folder |
 | `sg emit-c --help` | prints this page |
@@ -38,9 +39,10 @@ on Linux `-fstack-clash-protection`. When an `extern` block names a library, the
 what to link: `/* sg-link: -lz */`, the name found first among those the block gives. To find it, the C
 compiler is asked where it looks, with the `-L` folders before.
 
-`--release`, `--test`, `--library` and `--freestanding` choose what is printed as they choose what `sg build`
-makes. `--release` goes with any of them; the other three exclude each other. `--library` prints the C of
-the library alone: its header is written by `sg build --library`.
+`--release`, `--test`, `--library`, `--shared` and `--freestanding` choose what is printed as they choose what
+`sg build` makes. `--release` goes with any of them; the others exclude each other. `--library` prints the C of
+the library alone, and `--shared` the same C, since a static and a shared library differ only in how the C
+compiler links them: the header is written by `sg build --library`.
 
 The exit code is 0 when the C was printed, 1 when the checker refuses the program, and 2 for a command line
 that is not a usage and for a path that does not lead anywhere.
@@ -209,14 +211,14 @@ message goes on to say where it looked, and gives the hint of `-L`.
 $ sg emit-c twice.sg -o twice.c 2> usage.txt; echo $?
 2
 $ grep 'sg emit-c' usage.txt
-       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...
+       sg emit-c <file.sg | folder> [--release] [--test | --library | --shared | --freestanding] [-L folder]...
 $ sg emit-c twice.sg -- -O3 > /dev/null 2>&1; echo $?
 2
 ```
 
 `sg emit-c` writes to its output, so `-o` is not one of its flags, and it compiles nothing, so neither are flags
 of C after `--`. Both are a usage error: the usage of every command is printed, and nothing else. The same goes
-for a flag given twice, a second program, and two of `--test`, `--library` and `--freestanding`.
+for a flag given twice, a second program, and two of `--test`, `--library`, `--shared` and `--freestanding`.
 
 ### A library without `--library`
 
@@ -226,11 +228,11 @@ error: there is no `main` function
   --> temps/temps.sg:7:2
  7 | }
    |  ^
-  hint: a library that C calls through its `export` functions is built with `sg build <folder> --library`, or `--shared`
+  hint: a library that C calls through its `export` functions is printed with `sg emit-c <folder> --library`
 ```
 
 Without `--library` the folder is read as a program, which starts at `main`. `sg emit-c temps --library` prints
-its C.
+its C; `sg temps` and `sg build temps` give the hint of `sg build temps --library`.
 
 ### A program the checker refuses
 

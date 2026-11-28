@@ -1,0 +1,5 @@
+// A method of a fractional number misspelt gets the nearest one, as a text's does.
+void main() {
+    double side = 2.0
+    print(side.sqr())
+}

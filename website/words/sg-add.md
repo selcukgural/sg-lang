@@ -141,6 +141,7 @@ error: there is no module named `xml`
   --> main.sg:1:5
  1 | use xml
    |     ^^^
+  hint: a package is named on a `require` line of `sg.project`, beside the program, which `sg add <address>` writes
 $ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@1.4
 example.com/ada/xml 1.4.2 (added)
 example.com/bob/letters 1.0.0 (added)

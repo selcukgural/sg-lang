@@ -1,0 +1,8 @@
+test "adds" {
+    assert(1 + 1 == 2)
+}
+
+// A line break would make two lines of the report; the hint keeps the quotes escaped.
+test "the \"total\"\n  of two" {
+    assert(2 + 2 == 4)
+}

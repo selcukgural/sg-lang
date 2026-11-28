@@ -82,7 +82,14 @@ fn read_message(input: &mut impl BufRead) -> Result<Option<String>, String> {
         }
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse::<usize>().ok();
+                // Digits too many for a number are told as a length too large (choice 2236), not
+                // as a header that is not there.
+                let value = value.trim();
+                length = match value.parse::<usize>() {
+                    Ok(length) => Some(length),
+                    Err(_) if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => return Err(format!("a message whose Content-Length, {value}, is more than {MAX_MESSAGE} bytes")),
+                    Err(_) => return Err(format!("a Content-Length that is not a number of bytes: `{value}`")),
+                };
             }
         }
     }
@@ -419,6 +426,18 @@ mod tests {
         // `ç` and `ö` are one unit each, `😀` two.
         let x = text.find('x').unwrap();
         assert_eq!(position(text, x), (1, 4));
+    }
+
+    /// Choice 2236: a Content-Length past what a number holds is a length too large, not a header
+    /// that is not there.
+    #[test]
+    fn tells_a_content_length_it_cannot_take() {
+        let read = |text: &str| read_message(&mut std::io::BufReader::new(text.as_bytes()));
+        assert_eq!(read("Content-Length: 2\r\n\r\n{}"), Ok(Some("{}".to_string())));
+        assert_eq!(read("Content-Length: 99999999999999999999999\r\n\r\n{}"), Err(format!("a message whose Content-Length, 99999999999999999999999, is more than {MAX_MESSAGE} bytes")));
+        assert_eq!(read("Content-Length: 99999999\r\n\r\n{}"), Err(format!("a message of 99999999 bytes, more than {MAX_MESSAGE}")));
+        assert_eq!(read("Content-Length: two\r\n\r\n{}"), Err("a Content-Length that is not a number of bytes: `two`".to_string()));
+        assert_eq!(read("Content-Type: x\r\n\r\n{}"), Err("a message without a Content-Length".to_string()));
     }
 
     #[test]

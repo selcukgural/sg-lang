@@ -108,7 +108,16 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     };
     let (code, header) = match emitted {
         Ok(code) => code,
-        Err(diag) => {
+        Err(mut diag) => {
+            // `sg emit-c` prints the C of a library or an object, which `sg build` builds: its hint
+            // names its own command (choice 2240).
+            if out.is_none() {
+                if let Some(hint) = &mut diag.hint {
+                    for made in ["--library`, or `--shared", "--freestanding"] {
+                        *hint = hint.replace(&format!("is built with `sg build <folder> {made}`"), &format!("is printed with `sg emit-c <folder> {}`", made.split('`').next().unwrap_or(made)));
+                    }
+                }
+            }
             tell_part!("{}", diag.render_in(&sources));
             return ExitCode::FAILURE;
         }
@@ -124,6 +133,8 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let c_file = work.path().join(format!("{name}.c"));
     // The libraries the `extern` blocks of the program name.
     let libs = sg::emit_c::link_flags(&code);
+    // The C files of the program's own `extern "./x.c"` blocks, which the C takes in.
+    let code_files = included_files(&code);
     if let Err(error) = std::fs::write(&c_file, code) {
         tell!("error: cannot write {}: {error}", c_file.display());
         return ExitCode::FAILURE;
@@ -211,7 +222,34 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     }
     // The flags after `--` last, whatever was made.
     cc.args(&machine.flags);
-    let status = cc.status();
+    // What the C compiler writes to the standard error is caught, to tell whose mistake it found
+    // (choice 2230), and written on as it is. A file the C compiler should write is looked at
+    // afterwards: one that ends with 0 and writes nothing has built nothing.
+    let written = match made {
+        Made::Static => object.clone(),
+        _ => os_path(&out),
+    };
+    let before = std::fs::metadata(&written).and_then(|meta| meta.modified()).ok();
+    cc.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::piped());
+    let ran = cc.output();
+    let said = match &ran {
+        Ok(output) => {
+            told(std::io::stderr().write_all(&output.stderr));
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        }
+        Err(_) => String::new(),
+    };
+    let status = ran.map(|output| output.status);
+    let fresh = std::fs::metadata(&written).and_then(|meta| meta.modified()).is_ok_and(|after| before != Some(after));
+    let cc_named = std::env::var("CC").ok().filter(|cc| !cc.is_empty()).is_some();
+    let what_cc = || match cc_named {
+        true => format!("is `{compiler}` a C compiler? `CC` names it"),
+        false => format!("is `{compiler}` a C compiler?"),
+    };
+    if matches!(&status, Ok(status) if status.success()) && !fresh {
+        tell!("error: the C compiler `{compiler}` ended without writing {}; {}", written.display(), what_cc());
+        return ExitCode::FAILURE;
+    }
     let status = match (made, status) {
         // The static library is the object alone, in an archive made new.
         (Made::Static, Ok(status)) if status.success() => {
@@ -260,16 +298,45 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 Made::Static if cfg!(windows) => with_folders.iter().fold(out.clone(), |line, flag| format!("{line} {flag}")),
                 Made::Static => with_folders.iter().cloned().chain(["-lm".to_string(), "-pthread".to_string()]).fold(out.clone(), |line, flag| format!("{line} {flag}")),
                 Made::Shared if cfg!(windows) => format!("{out}.lib"),
-                _ => {
-                    let dir = os_path(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
-                    format!("-L{dir} -l{name}")
-                }
+                // `-l` is made of the name `-o` gave (choice 2231): `-lscore` finds `libscore.so`
+                // (`.dylib` on macOS), and nothing else, so another name is linked by its path.
+                _ => match shared_link_name(&out) {
+                    Some(linked_name) => {
+                        let dir = os_path(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
+                        format!("-L{dir} -l{linked_name}")
+                    }
+                    None => out.clone(),
+                },
             };
             match made {
                 // A program finds a DLL in its own folder or in the system's.
                 Made::Shared if cfg!(windows) => say(&format!("built {out}, {out}.lib and {}; a program links it with `{linked}`, and finds {out} beside itself\n", header_path.display())),
+                Made::Shared if shared_link_name(&out).is_none() => {
+                    let ending = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+                    say(&format!("built {out} and {}; a program links it with `{linked}`, its path, since `-l` finds only a name like `libname.{ending}`\n", header_path.display()))
+                }
                 _ => say(&format!("built {out} and {}; a program links it with `{linked}`\n", header_path.display())),
             }
+        }
+        // A C file of the program's own that the C compiler refused (choice 2230): the mistake is
+        // in that file, and its first errors are said again under the line that says so, since
+        // what the compiler wrote may be long.
+        Ok(_) if program_c_error(&code_files, &said, work.path()).is_some() => {
+            let (file, errors) = program_c_error(&code_files, &said, work.path()).expect("matched");
+            tell!("error: the C compiler did not accept {file}, a file of C of the program; the mistake is in that file");
+            for line in errors {
+                tell!("  {line}");
+            }
+            ExitCode::FAILURE
+        }
+        // A compiler that names no error, as `false` does, has not been shown the C sg writes.
+        Ok(status) if !said.to_ascii_lowercase().contains("error") => {
+            let ended = match status.code() {
+                Some(code) => format!("ended with {code}"),
+                None => "was stopped".to_string(),
+            };
+            tell!("error: the C compiler `{compiler}` {ended} and named no error; {}", what_cc());
+            ExitCode::FAILURE
         }
         Ok(_) if !libs.is_empty() => {
             if let Some(diag) = sg::missing_library(&sources, made == Made::Tests, matches!(made, Made::Static | Made::Shared)) {
@@ -289,7 +356,8 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             ExitCode::FAILURE
         }
         Ok(_) => {
-            tell!("error: the C compiler did not accept the program; this is a mistake in sg");
+            tell!("error: the C compiler did not accept the C that sg wrote for the program; this is a mistake in sg");
+            tell!("  note: please report it, with the program and what the C compiler wrote above");
             ExitCode::FAILURE
         }
         Err(error) => {
@@ -297,6 +365,60 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             ExitCode::FAILURE
         }
     }
+}
+
+/// The name `-l` finds a shared library by, from the file `-o` gave it: `score` for
+/// `out/libscore.so` (`libscore.dylib` on macOS). `None` for a name `-l` cannot find, which a
+/// program links by its path.
+fn shared_link_name(out: &str) -> Option<String> {
+    let ending = if cfg!(target_os = "macos") { ".dylib" } else { ".so" };
+    let file = os_path(out).file_name()?.to_str()?.to_string();
+    let name = file.strip_prefix("lib")?.strip_suffix(ending)?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The C files the C that sg wrote takes in: the program's own, from its `extern "./x.c"` blocks
+/// (`#include "/abs/x.c"`, the only `#include` with quotes sg writes).
+fn included_files(code: &str) -> Vec<PathBuf> {
+    code.lines()
+        .filter_map(|line| line.strip_prefix("#include \"")?.strip_suffix('"').map(|quoted| quoted.replace("\\\"", "\"").replace("\\\\", "\\")))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// The first error the C compiler found, when it is in C of the program's own (choice 2230): in one
+/// of its C files, or in a file of C beside one of them (a header it includes), never in the C sg
+/// wrote, in the temporary folder, or at a line of SG the C names. Gives the file as it is shown, and
+/// the first three lines of the compiler's that say `error:`. A line reads `file:line:col: error: ...`
+/// (Clang and GCC; `fatal error:` for a header that is not there).
+fn program_c_error(files: &[PathBuf], said: &str, work: &Path) -> Option<(String, Vec<String>)> {
+    if files.is_empty() {
+        return None;
+    }
+    let errors: Vec<&str> = said.lines().filter(|line| line.contains(": error: ") || line.contains(": fatal error: ")).collect();
+    let first = errors.first()?;
+    let place = first.split(": error: ").next().filter(|place| place.len() < first.len()).unwrap_or_else(|| first.split(": fatal error: ").next().unwrap_or_default());
+    // The column and the line come off the end; a drive letter of Windows stays.
+    let mut file = place;
+    for _ in 0..2 {
+        if let Some((before, number)) = file.rsplit_once(':') {
+            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+                file = before;
+            }
+        }
+    }
+    let path = Path::new(file);
+    let canonical = path.canonicalize().ok()?;
+    let in_work = work.canonicalize().is_ok_and(|work| canonical.starts_with(work));
+    let of_sg = canonical.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("sg"));
+    let beside = files.iter().filter_map(|own| own.canonicalize().ok()).any(|own| own == canonical || own.parent().is_some_and(|dir| canonical.parent() == Some(dir)));
+    if in_work || of_sg || !beside {
+        return None;
+    }
+    let here = std::env::current_dir().ok().and_then(|dir| dir.canonicalize().ok());
+    let shown = here.and_then(|here| canonical.strip_prefix(&here).ok().map(|rest| rest.display().to_string())).unwrap_or_else(|| file.to_string());
+    let lines = errors.iter().take(3).map(|line| line.replacen(file, &shown, 1)).collect();
+    Some((shown, lines))
 }
 
 /// The name of a library: that of its folder, or of its file without `.sg`.
@@ -478,7 +600,7 @@ fn main() -> ExitCode {
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     // sg's own words as names of the system made text (choice 1956), and back to paths by `path`.
     let args: Vec<String> = words.iter().map(|word| sg::names::text_of_os(word)).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg help [name | index]                                     the page of a word of SG, with no network\n       sg <command> --help                                        the page of the command (sg --help: of sg)\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --shared | --freestanding] [-L folder]...\n                                                                  prints the C (--shared: the same as --library)\n       sg lsp [--stdio]                                           the language server an editor starts\n       sg help [name | index]                                     the page of a word of SG, with no network\n       sg <command> --help                                        the page of the command (sg --help: of sg)\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
         tell!("{USAGE}");
         ExitCode::from(2)
@@ -524,8 +646,11 @@ fn main() -> ExitCode {
         };
     }
     // The language server an editor starts: it talks on the input and the output (choice 1370).
+    // `--stdio`, which clients such as vscode-languageclient add, names the only way it talks
+    // (choice 2237).
     if args.first().is_some_and(|word| word == "lsp") {
-        if args.len() != 1 {
+        let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+        if !matches!(rest.as_slice(), [] | ["--stdio"]) {
             return usage();
         }
         let code = sg::lsp::serve(std::io::stdin().lock(), std::io::stdout());
@@ -624,6 +749,8 @@ fn main() -> ExitCode {
                 Made::Shared if cfg!(target_os = "macos") => Some(format!("lib{name}.dylib")),
                 Made::Shared => Some(format!("lib{name}.so")),
                 Made::Freestanding => Some(format!("{name}.o")),
+                // A folder's program is named after the folder, `.` too (choice 2232).
+                _ if os_path(path).is_dir() => Some(name.clone()),
                 _ => os_path(path).file_stem().map(sg::names::text_of_os),
             };
             let named = out.is_some();

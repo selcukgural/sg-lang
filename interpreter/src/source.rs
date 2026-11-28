@@ -223,6 +223,25 @@ impl Sources {
         snippet(Span::new(start, end), &self.text[file.start..file.end], &file.path)
     }
 
+    /// The files of SG beside the program's file that were not read, when the program is one file
+    /// of a folder that has others (`sg shop/main.sg`, where `shop/prices.sg` is; choice 2242):
+    /// each named as `load` names it, with its text, and the folder as written.
+    pub fn beside(&self) -> (String, Vec<(String, String)>) {
+        let Some(root) = self.root.as_ref() else { return (String::new(), Vec::new()) };
+        let read: HashSet<std::ffi::OsString> = self.files.iter().filter(|file| file.module.is_empty()).filter_map(|file| Path::new(&file.path).file_name().map(|name| name.to_os_string())).collect();
+        let base = if root == Path::new(".") { PathBuf::new() } else { root.clone() };
+        let files = sg_files(root)
+            .into_iter()
+            .filter_map(|file| file.file_name().map(|name| name.to_os_string()))
+            .filter(|name| !read.contains(name))
+            .filter_map(|name| {
+                let path = base.join(&name);
+                std::fs::read_to_string(&path).ok().map(|text| (path.to_string_lossy().into_owned(), text))
+            })
+            .collect();
+        (root.to_string_lossy().into_owned(), files)
+    }
+
     /// The same program with the modules no file names read in after it, so every position
     /// stays where it was. `None` if there is no such module. This is how the hint for a name
     /// that was not found can say which `use` line is missing.

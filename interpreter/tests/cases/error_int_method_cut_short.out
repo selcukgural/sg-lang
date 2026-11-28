@@ -1,0 +1,5 @@
+error: type `uint` has no method `wrappingMul`
+  --> error_int_method_cut_short.sg:5:16
+ 5 |     print(seed.wrappingMul(31))
+   |                ^^^^^^^^^^^
+  hint: `wrappingMultiply`

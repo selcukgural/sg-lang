@@ -1,0 +1,6 @@
+// A method of a number written short: the one method it starts is the hint, where the nearest
+// by letters would be `wrappingAbs`.
+void main() {
+    uint seed = 7
+    print(seed.wrappingMul(31))
+}

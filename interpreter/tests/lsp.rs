@@ -22,11 +22,16 @@ impl Client {
 
     /// The server with these variables of the environment.
     fn start_with(variables: &[(&str, &Path)]) -> Client {
+        Client::start_as(variables, &["lsp"])
+    }
+
+    /// The server started with these words.
+    fn start_as(variables: &[(&str, &Path)], words: &[&str]) -> Client {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sg"));
         for (name, value) in variables {
             command.env(name, value);
         }
-        let mut child = command.arg("lsp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = command.args(words).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let input = child.stdin.take().unwrap();
         let output = BufReader::new(child.stdout.take().unwrap());
         let mut client = Client { child, input, output, next_id: 1 };
@@ -260,6 +265,13 @@ fn answers_what_it_does_not_serve_and_ends_as_told() {
     let mut client = Client::start();
     client.notify("exit", Json::Null);
     assert_eq!(client.child.wait().unwrap().code(), Some(1));
+    // `--stdio`, which clients add, names the way it talks already (choice 2237); another word is
+    // a usage error.
+    let client = Client::start_as(&[], &["lsp", "--stdio"]);
+    assert_eq!(client.finish(), 0);
+    let refused = Command::new(env!("CARGO_BIN_EXE_sg")).args(["lsp", "--stdio", "--stdio"]).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).starts_with("usage: sg "));
 }
 
 /// The server fetches no package (choice 1591): opening a file of a folder whose `sg.lock` names a

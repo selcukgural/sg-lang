@@ -3,3 +3,4 @@ error: there is no module named `text`
   --> error_other_name/main.sg:2:5
  2 | use text
    |     ^^^^
+  hint: a package is named on a `require` line of `sg.project`, beside the program, which `sg add <address>` writes

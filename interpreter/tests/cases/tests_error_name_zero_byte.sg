@@ -1,0 +1,4 @@
+// A test's name is one line of the report: compiled code would cut it at the zero byte.
+test "zero\0byte" {
+    assert(true)
+}
