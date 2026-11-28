@@ -1,0 +1,6 @@
+error: expected an expression, found `if`
+  `if` is a statement, not a value
+  --> error_if_as_value_lines.sg:2:12
+ 2 |     return if count > 2 {
+   |            ^^
+  hint: a value picked by a condition is written with `?:`: `condition ? a : b`

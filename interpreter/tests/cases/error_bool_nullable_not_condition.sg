@@ -1,0 +1,6 @@
+void main() {
+    bool? ready = null
+    while !ready {
+        ready = true
+    }
+}

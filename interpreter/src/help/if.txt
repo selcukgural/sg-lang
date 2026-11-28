@@ -270,12 +270,14 @@ WHAT THE COMPILER REFUSES
          }
 
          error: expected an expression, found `if`
+           `if` is a statement, not a value
            --> example.sg:3:16
           3 |     var word = if count > 2 { "many" } else { "few" }
             |                ^^
+           hint: a value picked by a condition is written with `?:`: `count > 2 ? "many" : "few"`
 
-     if gives no value. The line is written var word = count > 2 ? "many" :
-     "few".
+     if gives no value. When the if is written on one line, the hint is the
+     line with ?:; otherwise it shows the form, condition ? a : b.
 
 SEE ALSO
      sg help else, sg help is, sg help bool, sg help while, sg help match, sg

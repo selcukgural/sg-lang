@@ -75,7 +75,7 @@ void main() {
     int perBox = 5
     print($"{items / perBox} boxes, {items % perBox} left")
     print($"{-17 / 5} {-17 % 5}")
-    double half = items / 2
+    double half = (double)(items / 2)
     double exact = items / 2.0
     print($"{half} {exact}")
 }
@@ -88,7 +88,8 @@ void main() {
 ```
 
 `/` drops the fraction toward zero, and `%` takes the sign of the left side. `items / 2` is divided as two
-`int`s, and only the result becomes a `double`; with `2.0` the division is a `double`'s.
+`int`s; where a `double` goes, the cast around it says the fraction is dropped on purpose (without it the line
+is refused). With `2.0` the division is a `double`'s.
 
 ### Wider on its own, narrower with a cast
 

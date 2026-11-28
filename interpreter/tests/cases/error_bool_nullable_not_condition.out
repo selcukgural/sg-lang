@@ -1,0 +1,5 @@
+error: expected `bool`, found `bool?`
+  --> error_bool_nullable_not_condition.sg:3:12
+ 3 |     while !ready {
+   |            ^^^^^
+  hint: a `bool?` may be missing; compare it: `ready != true`, in place of `!ready`

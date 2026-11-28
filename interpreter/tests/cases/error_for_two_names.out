@@ -1,0 +1,5 @@
+error: a `for` has one loop variable
+  --> error_for_two_names.sg:3:10
+ 3 |     for i, word in read words {
+   |          ^
+  hint: with the positions: `for i in 0..words.length()`, and the item is `words[i]`

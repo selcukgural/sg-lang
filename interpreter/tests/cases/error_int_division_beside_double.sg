@@ -1,0 +1,6 @@
+void main() {
+    var total = 10
+    var count = 4
+    double mean = total / count + 0.5
+    print(mean)
+}

@@ -1,0 +1,47 @@
+// `await` and `try` on the right of `??` at the head of a statement (choice 2261): the right
+// side runs, and waits, only when the left has no value; in compiled code as in the interpreter.
+async string? cachedName(int n) {
+    await Task.delay(1)
+    if n > 0 {
+        return $"c{n}".toString()
+    }
+    return null
+}
+
+async string slowName(int n) {
+    await Task.delay(2)
+    return $"s{n}".toString()
+}
+
+Result<string, string> parse(int n) {
+    if n > 1 {
+        return Error($"bad {n}".toString())
+    }
+    return Ok($"p{n}".toString())
+}
+
+async Result<string, string> both(int n) {
+    string? c = n == 1 ? "one" : null
+    var name = c ?? await slowName(n)
+    // A `Result` on the left: its error, a text, is let go before the right side runs.
+    var r = parse(n) ?? await slowName(n + 10)
+    var k = await cachedName(n) ?? await slowName(n + 20)
+    string? d = n == 3 ? "three" : null
+    var t = d ?? try parse(n)
+    return Ok($"{name} {r} {k} {t}".toString())
+}
+
+async int seven() {
+    await Task.delay(1)
+    return 7
+}
+
+async void main() {
+    for i in 0..4 {
+        var line = await both(i) ?? "failed"
+        print(line)
+    }
+    int? cached = null
+    var n = cached ?? await seven()
+    print(n)
+}

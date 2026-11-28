@@ -1,0 +1,7 @@
+float half(short n) {
+    return n / 2
+}
+
+void main() {
+    print(half(3))
+}

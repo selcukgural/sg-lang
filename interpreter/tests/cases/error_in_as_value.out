@@ -1,0 +1,6 @@
+error: expected `)`, found `in`
+  `in` is written only at the head of a `for`
+  --> error_in_as_value.sg:3:23
+ 3 |     print(xs.length() in xs.clone())
+   |                       ^^
+  hint: whether a collection holds a value: `list.contains(value)`

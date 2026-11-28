@@ -1,0 +1,18 @@
+// An integer division that goes where a fractional number goes (choice 2262): written out, the
+// numbers take the fractional type; with a variable, the cast says where the fraction is kept.
+double half(int n) {
+    return (double)n / 2
+}
+
+void main() {
+    int x = 7
+    double written = 7 / 8
+    double kept = (double)x / 8
+    double dropped = (double)(x / 8)
+    double beside = (7 / 8) + x
+    float small = (float)((short)3) / (short)2
+    print($"{written} {kept} {dropped} {beside} {small} {half(3)}")
+    // An integer result that is not a division widens as before.
+    double sum = x * 2 + 1
+    print(sum)
+}

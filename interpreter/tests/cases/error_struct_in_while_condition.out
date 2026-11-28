@@ -1,0 +1,5 @@
+error: a struct built in a condition is written in brackets, since `{` here starts the block
+  --> error_struct_in_while_condition.sg:8:16
+ 8 |     while p != Point { x = 3, y = 0 } {
+   |                ^^^^^^^^^^^^^^^^^^^^^^
+  hint: `while p != (Point { x = 3, y = 0 })`

@@ -1,0 +1,5 @@
+void main() {
+    int count = 3
+    var word = if count > 2 { "many" } else { "few" }
+    print(word)
+}

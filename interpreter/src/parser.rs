@@ -34,7 +34,7 @@ pub fn parse_files(src: &str, files: &[FileIn]) -> Res<Program> {
     let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new(), value_layouts: Default::default(), windows: Default::default() };
     for (start, end, module, map) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
-        let mut parser = Parser { src, map: map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0, declaring: None };
+        let mut parser = Parser { src, map: map.clone(), toks, i: 0, struct_literals: true, condition: false, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0, declaring: None };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
         let (cvars, blocks, consts, statics) = (program.cvars.len(), program.blocks.len(), program.consts.len(), program.statics.len());
         let uses = parser.file(&mut program)?;
@@ -77,6 +77,9 @@ struct Parser<'a> {
     i: usize,
     /// Off while parsing a condition: there `x {` starts the block, not a struct literal.
     struct_literals: bool,
+    /// On while parsing the condition of an `if` or a `while`: `(x = 3)` there is a comparison
+    /// written with one `=`.
+    condition: bool,
     /// The consts of the blocks being read, as written and by their full names: a block opens
     /// a list and closes it.
     visible: Vec<Vec<(String, String)>>,
@@ -193,6 +196,19 @@ impl<'a> Parser<'a> {
                     .note("`readonly` is written on a field of a struct; a value that does not change is a `const`, or a variable that is not assigned again")
                     .hint(format!("`{}`", self.line_with(span.start, span.end, "const")));
             }
+            // `if 2 in xs {`, `print(2 in xs)`: `in` belongs to the head of a `for` (#24).
+            Tok::In if self.after_value() => {
+                let simple = |at: usize| matches!(self.toks.get(at).map(|token| &token.tok), Some(Tok::Ident(_) | Tok::Int(_) | Tok::Str(_) | Tok::Char(_)));
+                let next = self.toks.get(self.i + 2).map(|token| &token.tok);
+                let hint = match simple(self.i - 1) && matches!(self.toks.get(self.i + 1).map(|token| &token.tok), Some(Tok::Ident(_))) && !matches!(next, Some(Tok::Dot | Tok::LParen | Tok::LBracket)) {
+                    true => {
+                        let (value, list) = (self.toks[self.i - 1].span, self.toks[self.i + 1].span);
+                        format!("`{}.contains({})`", &self.src[list.start..list.end], &self.src[value.start..value.end])
+                    }
+                    false => "`list.contains(value)`".to_string(),
+                };
+                return diag.note("`in` is written only at the head of a `for`").hint(format!("whether a collection holds a value: {hint}"));
+            }
             Tok::Ident(word) if joins && word == "when" => {
                 return diag
                     .note("`when` is the condition of an arm of a `match`; after `is`, a condition is joined with `&&`")
@@ -241,6 +257,11 @@ impl<'a> Parser<'a> {
     /// fractional number has digits before its point: `.5` is `0.5`.
     fn no_expression(&self) -> Diag {
         let diag = self.unexpected("an expression");
+        // `var word = if n > 2 { "many" } else { "few" }` (#24).
+        if *self.peek() == Tok::If {
+            let hint = self.if_as_value().unwrap_or_else(|| "`condition ? a : b`".to_string());
+            return diag.note("`if` is a statement, not a value").hint(format!("a value picked by a condition is written with `?:`: {hint}"));
+        }
         let span = self.span();
         let bytes = self.src.as_bytes();
         let name_at = |range: std::ops::Range<usize>| {
@@ -1465,6 +1486,84 @@ impl<'a> Parser<'a> {
         Ok(stmts)
     }
 
+    /// The condition of an `if` or a `while`. `=` after it, or in brackets inside it, is a
+    /// comparison written with one `=`.
+    fn condition(&mut self) -> Res<Expr> {
+        let outer = std::mem::replace(&mut self.condition, true);
+        let cond = self.head_expr(false);
+        self.condition = outer;
+        let cond = cond?;
+        if *self.peek() == Tok::Assign {
+            return Err(self.assigned_in_condition());
+        }
+        Ok(cond)
+    }
+
+    fn assigned_in_condition(&self) -> Diag {
+        Diag::error(self.span(), "an assignment cannot be a condition").hint("comparison is written `==`")
+    }
+
+    /// The block of an `if` or a `while`. A struct built in its condition, `while p != Point {
+    /// x = 3, y = 0 } {`, was read as the block (#24): the error says to put it in brackets.
+    fn head_block(&mut self) -> Res<Block> {
+        let Some(name) = self.struct_ahead() else { return self.block() };
+        let brace = self.i;
+        let block = self.block();
+        let misread = match &block {
+            Err(diag) => diag.msg == "expected end of line, found `,`",
+            Ok(_) => *self.peek() == Tok::LBrace,
+        };
+        match misread {
+            true => Err(self.struct_in_condition(name, brace)),
+            false => block,
+        }
+    }
+
+    /// The span of the type name before the next token, when it is `{` and `name =` follows,
+    /// as in a struct built in place: `Point { x = 3`.
+    fn struct_ahead(&self) -> Option<Span> {
+        if *self.peek() != Tok::LBrace || self.i == 0 || !matches!(self.peek_at(1), Tok::Ident(_)) || *self.peek_at(2) != Tok::Assign {
+            return None;
+        }
+        let Tok::Ident(name) = &self.toks[self.i - 1].tok else { return None };
+        if !name.starts_with(|first: char| first.is_ascii_uppercase()) {
+            return None;
+        }
+        let mut first = self.i - 1;
+        while first >= 2 && self.toks[first - 1].tok == Tok::Dot && matches!(self.toks[first - 2].tok, Tok::Ident(_)) {
+            first -= 2;
+        }
+        Some(self.toks[first].span.to(self.toks[self.i - 1].span))
+    }
+
+    fn struct_in_condition(&self, name: Span, brace: usize) -> Diag {
+        let mut depth = 0;
+        let mut end = None;
+        for token in &self.toks[brace..] {
+            match token.tok {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(token.span);
+                        break;
+                    }
+                }
+                Tok::Eof => break,
+                _ => {}
+            }
+        }
+        let mut diag = Diag::error(name, "a struct built in a condition is written in brackets, since `{` here starts the block");
+        match end {
+            Some(end) => {
+                let built = &self.src[name.start..end.end];
+                diag.span = name.to(end);
+                diag.hint(format!("`{}`", self.line_with(name.start, end.end, &format!("({built})"))))
+            }
+            None => diag.hint("`(Point { x = 3, y = 0 })`"),
+        }
+    }
+
     /// A condition or range bound: a struct literal must be parenthesized here.
     fn head_expr(&mut self, range_bound: bool) -> Res<Expr> {
         let outer = std::mem::replace(&mut self.struct_literals, false);
@@ -1620,13 +1719,16 @@ impl<'a> Parser<'a> {
             Tok::If => self.if_stmt()?,
             Tok::While => {
                 self.bump();
-                let cond = self.head_expr(false)?;
-                let body = self.block()?;
+                let cond = self.condition()?;
+                let body = self.head_block()?;
                 StmtKind::While { cond, body, after: Vec::new(), label: None }
             }
             Tok::For => {
                 self.bump();
                 let (var, var_span) = self.ident("a loop variable")?;
+                if *self.peek() == Tok::Comma {
+                    return Err(self.two_loop_names(&var));
+                }
                 self.expect(Tok::In, "`in`")?;
                 if let Some((from, to)) = self.reversed_range()? {
                     let body = self.block()?;
@@ -1736,11 +1838,15 @@ impl<'a> Parser<'a> {
             }
             Tok::Break => {
                 self.bump();
-                StmtKind::Break(self.loop_named()?)
+                let label = self.loop_named()?;
+                self.no_value_after("break")?;
+                StmtKind::Break(label)
             }
             Tok::Continue => {
                 self.bump();
-                StmtKind::Continue(self.loop_named()?)
+                let label = self.loop_named()?;
+                self.no_value_after("continue")?;
+                StmtKind::Continue(label)
             }
             // `outer: for ...`, `outer: while ...`: a loop with a name, which `break outer` and
             // `continue outer` leave or go on with from a loop inside it.
@@ -1861,6 +1967,90 @@ impl<'a> Parser<'a> {
 
     /// Whether `read x as name {` starts here: the word `as` follows the value.
     /// The name after `break` or `continue`, if one is written on the same line.
+    /// `if c { a } else { b }`, each part on the line of the `if`, written as `c ? a : b`.
+    fn if_as_value(&self) -> Option<String> {
+        let tok = |at: usize| self.toks.get(at).map_or(&Tok::Eof, |token| &token.tok);
+        let text = |from: usize, to: usize| self.src[self.toks[from].span.start..self.toks[to].span.end].trim().to_string();
+        // The text between the `{` at `at` and its `}`, with no line end, and where it ends.
+        let braced = |at: usize| -> Option<(String, usize)> {
+            if *tok(at) != Tok::LBrace {
+                return None;
+            }
+            let mut depth = 0;
+            for end in at.. {
+                match tok(end) {
+                    Tok::LBrace => depth += 1,
+                    Tok::RBrace => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return (end > at + 1).then(|| (text(at + 1, end - 1), end + 1));
+                        }
+                    }
+                    Tok::Newline | Tok::Eof => return None,
+                    _ => {}
+                }
+            }
+            None
+        };
+        let mut open = self.i + 1;
+        let mut depth = 0;
+        loop {
+            match tok(open) {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBracket => depth -= 1,
+                Tok::LBrace if depth == 0 => break,
+                Tok::Newline | Tok::Eof => return None,
+                _ => {}
+            }
+            open += 1;
+        }
+        if open == self.i + 1 {
+            return None;
+        }
+        let cond = text(self.i + 1, open - 1);
+        let (then, after) = braced(open)?;
+        if *tok(after) != Tok::Else {
+            return None;
+        }
+        let (els, _) = braced(after + 1)?;
+        Some(format!("`{cond} ? {then} : {els}`"))
+    }
+
+    /// `for i, x in read xs {`: a `for` has one name; the positions are a range (#24).
+    fn two_loop_names(&self, var: &str) -> Diag {
+        let diag = Diag::error(self.span(), "a `for` has one loop variable");
+        let over = (|| {
+            let at = (self.i..self.toks.len()).find(|&at| matches!(self.toks[at].tok, Tok::In | Tok::LBrace | Tok::Newline | Tok::Eof))?;
+            if self.toks[at].tok != Tok::In {
+                return None;
+            }
+            let mut first = at + 1;
+            if matches!(self.toks.get(first)?.tok, Tok::Read | Tok::Ref) {
+                first += 1;
+            }
+            let last = (first..self.toks.len()).find(|&end| matches!(self.toks[end].tok, Tok::LBrace | Tok::Newline | Tok::Eof))?;
+            (last > first && self.toks[last].tok == Tok::LBrace).then(|| self.src[self.toks[first].span.start..self.toks[last - 1].span.end].to_string())
+        })();
+        match over {
+            Some(over) if over.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.') => {
+                diag.hint(format!("with the positions: `for {var} in 0..{over}.length()`, and the item is `{over}[{var}]`"))
+            }
+            _ => diag.hint(format!("with the positions: `for {var} in 0..xs.length()`, and the item is `xs[{var}]`")),
+        }
+    }
+
+    /// `break 5`: a loop gives no value (#24).
+    fn no_value_after(&self, word: &str) -> Res<()> {
+        if !self.starts_value() && !matches!(self.peek(), Tok::Minus) {
+            return Ok(());
+        }
+        let diag = Diag::error(self.span(), format!("`{word}` takes no value"));
+        Err(match word {
+            "break" => diag.hint("set a variable before the `break`, or put the loop in a function of its own and `return` the value"),
+            _ => diag,
+        })
+    }
+
     fn loop_named(&mut self) -> Res<Option<Label>> {
         if !matches!(self.peek(), Tok::Ident(_)) {
             return Ok(None);
@@ -2282,11 +2472,8 @@ impl<'a> Parser<'a> {
 
     fn if_stmt(&mut self) -> Res<StmtKind> {
         self.bump();
-        let cond = self.head_expr(false)?;
-        if *self.peek() == Tok::Assign {
-            return Err(Diag::error(self.span(), "an assignment cannot be a condition").hint("comparison is written `==`"));
-        }
-        let then = self.block()?;
+        let cond = self.condition()?;
+        let then = self.head_block()?;
         let els = if self.eat(&Tok::Else) {
             if *self.peek() == Tok::If {
                 let start = self.span();
@@ -2948,6 +3135,9 @@ impl<'a> Parser<'a> {
             Tok::LParen => {
                 self.bump();
                 let inner = self.bracketed(|p| p.expr())?;
+                if self.condition && *self.peek() == Tok::Assign {
+                    return Err(self.assigned_in_condition());
+                }
                 self.expect(Tok::RParen, "`)`")?;
                 return Ok(Expr { ty: Ty::Void, moved: false, kind: inner.kind, span: Span::new(start.start, self.prev_end()) });
             }
@@ -3159,7 +3349,7 @@ impl<'a> Parser<'a> {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
                 Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
-                    let mut inner = Parser { src: self.src, map: self.map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth, declaring: None };
+                    let mut inner = Parser { src: self.src, map: self.map.clone(), toks, i: 0, struct_literals: true, condition: false, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth, declaring: None };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
                         let diag = inner.unexpected("`}`");

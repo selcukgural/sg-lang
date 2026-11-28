@@ -1,0 +1,5 @@
+error: this divides two integers, so the fraction is dropped before the result becomes a `double`
+  --> error_int_division_beside_double.sg:4:19
+ 4 |     double mean = total / count + 0.5
+   |                   ^^^^^^^^^^^^^
+  hint: to keep the fraction: `(double)total / count`; to drop it on purpose: `(double)(total / count)`

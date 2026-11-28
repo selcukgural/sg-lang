@@ -1,0 +1,6 @@
+error: expected an expression, found `if`
+  `if` is a statement, not a value
+  --> error_if_as_value.sg:3:16
+ 3 |     var word = if count > 2 { "many" } else { "few" }
+   |                ^^
+  hint: a value picked by a condition is written with `?:`: `count > 2 ? "many" : "few"`

@@ -1,0 +1,4 @@
+error: `continue` takes no value
+  --> error_continue_value.sg:3:18
+ 3 |         continue "next"
+   |                  ^^^^^^

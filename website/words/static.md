@@ -3,7 +3,7 @@ name: static
 kind: keyword
 summary: A value made once, the first time the program uses it.
 see: const, atomic, shared, lock, public
-learn: ../docs/learn/book/02-values.md#consts
+learn: ../docs/learn/book/02-values.md#statics
 ---
 
 ## Forms
