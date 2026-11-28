@@ -1,0 +1,27 @@
+// A source made with `after` let go while the clock cancels it (`compiled_source_let_go_as_it_
+// fires` in tests/golden.rs). The clock and the variable each hold the source, and whichever
+// lets go last frees it, once. Each round sets two sources to the same time; the clock cancels
+// the first and then the second, so once the first is seen cancelled, the second is let go
+// while the clock is about to cancel it, or is cancelling it. Built with the pauses of the tests
+// (`-DSG_PAUSE_WAKES`), the clock waits at that moment, and every round lets the second go there.
+//
+// Compiled only: the interpreter's clock cancels a source when a task waits, not while a loop
+// looks at it.
+void main() {
+    var rounds = 0
+    for _ in 0..20 {
+        var sources = List<CancellationSource> { CancellationSource.after(1), CancellationSource.after(1) }
+        while !sources[0].isCancelled() {
+        }
+        sources.clear()
+        rounds += 1
+    }
+    print($"{rounds} rounds")
+
+    // A source let go long before its time leaves the clock at once.
+    for _ in 0..1000 {
+        var later = CancellationSource.after(60000)
+        later.cancelAfter(120000)
+    }
+    print("done")
+}
