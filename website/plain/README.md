@@ -30,7 +30,7 @@ What it makes, and from what:
   no example on a word's page is left unchecked.
 - **Names in programs.** In every program on every page, each word of the language and each type of the library
   is a link to its page (or to its line of the index), with what it is in one line; so is a name written alone
-  in `code` in the text.
+  in `code` in the text, and a command written alone (`sg build`) is a link to its page.
 - **Manual pages.** Each word's file also becomes its manual page, `build/man/man7/sg-read.7`, and the text `man`
   shows for it, on the site under Manual. A command's file (`sg-build.md`, `kind: command`) becomes a page of
   section 1, `build/man/man1/sg-build.1` (choice 2087). `npm run check` reads them with mandoc's lint, and compares the text the site

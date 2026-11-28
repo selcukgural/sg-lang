@@ -20,6 +20,10 @@ sg build main.sg --release       # optimised
 sg build shop                    # a folder is a program too: ./shop
 ```
 
+What a build writes never takes the place of a source: `sg build main.sg -o main.sg`, or an `-o` that names
+any file of SG or C, is refused before anything is compiled, and so is a library whose header would replace
+one that `sg build` did not write.
+
 A **debug build** is compiled without optimisation (the C compiler's `-O0`) and checks what the interpreter
 checks: integer overflow, a cast that does not fit, a shift past the bits of the type, an item of raw memory
 at an address that is not aligned for its type, and, when `main` returns, any block of memory the program took and never gave back

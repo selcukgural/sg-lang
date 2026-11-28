@@ -221,6 +221,15 @@ for (const page of sectionPages.library) {
 for (const entry of names) {
   if (['keyword', 'type', 'value', 'library-type'].includes(entry.kind)) nameOf.set(entry.name, entry);
 }
+// A command written alone in `code` in the text (`sg build`) is a link to its page too; not in a program,
+// where `sg` could be any name. `sg update`, `sg remove` and `sg lock` are on the page of `sg add`.
+const commandOf = new Map();
+for (const entry of names) {
+  if (entry.kind === 'command') commandOf.set(entry.name, entry);
+}
+for (const other of ['sg update', 'sg remove', 'sg lock']) {
+  if (commandOf.has('sg add') && !commandOf.has(other)) commandOf.set(other, commandOf.get('sg add'));
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Colouring a program of SG, with each name a link
@@ -308,7 +317,7 @@ marked.use({
       // marked gives the text of `code` with & < > " ' already written as entities.
       const raw = text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&amp;', '&');
       const key = raw.replace(/<.*>$/, '');
-      const entry = nameOf.get(key);
+      const entry = nameOf.get(key) ?? commandOf.get(raw);
       const self = current.kind === 'word' && entry && entry.page === current;
       if (inLink === 0 && entry && !self && (raw === key || /^[A-Z]/.test(key))) {
         return `<a class="code-link" href="${escape(link(current.url, entry.url))}" title="${escape(entry.summary)}"><code>${escape(raw)}</code></a>`;
