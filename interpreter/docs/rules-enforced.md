@@ -177,7 +177,9 @@ behind them is in [`design/decisions/`](../../design/decisions/README.md).
   `use` of a folder that is not there, `use` written twice and `use` below the first definition are errors.
 - A `public` function, field or method of a module that shows a type which is not `public` is an error
   that shows both places.
-- A `readonly` field cannot be assigned, lent as `ref`, or changed through (`account.history.add(1)`).
+- A `readonly` field cannot be assigned, lent as `ref`, or changed through (`account.history.add(1)`); a
+  `readonly` `shared locked` or `shared checked` field is only read in a `lock` block and not opened with
+  `ref ... as` (2151).
 - An index that is known and lies outside an array is an error, not a panic: `buf[16]` with `byte[16] buf`.
   An index that depends on data panics with the index and the length, as for a list; so does a range
   outside a list, an array or a slice.

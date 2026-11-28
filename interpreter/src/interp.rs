@@ -4283,7 +4283,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             let wait = LockWait { fiber: self.me, keys: keys.to_vec(), held };
             if wait.alone() {
                 return Err(Diag::panic(when.span, lonely_wait(&self.src[when.span.start..when.span.end], items, |item| &self.src[item.value.span.start..item.value.span.end]))
-                    .hint(lonely_hint(&self.src[items[0].value.span.start..items[0].value.span.end], &items[0].name))
+                    .hint(lonely_hint(&self.src[items[0].value.span.start..items[0].value.span.end], &items[0].name, &items[0].value.ty))
                     .into());
             }
             // What a task of `Task.run` that has not started yet does may end the wait.
@@ -11114,9 +11114,20 @@ pub(crate) fn lonely_wait<'i>(cond: &str, items: &'i [LockItem], text: impl Fn(&
     format!("this task waits until `{cond}`, and no other task could make it hold: it is the only owner of {}", names.join(" and "))
 }
 
-/// The hint of `lonely_wait`: the task that gives says, inside the value, that it is done.
-pub(crate) fn lonely_hint(value: &str, name: &str) -> String {
-    format!("a task with no more to give says so inside the value before it lets it go, `lock {value} as {name} {{ {name}.done = true }}`, and the condition looks at it: `when ... || {name}.done`")
+/// The hint of `lonely_wait`: the task that gives says, inside the value, that it is done. Only
+/// a struct has a field to say it in (`held`: the type of what is locked, as written in it).
+pub(crate) fn lonely_hint(value: &str, name: &str, held: &Ty) -> String {
+    let held = match held.strip_borrow() {
+        Ty::Shared(inner, _) => match &**inner {
+            Ty::Locked(inner) => &**inner,
+            other => other,
+        },
+        other => other,
+    };
+    match held {
+        Ty::Struct(_) => format!("a task with no more to give says so inside the value before it lets it go, in a field such as `done`: `lock {value} as {name} {{ {name}.done = true }}`, and the condition looks at it: `when ... || {name}.done`"),
+        _ => format!("a task with no more to give says so inside the value before it lets it go: make the locked value a struct with the `{held}` and a `bool done`, set `done` in a `lock` block, and look at it in the condition"),
+    }
 }
 
 #[cfg(test)]

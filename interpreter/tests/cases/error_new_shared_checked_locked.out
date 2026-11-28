@@ -1,0 +1,5 @@
+error: a value with several owners is `checked` or `locked`, not both
+  `checked` lets one task change it, each access checked; `locked` lets several tasks change it, inside a `lock` block
+  --> error_new_shared_checked_locked.sg:3:35
+ 3 |     var hits = new shared checked locked 0
+   |                                   ^^^^^^

@@ -1,0 +1,5 @@
+// `checked` and `locked` in one `new shared`, as in a type: one or the other.
+void main() {
+    var hits = new shared checked locked 0
+    print(hits)
+}

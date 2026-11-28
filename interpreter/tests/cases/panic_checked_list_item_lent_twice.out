@@ -1,0 +1,4 @@
+panic: `accounts[j]` shares item 1 with `accounts[i]`, lent to this call too
+  --> panic_checked_list_item_lent_twice.sg:18:31
+ 18 |     transfer(ref accounts[i], ref accounts[j], 30)
+    |                               ^^^^^^^^^^^^^^^

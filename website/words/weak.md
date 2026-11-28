@@ -20,7 +20,8 @@ learn: ../docs/learn/book/07-ownership.md#several-owners-shared-t-and-weak-t
 ## What it means
 
 `weak x` takes an owner, a `shared T`, and gives a `weak T`: it looks at the same value but does not own it.
-The value is let go when its last owner ends, however many looks remain.
+The value is let go when its last owner ends, however many looks remain. `weak w` of a look is one more look
+at the same value.
 
 A look is never followed by itself, since what it looks at may be gone. A `weak` value is not printed,
 compared or reached into, and it is not opened with `read ... as` or `lock`. `share w` asks for an owner
@@ -412,10 +413,11 @@ error: this is `weak City`, which is never `null`
   --> example.sg:8:8
  8 |     if look is null {
    |        ^^^^
+  hint: to know whether what it looks at is gone: `share look is null`
 ```
 
-A `weak City` always looks at something, which may be gone. Whether it is gone is asked with
-`share look is null`.
+A `weak City` always looks at something, which may be gone. Whether it is gone is asked of the owner `share`
+gives, which is `null` then.
 
 ### A `weak checked` look sent to a task
 
@@ -437,7 +439,7 @@ void main() {
 ```
 
 ```text
-error: `peek` takes a `weak checked Counter` here, which cannot go to another task: a `weak checked Counter` is checked within one task; one that several tasks change is `shared locked`
+error: `peek` takes a `weak checked Counter` here, which cannot go to another task: a `weak checked Counter` is checked within one task; a look at one that several tasks change is `weak locked`
   what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
   --> example.sg:12:31
  12 |     var task = Task.run(peek, weak counter)

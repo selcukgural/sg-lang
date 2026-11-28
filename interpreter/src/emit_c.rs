@@ -21994,7 +21994,7 @@ impl<'a> Emitter<'a> {
         let inner = format!("{pad}    ");
         let text = |span: Span| self.sources.text[span.start..span.end].to_string();
         let what = crate::interp::lonely_wait(&text(when.span), items, |item| &self.sources.text[item.value.span.start..item.value.span.end]);
-        let hint = crate::interp::lonely_hint(&text(items[0].value.span), &items[0].name);
+        let hint = crate::interp::lonely_hint(&text(items[0].value.span), &items[0].name, &items[0].value.ty);
         let counted = items.iter().all(|item| !matches!(item.value.kind, ExprKind::Static(_)));
         let loc = self.loc(when.span);
         let _ = writeln!(out, "{pad}{{");
@@ -24283,8 +24283,10 @@ impl<'a> Emitter<'a> {
             | ExprKind::IsVariant { expr: inner, .. }
             | ExprKind::Unary(UnOp::Not | UnOp::BitNot, inner) => of(inner),
             // Checked against the borrows in progress; a borrow that goes on changes what the
-            // accesses beside it find, and so does its end.
-            ExprKind::Open { inner, how: Opening::Look | Opening::Change } => of(inner).max(Effect::Stops),
+            // accesses beside it find, and so does its end. A borrow to read changes no value
+            // (a text beside it stays where it is): only the checks of the accesses beside it,
+            // each of which stops, so it is ordered with them as one that stops (#43).
+            ExprKind::Open { inner, how: Opening::Look | Opening::Change | Opening::Lend } => of(inner).max(Effect::Stops),
             ExprKind::Open { .. } | ExprKind::Within(_) => Effect::Changes,
             // A code that is not a character stops the program in every build.
             ExprKind::Cast { ty: Ty::Char, expr: inner } if *inner.ty.strip_borrow() != Ty::Char => of(inner).max(Effect::Stops),
@@ -28325,6 +28327,13 @@ impl<'a> Emitter<'a> {
                     self.ctype(&ty, recv.span)?;
                     Ok(self.move_of(&ty, &place))
                 }
+                // `.clone()` of a `shared` value is one more owner, not a copy; before the methods
+                // of what it holds, so that a `shared List<T>` does not take it for `List.clone`.
+                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => {
+                    let (pointer, _) = self.counted(recv)?;
+                    let target = self.ctype(&expr.ty, expr.span)?;
+                    Ok(format!("(({target})sg_rc_share({pointer}))"))
+                }
                 // `x.makeUnique()`: the pointer `x` holds, when it is the only owner and nothing
                 // looks at the value (`sg_rc_alone`); otherwise a copy made a `shared` value of its
                 // own, put in `x` in place of the one it let go of.
@@ -29123,12 +29132,6 @@ impl<'a> Emitter<'a> {
                     }
                     let helper = self.cloner(ty, expr.span)?;
                     Ok(format!("{helper}({place})"))
-                }
-                // `.clone()` of a `shared` value is one more owner, not a copy.
-                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => {
-                    let (pointer, _) = self.counted(recv)?;
-                    let target = self.ctype(&expr.ty, expr.span)?;
-                    Ok(format!("(({target})sg_rc_share({pointer}))"))
                 }
                 // `f.write(...)` adds to the text a `format` method is writing.
                 Callee::Plain if *recv.ty.strip_borrow() == Ty::Formatter => {

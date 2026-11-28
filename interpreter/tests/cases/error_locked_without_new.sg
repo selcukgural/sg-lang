@@ -1,0 +1,5 @@
+// A `locked` value has several owners, so it is made with `new shared locked`.
+void main() {
+    var hits = locked 0
+    print(hits)
+}

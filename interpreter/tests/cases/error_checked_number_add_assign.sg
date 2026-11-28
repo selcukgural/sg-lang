@@ -1,0 +1,5 @@
+// A number in a `shared checked` value is changed in a block.
+void main() {
+    var hits = new shared checked 0
+    hits += 1
+}

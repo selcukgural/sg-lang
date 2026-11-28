@@ -2,4 +2,4 @@ error: a `string` field cannot be moved out of a `shared` value: its other owner
   --> error_shared_move_field.sg:16:16
  16 |     var name = node.name
     |                ^^^^^^^^^
-  hint: borrow it instead: `read node.name`
+  hint: borrow it instead: `read node.name`, or copy it: `node.name.clone()`

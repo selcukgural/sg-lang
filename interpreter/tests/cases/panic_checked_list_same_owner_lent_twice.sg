@@ -1,0 +1,20 @@
+// Two items of a `List<shared checked Account>` that are owners of the same account, lent as
+// `ref` to one call: the items differ, the account does not, and the check of the account
+// stops the program.
+struct Account {
+    long balance
+}
+
+void transfer(ref Account from, ref Account to, long amount) {
+    from.balance -= amount
+    to.balance += amount
+}
+
+void main() {
+    var account = new shared checked Account { balance = 100 }
+    var accounts = List<shared checked Account>()
+    accounts.add(share account)
+    accounts.add(account)
+    transfer(ref accounts[0], ref accounts[1], 30)
+    print(accounts[1].balance)
+}

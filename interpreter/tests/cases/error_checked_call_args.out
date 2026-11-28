@@ -7,4 +7,4 @@ error: `folder` is being changed for the call, so it cannot be read here: this l
   --> error_checked_call_args.sg:35:14
  35 |     move(ref folder.bytes, read folder.children)
     |              ^^^^^^
-  hint: work the value out before the call: `var value = ...`
+  hint: copy what the call needs from `folder` into a variable before it

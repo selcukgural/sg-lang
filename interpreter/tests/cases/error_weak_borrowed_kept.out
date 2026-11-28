@@ -1,0 +1,5 @@
+error: expected `weak City?`, found `read weak City?`
+  --> error_weak_borrowed_kept.sg:11:24
+ 11 |     return Road { to = to }
+    |                        ^^
+  hint: `read weak City?` only borrows the value; `weak City?` needs to own it: `weak to`

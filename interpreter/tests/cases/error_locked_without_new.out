@@ -1,0 +1,5 @@
+error: a `locked` value has several owners, and is made with `new shared locked`
+  --> error_locked_without_new.sg:3:16
+ 3 |     var hits = locked 0
+   |                ^^^^^^
+  hint: `new shared locked 0`

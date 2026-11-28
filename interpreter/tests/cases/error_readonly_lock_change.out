@@ -1,0 +1,5 @@
+error: `f` only reads what `h.folder` holds, since `folder` is `readonly`
+  `readonly` stops every change made through the field, a `lock` block's too
+  --> error_readonly_lock_change.sg:13:9
+ 13 |         f.name = "b".clone()
+    |         ^^^^^^

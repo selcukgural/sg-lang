@@ -738,7 +738,7 @@ fn whens_in(block: &Block, outside: &HashMap<&str, &'static str>) -> Res<()> {
 /// What an expression does by itself that may change while no `lock` block ends: it reads an
 /// `atomic`, the clock or random bytes of the system, or reads or writes outside the program.
 fn unwoken_here(expr: &Expr) -> Option<(Span, &'static str)> {
-    if matches!(expr.ty.strip_borrow(), Ty::Atomic(_)) {
+    if holds_atomic(&expr.ty) {
         return Some((expr.span, "reads an `atomic`"));
     }
     let (ExprKind::Call { callee, name, name_span, .. } | ExprKind::Method { callee, name, name_span, .. }) = &expr.kind else { return None };
@@ -750,6 +750,16 @@ fn unwoken_here(expr: &Expr) -> Option<(Span, &'static str)> {
         }
         Callee::Plain if matches!(expr.kind, ExprKind::Call { .. }) && (name == "print" || name == "printError") => Some((*name_span, "writes out")),
         _ => None,
+    }
+}
+
+/// Whether a value of this type is an `atomic` or reaches one as it is: `atomic int`, `shared
+/// atomic int`, `weak atomic int`, `shared atomic int?`, behind a borrow or not.
+fn holds_atomic(ty: &Ty) -> bool {
+    match ty.strip_borrow() {
+        Ty::Atomic(_) => true,
+        Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Nullable(inner) => holds_atomic(inner),
+        _ => false,
     }
 }
 
@@ -889,7 +899,13 @@ fn locks_in(block: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize
             // The condition of `when` is computed under the locks, as the block runs.
             if let Some(when) = when {
                 let cond = vec![Stmt { kind: StmtKind::Expr((**when).clone()), span: when.span }];
-                error = inside(&cond, waits, taken, exports).err();
+                // The condition cannot be moved before or after the block: no hint says so.
+                error = inside(&cond, waits, taken, exports).err().map(|mut diag| {
+                    if diag.hint.as_deref().is_some_and(|hint| hint.ends_with("before the block or after it")) {
+                        diag.hint = None;
+                    }
+                    diag
+                });
             }
         }
         if error.is_none() {
@@ -990,11 +1006,11 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                 ExprKind::Call { args, name_span, callee: Callee::Value | Callee::FieldValue(_), .. }
                 | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => value_target(taken, waits, args.len(), &expr.ty).map(|target| {
                     let diag = Diag::error(*name_span, format!("this function value could be `{}`, which waits, and a `lock` block does not wait", short_name(&target)));
-                    explained(diag, &target, waits).note(NO_WAIT)
+                    explained(diag, &target, waits).note(NO_WAIT).hint("call it before the block or after it")
                 }),
                 _ if calls_c(expr).is_some() => exports.iter().find(|export| waits.contains_key(*export)).map(|target| {
                     let diag = Diag::error(calls_c(expr).expect("tested"), format!("this call of C may call `{}` back, which waits, and a `lock` block does not wait", short_name(target)));
-                    explained(diag, target, waits).note(NO_WAIT)
+                    explained(diag, target, waits).note(NO_WAIT).hint("call it before the block or after it")
                 }),
                 _ => None,
             };
@@ -1057,7 +1073,7 @@ const NO_WAIT: &str = "a task that holds a lock never waits, so it always lets t
 fn called(name: &str, span: Span, waits: &HashMap<String, Why>) -> Option<Diag> {
     waits.get(name)?;
     let diag = Diag::error(span, format!("`{}` waits, and a `lock` block does not wait", short_name(name)));
-    Some(explained(diag, name, waits).note(NO_WAIT))
+    Some(explained(diag, name, waits).note(NO_WAIT).hint(format!("call `{}` before the block or after it", short_name(name))))
 }
 
 /// Shows where the function named `name` waits, following its calls to the `lock` or the

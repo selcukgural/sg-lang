@@ -1,0 +1,11 @@
+// A text field of a `shared checked` value taken into a variable: a copy works there, a borrow
+// would end with its line.
+struct Doc {
+    string title
+}
+
+void main() {
+    var doc = new shared checked Doc { title = "a".clone() }
+    var title = doc.title
+    print(title)
+}

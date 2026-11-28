@@ -1,0 +1,18 @@
+// One `shared checked` value lent twice as `ref` to one call.
+struct Account {
+    long balance
+}
+
+void transfer(ref Account from, ref Account to, long amount) {
+    from.balance -= amount
+    to.balance += amount
+}
+
+void addFrom(ref Account to, read Account from) {
+    to.balance += from.balance
+}
+
+void main() {
+    var alice = new shared checked Account { balance = 100 }
+    transfer(ref alice, ref alice, 10)
+}

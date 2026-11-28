@@ -1,0 +1,23 @@
+// The task that waits is left the only owner of a `shared locked int`: an `int` has no field to
+// say "done" in, so the hint does not name one (see panic_lock_when_alone for a struct).
+int consume(shared locked int count) {
+    var seen = 0
+    lock count as c when c > 1 {
+        seen = c
+    }
+    return seen
+}
+
+void produce(shared locked int count) {
+    lock count as c {
+        c += 1
+    }
+}
+
+void main() {
+    var count = new shared locked 0
+    var consumer = Task.run(consume, share count)
+    var producer = Task.run(produce, count)
+    producer.wait()
+    print(consumer.wait())
+}

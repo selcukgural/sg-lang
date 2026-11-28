@@ -1,0 +1,5 @@
+error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+  --> error_lock_value_named_in_block.sg:6:15
+ 6 |         print(hits)
+   |               ^^^^
+  hint: this `lock` block lends it as `h`: write `h` in its place

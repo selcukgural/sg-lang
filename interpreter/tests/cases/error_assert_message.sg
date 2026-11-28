@@ -1,0 +1,4 @@
+void main() {
+    var stock = 3
+    assert(stock >= 5, "not enough in stock")
+}

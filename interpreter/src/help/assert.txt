@@ -209,13 +209,16 @@ WHAT THE COMPILER REFUSES
              assert(stock >= 5, "not enough in stock")
          }
 
-         error: `assert` takes 1 argument(s), 2 given
+         error: `assert` takes 1 argument, 2 given
+           `assert` writes the condition as its message
            --> example.sg:3:5
           3 |     assert(stock >= 5, "not enough in stock")
             |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+           hint: for a message of your own: `if !(stock >= 5) { panic("not enough in stock") }`
 
-     The condition is the message. For a text of your own, write if stock < 5
-     { panic("not enough in stock") }. Only const assert takes a message.
+     The condition is the message. For a text of your own, the hint turns the
+     condition around and gives the text to panic; if stock < 5 { panic("not
+     enough in stock") } says the same. Only const assert takes a message.
 
    A number for a condition
          int stockOf(read string code) {

@@ -1,0 +1,6 @@
+error: `assert` takes 1 argument, 2 given
+  `assert` writes the condition as its message
+  --> error_assert_message.sg:3:5
+ 3 |     assert(stock >= 5, "not enough in stock")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: for a message of your own: `if !(stock >= 5) { panic("not enough in stock") }`

@@ -189,9 +189,18 @@ impl Opener<'_> {
                 if (self.lends)(&init.ty) {
                     if let Some(kept) = self.kept(mark) {
                         let holder = kept.key.clone().unwrap_or_else(|| self.text(kept.span).to_string());
+                        // A borrow to change is lent by `ref`; the line moves into the block,
+                        // reaching the value through the block's name.
+                        let word = if kept.write || matches!(init.ty, Ty::Ref(_)) { "ref" } else { "read" };
+                        let written = self.text(init.span);
+                        let lead = ["read ", "ref "].into_iter().find(|lead| written.starts_with(lead)).unwrap_or("");
+                        let body = match written[lead.len()..].strip_prefix(holder.as_str()) {
+                            Some(rest) if rest.starts_with(['.', '[']) => format!("var {name} = {lead}value{rest} ..."),
+                            _ => "...".to_string(),
+                        };
                         return Err(Diag::error(init.span, format!("this borrows what a `shared checked` value holds, and such a borrow ends with its line; `{name}` would keep it"))
                             .related(kept.span, "it is borrowed here")
-                            .hint(format!("lend it for a block instead: `read {holder} as value {{ ... }}`")));
+                            .hint(format!("lend it for a block instead: `{word} {holder} as value {{ {body} }}`")));
                     }
                 }
             }
@@ -346,7 +355,8 @@ impl Opener<'_> {
             Why::Block { mutable: false } if write => diag.hint(format!("open it with `ref {key} as ...` and change it through that name")),
             Why::Block { .. } => diag.hint("use the name the block gives"),
             Why::Match | Why::Condition => diag.hint("copy what the test needs into a variable first, and test that"),
-            Why::Call => diag.hint("work the value out before the call: `var value = ...`"),
+            // A copy, not a borrow: a borrow of a `shared checked` value ends with its line.
+            Why::Call => diag.hint(format!("copy what the call needs from `{key}` into a variable before it")),
             Why::Line => diag,
         }
     }

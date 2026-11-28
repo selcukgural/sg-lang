@@ -1,0 +1,15 @@
+// A task started in a `lock` block cannot be waited for there, so the hint does not say
+// `u.wait()`: it keeps the task in a list made before the block (see ok_lock_task_started).
+void count(shared locked int hits) {
+    lock hits as h {
+        h += 1
+    }
+}
+
+void main() {
+    var hits = new shared locked 0
+    lock hits as h {
+        var u = Task.run(count, share hits)
+        h += 10
+    }
+}

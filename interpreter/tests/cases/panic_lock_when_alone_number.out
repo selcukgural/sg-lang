@@ -1,0 +1,9 @@
+panic: this task waits until `c > 1`, and no other task could make it hold: it is the only owner of `count`
+  --> panic_lock_when_alone_number.sg:5:26
+ 5 |     lock count as c when c > 1 {
+   |                          ^^^^^
+  in the task `consume` started here:
+  --> panic_lock_when_alone_number.sg:19:20
+ 19 |     var consumer = Task.run(consume, share count)
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a task with no more to give says so inside the value before it lets it go: make the locked value a struct with the `int` and a `bool done`, set `done` in a `lock` block, and look at it in the condition

@@ -1,0 +1,18 @@
+// A borrowed `weak City?` kept in a field: one more look is `weak to`, not a `clone`.
+struct City {
+    string name
+}
+
+struct Road {
+    weak City? to
+}
+
+Road road(read weak City? to) {
+    return Road { to = to }
+}
+
+void main() {
+    var c = new shared City { name = "a".clone() }
+    var r = road(weak c)
+    print(share r.to is null)
+}

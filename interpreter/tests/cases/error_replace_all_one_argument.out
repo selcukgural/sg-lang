@@ -1,4 +1,4 @@
-error: `replaceAll` takes 2 argument(s), 1 given
+error: `replaceAll` takes 2 arguments, 1 given
   --> error_replace_all_one_argument.sg:2:11
  2 |     print("a-b".replaceAll('-'))
    |           ^^^^^^^^^^^^^^^^^^^^^

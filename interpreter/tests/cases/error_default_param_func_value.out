@@ -1,4 +1,4 @@
-error: `f` takes 2 argument(s), 1 given
+error: `f` takes 2 arguments, 1 given
   a call through a `Func` is given every argument: `f` does not know the default values of the function it holds
   --> error_default_param_func_value.sg:10:5
  10 |     f(5)

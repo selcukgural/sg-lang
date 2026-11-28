@@ -1,4 +1,4 @@
-error: `compareExchange` takes 2 to 4 argument(s), 1 given
+error: `compareExchange` takes 2 to 4 arguments, 1 given
   `compareExchange(expected, desired)`, then the order it keeps and the one it keeps when it fails, if not `SequentiallyConsistent`
   --> error_atomic_arguments.sg:3:9
  3 |     _ = count.compareExchange(1)

@@ -1,0 +1,20 @@
+// Two items of a `List<shared checked Account>` lent as `ref` to one call: left to run time, as
+// for any list. With `i == j` the same item is lent twice, and that stops the program.
+struct Account {
+    long balance
+}
+
+void transfer(ref Account from, ref Account to, long amount) {
+    from.balance -= amount
+    to.balance += amount
+}
+
+void main() {
+    var accounts = List<shared checked Account>()
+    accounts.add(new shared checked Account { balance = 100 })
+    accounts.add(new shared checked Account { balance = 50 })
+    var i = 1
+    var j = 1
+    transfer(ref accounts[i], ref accounts[j], 30)
+    print(accounts[1].balance)
+}

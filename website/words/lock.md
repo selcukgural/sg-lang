@@ -27,7 +27,8 @@ A `lock` block never waits. Inside it there is no other `lock`, no `wait`, no `a
 `select` on a channel, and no call of a function that does one of these, followed through the calls. A task
 that holds a lock therefore always lets it go, and locks cannot deadlock. Values needed together are locked
 in one block: `lock a as x, b as y` takes them in the order of their addresses, whatever order it names them
-in, so two tasks never hold one each.
+in, so two tasks never hold one each. A task may be started in a `lock` block; since it is not waited for
+there, it goes into a list of tasks or a `TaskGroup` made before the block, and is waited for after it.
 
 `when` waits before the block, not in it. The condition is computed under the lock, with each name lent to
 read; while it fails the lock is let go and the task sleeps. Each `lock` block on the value that ends wakes
@@ -313,7 +314,7 @@ panic: this task waits until `q.items.length() > 0`, and no other task could mak
   --> example.sg:7:26
  7 |     lock queue as q when q.items.length() > 0 {
    |                          ^^^^^^^^^^^^^^^^^^^^
-  hint: a task with no more to give says so inside the value before it lets it go, `lock queue as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
+  hint: a task with no more to give says so inside the value before it lets it go, in a field such as `done`: `lock queue as q { q.done = true }`, and the condition looks at it: `when ... || q.done`
 ```
 
 In the interpreter and in compiled code alike, a task that would wait for ever is stopped with the line it
@@ -404,6 +405,7 @@ error: `ask` waits, and a `lock` block does not wait
   --> example.sg:7:17
  7 |     return task.wait()
    |                 ^^^^
+  hint: call `ask` before the block or after it
 ```
 
 The compiler follows the calls, and shows where the wait is.
@@ -507,7 +509,8 @@ error: the condition of `when` reads an `atomic`, and a task waiting for it is w
   hint: keep what the condition looks at inside the locked value, and change it in a `lock` block
 ```
 
-The clock, random bytes and input or output are refused there for the same reason.
+A `shared atomic` given to the task is refused there too, as is any `atomic`. The clock, random bytes and
+input or output are refused there for the same reason.
 
 ### `when` in an async function, without `await`
 

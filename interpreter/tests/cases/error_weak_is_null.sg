@@ -1,0 +1,10 @@
+// Whether what a `weak` value looks at is gone is asked of the owner `share` gives.
+struct City {
+    string name
+}
+
+void main() {
+    var c = new shared City { name = "a".clone() }
+    var look = weak c
+    print(look is null)
+}

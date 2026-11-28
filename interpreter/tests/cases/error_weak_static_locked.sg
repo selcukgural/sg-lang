@@ -1,0 +1,6 @@
+// A `static locked` value has no owners, so `weak` has none to look at.
+static locked int Hits = 0
+
+void main() {
+    var look = weak Hits
+}

@@ -112,8 +112,8 @@ true
 ```
 
 A check that only says yes or no returns a `Result<void, string>`: `Ok()` carries nothing. `try` passes an error
-on. As a pattern, in `is` and in `match`, it is written `Ok`, with no parentheses, since there is nothing in it to
-name.
+on. As a pattern, in `is` and in `match`, it is written `Ok`, since there is nothing in it to name, or `Ok()`, as
+it is built.
 
 ### `main` and the exit code
 

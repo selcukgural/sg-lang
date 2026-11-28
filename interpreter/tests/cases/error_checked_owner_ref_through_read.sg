@@ -1,0 +1,19 @@
+// Through a `read` borrow of a `shared checked` owner, what it points to is lent as `ref`, never
+// the owner itself: `reset` would put another account in the caller's variable.
+struct Account {
+    long balance
+}
+
+void reset(ref shared checked Account account) {
+    account = new shared checked Account { balance = 0 }
+}
+
+void charge(read shared checked Account account) {
+    reset(ref account)
+}
+
+void main() {
+    var account = new shared checked Account { balance = 100 }
+    charge(read account)
+    print(account.balance)
+}
