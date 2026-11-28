@@ -37,7 +37,8 @@ A command prints its own page too: `--help` or `-h` among the words of `sg build
 the page of `sg`. After a program the words are the program's, so `sg main.sg --help` gives `--help` to `main`.
 
 It ends with code 0 when it printed a page or a line. A name it does not know is an error on the standard
-error, which names the names that start like it, and ends with code 2; so does more than one name.
+error, which names the names that start like it, and ends with code 2; so do an empty name and more than one
+name.
 
 The pages are as new as the `sg` that carries them: they are built from the same files as the site, when `sg`
 is built.
@@ -133,9 +134,13 @@ error: SG has no name `zebra` that `sg help` knows; `sg help index` lists every 
 exit code 2
 $ sg help read write 2>/dev/null; echo "exit code $?"
 exit code 2
+$ sg help ''; echo "exit code $?"
+error: `sg help` takes a name, and this one is empty; `sg help` alone lists the commands and the words with a page
+exit code 2
 ```
 
-Two names are not a usage: `sg help` writes how `sg` is used, to the standard error.
+Two names are not a usage: `sg help` writes how `sg` is used, to the standard error. An empty name, as a
+variable of the shell that holds nothing gives, is told as one.
 
 ## Mistakes it tells
 

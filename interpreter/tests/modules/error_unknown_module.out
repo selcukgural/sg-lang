@@ -3,3 +3,4 @@ error: there is no module named `stok`
   --> error_unknown_module.sg:1:5
  1 | use stok
    |     ^^^^
+  hint: a package is named on a `require` line of `sg.project`, beside the program, which `sg add <address>` writes

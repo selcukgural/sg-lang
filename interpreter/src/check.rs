@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::*;
-use crate::diag::{nearest, Diag, Span};
+use crate::diag::{nearest, nearest_or_start, Diag, Span};
 use crate::exhaust;
 use crate::source::{std_types, STD_MODULE, STD_STREAM_CALLS};
 use crate::types::{FloatTy, IntTy, Net, TextIter, Ty};
@@ -487,6 +487,23 @@ const TEXT_METHODS: &[&str] = &[
     "toUpper", "toLower", "foldCase", "equalsIgnoreCase", "normalize", "isNormalized",
 ];
 
+/// The methods of an integer, for a name that is not one of them (choice 2239); the conversions
+/// (`tryToInt`, `wrappingToByte`) are made of the type's name. `tests::number_methods_are_methods`
+/// keeps the list true.
+const INT_METHODS: &[&str] = &[
+    "wrappingAdd", "wrappingSubtract", "wrappingMultiply", "saturatingAdd", "saturatingSubtract", "saturatingMultiply",
+    "tryAdd", "trySubtract", "tryMultiply", "tryDivide", "countOnes", "countZeros", "leadingZeros", "trailingZeros",
+    "leadingOnes", "trailingOnes", "reverseBytes", "reverseBits", "rotateLeft", "rotateRight", "isPowerOfTwo",
+    "nextPowerOfTwo", "log2", "toLittleEndian", "toBigEndian", "tryToChar", "toString", "compare", "equals", "clamp",
+    "abs", "tryAbs", "wrappingAbs", "unsignedAbs", "tryNegate", "wrappingNegate", "min", "max",
+];
+/// The methods of a `float` and a `double`, besides `FLOAT_ONE`, for the same.
+const FLOAT_METHODS: &[&str] = &[
+    "compare", "equals", "abs", "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos",
+    "tan", "asin", "acos", "atan", "isFinite", "isSignNegative", "toBits", "exponent", "scaleByPowerOfTwo", "clamp", "pow",
+    "atan2", "min", "max", "hypot", "copySign", "ieeeRemainder", "fusedMultiplyAdd", "isNaN", "isInfinite", "toString",
+];
+
 /// The searches in items that are in order, by the names other languages give them.
 fn search_name(name: &str) -> Option<&'static str> {
     match name {
@@ -926,7 +943,10 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             let shown: Vec<String> = seen().map(|other| map.written(other)).collect();
             return Err(match nearest(&written, shown.iter().map(String::as_str)) {
                 Some(close) => diag.hint(format!("`use {close}`")),
-                None => diag.note(format!("a module is a folder with source files, next to the files of the {whose}: `{}/`", written.replace('.', "/"))),
+                // Or a package, which the program names in its `sg.project` (choice 2241).
+                None => diag
+                    .note(format!("a module is a folder with source files, next to the files of the {whose}: `{}/`", written.replace('.', "/")))
+                    .hint(format!("a package is named on a `require` line of `sg.project`, beside the {whose}, which `sg add <address>` writes")),
             });
         }
     }
@@ -2585,6 +2605,21 @@ fn check_tests(
     for position in 0..prog.tests.len() {
         let test = &prog.tests[position];
         let test_span = test.name_span;
+        // A name is one line of the report, the same letter for letter in the interpreter and in
+        // compiled code, which writes it as a string of C (choice 2234).
+        if let Some(control) = test.name.chars().find(|c| c.is_control()) {
+            let shown = match control {
+                '\n' => "\\n".to_string(),
+                '\r' => "\\r".to_string(),
+                '\t' => "\\t".to_string(),
+                '\0' => "\\0".to_string(),
+                other => format!("\\u{{{:x}}}", other as u32),
+            };
+            let words: Vec<&str> = test.name.split(|c: char| c.is_control() || c == ' ').filter(|word| !word.is_empty()).collect();
+            let fixed = words.join(" ").replace('\\', "\\\\").replace('"', "\\\"");
+            return Err(Diag::error(test.name_span, format!("the name of a test is one line of the report, with no control character; this one has `{shown}`"))
+                .hint(format!("with a space instead: `test \"{fixed}\"`")));
+        }
         if let Some(first) = prog.tests[..position].iter().find(|other| other.name == test.name && names.module(other.name_span) == names.module(test_span)) {
             return Err(Diag::error(test.name_span, format!("there are two tests named \"{}\"", test.name))
                 .related(first.name_span, "the other one is here"));
@@ -16533,6 +16568,16 @@ impl<'a> Checker<'a> {
                     let (text, call) = (&self.src[recv.span.start..recv.span.end], &self.src[name_span.start..span.end]);
                     return Err(diag.hint(format!("make it a `string` first: `{text}.toString().{call}`")));
                 }
+                // The closest method of the number, or the one a name cut short starts (choice 2239).
+                let numbers: Vec<&str> = match target {
+                    Ty::Int(IntTy::Byte) => INT_METHODS.iter().chain(ASCII_TESTS).chain(&["toAsciiUpper", "toAsciiLower"]).copied().collect(),
+                    Ty::Int(_) => INT_METHODS.to_vec(),
+                    Ty::Float(_) => FLOAT_METHODS.iter().chain(FLOAT_ONE).copied().collect(),
+                    _ => Vec::new(),
+                };
+                if let Some(close) = nearest_or_start(name, numbers.iter().copied()) {
+                    return Err(diag.hint(format!("`{close}`")));
+                }
                 let (Ty::Struct(owner) | Ty::Enum(owner)) = target else {
                     return Err(if name.starts_with("try") { diag.note(format!("`{name}` is not in the interpreter yet")) } else { diag });
                 };
@@ -18232,4 +18277,26 @@ fn breaks_in(expr: &Expr, label: Option<&str>, nested: bool) -> Option<Span> {
         Part::Expr(inner) => breaks_in(inner, label, nested),
         Part::Block(block) => breaks_of(block, label, nested),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ASCII_TESTS, FLOAT_METHODS, FLOAT_ONE, INT_METHODS};
+
+    /// The lists the hints of a number's methods are taken from (choice 2239) name only methods:
+    /// called with no argument, each is refused for its arguments, or taken, never as a method
+    /// that is not there.
+    #[test]
+    fn number_methods_are_methods() {
+        let ints = INT_METHODS.iter().map(|name| ("int n = 4", name));
+        let floats = FLOAT_METHODS.iter().chain(FLOAT_ONE).map(|name| ("double n = 2.0", name));
+        let bytes = ASCII_TESTS.iter().chain(&["toAsciiUpper", "toAsciiLower"]).map(|name| ("byte n = 65", name));
+        for (declared, name) in ints.chain(floats).chain(bytes) {
+            let src = format!("void main() {{\n    {declared}\n    _ = n.{name}()\n}}\n");
+            let mut out = Vec::new();
+            if let Err(crate::Stop::Diag(diag)) = crate::run(&src, &mut out) {
+                assert!(!diag.msg.contains("has no method"), "{name}: {}", diag.msg);
+            }
+        }
+    }
 }

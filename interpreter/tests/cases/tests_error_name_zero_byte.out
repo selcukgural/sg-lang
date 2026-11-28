@@ -1,0 +1,5 @@
+error: the name of a test is one line of the report, with no control character; this one has `\0`
+  --> tests_error_name_zero_byte.sg:2:6
+ 2 | test "zero\0byte" {
+   |      ^^^^^^^^^^^^
+  hint: with a space instead: `test "zero byte"`

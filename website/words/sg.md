@@ -270,10 +270,11 @@ error: there is no function named `price`
   --> shop/main.sg:5:28
  5 |     print($"{count} cups: {price(count)} cents, {left(count)} left")
    |                            ^^^^^
+  hint: `price` is in `shop/prices.sg`; the files of a folder are one program: name the folder, `shop`, in place of the file
 ```
 
 A file alone is a program of that file and the modules beside it: `prices.sg` is not part of it. The folder is
-the program, `sg shop`.
+the program, `sg shop`; when a name not found is in a file beside the one given, the hint says so.
 
 ### `-L` after the program
 

@@ -235,7 +235,7 @@ belongs to, with its notes, its hint and a link to the second place it names, an
 saved. Some hints are fixes applied with one click: a conversion `(int)x`, `.clone()` of a text that is only
 borrowed, `_ = ` before a value dropped on purpose, and a missing `use`. The extension for VS Code
 (`editors/vscode`) brings colours, brackets, comments and indentation, and starts `sg lsp`; how to install it is
-in [Install](../install.md).
+in [Install](../install.md). Another editor starts `sg lsp` the same way, with `--stdio` if its client adds it.
 
 ## Help
 

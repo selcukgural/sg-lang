@@ -243,6 +243,15 @@ pub fn nearest<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Opt
         .map(|(_, c)| c)
 }
 
+/// The one candidate that starts with the name, for a name cut short, else `nearest`:
+/// `wrappingMul` is `wrappingMultiply`, which `nearest` finds too far, and `wrappingAbs` near
+/// (choice 2239). Three letters at least, and only when one candidate starts so.
+pub fn nearest_or_start<'a>(name: &str, candidates: impl Iterator<Item = &'a str> + Clone) -> Option<&'a str> {
+    let mut starting = candidates.clone().filter(|c| name.chars().count() >= 3 && c.len() > name.len() && c.starts_with(name));
+    let started = starting.next().filter(|first| starting.all(|other| other == *first));
+    started.or_else(|| nearest(name, candidates))
+}
+
 fn distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();

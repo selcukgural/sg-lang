@@ -202,6 +202,7 @@ error: there is no function named `sum`
   --> shop/stock/tests.sg:2:12
  2 |     assert(sum(read List<int>()) == 0)
    |            ^^^
+  hint: `sum` is in `shop/stock/shelf.sg`; the files of a folder are one program: name the folder, `shop/stock`, in place of the file
 ```
 
 The tests in `stock` reach `sum` and the field `counts`, which are not public, since they are in its module;

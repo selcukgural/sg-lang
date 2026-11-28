@@ -45,6 +45,8 @@ pub fn text(words: &[String]) -> Result<String, Refusal> {
     match words {
         [] => Ok(overview()),
         [word] if word == "index" => Ok(index()),
+        // An empty name is told as one, not shown between empty backticks (choice 2238).
+        [word] if word.trim().is_empty() => Err(Refusal::Unknown("`sg help` takes a name, and this one is empty; `sg help` alone lists the commands and the words with a page".to_string())),
         [word] => {
             let all: Vec<Name> = names().collect();
             let found = all

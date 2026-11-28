@@ -656,6 +656,17 @@ pub fn freestanding_division() -> &'static str {
 const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #define SG_FREESTANDING 0
 #endif
+/* `-ffast-math` and `-Ofast` after `--` make Clang warn at each `NAN` and `INFINITY` of the
+   runtime and of the program's own `double.NaN`, which `sg build` has said once already (choice
+   2235). Not for the program's own C files, before which the state of the command line comes
+   back. */
+#if defined(__clang__) && defined(__has_warning)
+#if __has_warning("-Wnan-infinity-disabled")
+#define SG_NAN_QUIET 1
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnan-infinity-disabled"
+#endif
+#endif
 #if !SG_FREESTANDING
 #if defined(_WIN32)
 /* The C library's warnings against `wcscpy` and its kin are for code that does not count its
@@ -16872,6 +16883,27 @@ extern char** environ;
 #endif
 
 typedef struct { const char* name; void (*run)(void); } sg_test;
+/* What the program of tests is asked (choice 2233): with no word every test, with `--only N` test
+   N alone, N written in digits and one of its tests. Anything else is told, with -2, which ends
+   the program with 2; else gives N, or -1 for every test. */
+static int sg_test_asked(int count, int argc, char** argv) {
+    if (argc <= 1) return -1;
+    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
+        const char* digits = argv[2];
+        long only = 0;
+        bool number = *digits != '\0';
+        for (const char* d = digits; *d && number; d++) {
+            number = *d >= '0' && *d <= '9' && only <= count;
+            only = only * 10 + (*d - '0');
+        }
+        if (number && only < count) return (int)only;
+        if (count == 0) fputs("error: `--only` names a test by its number, and this program has none\n", stderr);
+        else fprintf(stderr, "error: `--only` takes the number of a test, from 0 to %d\n", count - 1);
+        return -2;
+    }
+    fprintf(stderr, "usage: %s [--only N]   runs every test, or test N alone (0 is the first)\n", argv[0]);
+    return -2;
+}
 static int sg_run_test(const sg_test* test) {
     sg_test_error = 0;
 #if SG_COUNT
@@ -16966,11 +16998,9 @@ static int64_t sg_spawn_test(int number, char** reason, size_t* len) {
 }
 static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
     sg_in_tests = true;
-    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
-        long only = strtol(argv[2], NULL, 10);
-        if (only < 0 || only >= count) return 3;
-        return sg_run_test(&tests[only]);
-    }
+    int only = sg_test_asked(count, argc, argv);
+    if (only == -2) return 2;
+    if (only >= 0) return sg_run_test(&tests[only]);
     int failed = 0;
     for (int i = 0; i < count; i++) {
         sg_out_flush();
@@ -17017,11 +17047,9 @@ static char* sg_self_path(void) {
 }
 static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
     sg_in_tests = true;
-    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
-        long only = strtol(argv[2], NULL, 10);
-        if (only < 0 || only >= count) return 3;
-        return sg_run_test(&tests[only]);
-    }
+    int only = sg_test_asked(count, argc, argv);
+    if (only == -2) return 2;
+    if (only >= 0) return sg_run_test(&tests[only]);
     char* self = sg_self_path();
     int failed = 0;
     for (int i = 0; i < count; i++) {
@@ -17556,7 +17584,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&start);
     // The C files last, so that what they define touches none of the program.
     if !c_files.is_empty() {
-        out.push_str("\n/* The C files of the program, which take and give back with C's own functions. */\n#if SG_COUNT\n#undef malloc\n#undef calloc\n#undef aligned_alloc\n#undef realloc\n#undef free\n#endif\n");
+        out.push_str("\n/* The C files of the program, which take and give back with C's own functions. */\n#ifdef SG_NAN_QUIET\n#pragma clang diagnostic pop\n#endif\n#if SG_COUNT\n#undef malloc\n#undef calloc\n#undef aligned_alloc\n#undef realloc\n#undef free\n#endif\n");
         for file in &c_files {
             out.push_str(&crate::ffi::include_line(file));
         }

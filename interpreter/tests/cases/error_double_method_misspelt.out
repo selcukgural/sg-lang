@@ -1,0 +1,5 @@
+error: type `double` has no method `sqr`
+  --> error_double_method_misspelt.sg:4:16
+ 4 |     print(side.sqr())
+   |                ^^^
+  hint: `sqrt`

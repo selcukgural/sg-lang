@@ -291,9 +291,11 @@ error: there is no module named `stock`
   --> example.sg:1:5
  1 | use stock
    |     ^^^^^
+  hint: a package is named on a `require` line of `sg.project`, beside the program, which `sg add <address>` writes
 ```
 
-When a module of that name is further down, the hint gives its whole path: `use wind` in a file of `units/`
+A name `use` writes is a folder of the program or a package `sg.project` names, so the hint says how a package is
+named. When a module of that name is further down, the hint gives its whole path: `use wind` in a file of `units/`
 gets the hint `` `use units.wind` ``.
 
 ### `use std`

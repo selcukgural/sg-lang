@@ -10,7 +10,7 @@ learn: ../docs/learn/book/13-testing.md#test-and-assert
 
 | Form | What it is |
 |---|---|
-| `test "name" { ... }` | a test, written at the top level of a file; the name is any text |
+| `test "name" { ... }` | a test, written at the top level of a file; the name is any text on one line |
 | `sg test file.sg` | runs the tests of the file and of the modules it uses |
 | `sg test folder` | runs the tests of the folder and of every module under it |
 | `sg test file.sg --compiled` | the same tests, built as a debug build and run |
@@ -36,7 +36,8 @@ a failure that is to be tested is returned as a `Result`, and the test looks at 
 A test belongs to the module of its folder. It sees every name of that module, `public` or not, and only the
 `public` names of other modules, as a real user would. `sg test` writes one line for each test, `ok` or `FAIL`
 and the name, with the name of the module in front for a test of a module below. What a test prints comes
-before its line. Two tests of one module cannot have the same name. Compiled with `--compiled`, each test runs in
+before its line. Two tests of one module cannot have the same name, and a name has no control character
+(`\n`, `\t`, `\0`), since it is one line of the report. Compiled with `--compiled`, each test runs in
 a process of its own, and the report is the same, letter for letter.
 
 ## Examples
@@ -378,6 +379,8 @@ Without a text after it, `test` is not a keyword: the line reads as a function n
 a type `test`, and a function needs its parameters. The name of a test is written in quotes:
 `test "a small parcel" { }`.
 
-`sg test` refuses two more things, which `sg example.sg` does not see, since it leaves the tests out: two tests
-of one module with the same name (`error: there are two tests named "..."`), and `try` on a `T?` in a test
-(`` error: `try` on `int?` returns `null` to the caller, and a test has no caller ``).
+`sg test` refuses three more things, which `sg example.sg` does not see, since it leaves the tests out: two tests
+of one module with the same name (`error: there are two tests named "..."`), a name with a control character
+(`` error: the name of a test is one line of the report, with no control character; this one has `\n` ``, with
+the hint of the name with a space in its place), and `try` on a `T?` in a test (`` error: `try` on `int?`
+returns `null` to the caller, and a test has no caller ``).

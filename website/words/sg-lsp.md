@@ -11,12 +11,14 @@ learn: ../docs/learn/book/14-building.md#the-editor
 | Form | What it is |
 |---|---|
 | `sg lsp` | the language server, talking to the editor on its standard input and output |
+| `sg lsp --stdio` | the same: the word some clients add, such as VS Code's library of language clients |
 | `"sg.path": "/path/to/sg"` | the setting of the VS Code extension that names the `sg` it starts; empty, `sg` on the `PATH` |
 | `sg lsp --help` | prints this page |
 
 ## What it means
 
-`sg lsp` is the language server of SG, in `sg` itself. An editor starts it with no other word and talks to it in
+`sg lsp` is the language server of SG, in `sg` itself. An editor starts it with no other word, or with `--stdio`,
+which names the only way it talks, and talks to it in
 the Language Server Protocol: messages of JSON-RPC, each after a header `Content-Length: n` and an empty line,
 on the server's standard input and output. A person does not run it; the editor does, for the files that end
 in `.sg`. The extension for VS Code in the repository (`editors/vscode`) starts it, with the colours of SG;
@@ -41,7 +43,8 @@ nothing: a package that is not in the cache is an error in the editor, and runni
 
 It says it counts the columns of a line in UTF-16, as the protocol does by default; that each change sends the
 whole text; that it wants to know when a file is opened, closed and saved; and that it gives quick fixes. A
-header line takes at most 8 KB and a message at most 64 MB. The exit code is 0 when the editor asked to
+header line takes at most 8 KB and a message at most 64 MB; a `Content-Length` past that, or one too long for a
+number, is told as a message too large. The exit code is 0 when the editor asked to
 `shutdown` and then to `exit`, and 1 when the input ends before that or a message cannot be read, which is
 written on the standard error after `sg lsp:`.
 
@@ -152,13 +155,25 @@ The first line is read as a header, and a message has no body without `Content-L
 be read ends the server with 1, and what was wrong is written on the standard error. The input ending before
 `shutdown` and `exit`, as when an editor is killed, ends it with 1 too, and says nothing.
 
+### A length too large
+
+```text
+$ printf 'Content-Length: 99999999999999999999999\r\n\r\n{}' | sg lsp; echo $?
+sg lsp: a message whose Content-Length, 99999999999999999999999, is more than 67108864 bytes
+1
+```
+
+The length is read before the body, so a message larger than the server takes ends it before it waits for the
+bytes. A length that is not a number at all is told as one: `` sg lsp: a Content-Length that is not a number of
+bytes: `ten` ``.
+
 ### A word after `lsp`
 
 ```text
-$ sg lsp --stdio > /dev/null 2>&1; echo $?
+$ sg lsp --stdio --tcp > /dev/null 2>&1; echo $?
 2
 ```
 
-`sg lsp` takes no other word, and always talks on its standard input and output. Any word after it is a usage
-error: the usage of every command is printed, and the server does not start. An editor that adds `--stdio` on
-its own is told to start `sg` with the one word `lsp`.
+`sg lsp` talks only on its standard input and output, so it takes no word but `--stdio`, which says so and
+which clients such as VS Code's add on their own. Any other word is a usage error: the usage of every command
+is printed, and the server does not start.

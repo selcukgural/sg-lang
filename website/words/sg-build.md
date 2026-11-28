@@ -13,7 +13,7 @@ learn: ../docs/learn/book/14-building.md#debug-and-release-builds
 | `sg build file.sg`, `sg build folder` | a debug build of the program, named after the file without `.sg`, or after the folder |
 | `sg build path -o out` | the same, written to `out` |
 | `sg build path --release` | a release build: optimised, overflow wraps, no checks of a debug build |
-| `sg build path --test` | the program that runs the tests, each in a process of its own; `./tests --only N` runs one |
+| `sg build path --test` | the program that runs the tests, each in a process of its own; `./tests --only N` runs test N alone |
 | `sg build path --library` | a static library C links, `libname.a` (`name.lib` on Windows), and its header `name.h` |
 | `sg build path --shared` | a shared library, `libname.so` (`.dylib` on macOS, `name.dll` on Windows), and its header |
 | `sg build path --freestanding` | an object, `name.o`, for a machine without an operating system |
@@ -40,13 +40,15 @@ division by zero, a conflict of borrows, `assert` and `panic`.
 
 The output goes to the current folder, whatever folder the source is in, or to the path `-o` names, a file
 there being written over, unless it is a source: the program's own file, a file of SG or of C, or a header
-`sg build` did not write is never replaced. A program is named after its file without `.sg`, or after its folder; `sg build .`
-names it `a.out`, so it is given `-o`. On Windows a program gets `.exe`. `--test` builds the `test` blocks
+`sg build` did not write is never replaced. A program is named after its file without `.sg`, or after its folder,
+`sg build .` too. On Windows a program gets `.exe`. `--test` builds the `test` blocks
 instead of `main`, as `sg test --compiled` does; with `--release` too, the tests wrap and count nothing.
 
 A library is the `export` functions of the program, which must have no `main`. It is named after its folder or
 file: `sg build temps --library` writes `libtemps.a` and `temps.h`, and says how a program of C links it. A
-shared library shows only its `export` functions and is never unloaded. `--freestanding` writes an object with
+shared library shows only its `export` functions and is never unloaded. Named with `-o`, the line says to link
+it by that name: `-o out/libscore.so` gives `-Lout -lscore`, and a name `-l` cannot find, one that does not start
+with `lib` or end with `.so` (`.dylib` on macOS), is linked by its path. `--freestanding` writes an object with
 no `main` and nothing of C's library, which the code that starts the machine links; with `--target` the
 machine is another one, and the build uses Clang: the one `CC` names, else the first `clang` of the path.
 
@@ -67,6 +69,11 @@ quietly, unknown ones too. Some go on with a warning, written on every build: wh
 `-S`, `-E`, `-x`, `-std=`, `-shared`, `-static`, `--target`) and what changes the size or the layout of C's
 types (`-m16`, `-m32`, `-mx32`, `-fshort-enums`, `-fpack-struct`, `-fshort-wchar`, `-funsigned-char`,
 `-fsigned-char`). A flag of C turns off no check of SG: only `--release` leaves out the checks of a debug build.
+
+The C compiler writes its own messages as it goes, and when it builds nothing, sg says whose mistake it found: a
+mistake in a C file of the program's own (`extern "./native.c"`) is that file's, and its first errors are said
+again under sg's line; a compiler that ends without naming an error, or ends with 0 and writes nothing, may not be
+a C compiler at all; C that sg wrote and the compiler refused is a mistake in sg, to be reported.
 
 The exit code is 0 when it is built; 1 when the checker refuses the program, or the C compiler cannot be run
 or does not build it; 2 when the command line is not one of the forms (a second path, a flag given twice, `-o`
@@ -184,7 +191,19 @@ panic: assert failed: withTax(999, 33) == 1329
 
 The program starts itself again for each test, with `--only` and its number, counted from 0 in the order of the
 report. Run so by hand, one test runs in the program's own process, writes no line of its own and ends with 0
-when it passes: that is the way to look at one test in a debugger, `gdb --args ./tests --only 1`.
+when it passes: that is the way to look at one test in a debugger, `gdb --args ./tests --only 1`. It takes no
+other word: a number that is not one of its tests, or another word, is told on the standard error, and it ends
+with 2 having run nothing.
+
+```text
+$ cd tax
+$ ./tests --only 2; echo $?
+error: `--only` takes the number of a test, from 0 to 1
+2
+$ ./tests --verbose; echo $?
+usage: ./tests [--only N]   runs every test, or test N alone (0 is the first)
+2
+```
 
 ### Flags of C
 
@@ -285,7 +304,8 @@ TALLY_API int32_t tally_max(int32_t a, int32_t b);
 ```
 
 `tally.h` declares the `export` functions with the types of C. `--shared` builds `libtally.so` (`libtally.dylib`
-on macOS) from the same folder, which a program links with `-L. -ltally`. A library is a debug build too unless
+on macOS) from the same folder, which a program links with `-L. -ltally`; `--shared -o out/libscore.so` writes
+`out/tally.h` beside it, and the line says `-Lout -lscore`. A library is a debug build too unless
 `--release` is given, and a panic in it stops the program of C with the message.
 
 ### Without an operating system
@@ -379,8 +399,46 @@ error: cannot run the C compiler `nosuchcc`: No such file or directory (os error
 1
 ```
 
-`CC` names one program; a C compiler that is there but cannot build what sg writes is told by its own messages,
-then by sg's.
+```text
+$ CC=false sg build hello/hello.sg -o hi; echo $?
+error: the C compiler `false` ended with 1 and named no error; is `false` a C compiler? `CC` names it
+1
+```
+
+`CC` names one program. One that ends without naming an error, as `false` does, or that ends with 0 and writes no
+program, is told as perhaps no C compiler; a C compiler that cannot build what sg writes is told by its own
+messages, then by sg's.
+
+### A mistake in a C file of the program
+
+```c title="native/twice.c"
+#include <stdint.h>
+
+int64_t twice(int64_t x) {
+    return x * 2
+}
+```
+
+```sg file title="native/main.sg"
+extern "./twice.c" {
+    long twice(long x)
+}
+
+void main() {
+    print(unsafe twice(21))
+}
+```
+
+```text
+$ cd native
+$ sg build main.sg 2>&1 | grep -A1 '^error:' | cut -d: -f1-4
+error: the C compiler did not accept twice.c, a file of C of the program; the mistake is in that file
+  twice.c:4:17: error
+```
+
+What the C compiler wrote comes first, as it wrote it; under it, sg names the file the mistake is in and says its
+first errors again, here the missing `;` (cut to the place, since each compiler words its error its own way). C
+that sg wrote and the C compiler refused is a mistake in sg, and the line says so.
 
 ### A library with a `main`
 

@@ -3,3 +3,4 @@ error: there is no module named `stock`
   --> lib/leaky/leaky.sg:2:5
  2 | use stock
    |     ^^^^^
+  hint: a package is named on a `require` line of `sg.project`, beside the package, which `sg add <address>` writes

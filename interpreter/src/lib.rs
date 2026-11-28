@@ -196,9 +196,39 @@ fn check_all(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
         Ok(()) => Ok(prog),
         Err(diag) => Err(match missing_use(sources, &diag) {
             Some(module) => with_use(sources, diag, &module),
-            None => diag,
+            None => match beside_in_folder(sources, &diag) {
+                Some((file, folder)) => {
+                    let name = diag.msg.split('`').nth(1).unwrap_or_default().to_string();
+                    let mut diag = diag.hint(format!("`{name}` is in `{file}`; the files of a folder are one program: name the folder, `{folder}`, in place of the file"));
+                    diag.fix = None;
+                    diag
+                }
+                None => diag,
+            },
         }),
     }
+}
+
+/// The file beside the program's own that declares the name not found, when a file of a folder
+/// is given alone (choice 2242), and the folder.
+fn beside_in_folder(sources: &Sources, diag: &Diag) -> Option<(String, String)> {
+    // A name the program uses, not a `main` it lacks.
+    if !diag.msg.starts_with("there is no ") || !diag.msg.contains(" named `") || diag.msg.contains("module") {
+        return None;
+    }
+    let name = diag.msg.split('`').nth(1)?;
+    let file = sources.file_at(diag.span.start);
+    if !file.module.is_empty() {
+        return None;
+    }
+    let (folder, beside) = sources.beside();
+    beside.into_iter().find_map(|(path, text)| {
+        let prog = parser::parse_files(&text, &[(0, text.len(), String::new(), file.map.clone())]).ok()?;
+        let types = prog.structs.iter().map(|decl| &decl.name).chain(prog.enums.iter().map(|decl| &decl.name)).chain(prog.aliases.iter().map(|decl| &decl.name));
+        let values = prog.funcs.iter().map(|func| &func.name).chain(prog.consts.iter().map(|decl| &decl.name));
+        let mut names = types.chain(values);
+        names.any(|full| ast::short_name(full) == name).then(|| (path, folder.clone()))
+    })
 }
 
 /// The hint of the missing `use` line, and its fix: the line put before the first line of the

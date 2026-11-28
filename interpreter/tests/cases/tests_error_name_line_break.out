@@ -1,0 +1,5 @@
+error: the name of a test is one line of the report, with no control character; this one has `\n`
+  --> tests_error_name_line_break.sg:6:6
+ 6 | test "the \"total\"\n  of two" {
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: with a space instead: `test "the \"total\" of two"`
