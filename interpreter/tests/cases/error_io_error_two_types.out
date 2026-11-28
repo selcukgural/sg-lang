@@ -1,0 +1,5 @@
+error: expected `Result<string, IoError>`, found `Result<string, IoError>`
+  two types have this name: the program's own, and the one of the language's module `std`, which the program's hides; with the module in front, it is the language's
+  --> error_io_error_two_types.sg:7:12
+ 7 |     return std.File.readText(read "notes.txt")
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

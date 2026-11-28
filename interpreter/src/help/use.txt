@@ -43,10 +43,16 @@ DESCRIPTION
 
      The library, the module std, needs no use: its types are seen from every
      module, and use std is an error. A type of your own with the name of one
-     of its types comes first, and the library's is then written std.Duration
-     or std.Hex. Only the types the language itself is built around, such as
-     List, Result, File and Task, cannot be declared again: the compiler knows
-     them by name.
+     of its types comes first, and the library's is then written with the
+     module in front: std.Duration, std.Hex, std.List<int>,
+     std.File.readText(path). This holds for every type of the library, List,
+     HashMap, File, IoError and TcpStream among them, and a function, a const
+     or a static may have such a name too. Kept are only the words of the
+     language, the types of numbers, bool, char, string and void, and the
+     three types its syntax makes: Result (by try, Ok and Error), Task (by
+     async) and Func (by a function's name used as a value). Stdin, Stdout and
+     Stderr are kept too: they are not types but the streams every function
+     has.
 
      A use that nothing needs is not an error. Two modules may use each other.
      There is no use ... as: a type gets a second name with alias.
@@ -90,6 +96,33 @@ EXAMPLES
 
      Hex is the struct of the program, a cell of a map. The library's Hex is
      still there under its full name.
+
+   A File of your own
+         struct File {
+             string name
+             int lines
+         }
+
+         void main() {
+             var notes = File { name = "notes.txt", lines = 3 }
+             print(notes.name)
+             var words = std.List<string>()
+             words.add("sg")
+             match std.File.readText(read "/no/such/file.txt") {
+                 Ok(text) => print(text)
+                 Error(NotFound) => print("not there")
+                 Error(other) => print(other)
+             }
+             print(words)
+         }
+
+         notes.txt
+         not there
+         ["sg"]
+
+     File here is the program's struct. The library's file functions are still
+     there as std.File, and its collections as std.List<T>, as for any type of
+     the library.
 
    A module beside the program
          weather/

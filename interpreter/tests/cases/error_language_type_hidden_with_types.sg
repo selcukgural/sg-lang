@@ -1,0 +1,10 @@
+// The program's own `List` hides the language's, so `List<int>` is the program's type with
+// types it does not take; the language's is `std.List<int>`.
+struct List {
+    int count
+}
+
+void main() {
+    List<int> xs = std.List<int>()
+    print(xs)
+}

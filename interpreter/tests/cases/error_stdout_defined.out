@@ -1,0 +1,4 @@
+error: `Stdout` is the output every function has, so a type cannot have its name
+  --> error_stdout_defined.sg:2:8
+ 2 | struct Stdout {
+   |        ^^^^^^

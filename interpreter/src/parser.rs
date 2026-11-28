@@ -674,6 +674,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             first = false;
+            self.no_private(matches!(self.peek_at(1), Tok::Struct | Tok::Enum) || matches!(self.peek_at(1), Tok::Ident(word) if word == "union" || word == "alias"))?;
             let public_span = self.span();
             let public = self.eat(&Tok::Public);
             let export_span = self.span();
@@ -1015,6 +1016,7 @@ impl<'a> Parser<'a> {
             if *self.peek() == Tok::Eof {
                 return Err(self.unexpected("`}`"));
             }
+            self.no_private(true)?;
             let public = self.eat(&Tok::Public);
             let async_span = self.span();
             let is_async = self.eat_async()?;
@@ -1222,6 +1224,7 @@ impl<'a> Parser<'a> {
             let variant_line = matches!(self.peek(), Tok::Ident(_))
                 && matches!(self.peek_at(1), Tok::LParen | Tok::Assign | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
             if !variant_line {
+                self.no_private(true)?;
                 let public = self.eat(&Tok::Public);
                 let is_async = self.eat_async()?;
                 let ty = self.type_expr()?;
@@ -2735,7 +2738,7 @@ impl<'a> Parser<'a> {
                 }
             }
             // `Memory.sizeOf<int>()`, `Memory.alignOf<int>()`: what C has for the type.
-            if (name == "sizeOf" || name == "alignOf") && *self.peek() == Tok::Lt && matches!(&expr.kind, ExprKind::Var(owner) if owner == "Memory") {
+            if (name == "sizeOf" || name == "alignOf") && *self.peek() == Tok::Lt && is_memory(&expr) {
                 let start = expr.span.start;
                 self.bump();
                 let item = self.type_expr()?;
@@ -2747,7 +2750,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             // `Memory.allocate<int>(n)`: the type of the items is written after the name.
-            if name == "allocate" && *self.peek() == Tok::Lt && matches!(&expr.kind, ExprKind::Var(owner) if owner == "Memory") {
+            if name == "allocate" && *self.peek() == Tok::Lt && is_memory(&expr) {
                 let start = expr.span.start;
                 self.bump();
                 let item = self.type_expr()?;
@@ -3059,7 +3062,7 @@ impl<'a> Parser<'a> {
     /// Whether a type with `<...>` is written here and then built: `List<int>()`,
     /// `List<int> { 1, 2 }`. As in C#, `a < b > (c)` is read this way too.
     fn at_collection(&self) -> bool {
-        if *self.peek_at(1) != Tok::Lt {
+        if *self.peek_at(self.after_type_name()) != Tok::Lt {
             return false;
         }
         let Some(n) = self.type_len(0) else { return false };
@@ -3071,9 +3074,31 @@ impl<'a> Parser<'a> {
                 || (*self.peek_at(n) == Tok::Dot && matches!(self.peek_at(n + 1), Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::LParen))
     }
 
+    /// `private int x`: SG has no such word (choice 2254). A name without `public` is seen
+    /// only in its module; a folder of its own keeps it from the files beside it too. `of_type`:
+    /// what follows is a type or a member of one, which the hint names.
+    fn no_private(&self, of_type: bool) -> Res<()> {
+        let Tok::Ident(word) = self.peek() else { return Ok(()) };
+        if word != "private" || !matches!(self.peek_at(1), Tok::Ident(_) | Tok::Struct | Tok::Enum | Tok::Readonly | Tok::Public) {
+            return Ok(());
+        }
+        let what = if of_type { "the type" } else { "it" };
+        Err(Diag::error(self.span(), "there is no `private`: a name without `public` stays inside its module")
+            .hint(format!("leave the word out; to hide it from the files beside it too, put {what} in a folder of its own")))
+    }
+
+    /// Where the name of a type written here ends: after `List`, or after `std.List`, the
+    /// language's type written with its module (choice 2251).
+    fn after_type_name(&self) -> usize {
+        match (self.peek(), self.peek_at(1), self.peek_at(2)) {
+            (Tok::Ident(module), Tok::Dot, Tok::Ident(_)) if module == crate::source::STD_MODULE => 3,
+            _ => 1,
+        }
+    }
+
     /// Whether a type with `<...>` and then `{` is written here: `List<int> { 1, 2 }`.
     fn at_braced_collection(&self) -> bool {
-        if *self.peek_at(1) != Tok::Lt {
+        if *self.peek_at(self.after_type_name()) != Tok::Lt {
             return false;
         }
         let Some(n) = self.type_len(0) else { return false };
@@ -3173,6 +3198,17 @@ fn is_statement(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Select { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => true,
         ExprKind::Unsafe(inner) => is_statement(inner),
+        _ => false,
+    }
+}
+
+/// `Memory` in `Memory.sizeOf<int>()`, or `std.Memory`, as the language's type is written beside
+/// a type of the program with its name (choice 2251). A type of the program has no function
+/// written with `<...>`, so `Memory.sizeOf<int>()` is the language's either way.
+fn is_memory(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(owner) => owner == "Memory",
+        ExprKind::Field { recv, name, .. } => name == "Memory" && matches!(&recv.kind, ExprKind::Var(module) if module == crate::source::STD_MODULE),
         _ => false,
     }
 }

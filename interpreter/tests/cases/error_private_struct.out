@@ -1,0 +1,5 @@
+error: there is no `private`: a name without `public` stays inside its module
+  --> error_private_struct.sg:1:1
+ 1 | private struct Point {
+   | ^^^^^^^
+  hint: leave the word out; to hide it from the files beside it too, put the type in a folder of its own

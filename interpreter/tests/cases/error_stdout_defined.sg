@@ -1,0 +1,7 @@
+// `Stdout` is the output every function has, which `Stdout.write(...)` always means.
+struct Stdout {
+    int lines
+}
+
+void main() {
+}

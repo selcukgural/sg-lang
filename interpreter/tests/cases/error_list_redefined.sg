@@ -1,6 +1,0 @@
-struct List {
-    int count
-}
-
-void main() {
-}

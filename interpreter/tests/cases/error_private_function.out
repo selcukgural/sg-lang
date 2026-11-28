@@ -1,0 +1,5 @@
+error: there is no `private`: a name without `public` stays inside its module
+  --> error_private_function.sg:1:1
+ 1 | private int twice(int x) {
+   | ^^^^^^^
+  hint: leave the word out; to hide it from the files beside it too, put it in a folder of its own

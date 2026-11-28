@@ -1,6 +1,0 @@
-enum NumberError {
-    Bad
-}
-
-void main() {
-}

@@ -1,0 +1,5 @@
+error: there is no `private`: a name without `public` stays inside its module
+  --> error_private_field.sg:2:5
+ 2 |     private int x
+   |     ^^^^^^^
+  hint: leave the word out; to hide it from the files beside it too, put the type in a folder of its own

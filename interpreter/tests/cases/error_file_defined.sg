@@ -1,7 +1,0 @@
-// `File` is the built-in that reads and writes files.
-struct File {
-    string path
-}
-
-void main() {
-}

@@ -1,0 +1,12 @@
+// The program's `IoError` is not the language's, though both are written `IoError`.
+enum IoError {
+    Mine
+}
+
+Result<string, IoError> load() {
+    return std.File.readText(read "notes.txt")
+}
+
+void main() {
+    print(load() is Ok(_))
+}

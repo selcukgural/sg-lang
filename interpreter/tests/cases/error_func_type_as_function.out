@@ -1,0 +1,4 @@
+error: `Func` is a built-in type, so a function cannot have its name
+  --> error_func_type_as_function.sg:2:5
+ 2 | int Func() {
+   |     ^^^^

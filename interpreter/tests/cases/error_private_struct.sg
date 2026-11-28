@@ -1,0 +1,6 @@
+private struct Point {
+    int x
+}
+
+void main() {
+}

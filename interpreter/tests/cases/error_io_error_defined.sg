@@ -1,7 +1,0 @@
-// `IoError` is built in.
-enum IoError {
-    Lost
-}
-
-void main() {
-}

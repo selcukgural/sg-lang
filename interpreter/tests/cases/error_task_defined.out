@@ -1,0 +1,4 @@
+error: `Task` is a built-in type and cannot be redefined
+  --> error_task_defined.sg:2:8
+ 2 | struct Task {
+   |        ^^^^

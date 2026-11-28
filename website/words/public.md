@@ -36,6 +36,12 @@ keeps a rule true: only its own code can change the field. A `public` field can 
 A `public` name cannot show a type that is not public: a public function that takes or gives a private struct,
 or a public field of a private type, is an error that points at both.
 
+There is no `private`: a name without `public` already stays inside its module, and the word is refused with that
+hint. A field without `public` is seen by every file of its folder. To keep it from those files too, put the type
+in a folder of its own, a module of its own under the first (`accounts/ledger/`): the files beside it then see
+only what it makes `public`, as any other module does. The folder is the one line that hides a name, so a reader
+finds what can touch a field by looking at one folder.
+
 The root of a program, the file given to `sg` or the files of the folder given, has no module name, so no
 module can `use` it. `public` is allowed there and changes nothing: a program of one file does not need it. In
 a package the `public` names of its modules are what a program sees, and a module in a folder named `internal`
@@ -106,6 +112,67 @@ rent
 `main.sg` reads `owner` and writes `note`, both public. `cents` has no `public`, so only the `accounts` module
 changes it, through `deposit`. `fee` is in another file of the same folder, so `deposit` calls it with nothing
 written; `main.sg` cannot call it.
+
+### A field kept from the files beside it
+
+```text
+bank/
+  main.sg
+  accounts/
+    transfer.sg
+    ledger/
+      ledger.sg
+```
+
+```sg file title="bank/accounts/ledger/ledger.sg"
+public struct Ledger {
+    long cents
+
+    public Ledger create() {
+        return Ledger { cents = 0 }
+    }
+
+    public void add(ref this, long cents) {
+        if cents > 0 {
+            this.cents += cents
+        }
+    }
+
+    public long total(read this) {
+        return this.cents
+    }
+}
+```
+
+```sg file title="bank/accounts/transfer.sg"
+use accounts.ledger
+
+public long moved(long a, long b) {
+    var book = Ledger()
+    book.add(a)
+    book.add(b)
+    book.add(-500)
+    return book.total()
+}
+```
+
+```sg file title="bank/main.sg"
+use accounts
+
+void main() {
+    print(moved(1200, 300))
+}
+```
+
+```text
+$ cd bank
+$ sg main.sg
+1500
+```
+
+`cents` has no `public`, and `Ledger` is alone in `accounts/ledger/`, so `transfer.sg`, a file of `accounts`,
+changes it only through `add`, which passes over an amount below zero. Had `Ledger` been a file of `accounts`,
+`transfer.sg` could write `book.cents = -500`.
 
 ### The library shows its `public` names
 
@@ -266,6 +333,25 @@ A function gets its own message, which shows where it is: `print(fee(5000))` giv
 Building the struct field by field, `Account { owner = "Ada", note = null, cents = 1000000 }`, gives
 `` `cents` is not public, so an `Account` cannot be built field by field outside the `accounts` module ``, with
 the hint `` `Account(owner)` ``.
+
+### `private`
+
+```sg error
+struct Point {
+    private int x
+}
+
+void main() {
+}
+```
+
+```text
+error: there is no `private`: a name without `public` stays inside its module
+  --> example.sg:2:5
+ 2 |     private int x
+   |     ^^^^^^^
+  hint: leave the word out; to hide it from the files beside it too, put the type in a folder of its own
+```
 
 ### A public function that shows a private type
 

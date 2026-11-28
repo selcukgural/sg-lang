@@ -413,7 +413,8 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `stock::total(&xs)` | `stock.total(read xs)` | built | The full name works without `use` |
 | `pub` | `public` | built | On a type, a function, a field, a method |
 | `pub(crate)` | a folder `internal/` | built | As Go's: a module in a folder `internal` is named only from inside the folder that holds it (1561); no third level of `public` |
-| The prelude (`Option`, `Vec`, ...), shadowed by what is imported | the types of `std` (`Log`, `Json`, ...), seen everywhere | built | A type of the module or of a module named with `use` comes first; `std.Log` reaches the language's |
+| The prelude (`Option`, `Vec`, ...), shadowed by what is imported | the types of the language (`List`, `File`, `Log`, `Json`, ...), seen everywhere | built | A type of the module or of a module named with `use` comes first; `std.Log`, `std.List<int>`, `std.File.readText(path)` reach the language's. Only the words (`int`, `string`, ...), `Result`, `Task` and `Func` keep their names (2250) |
+| a private field (`struct S { x: i32 }`, seen in the module) | a field without `public`, seen in the folder | built | There is no `private` (2254): a type whose fields the other files of its folder must not touch goes in a folder of its own, as Rust gives it a `mod` of its own |
 
 ## Files and input
 

@@ -1,0 +1,112 @@
+// A type of the program may take the name of a type of the language (`List`, `File`, `IoError`,
+// `StreamReader`, `TaskGroup`, `Memory`): the program's comes first, and the language's is
+// written with its module, `std.List<int>`. Only `Result`, `Task` and `Func`, and the words of
+// the language (`int`, `string`, ...), keep their names.
+struct List {
+    int count
+}
+
+enum IoError : Formattable {
+    NotFound
+    Late
+}
+
+struct File {
+    string path
+
+    File named(string path) {
+        return File { path = path }
+    }
+}
+
+struct Cancelled {
+    string why
+}
+
+struct TextError {
+    int code
+}
+
+enum NumberError : Formattable {
+    Mine
+}
+
+struct Memory {
+    int size
+}
+
+struct StreamReader {
+    string name
+}
+
+struct TaskGroup {
+    int size
+}
+
+// A function and a const may take such a name too.
+int Channel(int x) {
+    return x + 1
+}
+
+const int HashMap = 7
+
+std.List<int> firsts(int count) {
+    var xs = std.List<int>()
+    for i in 0..count {
+        xs.add(i)
+    }
+    return xs
+}
+
+int lines(read std.StreamReader reader) {
+    return 0
+}
+
+// The language's `IoError` beside the program's: a variant written alone is of the type of what
+// `match` looks at.
+string load(string path) {
+    match std.File.readText(read path) {
+        Ok(text) => return text
+        Error(NotFound) => return "not found"
+        Error(other) => return $"other: {other}".toString()
+    }
+}
+
+void main() {
+    var mine = List { count = 4 }
+    print(mine.count)
+    var late = IoError.Late
+    print(late)
+    print(firsts(3))
+    var f = File.named("notes.txt")
+    print(f.path)
+    print(load("/no/such/folder/file.txt"))
+    var c = Cancelled { why = "late" }
+    print(c.why)
+    var t = TextError { code = 3 }
+    print(t.code)
+    print(NumberError.Mine)
+    match int.parse("12x") {
+        Ok(n) => print(n)
+        Error(Invalid(at)) => print($"invalid at {at}")
+        Error(OutOfRange) => print("out of range")
+    }
+    var m = Memory { size = 2 }
+    print(m.size)
+    print(std.Memory.sizeOf<long>())
+    var r = StreamReader { name = "mine" }
+    print(r.name)
+    var g = TaskGroup { size = 5 }
+    print(g.size)
+    var group = std.TaskGroup()
+    group.whenAll().wait()
+    print(Channel(1))
+    print(HashMap)
+    var counts = std.HashMap<string, int>()
+    counts.add("a", 1)
+    print(counts)
+    var channel = std.Channel<int>(1)
+    std.Sender<int> tx = channel.sender()
+    print(tx.send(9))
+    print(channel.receive() ?? -1)
+}

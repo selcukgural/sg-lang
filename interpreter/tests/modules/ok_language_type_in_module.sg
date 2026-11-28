@@ -1,0 +1,16 @@
+use ownnames
+
+// `File` is the public one of `ownnames`, which `use` brings in before the language's; the
+// module's `TcpStream` is not public, so it hides nothing here.
+int port(read TcpStream stream) {
+    return 0
+}
+
+void main() {
+    var f = named("notes")
+    print(f.path)
+    File g = File { path = "mine" }
+    print(g.path)
+    print(hostsThere())
+    print(std.File.exists(read "/no/such/file"))
+}

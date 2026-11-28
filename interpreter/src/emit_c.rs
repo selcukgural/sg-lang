@@ -20001,7 +20001,7 @@ impl<'a> Emitter<'a> {
         // The built-in `TextError`, `NumberError`, `IoError` and `Cancelled` are seen from every
         // module with nothing written.
         if name == "TextError" || name == "NumberError" || name == "IoError" || name == "Cancelled" {
-            return Some(name.to_string());
+            return Some(format!("{}.{name}", crate::source::STD_MODULE));
         }
         // So are the types of the language's own module.
         if crate::source::std_types().any(|std| std == name) {
@@ -20019,8 +20019,23 @@ impl<'a> Emitter<'a> {
 
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
+        // `std.StreamReader` is the language's type; `StreamReader` is the program's where it has
+        // one of that name, as the checker found (choices 2250, 2251).
+        let language;
+        let mut own = false;
+        let ty = match ty.name.strip_prefix("std.") {
+            Some(rest) if crate::check::is_builtin_name(rest) && !crate::check::ERROR_TYPES.contains(&rest) => {
+                language = TypeExpr { name: rest.to_string(), ..ty.clone() };
+                &language
+            }
+            None if crate::check::is_builtin_name(&ty.name) && !crate::check::is_reserved_type(&ty.name) => {
+                own = self.full(&ty.name, ty.span).is_some_and(|full| module_of(&full) != crate::source::STD_MODULE);
+                ty
+            }
+            _ => ty,
+        };
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
-        let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
+        let mut found = match (Ty::from_name(&ty.name).filter(|_| !own), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
             (None, [result]) if ty.name == "Task" => Ty::Task(Box::new(self.written(result)?)),
@@ -20478,7 +20493,7 @@ impl<'a> Emitter<'a> {
                 }
             }
             // An `IoError` is a sentence (1537): `not found`, `invalid text at byte 812`.
-            Ty::Enum(owner) if owner == "IoError" => {
+            Ty::Enum(owner) if owner == "std.IoError" => {
                 body.push_str("switch (v->tag) {");
                 for (index, text) in crate::check::IO_ERROR_TEXTS.iter().enumerate() {
                     let _ = write!(body, " case {index}: {}", put_text(text));
@@ -21404,7 +21419,7 @@ impl<'a> Emitter<'a> {
         if !told {
             return Ok(value);
         }
-        let gives = self.ctype(&Ty::Result(Box::new(plain), Box::new(Ty::Struct("Cancelled".to_string()))), span)?;
+        let gives = self.ctype(&Ty::Result(Box::new(plain), Box::new(Ty::Struct("std.Cancelled".to_string()))), span)?;
         Ok(format!("(({gave}) < 0 ? ({gives}){{ .tag = 1 }} : ({gives}){{ .tag = 0, .u.v0 = {{ {value} }} }})"))
     }
 
@@ -25398,7 +25413,7 @@ impl<'a> Emitter<'a> {
     /// and for a byte that is not UTF-8.
     fn io_error(&mut self, span: Span) -> Res<()> {
         self.made.insert("io".to_string());
-        let error_c = self.ctype(&Ty::Enum("IoError".to_string()), span)?;
+        let error_c = self.ctype(&Ty::Enum("std.IoError".to_string()), span)?;
         if self.made.insert("sg_io_error".to_string()) {
             let _ = writeln!(
                 self.glue,
@@ -28877,7 +28892,7 @@ impl<'a> Emitter<'a> {
                             self.glue,
                             "static {gives} sg_from_utf8({given} bytes) {{ int64_t bad = sg_utf8_bad(bytes.ptr, bytes.len); \
                              if (bad < 0) return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_str){{ bytes.ptr, bytes.len }} }} }}; \
-                             return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = bad }} }} }}; }}"
+                             return ({gives}){{ .tag = 1, .u.v1 = {{ (S_3std_TextError){{ .m_position = bad }} }} }}; }}"
                         );
                         self.sigs.insert("sg_from_utf8".to_string(), vec![bytes]);
                     }
@@ -28892,7 +28907,7 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(
                             self.glue,
                             "static {gives} sg_to_cstring({given} text) {{ const uint8_t* zero = text.len ? memchr(text.ptr, 0, (size_t)text.len) : NULL; \
-                             if (zero) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = zero - text.ptr }} }} }}; \
+                             if (zero) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_3std_TextError){{ .m_position = zero - text.ptr }} }} }}; \
                              uint8_t* bytes = malloc((size_t)text.len + 1); if (!bytes) abort(); \
                              if (text.len) memcpy(bytes, text.ptr, (size_t)text.len); bytes[text.len] = 0; \
                              return ({gives}){{ .tag = 0, .u.v0 = {{ bytes }} }}; }}"
@@ -28908,7 +28923,7 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(
                             self.glue,
                             "static {gives} sg_from_cstring(const void* p) {{ int64_t n = (int64_t)strlen((const char*)p); int64_t bad = sg_utf8_bad((const uint8_t*)p, n); \
-                             if (bad >= 0) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = bad }} }} }}; \
+                             if (bad >= 0) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_3std_TextError){{ .m_position = bad }} }} }}; \
                              return ({gives}){{ .tag = 0, .u.v0 = {{ sg_clone((sg_str){{ (const uint8_t*)p, n }}) }} }}; }}"
                         );
                     }
@@ -29005,7 +29020,7 @@ impl<'a> Emitter<'a> {
                 Callee::Memory(MemoryCall::IoErrorOf | MemoryCall::IoErrorOfErrno) => {
                     self.io_error(expr.span)?;
                     if self.made.insert("sg_io_from_code".to_string()) {
-                        let error_c = self.ctype(&Ty::Enum("IoError".to_string()), expr.span)?;
+                        let error_c = self.ctype(&Ty::Enum("std.IoError".to_string()), expr.span)?;
                         // The runtime's own codes are below 0; a number there is kept as it is.
                         let _ = writeln!(self.glue, "static {error_c} sg_io_from_code(int32_t code) {{ return code < 0 ? ({error_c}){{ .tag = 5, .u.v5 = {{ code }} }} : sg_io_error(code); }}");
                     }
@@ -29206,7 +29221,7 @@ impl<'a> Emitter<'a> {
                     let given = Ty::Read(Box::new(Ty::Str));
                     let (text_c, gives) = (self.ctype(&given, expr.span)?, self.ctype(&expr.ty, expr.span)?);
                     let value_c = self.ctype(ty, expr.span)?;
-                    let error_c = self.ctype(&Ty::Enum("NumberError".to_string()), expr.span)?;
+                    let error_c = self.ctype(&Ty::Enum("std.NumberError".to_string()), expr.span)?;
                     if self.made.insert(fname.clone()) {
                         let _ = writeln!(
                             self.glue,

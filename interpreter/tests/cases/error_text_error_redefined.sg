@@ -1,6 +1,0 @@
-struct TextError {
-    int code
-}
-
-void main() {
-}

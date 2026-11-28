@@ -96,7 +96,7 @@ impl Diag {
 
     /// A note as it is shown.
     pub fn shown(&self, text: &str) -> String {
-        if self.as_written { text.to_string() } else { worded(text) }
+        if self.as_written { text.replace(KEEP_MODULE, "") } else { worded(text) }
     }
 
     /// Renders the message with the source line and a marker under the span.
@@ -189,8 +189,18 @@ fn with_article(before: &str, code: &str) -> String {
     format!("{}{article} ", &head[..word_start])
 }
 
+/// Written in front of `std.` in a message that names the language's type with its module, as a
+/// program writes it beside a type of its own with that name (choice 2251): `std.List<int>`.
+const KEEP_MODULE: char = '\u{1}';
+
+/// The language's type `name` as a message writes it with its module: `std.File`.
+pub fn language_type(name: &str) -> String {
+    format!("{KEEP_MODULE}{}.{name}", crate::source::STD_MODULE)
+}
+
 /// A message names the types of the language's own module as a program writes them: `Duration`,
-/// not `std.Duration`. No module of a program is named `std`, so the prefix is always theirs.
+/// not `std.Duration`. No module of a program is named `std`, so the prefix is always theirs,
+/// but where the message keeps it (`language_type`).
 fn unprefixed(text: &str) -> std::borrow::Cow<'_, str> {
     let prefix = format!("{}.", crate::source::STD_MODULE);
     if !text.contains(&prefix) {
@@ -199,9 +209,11 @@ fn unprefixed(text: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(&prefix) {
-        let joined = rest[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
-        out.push_str(&rest[..at]);
-        if joined {
+        let before = rest[..at].chars().next_back();
+        let joined = before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+        let kept = before == Some(KEEP_MODULE);
+        out.push_str(&rest[..at - if kept { KEEP_MODULE.len_utf8() } else { 0 }]);
+        if joined || kept {
             out.push_str(&prefix);
         }
         rest = &rest[at + prefix.len()..];
@@ -271,7 +283,7 @@ fn distance(a: &str, b: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::worded;
+    use super::{language_type, worded};
 
     #[test]
     fn an_article_follows_the_code() {
@@ -280,6 +292,7 @@ mod tests {
         assert_eq!(worded("An `List<int>` is"), "A `List<int>` is");
         assert_eq!(worded("a `int`, a `uint`, a `unsafe` block, a `union`, a `UdpSocket`"), "an `int`, a `uint`, an `unsafe` block, a `union`, a `UdpSocket`");
         assert_eq!(worded("a `std.IoError`"), "an `IoError`");
+        assert_eq!(worded(&format!("`{}<int>`, a `std.List<int>`", language_type("List"))), "`std.List<int>`, a `List<int>`");
         // Inside code, and before what does not start with a letter, nothing changes.
         assert_eq!(worded("`var a `x`` and a `[` and a `8`"), "`var a `x`` and a `[` and a `8`");
         assert_eq!(worded("a `Inner`; data `a `"), "an `Inner`; data `a `");
