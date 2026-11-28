@@ -34,7 +34,8 @@ to the library never breaks a program that has a name of its own like it.
 
 The library, the module `std`, needs no `use`: its types are seen from every module, and `use std` is an error.
 A type of your own with the name of one of its types comes first, and the library's is then written
-`std.Hex`; a few names, such as `List`, `Duration` and `Path`, cannot be declared again at all.
+`std.Duration` or `std.Hex`. Only the types the language itself is built around, such as `List`, `Result`,
+`File` and `Task`, cannot be declared again: the compiler knows them by name.
 
 A `use` that nothing needs is not an error. Two modules may `use` each other. There
 is no `use ... as`: a type gets a second name with `alias`.

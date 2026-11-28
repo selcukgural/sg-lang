@@ -1,0 +1,5 @@
+error: no loop around this `continue` is named `rounds`
+  --> error_label_unknown_while.sg:8:26
+ 8 |                 continue rounds
+   |                          ^^^^^^
+  hint: name the loop it goes on with: `rounds: while ...`

@@ -26,7 +26,6 @@ async long consume(Channel<int> jobs) {
         }
         sum += job
     }
-    return sum
 }
 
 // Sends from a thread that blocks, to tasks that await.

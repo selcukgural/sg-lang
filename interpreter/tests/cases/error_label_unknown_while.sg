@@ -1,0 +1,13 @@
+// The hint names the loop around the one the `continue` is in, by its own word.
+void main() {
+    var i = 0
+    while i < 3 {
+        i += 1
+        for j in 0..2 {
+            if j == 1 {
+                continue rounds
+            }
+            print(j)
+        }
+    }
+}

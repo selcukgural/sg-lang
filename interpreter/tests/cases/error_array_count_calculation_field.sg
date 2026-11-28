@@ -1,0 +1,9 @@
+const int Rows = 2
+const int Cols = 3
+
+struct Board {
+    int[Rows * Cols] cells
+}
+
+void main() {
+}

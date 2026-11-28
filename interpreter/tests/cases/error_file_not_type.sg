@@ -1,0 +1,4 @@
+static File Log = File.create("log.txt")
+
+void main() {
+}

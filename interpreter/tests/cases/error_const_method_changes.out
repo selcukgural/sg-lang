@@ -1,0 +1,5 @@
+error: `sort` changes the array, but it is reached through the const `Primes`
+  --> error_const_method_changes.sg:5:5
+ 5 |     Primes.sort()
+   |     ^^^^^^
+  hint: change a copy of it: `var copy = Primes`

@@ -63,7 +63,6 @@ async long drain(Channel<int> jobs) {
         }
         sum += job
     }
-    return sum
 }
 
 async Result<int, IoError> failing() {

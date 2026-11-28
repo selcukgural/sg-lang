@@ -1,0 +1,35 @@
+// A type of the program may have the name of a type written in SG in the language's own
+// module (`Duration`, `Path`, `Random`): the program's comes first, and the language's is
+// written with the module in front.
+struct Duration {
+    int days
+
+    int hours(read this) {
+        return this.days * 24
+    }
+}
+
+enum Path : Formattable {
+    Up
+    Down
+}
+
+struct Random {
+    int seed
+}
+
+void main() {
+    var d = Duration { days = 2 }
+    print(d.days)
+    print(d.hours())
+    var way = Path.Down
+    print(way)
+    var r = Random { seed = 7 }
+    print(r.seed)
+    var wait = std.Duration.fromSeconds(90)
+    print(wait)
+    var gone = Instant.now().elapsed()
+    print(gone.totalSeconds() >= 0)
+    var dice = std.Random.fromSeed(1)
+    print(dice.nextInt(1, 2))
+}

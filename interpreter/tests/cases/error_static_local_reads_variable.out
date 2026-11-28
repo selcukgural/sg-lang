@@ -1,0 +1,5 @@
+error: there is no variable named `n`
+  a static sees consts and other statics, not variables: its value is found once, the first time it is read
+  --> error_static_local_reads_variable.sg:3:24
+ 3 |     static int Twice = n * 2
+   |                        ^

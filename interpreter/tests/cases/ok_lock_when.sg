@@ -25,7 +25,6 @@ int consume(shared locked Jobs jobs) {
         }
         sum += next
     }
-    return sum
 }
 
 void produce(shared locked Jobs jobs, int count) {
@@ -64,7 +63,6 @@ int takeEither(shared locked Box a, shared locked Box b) {
             return got
         }
     }
-    return got
 }
 
 void fill(shared locked Box box, int count) {

@@ -101,7 +101,7 @@ test "the tests after it still run" {
 ok    a number is read
 FAIL  a wrong expectation
 panic: assert failed: ages == List<int> { 36, 54 }
-  left: [36, 45]
+  left:  [36, 45]
   right: [36, 54]
   --> example.sg:20:5
  20 |     assert(ages == List<int> { 36, 54 })

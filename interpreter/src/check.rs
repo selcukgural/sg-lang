@@ -29,8 +29,11 @@ const INTERFACES: &[&str] = &["Copyable", "Clonable", "Formattable", "Equatable"
 
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
-/// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "MappedFile", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
+/// Types the language itself defines, which the checker, the interpreter and the C back end
+/// know by these names; a program cannot define another one under them. A type written in SG
+/// in the language's own module (`Duration`, `Path`, `Hex`) is not here: a type of the program
+/// with its name is the program's, and the other is written `std.Duration` (choice 2192).
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "TaskGroup", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "UnixListener", "UnixStream", "Memory", "C", "CString", "OperatingSystem", "Channel", "Sender", "Atomic"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -997,10 +1000,10 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)))
         .chain(prog.aliases.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Alias)));
     for (name, span, kind) in declared {
-        if BUILTIN_TYPES.contains(&short_name(name)) && module_of(name) != STD_MODULE {
+        if (BUILTIN_TYPES.contains(&short_name(name)) || Ty::from_name(short_name(name)).is_some()) && module_of(name) != STD_MODULE {
             return Err(Diag::error(span, format!("`{}` is a built-in type and cannot be redefined", short_name(name))));
         }
-        if Ty::from_name(short_name(name)).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
+        if names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
         if names.consts.contains(name) {
@@ -1625,6 +1628,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
+            nulls: Vec::new(),
             ret: Ty::Void,
             sources: Vec::new(),
             func_name: decl.name.clone(),
@@ -1718,6 +1722,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
+            nulls: Vec::new(),
             ret: sig.ret.clone(),
             sources: sig.sources.clone(),
             func_name: func.name.clone(),
@@ -1770,7 +1775,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             checker.async_returns(func, &sig.ret)?;
         }
         checker.declare_streams(func.name_span)?;
-        checker.block(&mut func.body, &[])?;
+        // What gives the value of a static sees the consts and statics around it, and no
+        // variable: the value is found once, the first time the static is read.
+        let static_init = sees.contains_key(&func.name);
+        checker.block(&mut func.body, &[]).map_err(|diag| match static_init && diag.msg.starts_with("there is no variable named") {
+            true => diag.note("a static sees consts and other statics, not variables: its value is found once, the first time it is read"),
+            false => diag,
+        })?;
         // A writer given to the function by value is closed before its end.
         if !leaves(&func.body, false) {
             checker.unclosed(0, None)?;
@@ -2595,6 +2606,7 @@ fn check_tests(
             borrows: Borrows::default(),
             loops: 0,
             loop_cx: Vec::new(),
+            nulls: Vec::new(),
             ret: Ty::Void,
             sources: Vec::new(),
             func_name: "test".to_string(),
@@ -2823,6 +2835,9 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             if ty.name == "StringBuilder" {
                 return Err(diag.hint(STRING_BUILDER));
             }
+            if ty.name == "File" {
+                return Err(diag.note("`File` is not a type but a set of functions: a file open to read is a `StreamReader`, one open to write a `StreamWriter`"));
+            }
             // `alias X = int` inside a function reads as a variable `X` of a type `alias`.
             if ty.name == "alias" {
                 return Err(diag.note("a type alias is written at the top of a file, outside every function: `alias X = int`"));
@@ -2840,7 +2855,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "double", "bool", "char", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
-                None => diag.note("built-in types for now: the integer types, float, double, bool, char, string"),
+                None => diag.note("a type is one of the language, such as `int`, `string`, `List<T>` or `Duration`, one of the program, or a `public` one of a module named with `use`"),
             });
             }
         },
@@ -4593,6 +4608,8 @@ struct LoopCx {
     /// How many scopes were open where the loop starts: a `break` ends those above.
     depth: usize,
     label: Option<Label>,
+    /// The word the loop is written with, `while` or `for`, for a hint that names it.
+    kind: &'static str,
     /// Whether a `break` or `continue` names the loop.
     used: bool,
     /// What was moved at each `break` that leaves the loop.
@@ -4642,6 +4659,10 @@ struct Checker<'a> {
     loops: usize,
     /// The enclosing loops, the innermost last.
     loop_cx: Vec<LoopCx>,
+    /// The variables that are surely `null` in the branch being checked (`else` of `x is not
+    /// null`, the block of `x is null`): each by its number, with how often it had been
+    /// assigned then, so that a value given to it since is not taken for `null`.
+    nulls: Vec<(usize, u32)>,
     ret: Ty,
     /// Where a returned borrow may come from.
     sources: Vec<Source>,
@@ -4879,6 +4900,23 @@ fn one_type(diag: Diag, expected: Option<&Ty>, ty: &Ty) -> Diag {
     match expected {
         Some(_) => diag,
         None => diag.note(format!("both arms of `?:` give one type, and the other arm gives `{ty}`")),
+    }
+}
+
+/// The variable that is surely `null` where the condition holds (`x is null`) and where it
+/// fails (`x is not null`), also under `!`.
+fn surely_null(cond: &Expr) -> (Option<&str>, Option<&str>) {
+    match &cond.kind {
+        ExprKind::IsNull { expr, negated } => match &expr.kind {
+            ExprKind::Var(name) if *negated => (None, Some(name.as_str())),
+            ExprKind::Var(name) => (Some(name.as_str()), None),
+            _ => (None, None),
+        },
+        ExprKind::Unary(UnOp::Not, inner) => {
+            let (holds, fails) = surely_null(inner);
+            (fails, holds)
+        }
+        _ => (None, None),
     }
 }
 
@@ -5726,6 +5764,18 @@ impl<'a> Checker<'a> {
     }
 
     fn read_only(&self, place: &Expr, mut diag: Diag) -> Diag {
+        // A const or a static is not taken as `ref` either: a copy of it is changed, or a
+        // static that changes is `atomic` or `locked`.
+        if let Some(name) = self.const_root(place) {
+            diag.msg = diag.msg.replace("a `read` borrow", &format!("the const `{name}`"));
+            diag.hint = Some(format!("change a copy of it: `var copy = {name}`"));
+            return diag;
+        }
+        if let Some(name) = self.static_root(place) {
+            diag.msg = diag.msg.replace("a `read` borrow", &format!("the static `{name}`"));
+            diag.hint = None;
+            return diag.note("a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block");
+        }
         if !through_shared(place) {
             // In a method that takes `read this`, what is changed through `this` asks for `ref this`.
             let mut root = place;
@@ -6855,8 +6905,14 @@ impl<'a> Checker<'a> {
             self.narrow(name);
         }
         self.declare_binds(binds)?;
-        for stmt in block.iter_mut() {
-            self.stmt(stmt)?;
+        for index in 0..block.len() {
+            self.used_later(block, index)?;
+            self.stmt(&mut block[index])?;
+            // A line after one that always leaves is never run: an error, as an arm of a
+            // `match` that never runs is (choice 2191).
+            if let (Some(next), true) = (block.get(index + 1), stmt_leaves(&block[index], true)) {
+                return Err(never_run(&block[index], next.span));
+            }
         }
         // What happens where the block ends (a `dispose`, an owner gone) comes after all of it.
         if let Some(last) = block.last() {
@@ -6873,6 +6929,41 @@ impl<'a> Checker<'a> {
         }
         let reached = !leaves(block, self.loops > 0);
         self.pop_scope(reached)
+    }
+
+    /// Notes that the variable is surely `null` in the branch about to be checked; gives the
+    /// length to cut the notes back to after it.
+    fn mark_null(&mut self, name: Option<&str>) -> usize {
+        let marked = self.nulls.len();
+        if let Some(var) = name.and_then(|name| self.var_named(name)) {
+            self.nulls.push((var.id, var.assigned));
+        }
+        marked
+    }
+
+    /// Whether `expr` is a variable that is surely `null` here, as an `if` tested it.
+    fn null_here<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        let ExprKind::Var(name) = &expr.kind else { return None };
+        let var = self.var_named(name)?;
+        self.nulls.contains(&(var.id, var.assigned)).then_some(name.as_str())
+    }
+
+    /// A const or a static of a block that no line after it in the block names is an error, as
+    /// a variable nothing reads is (choice 2194). The lines are looked at as written, so a use
+    /// in the value of another const, in the count of an array or inside `$"..."` counts.
+    fn used_later(&self, block: &Block, index: usize) -> Res<()> {
+        let (name, name_span, what) = match &block[index].kind {
+            // A `const assert` has a made-up name, which nothing is meant to use.
+            StmtKind::Const { name, .. } if name.contains('#') => return Ok(()),
+            StmtKind::Const { name, name_span, .. } => (name, *name_span, "const"),
+            StmtKind::Static { name, name_span, .. } => (name, *name_span, "static"),
+            _ => return Ok(()),
+        };
+        let end = block.last().map_or(block[index].span.end, |last| last.span.end);
+        if crate::source::names_at(self.src, Span::new(block[index].span.end, end)).contains(name.as_str()) {
+            return Ok(());
+        }
+        Err(Diag::error(name_span, format!("`{name}` is never used")).hint(format!("take the line away: a {what} of a block is seen only by the lines after it in the block")))
     }
 
     /// Declares the names of a pattern. Those that are borrows hold what the pattern's value
@@ -7388,9 +7479,13 @@ impl<'a> Checker<'a> {
 
                 let before = self.moves();
                 let node = self.node();
+                let (null_then, null_else) = surely_null(cond);
                 self.borrows.branches.push((node, 0));
-                self.block(then, &[])?;
+                let marked = self.mark_null(null_then);
+                let result = self.block(then, &[]);
+                self.nulls.truncate(marked);
                 self.borrows.branches.pop();
+                result?;
                 self.pop_scope(true)?;
                 let then_leaves = leaves(then, true);
                 let after_then = self.moves();
@@ -7403,7 +7498,9 @@ impl<'a> Checker<'a> {
                     for (binds, loans) in fails.clone() {
                         self.declare_group(binds, loans)?;
                     }
+                    let marked = self.mark_null(null_else);
                     let result = self.block(els, &when_false);
+                    self.nulls.truncate(marked);
                     self.borrows.branches.pop();
                     result?;
                     self.pop_scope(!leaves(els, true))?;
@@ -7586,7 +7683,18 @@ impl<'a> Checker<'a> {
                             .hint("test it first with `is not null`, or give a fallback with `??`"));
                     }
                     _ => {
-                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap` or a `HashSet`, found `{found}`")));
+                        let diag = Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap`, a `HashSet`, a `Channel` or an iterator such as `text.chars()` or `reader.lines()`, found `{found}`"));
+                        return Err(match inner {
+                            Ty::Int(_) => {
+                                let place = match &iter.kind {
+                                    ExprKind::Borrow { expr, .. } => expr.span,
+                                    _ => iter.span,
+                                };
+                                let text = &self.src[place.start..place.end];
+                                diag.hint(format!("the numbers from 0 up to it: `for {var} in 0..{text}`"))
+                            }
+                            _ => diag,
+                        });
                     }
                 };
                 // A loop could leave a task of the list at a `break`: the tasks are waited for
@@ -7895,6 +8003,16 @@ impl<'a> Checker<'a> {
             }
             Some(value) => {
                 let ret = self.ret.clone();
+                // A variable of the function, returned where a borrow goes: lending it would not
+                // help, it is gone when the function returns.
+                if let (Ty::Read(inner) | Ty::Ref(inner), ExprKind::Var(name)) = (&ret, &value.kind) {
+                    if self.var_named(name).is_some_and(|var| !var.param && var.declared == **inner) {
+                        let short = self.func_name.rsplit('.').next().unwrap_or(&self.func_name);
+                        return Err(Diag::error(value.span, format!("expected `{ret}`, found `{inner}`"))
+                            .note(format!("`{name}` is a variable of the function, gone when it returns: a borrow of it would outlive it"))
+                            .hint(format!("return the value itself: `{inner} {short}(...)`")));
+                    }
+                }
                 self.typed(value, &ret)?;
                 match self.holds(&ret) {
                     true => self.returned_borrow(value),
@@ -8193,13 +8311,23 @@ impl<'a> Checker<'a> {
                 None => {
                     let named: Vec<String> = self.loop_cx.iter().rev().filter_map(|cx| cx.label.as_ref().map(|named| format!("`{}`", named.name))).collect();
                     let diag = Diag::error(label.span, format!("no loop around this `{word}` is named `{}`", label.name));
-                    return Err(match named.is_empty() {
-                        true => diag.hint(format!("name the loop it {}: `{}: for ...`", if leaves { "leaves" } else { "goes on with" }, label.name)),
-                        false => diag.note(format!("the loops around it that have a name: {}", named.join(", "))),
+                    // In one loop the plain word does it (choice 2193); in a loop inside
+                    // another, the hint names the loop around it, by its own word.
+                    let around = self.loop_cx.len().checked_sub(2).map(|index| self.loop_cx[index].kind);
+                    return Err(match (named.is_empty(), around) {
+                        (true, None) => diag.hint(format!("a plain `{word}` {} the loop it is in", if leaves { "leaves" } else { "goes on with" })),
+                        (true, Some(kind)) => diag.hint(format!("name the loop it {}: `{}: {kind} ...`", if leaves { "leaves" } else { "goes on with" }, label.name)),
+                        (false, _) => diag.note(format!("the loops around it that have a name: {}", named.join(", "))),
                     });
                 }
             },
         };
+        // The name of the loop the `break` is in itself says nothing a plain `break` does not
+        // (choice 2193): a name is for a loop inside it to leave it.
+        if let Some(label) = label.filter(|_| index + 1 == self.loop_cx.len()) {
+            return Err(Diag::error(label.span, format!("this `{word}` is in the loop named `{}` itself, where a plain `{word}` does the same", label.name))
+                .hint(format!("write `{word}`, and take `{}:` away if no loop inside it names it", label.name)));
+        }
         let depth = self.loop_cx[index].depth;
         self.unclosed(depth, Some((stmt_span, word)))?;
         // The blocks between here and the loop end here, as they would at their ends: a
@@ -8233,7 +8361,7 @@ impl<'a> Checker<'a> {
         let before = self.moves();
         let mark = head.unwrap_or(self.borrows.touched.len());
         self.loops += 1;
-        self.loop_cx.push(LoopCx { depth: self.scopes.len(), label: label.cloned(), used: false, breaks: Vec::new(), continues: Vec::new(), before: Vec::new() });
+        self.loop_cx.push(LoopCx { depth: self.scopes.len(), label: label.cloned(), kind: if head.is_some() { "while" } else { "for" }, used: false, breaks: Vec::new(), continues: Vec::new(), before: Vec::new() });
         let result = self.block_with(body, narrow, binds);
         let mut cx = self.loop_cx.pop().expect("pushed above");
         self.loops -= 1;
@@ -8467,7 +8595,11 @@ impl<'a> Checker<'a> {
         }
         let text = &self.src[expr.span.start..expr.span.end];
         let mismatch = |hint: Option<String>| {
-            let diag = Diag::error(expr.span, format!("expected `{expected}`, found `{found}`"));
+            let mut diag = Diag::error(expr.span, format!("expected `{expected}`, found `{found}`"));
+            // A type of the program named as one of the language's own module (choice 2192).
+            if expected.to_string() == found.to_string() {
+                diag = diag.note("two types have this name: the program's own, and the one of the language's module `std`, which the program's hides; with the module in front, it is the language's");
+            }
             Err(match hint {
                 Some(hint) => diag.hint(hint),
                 None => diag,
@@ -8852,6 +8984,9 @@ impl<'a> Checker<'a> {
                                 .hint("the number of items is a method: `.length()`"));
                         }
                         Ty::Nullable(_) => {
+                            if let Some(var) = self.null_here(recv) {
+                                return Err(Diag::error(recv.span, format!("`{var}` is `null` here, as the `if` around it tested; `.{name}` needs a value")));
+                            }
                             let diag = Diag::error(recv.span, format!("this is `{ty}` and may be `null`; `.{name}` needs a value"));
                             return Err(self.null_arm_note(recv, diag).hint(self.test_first(recv, &ty)));
                         }
@@ -16087,6 +16222,9 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Void)
             }
             (Ty::Nullable(_), _) => {
+                if let Some(var) = self.null_here(recv) {
+                    return Err(Diag::error(recv.span, format!("`{var}` is `null` here, as the `if` around it tested; `.{name}()` needs a value")));
+                }
                 let diag = Diag::error(recv.span, format!("this is `{recv_ty}` and may be `null`; `.{name}()` needs a value"));
                 Err(self.null_arm_note(recv, diag).hint(self.test_first(recv, &recv_ty)))
             }
@@ -17235,8 +17373,7 @@ fn unwrap_unsafe(expr: &mut Expr) {
 /// Whether `name` is a type of the language: a module cannot have it (choice 1591), so that
 /// `Hex.encode`, in the program and inside the language's own module, is always the type's.
 pub fn is_language_type(name: &str) -> bool {
-    const MORE: &[&str] = &["Channel", "Sender", "Atomic"];
-    Ty::from_name(name).is_some() || BUILTIN_TYPES.contains(&name) || INTERFACES.contains(&name) || MORE.contains(&name) || crate::source::std_types().any(|ty| ty == name)
+    Ty::from_name(name).is_some() || BUILTIN_TYPES.contains(&name) || INTERFACES.contains(&name) || crate::source::std_types().any(|ty| ty == name)
 }
 
 /// Whether `name` can name a library of C: as the C compiler links it, `-lz`, and nothing else.
@@ -17780,8 +17917,12 @@ fn after_name(text: &str) -> &str {
 /// Whether control never reaches the end of the block: it ends in `return` or `panic` on
 /// every path, or, with `in_loop`, in `break` or `continue`.
 fn leaves(block: &Block, in_loop: bool) -> bool {
-    let Some(last) = block.last() else { return false };
-    match &last.kind {
+    block.last().is_some_and(|last| stmt_leaves(last, in_loop))
+}
+
+/// Whether control never goes past the statement, as `leaves` asks of the last one.
+fn stmt_leaves(stmt: &Stmt, in_loop: bool) -> bool {
+    match &stmt.kind {
         StmtKind::Return(_) => true,
         StmtKind::Break(_) | StmtKind::Continue(_) => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
@@ -17790,6 +17931,23 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
     }
+}
+
+/// A line after `leaving`, which always leaves: it is never run.
+fn never_run(leaving: &Stmt, next: Span) -> Diag {
+    let why = match &leaving.kind {
+        StmtKind::Return(_) => "the `return` before it leaves the function",
+        StmtKind::Break(_) => "the `break` before it leaves the loop",
+        StmtKind::Continue(_) => "the `continue` before it goes on with the next turn of the loop",
+        StmtKind::Expr(Expr { kind: ExprKind::Call { name, callee: Callee::Plain, .. }, .. }) if name == "panic" => "the `panic` before it stops the program",
+        StmtKind::Expr(Expr { kind: ExprKind::Call { name, callee: Callee::Plain, .. }, .. }) if name == "exit" => "the `exit` before it ends the program",
+        StmtKind::If { .. } => "both branches of the `if` before it leave",
+        StmtKind::Expr(Expr { kind: ExprKind::Select { .. }, .. }) => "every arm of the `select` before it leaves",
+        StmtKind::Expr(_) => "every arm of the `match` before it leaves",
+        StmtKind::While { .. } => "the loop before it never ends, since no `break` leaves it",
+        _ => "the block before it always leaves",
+    };
+    Diag::error(next, format!("this line is never run: {why}")).hint("take it away, with the lines after it in the block")
 }
 
 /// Whether evaluating the expression always leaves: `panic(...)`, or a `match` whose arms

@@ -1,0 +1,23 @@
+[3, 2, 2]
+ok
+error: not a number: bad
+error: not a number: bad
+["first", "w1", "mid1", "w2", "last"]
+ok
+error: below zero: -1
+error: below zero: -2
+2
+ok
+error: below zero: -2
+error: below zero: -1
+3
+ok
+error: below zero: -2
+[["x"], ["w1"]]
+ok
+error: below zero: -1
+2
+["w5", "two"]
+["three", "w5"]
+["four", "w5"]
+["none"]

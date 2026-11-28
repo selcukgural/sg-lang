@@ -1,0 +1,13 @@
+// In the `else` of `name is not null`, `name` is `null`: the message says so, with no hint
+// to test it again.
+void greet(read string? name) {
+    if name is not null {
+        print($"hello, {name}")
+    } else {
+        print(name.length())
+    }
+}
+
+void main() {
+    greet(null)
+}

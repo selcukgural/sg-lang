@@ -27,7 +27,6 @@ async Result<bool, IoError> waitFor(ref DirectoryWatcher watcher, read string pa
             Error(cause) => return Error(cause)
         }
     }
-    return Ok(false)
 }
 
 // Reads until no change has come for a second; gives how many came and how many were `Lost` of
@@ -47,7 +46,6 @@ async Result<int[2], IoError> drain(ref DirectoryWatcher watcher, read string ro
             Error(cause) => return Error(cause)
         }
     }
-    return Ok(counts)
 }
 
 async Result<void, IoError> main() {

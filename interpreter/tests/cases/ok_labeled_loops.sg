@@ -72,7 +72,7 @@ void main() {
     }
     print($"n {n}")
 
-    // From an arm of a `match` inside an expression, and naming the loop it is in.
+    // From an arm of a `match` inside an expression.
     var total = 0
     var list = List<string> { "one", "two", "stop", "three" }
     words: for word in read list {
@@ -86,9 +86,6 @@ void main() {
                 }
                 _ => 1
             }
-        }
-        each: for _ in 0..1 {
-            break each
         }
     }
     print($"total {total}")

@@ -1,0 +1,5 @@
+error: this line is never run: the `return` before it leaves the function
+  --> error_never_run_after_return.sg:4:5
+ 4 |     print("never")
+   |     ^^^^^^^^^^^^^^
+  hint: take it away, with the lines after it in the block

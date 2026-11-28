@@ -7623,7 +7623,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let failed = |sides: Option<(String, String)>| {
             let mut diag = Diag::panic(call.span, format!("assert failed: {text}")).as_written();
             if let Some((left, right)) = sides {
-                diag = diag.note(format!("left: {left}")).note(format!("right: {right}"));
+                diag = diag.note(format!("left:  {left}")).note(format!("right: {right}"));
             }
             Unwind::from(diag)
         };

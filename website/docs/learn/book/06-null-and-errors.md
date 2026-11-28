@@ -418,7 +418,7 @@ void main() {
 ```text
 25
 panic: assert failed: whole > 0
-  left: 0
+  left:  0
   right: 0
   --> example.sg:2:5
  2 |     assert(whole > 0)

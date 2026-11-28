@@ -63,7 +63,6 @@ int work(Channel<int> jobs, Channel<bool> stop, Sender<int> results) {
             return done
         }
     }
-    return done
 }
 
 // The value of a `select` given back as it is.

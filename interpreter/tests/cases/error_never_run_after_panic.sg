@@ -1,0 +1,8 @@
+void main() {
+    var count = 3
+    if count > 2 {
+        panic("too many")
+        count = 2
+    }
+    print(count)
+}

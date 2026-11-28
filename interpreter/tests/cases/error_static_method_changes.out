@@ -1,0 +1,5 @@
+error: `add` changes the list, but it is reached through the static `Names`
+  a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block
+  --> error_static_method_changes.sg:5:5
+ 5 |     Names.add("b")
+   |     ^^^^^

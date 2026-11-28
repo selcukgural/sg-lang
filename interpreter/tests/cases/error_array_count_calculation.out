@@ -1,0 +1,5 @@
+error: the count of an array is a number or the name of a const, not a calculation
+  --> error_array_count_calculation.sg:5:9
+ 5 |     int[Rows * Cols] grid = int[Rows * Cols](1)
+   |         ^^^^^^^^^^^
+  hint: give it a name first: `const int Count = Rows * Cols`, then `[Count]`

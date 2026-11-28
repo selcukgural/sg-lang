@@ -1,5 +1,5 @@
 panic: assert failed: label(2) == "item \"two\""
-  left: "item 2"
+  left:  "item 2"
   right: "item \"two\""
   --> panic_compiled_text_assert.sg:7:5
  7 |     assert(label(2) == "item \"two\"")

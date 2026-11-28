@@ -71,6 +71,14 @@ pub fn std_types() -> impl Iterator<Item = &'static str> {
     STD_FILES.iter().flat_map(|(_, _, types)| types.iter().copied())
 }
 
+/// The names written in `text` at `span`, those in the code of a `$"..."` too: what the lines
+/// after a const or a static of a block name, to tell whether anything uses it (choice 2194).
+pub fn names_at(text: &str, span: Span) -> HashSet<String> {
+    let mut named = HashSet::new();
+    names_within(text, span, 0, &mut named);
+    named
+}
+
 /// The names written in `text` from `start` on, those in the code of a `$"..."` too (choice 1400).
 fn names_in(text: &str, start: usize, named: &mut HashSet<String>) {
     names_within(text, Span::new(start, text.len()), 0, named);

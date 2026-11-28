@@ -169,7 +169,6 @@ EXAMPLES
                  }
                  sum += job * job
              }
-             return sum
          }
 
          void main() {
@@ -221,7 +220,6 @@ EXAMPLES
                      return count
                  }
              }
-             return count
          }
 
          async void main() {

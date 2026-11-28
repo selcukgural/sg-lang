@@ -1,0 +1,88 @@
+Result<int, string> number(string text) {
+    if text == "bad" {
+        return Error($"not a number: {text}".toString())
+    }
+    return Ok((int)text.length())
+}
+
+Result<string, string> word(int n) {
+    if n < 0 {
+        return Error($"below zero: {n}".toString())
+    }
+    return Ok($"w{n}".toString())
+}
+
+Result<void, string> numbers(string a, string b) {
+    var xs = List<int> { try number(a), 2, try number(b) }
+    print(xs)
+    return Ok()
+}
+
+Result<void, string> words(int a, int b) {
+    var xs = List<string> { "first".clone(), try word(a), $"mid{a}".toString(), try word(b), "last".clone() }
+    print(xs)
+    return Ok()
+}
+
+Result<void, string> table(int a, int b) {
+    var map = HashMap<string, string> { {"one".clone(), try word(a)}, {try word(b), "two".clone()} }
+    print(map.length())
+    return Ok()
+}
+
+Result<void, string> group(int a, int b) {
+    var set = HashSet<string> { $"s{a}".toString(), try word(a), try word(b) }
+    print(set.length())
+    return Ok()
+}
+
+Result<void, string> nested(int a) {
+    var rows = List<List<string>> { List<string> { "x".clone() }, List<string> { try word(a) } }
+    print(rows)
+    return Ok()
+}
+
+struct Box {
+    string name
+    List<string> items
+}
+
+int total(List<string> items) {
+    return (int)items.length()
+}
+
+// A new list as an argument of a call, a field, a returned value and on the right of `=`.
+Result<List<string>, string> places(int a) {
+    print(total(List<string> { "one".clone(), try word(a) }))
+    var box = Box { name = "box".clone(), items = List<string> { try word(a), "two".clone() } }
+    print(box.items)
+    var again = List<string> { "start".clone() }
+    again = List<string> { "three".clone(), try word(a) }
+    print(again)
+    return Ok(List<string> { "four".clone(), try word(a) })
+}
+
+void report(Result<void, string> result) {
+    match result {
+        Ok => print("ok")
+        Error(e) => print($"error: {e}")
+    }
+}
+
+void main() {
+    report(numbers("abc", "de"))
+    report(numbers("bad", "de"))
+    report(numbers("abc", "bad"))
+    report(words(1, 2))
+    report(words(-1, 2))
+    report(words(1, -2))
+    report(table(1, 2))
+    report(table(1, -2))
+    report(table(-1, 2))
+    report(group(1, 2))
+    report(group(1, -2))
+    report(nested(1))
+    report(nested(-1))
+    print(places(5) ?? List<string> { "none".clone() })
+    print(places(-5) ?? List<string> { "none".clone() })
+}

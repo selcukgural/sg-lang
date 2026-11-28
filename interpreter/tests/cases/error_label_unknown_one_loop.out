@@ -1,0 +1,5 @@
+error: no loop around this `continue` is named `inner`
+  --> error_label_unknown_one_loop.sg:6:18
+ 6 |         continue inner
+   |                  ^^^^^
+  hint: a plain `continue` goes on with the loop it is in

@@ -7,7 +7,7 @@ struct Jobs {
 
 int consume(shared locked Jobs jobs) {
     var sum = 0
-    while true {
+    while sum >= 0 {
         var next = 0
         lock jobs as q when q.items.length() > 0 || q.done {
             next = q.items.removeLast() ?? 0

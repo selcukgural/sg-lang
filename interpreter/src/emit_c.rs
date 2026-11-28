@@ -2206,7 +2206,7 @@ SG_COLD static _Noreturn void sg_assert_fail(const char* text, const char* loc) 
 }
 SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, __int128 l, __int128 r, const char* loc) {
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
+    fprintf(stderr, "panic: assert failed: %s\n  left:  ", text);
     sg_err_int(l);
     fputs("\n  right: ", stderr);
     sg_err_int(r);
@@ -2215,7 +2215,7 @@ SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, __int128 l, __i
 }
 SG_COLD static _Noreturn void sg_assert_fail_b(const char* text, bool l, bool r, const char* loc) {
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: %s\n  right: %s\n", text, l ? "true" : "false", r ? "true" : "false");
+    fprintf(stderr, "panic: assert failed: %s\n  left:  %s\n  right: %s\n", text, l ? "true" : "false", r ? "true" : "false");
     sg_die(loc);
 }
 
@@ -2290,7 +2290,7 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
+    fprintf(stderr, "panic: assert failed: %s\n  left:  ", text);
     sg_err_float(l, single);
     fputs("\n  right: ", stderr);
     sg_err_float(r, single);
@@ -3575,7 +3575,7 @@ SG_COLD static _Noreturn void sg_assert_fail_c(const char* text, uint32_t l, uin
     char a[16], b[16];
     int an = sg_quote_char(a, l), bn = sg_quote_char(b, r);
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, an, a, bn, b);
+    fprintf(stderr, "panic: assert failed: %s\n  left:  %.*s\n  right: %.*s\n", text, an, a, bn, b);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_char_fail(__int128 v, const char* loc) {
@@ -3937,7 +3937,7 @@ static inline uint32_t sg_ascii_upper(uint32_t c) { return c >= 'a' && c <= 'z' 
 static inline uint32_t sg_ascii_lower(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_str r, const char* loc) {
     SG_PANIC_START();
-    sg_eprint("panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, l.len, (const char*)l.ptr, r.len, (const char*)r.ptr);
+    sg_eprint("panic: assert failed: %s\n  left:  %.*s\n  right: %.*s\n", text, l.len, (const char*)l.ptr, r.len, (const char*)r.ptr);
     sg_die(loc);
 }
 /* Puts the items in order and keeps equal items in the order they had: a merge sort of the runs
@@ -4025,7 +4025,7 @@ static void sg_quoted(sg_str s) {
 }
 SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_str r, const char* loc) {
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
+    fprintf(stderr, "panic: assert failed: %s\n  left:  ", text);
     sg_quoted(l);
     fputs("\n  right: ", stderr);
     sg_quoted(r);
@@ -24097,6 +24097,15 @@ impl<'a> Emitter<'a> {
         value
     }
 
+    /// What `write` gives, with the expression it writes standing where leaving the function
+    /// is possible: a side of `assert` that is kept under a name (see `Emitter::head`).
+    fn at_head(&mut self, write: impl FnOnce(&mut Self) -> Res<String>) -> Res<String> {
+        self.head = true;
+        let value = write(self);
+        self.head = false;
+        value
+    }
+
     fn first_as(&mut self, expr: &'a Expr, want: &Ty, head: bool) -> Res<String> {
         self.head = head;
         let value = self.value_as(expr, want);
@@ -24512,6 +24521,22 @@ impl<'a> Emitter<'a> {
             }
         }
         Ok((values(&parts), names))
+    }
+
+    /// `in_order` for the items of a new list, map or set, which are added to it one by one
+    /// once it is made: an item that can leave the function (`try`), and every item before it,
+    /// is computed first, under a name, so that a way out never leaves the collection behind.
+    fn items_in_order(&mut self, parts: Vec<Part>) -> Res<(Vec<String>, String)> {
+        let kinds: Vec<(bool, String)> = parts.iter().map(|part| (part.leaves, part.ctype.clone())).collect();
+        let (mut values, mut names) = self.in_order(parts)?;
+        if let Some(last) = kinds.iter().rposition(|(leaves, _)| *leaves) {
+            for (value, (_, ctype)) in values[..=last].iter_mut().zip(&kinds).filter(|(_, (_, ctype))| !ctype.is_empty()) {
+                let temp = self.temp();
+                let _ = write!(names, "{ctype} {temp} = {value}; ");
+                *value = temp;
+            }
+        }
+        Ok((values, names))
     }
 
     /// An expression whose value is not kept: it is computed, and dropped if it owns something.
@@ -26646,7 +26671,10 @@ impl<'a> Emitter<'a> {
             let ty = left.ty.strip_borrow().clone();
             if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_)) {
                 let (l, r, ctype) = (self.temp(), self.temp(), self.ctype(&ty, left.span)?);
-                let (left, right) = (self.pointer(left)?, self.pointer(right)?);
+                // Each side is kept under a name before the next is computed, so a `try` can
+                // leave from either (`assert(try load() == expected)`).
+                let left = self.at_head(|emitter| emitter.pointer(left))?;
+                let right = self.at_head(|emitter| emitter.pointer(right))?;
                 let (test, shower) = (self.compared(*op, &ty, &l, &r, cond.span)?, self.shower(&ty, cond.span)?);
                 self.flush_pre(pad, out);
                 let _ = writeln!(
@@ -26669,7 +26697,8 @@ impl<'a> Emitter<'a> {
             if let (true, Some((fail, shown))) = (op.is_comparison(), sides) {
                 let (l, r) = (self.temp(), self.temp());
                 let line = if shown.is_empty() {
-                    let (left, right) = (self.view(left)?, self.view(right)?);
+                    let left = self.at_head(|emitter| emitter.view(left))?;
+                    let right = self.at_head(|emitter| emitter.view(right))?;
                     let test = match op {
                         BinOp::Eq => format!("sg_eq({l}, {r})"),
                         BinOp::Ne => format!("!sg_eq({l}, {r})"),
@@ -27995,17 +28024,18 @@ impl<'a> Emitter<'a> {
                     Ty::Set(key) => vec![(**key).clone()],
                     _ => unreachable!("matched above"),
                 };
+                // A key or value that owns something is kept under a name when one after it
+                // can leave the function (`try`), as the values of a call are (see `taken`).
+                let given: Vec<(&'a Expr, &Ty)> = items.iter().flatten().flat_map(|given| given.values.iter().zip(&wanted)).collect();
+                let spans: Vec<Span> = items.iter().flatten().map(|given| given.span).collect();
                 let mut parts = Vec::new();
-                let mut spans = Vec::new();
-                for given in items.iter().flatten() {
-                    spans.push(given.span);
-                    for (value, want) in given.values.iter().zip(&wanted) {
-                        let before = self.mark();
-                        let written = self.value_as(value, want)?;
-                        parts.push(self.part(value, want, written, before));
-                    }
+                let mut taking = Taking { head, handed: Vec::new() };
+                for (position, (value, want)) in given.iter().enumerate() {
+                    let before = self.mark();
+                    let written = self.first_as(value, want, taking.head)?;
+                    parts.push(self.taken(value, written, want, before, given[position + 1..].iter().any(|(later, _)| may_leave(later)), &mut taking)?);
                 }
-                let (values, names) = self.in_order(parts)?;
+                let (values, names) = self.items_in_order(parts)?;
                 let mut adds = String::new();
                 for (entry, span) in values.chunks(wanted.len()).zip(spans) {
                     let _ = match wanted.len() {
@@ -28013,7 +28043,8 @@ impl<'a> Emitter<'a> {
                         _ => write!(adds, "sg_add_{name}(&{temp}, {}); ", entry[0]),
                     };
                 }
-                Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
+                let made = self.handed_over(format!("({{ {ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"), &expr.ty, &taking.handed, expr.span)?;
+                Ok(sequence(&names, made))
             }
             // `Channel<T>(n)`: the block of the channel, with what drops an item left in it.
             ExprKind::Collection { args, .. } if matches!(expr.ty, Ty::Channel(_)) => {
@@ -28028,15 +28059,20 @@ impl<'a> Emitter<'a> {
                 let Ty::List(item) = &expr.ty else { return Err(not_yet(expr.span, &format!("a `{}`", expr.ty))) };
                 let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
                 let name = mangle(&expr.ty).expect("it has a C type");
+                // An item that owns something is kept under a name when an item after it can
+                // leave the function (`try`), as the values of a call are (see `taken`).
+                let given: Vec<&'a Expr> = items.iter().flatten().map(|given| &given.values[0]).collect();
                 let mut parts = Vec::new();
-                for given in items.iter().flatten() {
+                let mut taking = Taking { head, handed: Vec::new() };
+                for (position, value) in given.iter().enumerate() {
                     let before = self.mark();
-                    let value = self.value_as(&given.values[0], item)?;
-                    parts.push(self.part(&given.values[0], item, value, before));
+                    let written = self.first_as(value, item, taking.head)?;
+                    parts.push(self.taken(value, written, item, before, given[position + 1..].iter().any(|later| may_leave(later)), &mut taking)?);
                 }
-                let (values, names) = self.in_order(parts)?;
+                let (values, names) = self.items_in_order(parts)?;
                 let adds: String = values.iter().map(|value| format!("sg_add_{name}(&{temp}, {value}); ")).collect();
-                Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
+                let made = self.handed_over(format!("({{ {ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"), &expr.ty, &taking.handed, expr.span)?;
+                Ok(sequence(&names, made))
             }
             // A byte of text and a range of it: checked in every build.
             ExprKind::Index { recv, index, kind: IndexKind::Text, .. } => {

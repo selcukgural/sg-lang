@@ -273,6 +273,31 @@ error: `size` does not return a value on every path; it must return `string`
 
 A number of 100 or more reaches the end with nothing to give. An `else { return "large" }` makes it whole.
 
+### A line after `return`
+
+```sg error
+int f() {
+    return 1
+    print("never")
+}
+
+void main() {
+    print(f())
+}
+```
+
+```text
+error: this line is never run: the `return` before it leaves the function
+  --> example.sg:3:5
+ 3 |     print("never")
+   |     ^^^^^^^^^^^^^^
+  hint: take it away, with the lines after it in the block
+```
+
+There are no warnings, so a line that can never run is an error, as an arm of a `match` that never runs is. The
+same holds after `break`, `continue`, `panic(...)` and `exit(...)`, after an `if` whose branches all leave, and
+after a `while true` that no `break` leaves.
+
 ### A bare `return` where a value is due
 
 ```sg error
@@ -334,7 +359,28 @@ error: this returns a borrow of `text`, and `text` is gone when the function ret
   hint: return the value itself instead of a borrow of it
 ```
 
-Written `string made()` with `return text`, the function gives the text itself to the caller.
+Written `string made()` with `return text`, the function gives the text itself to the caller. Written
+`return text` in `read string made()`, the message says the same before anything is lent:
+
+```sg error
+read string made() {
+    var text = "Pasha".clone()
+    return text
+}
+
+void main() {
+    print(made())
+}
+```
+
+```text
+error: expected `read string`, found `string`
+  `text` is a variable of the function, gone when it returns: a borrow of it would outlive it
+  --> example.sg:3:12
+ 3 |     return text
+   |            ^^^^
+  hint: return the value itself: `string made(...)`
+```
 
 ### A borrow of two parameters, with no `from`
 

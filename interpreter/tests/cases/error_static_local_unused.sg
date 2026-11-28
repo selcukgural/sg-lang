@@ -1,0 +1,4 @@
+void main() {
+    static atomic int Calls = atomic 0
+    print("x")
+}

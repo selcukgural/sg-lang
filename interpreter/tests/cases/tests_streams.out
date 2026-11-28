@@ -3,7 +3,7 @@ FAIL  a test that fails shows what it wrote
 checking 3
 then more
 panic: assert failed: doubled == 7
-  left: 6
+  left:  6
   right: 7
   --> tests_streams.sg:18:5
  18 |     assert(doubled == 7)

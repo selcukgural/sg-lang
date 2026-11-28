@@ -358,7 +358,63 @@ error: `Primes` is a const: what it holds is fixed when the program is compiled
   hint: change a copy of it: `var copy = Primes`
 ```
 
-`Primes = ...` and `ref Primes` are refused the same way.
+`Primes = ...` and `ref Primes` are refused the same way, and so is a method that changes it:
+
+```sg error
+const int[] Primes = { 5, 3, 2 }
+
+void main() {
+    Primes.sort()
+}
+```
+
+```text
+error: `sort` changes the array, but it is reached through the const `Primes`
+  --> example.sg:4:5
+ 4 |     Primes.sort()
+   |     ^^^^^^
+  hint: change a copy of it: `var copy = Primes`
+```
+
+### A const of a block that nothing uses
+
+```sg error
+void main() {
+    const int Unused = 1
+    print("x")
+}
+```
+
+```text
+error: `Unused` is never used
+  --> example.sg:2:15
+ 2 |     const int Unused = 1
+   |               ^^^^^^
+  hint: take the line away: a const of a block is seen only by the lines after it in the block
+```
+
+As for a variable nothing reads. A line that names it anywhere after it in the block uses it: another const, the
+count of an array, a `$"..."`.
+
+### A calculation as the count of an array
+
+```sg error
+const int Rows = 2
+const int Cols = 3
+
+void main() {
+    int[Rows * Cols] grid = int[Rows * Cols](1)
+    print(grid.length())
+}
+```
+
+```text
+error: the count of an array is a number or the name of a const, not a calculation
+  --> example.sg:5:9
+ 5 |     int[Rows * Cols] grid = int[Rows * Cols](1)
+   |         ^^^^^^^^^^^
+  hint: give it a name first: `const int Count = Rows * Cols`, then `[Count]`
+```
 
 ### An overflow
 

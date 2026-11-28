@@ -234,7 +234,7 @@ $ sg test ports.sg
 ok    a port is read
 FAIL  the usual ports
 panic: assert failed: ports == List<int> { 80, 8443 }
-  left: [80, 443]
+  left:  [80, 443]
   right: [80, 8443]
   --> ports.sg:23:5
  23 |     assert(ports == List<int> { 80, 8443 })

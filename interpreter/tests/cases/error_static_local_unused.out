@@ -1,0 +1,5 @@
+error: `Calls` is never used
+  --> error_static_local_unused.sg:2:23
+ 2 |     static atomic int Calls = atomic 0
+   |                       ^^^^^
+  hint: take the line away: a static of a block is seen only by the lines after it in the block

@@ -1,0 +1,5 @@
+error: expected `Duration`, found `Duration`
+  two types have this name: the program's own, and the one of the language's module `std`, which the program's hides; with the module in front, it is the language's
+  --> error_std_type_same_name.sg:8:36
+ 8 |     var later = Instant.now().plus(d)
+   |                                    ^

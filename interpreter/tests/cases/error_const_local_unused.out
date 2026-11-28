@@ -1,0 +1,5 @@
+error: `Unused` is never used
+  --> error_const_local_unused.sg:2:15
+ 2 |     const int Unused = 1
+   |               ^^^^^^
+  hint: take the line away: a const of a block is seen only by the lines after it in the block

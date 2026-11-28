@@ -1,4 +1,5 @@
-error: `for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap` or a `HashSet`, found `int`
+error: `for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap`, a `HashSet`, a `Channel` or an iterator such as `text.chars()` or `reader.lines()`, found `int`
   --> error_for_not_collection.sg:3:14
  3 |     for x in n {
    |              ^
+  hint: the numbers from 0 up to it: `for x in 0..n`

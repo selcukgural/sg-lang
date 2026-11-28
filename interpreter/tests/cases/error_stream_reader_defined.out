@@ -1,0 +1,4 @@
+error: `StreamReader` is a built-in type and cannot be redefined
+  --> error_stream_reader_defined.sg:2:8
+ 2 | struct StreamReader {
+   |        ^^^^^^^^^^^^

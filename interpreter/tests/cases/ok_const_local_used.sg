@@ -1,0 +1,13 @@
+// A const of a block counts as used when a line after it names it: in another const, in the
+// count of an array, inside `$"..."`.
+void main() {
+    const int Rows = 2
+    const int Cols = 3
+    const int Cells = Rows * Cols
+    const assert(Cells == 6)
+    int[Cells] grid = int[Cells](1)
+    static atomic int Calls = atomic 0
+    _ = Calls.fetchAdd(1)
+    const string Who = "ada"
+    print($"{grid.length()} {Calls.load()} {Who}")
+}

@@ -229,7 +229,6 @@ public struct Decompressor {
                 return Ok(true)
             }
         }
-        return Ok(false)
     }
 
     // All that is left, as text.
@@ -321,7 +320,6 @@ public struct Decompressor {
                 return Error(CompressError.TooLarge)
             }
         }
-        return Ok(false)
     }
 
     // Reads the source until `InflateAhead` bytes wait to be opened, or it ends.
@@ -1930,7 +1928,6 @@ struct Inflater {
                 return Ok()
             }
         }
-        return Ok()
     }
 
     // What follows the block that ended.
@@ -2093,7 +2090,6 @@ struct Inflater {
                 this.step = 17
             }
         }
-        return Ok(false)
     }
 
     // The header of a block: stored, of the fixed codes, or of codes of its own.

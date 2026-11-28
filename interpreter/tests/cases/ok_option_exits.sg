@@ -41,7 +41,6 @@ int count(read string line) {
         total += 1
         rest = rest[word.length() + 1..]
     }
-    return total
 }
 
 // `list` is moved only if the `return` runs; the line after it still owns the list.

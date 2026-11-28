@@ -1,0 +1,5 @@
+error: this line is never run: the `panic` before it stops the program
+  --> error_never_run_after_panic.sg:5:9
+ 5 |         count = 2
+   |         ^^^^^^^^^
+  hint: take it away, with the lines after it in the block

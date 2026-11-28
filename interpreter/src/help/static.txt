@@ -384,6 +384,57 @@ WHAT THE COMPILER REFUSES
             |        ^^^^^^^^^^^^
            hint: open it where it is used and lend it to the functions that need it, as a parameter
 
+   A type that is not one
+         static File Log = File.create("log.txt")
+
+         void main() {
+         }
+
+         error: there is no type named `File`
+           `File` is not a type but a set of functions: a file open to read is a `StreamReader`, one open to write a `StreamWriter`
+           --> example.sg:1:8
+          1 | static File Log = File.create("log.txt")
+            |        ^^^^
+
+   A static of a block that reads a variable
+         void main() {
+             var n = 3
+             static int Twice = n * 2
+             print(Twice)
+         }
+
+         error: there is no variable named `n`
+           a static sees consts and other statics, not variables: its value is found once, the first time it is read
+           --> example.sg:3:24
+          3 |     static int Twice = n * 2
+            |                        ^
+
+   A static of a block that nothing uses
+         void main() {
+             static atomic int Calls = atomic 0
+             print("x")
+         }
+
+         error: `Calls` is never used
+           --> example.sg:2:23
+          2 |     static atomic int Calls = atomic 0
+            |                       ^^^^^
+           hint: take the line away: a static of a block is seen only by the lines after it in the block
+
+   A method that changes it
+         static List<string> Names = List<string> { "a" }
+
+         void main() {
+             Names.add("b")
+             print(Names)
+         }
+
+         error: `add` changes the list, but it is reached through the static `Names`
+           a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block
+           --> example.sg:4:5
+          4 |     Names.add("b")
+            |     ^^^^^
+
    A local with the name of a static
          static int Limit = 3
 

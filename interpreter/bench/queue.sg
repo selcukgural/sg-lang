@@ -61,7 +61,6 @@ struct BoundedQueue {
                 at = this.head.value.load(MemoryOrder.Relaxed)
             }
         }
-        return false
     }
 
     // Takes the value at the tail; `null` when the queue is empty.
@@ -86,7 +85,6 @@ struct BoundedQueue {
                 at = this.tail.value.load(MemoryOrder.Relaxed)
             }
         }
-        return null
     }
 
     // How many values it holds at most.

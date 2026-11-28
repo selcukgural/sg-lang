@@ -8,7 +8,6 @@ int pass(shared locked Gate gate) {
     lock gate as g when g.open {
         return 1
     }
-    return 0
 }
 
 void main() {

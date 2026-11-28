@@ -106,7 +106,7 @@ both sides of the comparison. Had the second test been written `assert(twice(-3)
 ok    twice doubles
 FAIL  twice keeps the sign
 panic: assert failed: twice(-3) == 6
-  left: -6
+  left:  -6
   right: 6
   --> example.sg:10:5
  10 |     assert(twice(-3) == 6)

@@ -114,7 +114,6 @@ public struct Deflater : Disposable, Closable {
                 return Ok()
             }
         }
-        return Ok()
     }
 
     void dispose(ref this) {

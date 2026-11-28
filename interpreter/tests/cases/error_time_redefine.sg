@@ -1,7 +1,0 @@
-// The types of the language's own module keep their names.
-struct Duration {
-    long ms
-}
-
-void main() {
-}
