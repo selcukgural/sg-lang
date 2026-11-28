@@ -3677,7 +3677,7 @@ pub fn cast_first(src: &str, span: Span, left: &Expr, to: &str) -> String {
     let mut first = left;
     loop {
         match &first.kind {
-            ExprKind::Binary(op, inner, _) if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) => first = inner,
+            ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem, inner, _) => first = inner,
             ExprKind::Widen(_, inner) => first = inner,
             _ => break,
         }
