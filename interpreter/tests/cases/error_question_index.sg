@@ -1,0 +1,5 @@
+// There is no `?[i]`; `ys?[0]` read like an array of a type `ys?`.
+void main() {
+    List<int>? ys = List<int> { 1 }
+    print(ys?[0])
+}

@@ -34,7 +34,7 @@ pub fn parse_files(src: &str, files: &[FileIn]) -> Res<Program> {
     let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new(), value_layouts: Default::default(), windows: Default::default() };
     for (start, end, module, map) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
-        let mut parser = Parser { src, map: map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0 };
+        let mut parser = Parser { src, map: map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0, declaring: None };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
         let (cvars, blocks, consts, statics) = (program.cvars.len(), program.blocks.len(), program.consts.len(), program.statics.len());
         let uses = parser.file(&mut program)?;
@@ -96,6 +96,8 @@ struct Parser<'a> {
     /// How deep the tree being read is nested: blocks, expressions, the operators of a chain,
     /// types and patterns. At most `MAX_NESTING`.
     depth: usize,
+    /// The variable whose value is being read (`var n = ...`), for the hints that name it.
+    declaring: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -436,6 +438,12 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Tok::Star => suffixes.push(Suffix::Pointer),
                 Tok::Question => suffixes.push(Suffix::Nullable),
+                // `int?? count`: the lexer reads `??` as one sign.
+                Tok::QuestionQuestion => {
+                    let written = format!("{}?", &self.src[start.start..self.prev_end()]);
+                    return Err(Diag::error(self.span(), "`??` is not a type: a value is either there or `null`")
+                        .hint(format!("one `?`: `{written}`")));
+                }
                 // `int[8]` is an array, `byte[]` a slice.
                 Tok::LBracket => {
                     self.bump();
@@ -761,8 +769,11 @@ impl<'a> Parser<'a> {
                 program.statics.push(decl);
                 program.funcs.push(init);
             } else {
-                let ret = self.type_expr().map_err(|d| {
-                    d.hint("only `use` lines, structs, enums, aliases, consts, statics, functions, `extern` blocks and tests are written at the top level: `void main() { ... }`")
+                // A type that was read and refused (`int?? find()`) keeps its own hint.
+                let started = matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::QuestionQuestion);
+                let ret = self.type_expr().map_err(|d| match started {
+                    true => d,
+                    false => d.hint("only `use` lines, structs, enums, aliases, consts, statics, functions, `extern` blocks and tests are written at the top level: `void main() { ... }`"),
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
                 let mut func = self.func(ret, name, name_span, false)?;
@@ -1495,6 +1506,8 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek_at(n) {
                 Tok::Star | Tok::Question => n += 1,
+                // `int?? count = null` reads as a declaration, which the type then refuses.
+                Tok::QuestionQuestion if matches!(self.peek_at(n + 1), Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::Assign => n += 1,
                 Tok::LBracket if *self.peek_at(n + 1) == Tok::RBracket => n += 2,
                 Tok::LBracket if matches!(self.peek_at(n + 1), Tok::Int(_) | Tok::Ident(_)) && *self.peek_at(n + 2) == Tok::RBracket => n += 3,
                 Tok::LBracket if self.type_word(first) => match self.count_len(n) {
@@ -1598,7 +1611,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let (name, name_span) = self.ident("a variable name")?;
                 self.expect(Tok::Assign, "`=`")?;
-                let init = self.expr()?;
+                let init = self.declared_value(&name)?;
                 StmtKind::Let { ty: None, name, name_span, init }
             }
             Tok::If => self.if_stmt()?,
@@ -1616,7 +1629,15 @@ impl<'a> Parser<'a> {
                     let body = self.block()?;
                     StmtKind::For { var, var_span, from, to, body, reversed: true, label: None }
                 } else {
-                    let from = self.head_expr(true)?;
+                    let mark = self.i;
+                    let mut from = self.head_expr(true)?;
+                    // What goes over is read up to `..`, which binds more loosely than a
+                    // comparison; anything else is read whole, as an `if` reads its condition
+                    // (`for x in c ? a : b {`).
+                    if matches!(self.peek(), Tok::Question | Tok::QuestionQuestion | Tok::AndAnd | Tok::OrOr | Tok::Eq | Tok::Ne | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::Is) {
+                        self.i = mark;
+                        from = self.head_expr(false)?;
+                    }
                     if *self.peek() == Tok::DotDotEq {
                         return Err(Diag::error(self.span(), "`..=` is written only in a pattern; a `for` goes up to its end, without it")
                             .hint("`for i in a..b + 1`"));
@@ -1771,7 +1792,7 @@ impl<'a> Parser<'a> {
                         .hint(format!("a variable is declared with an initial value: `{written} {name} = ...`")));
                 }
                 self.bump();
-                let init = self.expr()?;
+                let init = self.declared_value(&name)?;
                 StmtKind::Let { ty: Some(ty), name, name_span, init }
             }
             _ => {
@@ -1781,6 +1802,18 @@ impl<'a> Parser<'a> {
                         let text = &self.src[target.span.start..target.span.end];
                         return Err(Diag::error(expr.span, "`unsafe` in front of a value is for reading it; a write is a statement")
                             .hint(format!("write it inside a block: `unsafe {{ {text} = ... }}`")));
+                    }
+                    // `p?.x = 5`: `?.` reads (the `match` it is read as is no place).
+                    if let ExprKind::Match { subject, arms, .. } = &expr.kind {
+                        if matches!(arms.get(1).map(|arm| &arm.pattern.kind), Some(PatternKind::Bind(held)) if held.starts_with(OR_NULL)) {
+                            let (tested, plain) = (self.src[subject.span.start..subject.span.end].to_string(), self.src[expr.span.start..expr.span.end].replace("?.", "."));
+                            let (at, sign) = (expr.span, op.map_or("=".to_string(), |op| format!("{}=", op.symbol())));
+                            self.bump();
+                            let value = self.expr()?;
+                            let value = &self.src[value.span.start..value.span.end];
+                            return Err(Diag::error(at, "`?.` only reads: a field is written through a value that is there")
+                                .hint(format!("test it first: `if {tested} is not null {{ {plain} {sign} {value} }}`")));
+                        }
                     }
                     if !expr.is_place() {
                         let diag = Diag::error(expr.span, "the left side of an assignment must be a variable, a field or an item");
@@ -2265,6 +2298,14 @@ impl<'a> Parser<'a> {
         Ok(StmtKind::If { cond, then, els, after: Vec::new() })
     }
 
+    /// The value a variable is declared with, read with its name at hand for the hints.
+    fn declared_value(&mut self, name: &str) -> Res<Expr> {
+        let outer = self.declaring.replace(name.to_string());
+        let value = self.expr();
+        self.declaring = outer;
+        value
+    }
+
     /// `c ? a : b` binds loosest, then `a ?? b`; both group to the right, as in C#.
     fn expr(&mut self) -> Res<Expr> {
         self.nest(|parser| parser.expr_in())
@@ -2278,6 +2319,17 @@ impl<'a> Parser<'a> {
         self.bump();
         let then = self.cond_arm()?;
         if !self.eat(&Tok::Colon) {
+            // `: b` on the next line: the line ended the statement, as for a line that starts
+            // with `?`.
+            let mut ahead = 0;
+            while *self.peek_at(ahead) == Tok::Newline {
+                ahead += 1;
+            }
+            if ahead > 0 && *self.peek_at(ahead) == Tok::Colon {
+                let at = self.toks[self.i + ahead].span;
+                return Err(Diag::error(at, "a line cannot start with `:`")
+                    .hint("the statement ended on the previous line; to continue it, put `:` at the end of that line"));
+            }
             return Err(self.unexpected("`:`").note("`c ? a : b` gives `a` where `c` holds, otherwise `b`"));
         }
         let els = self.cond_arm()?;
@@ -2296,8 +2348,24 @@ impl<'a> Parser<'a> {
 
     fn coalesce(&mut self) -> Res<Expr> {
         let left = self.binary(0)?;
+        let mark = self.span();
         if !self.eat(&Tok::QuestionQuestion) {
             return Ok(left);
+        }
+        let written = self.src[left.span.start..left.span.end].to_string();
+        // `n ??= 3`, which C# has.
+        if *self.peek() == Tok::Assign && self.toks[self.i].span.start == mark.end {
+            let at = Span::new(mark.start, self.bump().span.end);
+            let value = self.expr()?;
+            let value = &self.src[value.span.start..value.span.end];
+            return Err(Diag::error(at, "there is no `??=`").hint(format!("`{written} = {written} ?? {value}`")));
+        }
+        // `?? break`: only `return` leaves from the right of `??`.
+        if matches!(self.peek(), Tok::Break | Tok::Continue) {
+            let word = if *self.peek() == Tok::Break { "break" } else { "continue" };
+            let name = self.declaring.clone().unwrap_or_else(|| "value".to_string());
+            return Err(Diag::error(self.span(), format!("`{word}` cannot stand on the right of `??`: only `return` leaves from there"))
+                .hint(format!("test it with `is`: on a `Result`, `if {written} is not Ok({name}) {{ {word} }}`; on a `T?`, `var {name} = {written}`, then `if {name} is null {{ {word} }}`")));
         }
         // The right side can leave the function: `x ?? return Error(...)`.
         let right = if *self.peek() == Tok::Return {
@@ -3066,7 +3134,7 @@ impl<'a> Parser<'a> {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
                 Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
-                    let mut inner = Parser { src: self.src, map: self.map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth };
+                    let mut inner = Parser { src: self.src, map: self.map.clone(), toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth, declaring: None };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
                         let diag = inner.unexpected("`}`");

@@ -7766,7 +7766,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         let (left, right) = (as_list(left), as_list(right));
         let by_method = |value: &Value| matches!(value, Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_));
-        if !by_method(&left) {
+        // A `T?` that is `null` on a side (choice 2131): equal only to another `null`.
+        let null_side = matches!(left, Value::Null) || matches!(right, Value::Null);
+        if !by_method(&left) && !null_side {
             return Ok(binary(op, left, right, span)?);
         }
         Ok(Value::Bool(match op {

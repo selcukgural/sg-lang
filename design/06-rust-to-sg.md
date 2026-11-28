@@ -221,6 +221,8 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `None`, `Some(x)` | `null`, `x` | built | |
 | `if let Some(v) = x` | `if x is not null` | built | `x` is a `T` inside |
 | `x.unwrap_or(d)` | `x ?? d` | built | |
+| `a == b`, `x == Some(4)` on `Option<T>` | `a == b`, `x == 4` | built | Equal when both are `null` or both hold equal values; `x == null` is written `x is null` (2131) |
+| `match c { Go(None) => ..., Go(Some(t)) => ... }` | `match c { Go(null) => ...  Go(t) => ... }` | built | Below `Go(null)` the name is a `T` (2132) |
 | `x.expect("...")` | `x ?? panic("...")` | built | |
 | `x?` on an `Option` | `try x` | built | |
 | `x.as_ref().map(\|p\| &p.name)`, `x.as_ref().and_then(\|p\| p.next.as_ref())` | `x?.name`, `x?.next?.name` | built | The rest of the chain does not run on `null`; a field that is not `Copyable` is lent (`read string?`), one that is copied (`int?`). `x?.name is not null` narrows `x` |

@@ -1,0 +1,45 @@
+// Below an arm `Go(null, _)` that takes every other value of `Go`, a name in that place of `Go`
+// is not `null` (2132), owned or lent, as a name below `null` in a `match` on a `T?` is.
+enum Command {
+    Go(string? target, int? speed)
+    Stop
+}
+
+string describe(read Command command) {
+    match command {
+        Go(null, _) => return "nowhere"
+        Go(target, null) => return $"going to {target}".toString()
+        Go(target, speed) => return $"going to {target} at {speed}".toString()
+        Stop => return "stop"
+    }
+}
+
+void main() {
+    var command = Command.Go("home".clone(), null)
+    match command {
+        Go(null, _) => print("nowhere")
+        Go(target, _) => print($"going to {target}, {target.length()} letters")
+        Stop => print("stop")
+    }
+    print(describe(read Command.Go(null, 3)))
+    print(describe(read Command.Go("park".clone(), null)))
+    print(describe(read Command.Go("park".clone(), 5)))
+    print(describe(read Command.Stop))
+    var owned = Command.Go("sea".clone(), 2)
+    match owned {
+        Go(null, _) => print("nowhere")
+        Go(target, speed) => {
+            string kept = target
+            print(kept)
+            print(speed ?? 0)
+        }
+        Stop => print("stop")
+    }
+    for seen in (List<Result<int?, string>> { Ok(null), Ok(7), Error("lost".clone()) }) {
+        match seen {
+            Ok(null) => print("nothing yet")
+            Ok(value) => print(value + 1)
+            Error(why) => print(why)
+        }
+    }
+}

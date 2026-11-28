@@ -24155,6 +24155,18 @@ impl<'a> Emitter<'a> {
         self.lift(value, &expr.ty, want, expr.span)
     }
 
+    /// A side of `a == b` with a `T?` on a side, lent as a `read T?` (`option` is the `T?`): a
+    /// borrow as it is, a value kept somewhere by its address. Nothing is moved or copied.
+    fn lent_option_side(&mut self, side: &'a Expr, option: &Ty) -> Res<String> {
+        let lent = Ty::Read(Box::new(option.clone()));
+        if side.ty.is_borrow() {
+            let value = self.value(side)?;
+            return self.lift(value, &side.ty, &lent, side.span);
+        }
+        let address = self.pointer(side)?;
+        self.lift(address, &Ty::Ref(Box::new(side.ty.clone())), &lent, side.span)
+    }
+
     fn lift(&mut self, value: String, found: &Ty, want: &Ty, span: Span) -> Res<String> {
         match want {
             Ty::Nullable(inner) if is_option(want) => {
@@ -26667,6 +26679,29 @@ impl<'a> Emitter<'a> {
         let text = c_string(self.text(cond.span));
         let loc = self.loc(call.span);
         if let ExprKind::Binary(op, left, right) = &cond.kind {
+            // A `T?` on a side (choice 2131): both are lent as a `read T?`, and on failure each
+            // is written as its value or `null`.
+            let held = [left, right].iter().find_map(|side| match side.ty.strip_borrow() {
+                Ty::Nullable(inner) => Some(inner.strip_borrow().clone()),
+                _ => None,
+            });
+            if let (Some(held), BinOp::Eq | BinOp::Ne) = (held, op) {
+                let option = Ty::Nullable(Box::new(held));
+                let lent = Ty::Read(Box::new(option.clone()));
+                let (l, r, ctype) = (self.temp(), self.temp(), self.ctype(&lent, cond.span)?);
+                let (left, right) = (self.lent_option_side(left, &option)?, self.lent_option_side(right, &option)?);
+                let same = self.same_at(&lent, &l, &r, cond.span)?;
+                let not = if *op == BinOp::Ne { "!" } else { "" };
+                let (show_l, show_r) = (self.show_at(&lent, &l, cond.span)?, self.show_at(&lent, &r, cond.span)?);
+                self.flush_pre(pad, out);
+                let _ = writeln!(
+                    out,
+                    "{pad}{{ {ctype} {l} = {left}; {ctype} {r} = {right}; if (!({not}({same}))) {{ sg_string {l}s = SG_LIT(\"\", 0), {r}s = SG_LIT(\"\", 0); \
+                     {{ sg_string* out = &{l}s; {show_l} }} {{ sg_string* out = &{r}s; {show_r} }} sg_assert_fail_t({text}, sg_view(&{l}s), sg_view(&{r}s), {loc}); }} }}"
+                );
+                self.flush_post(pad, out);
+                return Ok(());
+            }
             // Two structs, enums or lists: on failure each is written as `print` would write it.
             let ty = left.ty.strip_borrow().clone();
             if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_)) {
@@ -27804,6 +27839,30 @@ impl<'a> Emitter<'a> {
                 self.maybe -= 1;
                 let right_value = self.enclosed(before, right_value?, &Ty::Bool, right.span)?;
                 Ok(format!("({left} {} {right_value})", op.symbol()))
+            }
+            // `a == b` with a `T?` on a side (choice 2131): both sides are lent as a `read T?`,
+            // equal when both are `null` or both hold equal values.
+            ExprKind::Binary(op @ (BinOp::Eq | BinOp::Ne), left, right) if [left, right].iter().any(|side| matches!(side.ty.strip_borrow(), Ty::Nullable(_))) => {
+                let held = [left, right]
+                    .iter()
+                    .find_map(|side| match side.ty.strip_borrow() {
+                        Ty::Nullable(inner) => Some(inner.strip_borrow().clone()),
+                        _ => None,
+                    })
+                    .expect("a side is a `T?`");
+                let option = Ty::Nullable(Box::new(held));
+                let lent = Ty::Read(Box::new(option.clone()));
+                let mut parts = Vec::new();
+                for side in [left, right] {
+                    let before = self.mark();
+                    let value = self.lent_option_side(side, &option)?;
+                    parts.push(self.part(side, &lent, value, before));
+                }
+                let (values, names) = self.in_order(parts)?;
+                let (ctype, a, b) = (self.ctype(&lent, expr.span)?, self.temp(), self.temp());
+                let same = self.same_at(&lent, &a, &b, expr.span)?;
+                let not = if *op == BinOp::Ne { "!" } else { "" };
+                Ok(sequence(&names, format!("({{ {ctype} {a} = {}; {ctype} {b} = {}; {not}({same}); }})", values[0], values[1])))
             }
             ExprKind::Binary(op, left, right) if is_text(&left.ty) => {
                 let view = Ty::Read(Box::new(Ty::Str));

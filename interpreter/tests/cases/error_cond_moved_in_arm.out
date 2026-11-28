@@ -1,8 +1,8 @@
-error: `s` was moved and can no longer be used
+error: `s` may have been moved and can no longer be used
   --> error_cond_moved_in_arm.sg:6:11
  6 |     print(s)
    |           ^
-  it was moved here:
+  it is moved here, on one of the ways to this line:
   --> error_cond_moved_in_arm.sg:4:21
  4 |     var y = x > 0 ? s : "b".clone()
    |                     ^

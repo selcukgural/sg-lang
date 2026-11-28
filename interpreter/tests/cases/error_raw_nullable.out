@@ -2,4 +2,4 @@ error: a raw pointer can be `null` already, so it is not written with `?`
   --> error_raw_nullable.sg:3:5
  3 |     raw int? numbers = null
    |     ^^^^^^^^
-  hint: compare it: `p == null`
+  hint: write `raw int`, and compare it with `null` using `==` or `!=`

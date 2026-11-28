@@ -3,3 +3,4 @@ error: this is `int`, which is never `null`
   --> error_never_null.sg:3:8
  3 |     if n is null {
    |        ^
+  hint: to test for zero: `n == 0`

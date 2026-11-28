@@ -1,0 +1,5 @@
+error: this is `bool`, which is never `null`, so `??` has nothing to do
+  `==` binds more tightly than `??`: this reads `(n == 4) ?? false`
+  --> error_coalesce_after_comparison.sg:4:11
+ 4 |     print(n == 4 ?? false)
+   |           ^^^^^^

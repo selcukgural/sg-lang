@@ -1,0 +1,6 @@
+error: this is `string?` and may be `null`; a `T?` alone is not written as text
+  inside a list or a struct a missing value is written `null`
+  --> error_variant_null_not_all.sg:11:44
+ 11 |         Go(target, _) => print($"going to {target}")
+    |                                            ^^^^^^
+  hint: give a fallback, `target ?? ...`, or test it first: `if target is not null { ... }`

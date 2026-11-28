@@ -1,0 +1,5 @@
+error: there is no `?[i]`: `?.` reaches fields and methods, not items
+  --> error_question_index.sg:4:11
+ 4 |     print(ys?[0])
+   |           ^^^^^^
+  hint: `ys?.get(0)` gives `null` when `ys` is `null` or has no such item; or test it first: `if ys is not null { ... ys[0] ... }`

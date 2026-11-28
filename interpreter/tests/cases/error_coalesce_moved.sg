@@ -1,0 +1,6 @@
+// `??` takes what a `string?` holds; the hint lends it with `read`.
+void main() {
+    string? nickname = "Pasha".clone()
+    print(nickname ?? "nobody")
+    print(nickname ?? "nobody")
+}

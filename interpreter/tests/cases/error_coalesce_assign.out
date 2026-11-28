@@ -1,0 +1,5 @@
+error: there is no `??=`
+  --> error_coalesce_assign.sg:4:11
+ 4 |     limit ??= 3
+   |           ^^^
+  hint: `limit = limit ?? 3`

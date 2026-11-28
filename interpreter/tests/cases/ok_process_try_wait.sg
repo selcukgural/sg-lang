@@ -11,7 +11,7 @@ Command tool(read string[] steps) {
 void shown(read string what, Result<ExitStatus?, IoError> seen) {
     match seen {
         Ok(null) => print($"{what}: running")
-        Ok(status) => print($"{what}: {status ?? ExitStatus.Code(-1)}")
+        Ok(status) => print($"{what}: {status}")
         Error(cause) => print($"{what}: {cause}")
     }
 }
@@ -33,7 +33,7 @@ Result<void, ProcessError> main() {
         match process.tryWait() {
             Ok(null) => try tool(read List<string> { "sleep=20" }).run()
             Ok(status) => {
-                print($"ended: {status ?? ExitStatus.Code(-1)}")
+                print($"ended: {status}")
                 break
             }
             Error(cause) => return Error(ProcessError.Io(cause))

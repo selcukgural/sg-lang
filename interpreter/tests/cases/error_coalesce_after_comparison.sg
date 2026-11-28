@@ -1,0 +1,5 @@
+// `n == 4 ?? false` is `(n == 4) ?? false`, and a `bool` is never `null`.
+void main() {
+    int? n = 4
+    print(n == 4 ?? false)
+}

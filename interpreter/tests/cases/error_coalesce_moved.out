@@ -1,0 +1,9 @@
+error: `nickname` was moved and can no longer be used
+  --> error_coalesce_moved.sg:5:11
+ 5 |     print(nickname ?? "nobody")
+   |           ^^^^^^^^
+  it was moved here:
+  --> error_coalesce_moved.sg:4:11
+ 4 |     print(nickname ?? "nobody")
+   |           ^^^^^^^^
+  hint: `??` takes what `nickname` holds; to look at it without taking it: `read nickname ?? ...`

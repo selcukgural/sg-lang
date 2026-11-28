@@ -1,0 +1,5 @@
+error: expected `bool`, found `string?`
+  --> error_cond_nullable_condition.sg:3:11
+ 3 |     print(name ? 1 : 2)
+   |           ^^^^
+  hint: `name is not null` tells whether it holds a value; in a condition it also makes `name` a `string` where the test holds

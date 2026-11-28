@@ -2884,7 +2884,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         if *suffix == Suffix::Nullable {
             if raw > 0 {
                 return Err(Diag::error(ty.span, "a raw pointer can be `null` already, so it is not written with `?`")
-                    .hint("compare it: `p == null`"));
+                    .hint(format!("write `{}{resolved}`, and compare it with `null` using `==` or `!=`", "raw ".repeat(raw as usize))));
             }
             if let Some(word) = holder.take() {
                 resolved = held(word, resolved, ty, names)?;
@@ -4885,6 +4885,18 @@ fn whole_number(expr: &Expr) -> bool {
     }
 }
 
+/// The value of a whole number written out: `1`, `-1`.
+fn whole_value(expr: &Expr) -> Option<i128> {
+    match &expr.kind {
+        ExprKind::Int(value, _) => Some(*value),
+        ExprKind::Unary(UnOp::Neg, inner) => match inner.kind {
+            ExprKind::Int(value, _) => Some(-value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A value written out that takes its type from where it goes: `null`, `0`, `-1`, `1.5`, `'a'`.
 fn bare_literal(expr: &Expr) -> bool {
     match &expr.kind {
@@ -5826,6 +5838,7 @@ impl<'a> Checker<'a> {
 
     /// A variable that is about to be read: it must still hold its value.
     fn live_var(&mut self, name: &str, span: Span) -> Res<&mut Var> {
+        let src = self.src;
         let var = self.var(name, span)?;
         if let Some(moved) = var.moved.whole {
             if var.moved.emptied {
@@ -5833,7 +5846,16 @@ impl<'a> Checker<'a> {
                     .related(moved, "after this loop its tasks count as waited for, and the list as used up")
                     .hint(format!("for more tasks, give it a new list first: `{name} = List<...>()`")));
             }
-            let diag = Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here");
+            // Moved on some of the ways that reach here: in one branch of an `if`, one arm of a
+            // `match` or of `?:`.
+            let diag = match var.moved.partly {
+                true => Diag::error(span, format!("`{name}` may have been moved and can no longer be used")).related(moved, "it is moved here, on one of the ways to this line"),
+                false => Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here"),
+            };
+            // `nickname ?? "nobody"` takes the value; `read nickname ?? ...` looks at it.
+            if matches!(var.declared, Ty::Nullable(_)) && src[moved.end..].trim_start().starts_with("??") {
+                return Err(diag.hint(format!("`??` takes what `{name}` holds; to look at it without taking it: `read {name} ?? ...`")));
+            }
             // A generator is not copied, so that two never give the same numbers.
             if matches!(peel(&var.declared), Ty::Struct(ty) if ty == &format!("{STD_MODULE}.Random")) {
                 return Err(diag
@@ -7454,10 +7476,15 @@ impl<'a> Checker<'a> {
                             };
                             return Err(Diag::error(target.span, msg).related(var.at, "it is declared here").hint(hint));
                         }
+                        // A value that is never `null` keeps what a test said (choice 2130): after
+                        // `count = 9` a narrowed `count` is still a `T`; a `T?` or `null` ends it.
+                        let never_null = op.is_some() || !matches!(value.ty.strip_borrow(), Ty::Nullable(_) | Ty::Null);
                         let var = self.var(name, target.span)?;
                         var.moved = Moved::default();
                         var.assigned += 1;
-                        var.current = var.declared.clone();
+                        if !never_null {
+                            var.current = var.declared.clone();
+                        }
                     }
                     // A field that was moved out holds a value again.
                     Some((name, path)) => {
@@ -8504,6 +8531,18 @@ impl<'a> Checker<'a> {
         self.coerce(expr, found, expected)
     }
 
+    /// An error on the right of `??` that is a comparison or a chain of `&&` and `||`
+    /// (`n ?? 0 == 4`): `??` binds more loosely, so the comparison was meant for the result.
+    fn loosely(&self, left: &Expr, right: &Expr, diag: Diag) -> Diag {
+        let ExprKind::Binary(op, first, rest) = &right.kind else { return diag };
+        if !op.is_comparison() && !matches!(op, BinOp::And | BinOp::Or) {
+            return diag;
+        }
+        let text = |part: &Expr| self.src[part.span.start..part.span.end].to_string();
+        diag.note(format!("`??` binds more loosely than `{}`: this reads `{} ?? ({})`", op.symbol(), text(left), text(right)))
+            .hint(format!("to {} the value, write `({} ?? {}) {} {}`", if op.is_comparison() { "compare" } else { "test" }, text(left), text(first), op.symbol(), text(rest)))
+    }
+
     /// The right side of `??`. When it always leaves (`?? return list`, `?? panic(...)`), the
     /// code after it runs only if the right side did not, so what it moved is still there.
     fn fallback(&mut self, right: &mut Expr, expected: &Ty) -> Res<()> {
@@ -8773,7 +8812,13 @@ impl<'a> Checker<'a> {
                 let copy = format!("{}.clone()", if is_simple(expr) { text.to_string() } else { format!("({text})") });
                 mismatch(Some(format!("`{found}` only borrows the text; to own a copy write `{text}.clone()`"))).map_err(|diag| diag.fix(expr.span, copy))
             }
-            (Ty::Read(_) | Ty::Ref(_), _) if !expected.is_borrow() => {
+            // A `T?` is tested with `is not null` (#30.3).
+            (Ty::Read(inner) | Ty::Ref(inner), Ty::Bool) if matches!(**inner, Ty::Nullable(_)) => mismatch(Some(self.null_condition(expr, &found))),
+            // `string k = x`, `x` a `read string?`: it may be `null`, and it is only lent.
+            (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && matches!(&**inner, Ty::Nullable(held) if **held == *expected) => {
+                mismatch(Some(format!("it may be `null`, and `{found}` only borrows the value: test it with `is not null` and copy it with `.clone()`, or give a fallback to a copy: `{text}?.clone() ?? ...`")))
+            }
+            (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && peel(inner) == peel(expected) => {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
             }
             // What a `shared locked` value holds is lent only by `lock`.
@@ -8860,6 +8905,23 @@ impl<'a> Checker<'a> {
             (Ty::Nullable(inner), _) if **inner == *expected => {
                 mismatch(Some(format!("it may be `null`: give a fallback with `{text} ?? ...`, or test it with `is null`")))
             }
+            (Ty::Nullable(_), Ty::Bool) => mismatch(Some(self.null_condition(expr, &found))),
+            // `clear(ref a)` with a `ref int?` parameter, inside `if a is not null`: the callee could
+            // write `null` where the test said there is a value.
+            (Ty::Ref(from), Ty::Ref(to)) if **to == Ty::Nullable(from.clone()) => {
+                let place = match &expr.kind {
+                    ExprKind::Borrow { expr: inner, .. } => &**inner,
+                    _ => &*expr,
+                };
+                let narrowed = match &place.kind {
+                    ExprKind::Var(name) => self.var_named(name).filter(|var| var.declared.strip_borrow() == &**to).map(|_| name.clone()),
+                    _ => None,
+                };
+                match narrowed {
+                    Some(name) => mismatch(Some(format!("a test made `{name}` a `{from}` here, and a `ref {to}` could write `null` into it: lend it where it is not narrowed, before or after the test"))),
+                    None => mismatch(None),
+                }
+            }
             (_, Ty::Result(ok, _)) if found == **ok => mismatch(Some(format!("success is written `Ok({text})`"))),
             (_, Ty::Result(_, error)) if found == **error => mismatch(Some(format!("an error is written `Error({text})`"))),
             (Ty::Result(ok, _), _) if **ok == *expected => {
@@ -8868,6 +8930,17 @@ impl<'a> Checker<'a> {
             // `Point* p = Point { ... }`: a value is put on the heap only where `new` says so (#37).
             (_, Ty::Ptr(inner)) if found == **inner => mismatch(Some(format!("a `{expected}` is made with `new`: `new {text}`"))),
             _ => mismatch(None),
+        }
+    }
+
+    /// The hint for a `T?` where a `bool` goes: a `T?` is no condition, `x is not null` is
+    /// one, and on a variable it also narrows (#30.3).
+    fn null_condition(&self, expr: &Expr, found: &Ty) -> String {
+        let text = &self.src[expr.span.start..expr.span.end];
+        let shown = if matches!(expr.kind, ExprKind::Coalesce { .. } | ExprKind::Cond { .. } | ExprKind::Binary(..)) { format!("({text})") } else { text.to_string() };
+        match (&expr.kind, without_null(found)) {
+            (ExprKind::Var(_), Some(held)) => format!("`{text} is not null` tells whether it holds a value; in a condition it also makes `{text}` a `{}` where the test holds", held.strip_borrow()),
+            _ => format!("`{shown} is not null` tells whether it holds a value"),
         }
     }
 
@@ -10124,6 +10197,13 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Slice { recv, from, to } => Ok(self.range(recv, from, to)?.0),
             ExprKind::Array { ty, args, items } => {
+                // `ys?[0]` with a variable `ys` reads like an array of `ys?` (`int?[4]`).
+                if let ([Suffix::Nullable, Suffix::Array(_) | Suffix::Named(..)], true, None, true) = (ty.suffixes.as_slice(), args.is_empty(), items.as_ref(), self.var_named(&ty.name).is_some()) {
+                    let (name, written) = (ty.name.clone(), self.src[ty.span.start..ty.span.end].to_string());
+                    let index = written.find('[').map_or("0", |at| written[at + 1..].trim_end_matches(']').trim());
+                    return Err(Diag::error(ty.span, "there is no `?[i]`: `?.` reaches fields and methods, not items")
+                        .hint(format!("`{name}?.get({index})` gives `null` when `{name}` is `null` or has no such item; or test it first: `if {name} is not null {{ ... {name}[{index}] ... }}`")));
+                }
                 let built = resolve_type(ty, self.names, false)?;
                 let Ty::Array(item, length) = &built else {
                     return Err(Diag::error(ty.span, format!("a `{built}` is not built this way")));
@@ -10414,8 +10494,14 @@ impl<'a> Checker<'a> {
                     .map(|((field, _), _)| format!("`{field}`"))
                     .collect();
                 if !missing.is_empty() {
-                    return Err(Diag::error(span, format!("`{name}` is missing {}", missing.join(", ")))
-                        .note("every field gets a value; there is no uninitialized memory"));
+                    let diag = Diag::error(span, format!("`{name}` is missing {}", missing.join(", ")))
+                        .note("every field gets a value; there is no uninitialized memory");
+                    // A `T?` is not `null` on its own: it is given, or has a default.
+                    let nullable: Vec<(&String, &Ty)> = info.fields.iter().zip(&given).filter(|(_, given)| !**given).map(|((field, ty), _)| (field, ty)).filter(|(_, ty)| matches!(ty, Ty::Nullable(_))).collect();
+                    return Err(match nullable.as_slice() {
+                        [(field, ty)] => diag.hint(format!("give it here, `{field} = null`, or give the field a default where `{}` is written: `{ty} {field} = null`", short_name(name))),
+                        _ => diag,
+                    });
                 }
                 Ok(Ty::Struct(name.clone()))
             }
@@ -10697,7 +10783,15 @@ impl<'a> Checker<'a> {
                         let word = if *negated { "is not null" } else { "is null" };
                         return Err(diag.hint(format!("to know whether what it looks at is gone: `share {text} {word}`")));
                     }
-                    return Err(diag);
+                    // `count is null` on a number, where a zero was meant.
+                    let text = &self.src[inner.span.start..inner.span.end];
+                    let op = if *negated { "!=" } else { "==" };
+                    return Err(match ty.strip_borrow() {
+                        Ty::Int(_) => diag.hint(format!("to test for zero: `{text} {op} 0`")),
+                        Ty::Float(_) => diag.hint(format!("to test for zero: `{text} {op} 0.0`")),
+                        Ty::Str => diag.hint(format!("to test for an empty text: `{text}.length() {op} 0`")),
+                        _ => diag,
+                    });
                 }
                 Ok(Ty::Bool)
             }
@@ -10721,7 +10815,7 @@ impl<'a> Checker<'a> {
                             .hint("pass the error on with `try`, or drop it on purpose with `_ = ...`"));
                     }
                     *on_result = true;
-                    self.fallback(right, ok)?;
+                    self.fallback(right, ok).map_err(|diag| self.loosely(left, right, diag))?;
                     return Ok((**ok).clone());
                 }
                 if matches!(found.strip_borrow(), Ty::Result(..)) {
@@ -10729,9 +10823,17 @@ impl<'a> Checker<'a> {
                         .hint("look at it with `match` or `is`"));
                 }
                 let Some(inner) = without_null(&found) else {
-                    return Err(Diag::error(left.span, format!("this is `{found}`, which is never `null`, so `??` has nothing to do")));
+                    let diag = Diag::error(left.span, format!("this is `{found}`, which is never `null`, so `??` has nothing to do"));
+                    // `n == 4 ?? false` is `(n == 4) ?? false`.
+                    return Err(match &left.kind {
+                        ExprKind::Binary(op, ..) if op.is_comparison() || matches!(op, BinOp::And | BinOp::Or) => {
+                            let (a, b) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+                            diag.note(format!("`{}` binds more tightly than `??`: this reads `({a}) ?? {b}`", op.symbol()))
+                        }
+                        _ => diag,
+                    });
                 };
-                self.fallback(right, &inner)?;
+                self.fallback(right, &inner).map_err(|diag| self.loosely(left, right, diag))?;
                 Ok(inner)
             }
             ExprKind::Try { expr: inner, kind } => self.try_expr(inner, kind, span),
@@ -11560,6 +11662,10 @@ impl<'a> Checker<'a> {
         let mut null_taken = false;
         // Whether an arm `null` with `when` came first: it does not take `null` away.
         let mut null_under_condition = false;
+        // The same one level down (choice 2132): after an arm `Go(null)` that takes every
+        // other value of the variant, a name in that place of `Go` takes a value that is not
+        // `null`. Variant positions and the places in them.
+        let mut null_fields: Vec<(usize, usize)> = Vec::new();
         // `a?.b` where no `T?` is expected gives the type of `b`, made a `T?`.
         let mut result: Option<Ty> = expected.filter(|ty| held.is_none() || without_null(ty).is_some()).cloned();
         let before = self.moves();
@@ -11588,7 +11694,18 @@ impl<'a> Checker<'a> {
                     }
                     binds
                 }
-                None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
+                None => {
+                    let mut binds = self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?;
+                    if let PatternKind::Variant { index, args: Some(args), .. } = &arm.pattern.kind {
+                        for (place, arg) in args.iter().enumerate() {
+                            let (PatternKind::Bind(name), true) = (&arg.kind, null_fields.contains(&(*index, place))) else { continue };
+                            if let Some(bind) = binds.iter_mut().find(|bind| bind.0 == *name) {
+                                bind.1 = not_null(&bind.1);
+                            }
+                        }
+                    }
+                    binds
+                }
             };
             let position = match &arm.pattern.kind {
                 PatternKind::Variant { index, .. } => Some(*index as i128),
@@ -11633,6 +11750,14 @@ impl<'a> Checker<'a> {
                     named.extend(top_variants(&arm.pattern));
                 }
                 null_taken |= takes_null(&arm.pattern);
+                if let PatternKind::Variant { index, args: Some(args), .. } = &arm.pattern.kind {
+                    for (place, arg) in args.iter().enumerate() {
+                        let rest_all = args.iter().enumerate().all(|(other, arg)| other == place || arg.takes_all());
+                        if takes_null(arg) && rest_all {
+                            null_fields.push((*index, place));
+                        }
+                    }
+                }
             }
             self.borrows.binds = subject_loans.clone();
             self.declare_binds(binds)?;
@@ -11663,6 +11788,38 @@ impl<'a> Checker<'a> {
             match &mut arm.value {
                 Some(value) if unused => self.unused(value)?,
                 Some(value) => match &result {
+                    // The value of `a?.b`, where a `T?` is wanted: what is named is the type of
+                    // the whole `?.` (`expected `string?`, found `read string?``), not of `b`.
+                    Some(ty) if held.is_some() && !matches!(value.kind, ExprKind::Null) => {
+                        let ty = ty.clone();
+                        let found = self.expr(value, Some(&ty))?;
+                        // A borrow of a value that is copied is named as the value.
+                        let named = match &found {
+                            Ty::Read(inner) | Ty::Ref(inner) if inner.is_copyable(self.copyable) => (**inner).clone(),
+                            _ => found.clone(),
+                        };
+                        self.coerce(value, found.clone(), &ty).map_err(|diag| match (&ty, diag.msg.starts_with("expected `")) {
+                            (Ty::Nullable(_), true) => {
+                                let numbers = matches!((&ty, found.strip_borrow()), (Ty::Nullable(want), Ty::Int(_) | Ty::Float(_)) if want.is_number());
+                                let found = match named.strip_borrow() {
+                                    Ty::Nullable(_) => named.clone(),
+                                    _ => nullable_of(named.clone()),
+                                };
+                                let was = format!("`{}` only borrows", value.ty);
+                                let hint = diag.hint.as_ref().map(|hint| hint.replacen(&was, &format!("`{found}` only borrows"), 1));
+                                let diag = Diag { msg: format!("expected `{ty}`, found `{found}`"), hint, ..diag };
+                                // A cast of the value would be written inside the chain.
+                                match (numbers, held.as_ref()) {
+                                    (true, Some(_)) => {
+                                        let tested = &self.src[subject.span.start..subject.span.end];
+                                        Diag { fix: None, ..diag }.hint(format!("keep the type it gives, `{found}`; or test `{tested}` first with `is not null` and convert the value with a cast"))
+                                    }
+                                    _ => diag,
+                                }
+                            }
+                            _ => diag,
+                        })?;
+                    }
                     Some(ty) => {
                         let ty = ty.clone();
                         self.typed(value, &ty)?;
@@ -11987,6 +12144,8 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let (_, fails) = self.condition(cond, NamesSeen::Fails).map_err(|diag| match &grouped {
+            // The right of `??` has said so already.
+            Some((note, _)) if diag.notes.contains(note) => diag,
             Some((note, Some(hint))) => diag.note(note.clone()).hint(hint.clone()),
             Some((note, None)) => diag.note(note.clone()),
             None => diag,
@@ -11994,7 +12153,18 @@ impl<'a> Checker<'a> {
         let (_, when_false) = condition_facts(cond);
         // A bare `null` or number on the left waits for the type of the right side; it has
         // nothing to check in the scope of the condition.
-        let waits = expected.is_none() && bare_literal(then) && (!bare_literal(els) || (whole_number(then) && !whole_number(els)));
+        // `c ? 1 : null` does not wait: the number gives `int`, and the `null` makes it `int?`
+        // (1912); `c ? null : 1` waits for the `int`. A number that fits an `int` waits for one
+        // that does not (`c ? 1 : 5000000000` is a `long`, as `var big = 5000000000` is).
+        let is_null = |arm: &Expr| matches!(arm.kind, ExprKind::Null);
+        let wider = matches!((whole_value(then), whole_value(els)), (Some(a), Some(b)) if IntTy::Int.fits(a) && !IntTy::Int.fits(b));
+        let waits = expected.is_none()
+            && bare_literal(then)
+            && match (is_null(then), is_null(els)) {
+                (_, true) => false,
+                (true, false) => true,
+                (false, false) => !bare_literal(els) || (whole_number(then) && !whole_number(els)) || wider,
+            };
         let before = self.moves();
         let node = self.node();
         self.borrows.branches.push((node, 0));
@@ -12035,7 +12205,18 @@ impl<'a> Checker<'a> {
                 Some(Ty::Never) | None => {}
                 Some(ty) => want = Some(ty.clone()),
             }
-            self.cond_arm(els, want.as_ref(), expected)
+            // `exact ? small : big`, an `int` and then a `long`: the first arm gave the type.
+            let texts = [&*cond, &*then, &*els].map(|part| self.src[part.span.start..part.span.end].to_string());
+            match self.cond_arm(els, want.as_ref(), expected) {
+                Err(diag) => Err(match (&then_ty, els.ty.strip_borrow(), expected) {
+                    (Some(Ty::Int(first)), Ty::Int(second), None) if first.widens_to(*second) => {
+                        let ([cond, first_text, second_text], wide) = (&texts, second.name());
+                        Diag { fix: None, ..diag }.hint(format!("the first arm gives the type of both: widen it, `{cond} ? ({wide}){first_text} : {second_text}`, or give the result the type `{wide}` where it goes"))
+                    }
+                    _ => diag,
+                }),
+                other => other,
+            }
         })();
         self.borrows.branches.pop();
         let els_ty = els_ty?;
@@ -12110,9 +12291,17 @@ impl<'a> Checker<'a> {
             return self.shift(op, left, right, expected, span);
         }
         let wanted = if op.is_comparison() { None } else { expected.filter(|ty| ty.is_number()) };
-        let like = |ty: &Ty| match ty.strip_borrow() {
-            Ty::Int(_) | Ty::Float(_) | Ty::Char => Some(ty.strip_borrow().clone()),
-            _ => None,
+        // A number beside a `T?` of numbers takes the type of its values: `count == 4` with a
+        // `byte? count`.
+        let like = |ty: &Ty| {
+            let base = match ty.strip_borrow() {
+                Ty::Nullable(inner) if op.is_comparison() => inner.strip_borrow(),
+                other => other,
+            };
+            match base {
+                Ty::Int(_) | Ty::Float(_) | Ty::Char => Some(base.clone()),
+                _ => None,
+            }
         };
         // A number on the left past every `long` takes its type from the right:
         // `0xffff_ffff_ffff_ffff == top` with a `ulong top`. Only the types are looked at in
@@ -12160,6 +12349,13 @@ impl<'a> Checker<'a> {
         if !matches!(op, BinOp::Eq | BinOp::Ne) {
             if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(peel(&side.ty), Ty::Nullable(_))) {
                 let text = self.src[side.span.start..side.span.end].trim();
+                // A borrow of a `T?` that is copied is named as the `T?` (`ages.get(key)`), as
+                // the other messages name it.
+                let shown = |ty: &Ty| match ty {
+                    Ty::Read(inner) | Ty::Ref(inner) if inner.is_copyable(self.copyable) => (**inner).clone(),
+                    _ => ty.clone(),
+                };
+                let (left_ty, right_ty) = (shown(&left_ty), shown(&right_ty));
                 let diag = Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
                     .note(format!("`{text}` may be `null`"));
                 return Err(self.null_arm_note(side, diag).hint(format!("{}; or give a fallback with `??`", self.test_first(side, &side.ty))));
@@ -12201,6 +12397,29 @@ impl<'a> Checker<'a> {
             }
         }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
+        // `a == b` with a `T?` on a side (choice 2131): equal when both are `null` or both hold
+        // equal values, as a `T?` field compares; the other side is a `T?` or a `T` of the same
+        // type. `x == null` stays `x is null`.
+        let held = |ty: &Ty| match ty.strip_borrow() {
+            Ty::Nullable(inner) => Some(inner.strip_borrow().clone()),
+            _ => None,
+        };
+        let has_null = matches!(left_ty.strip_borrow(), Ty::Null) || matches!(right_ty.strip_borrow(), Ty::Null);
+        if let (Some(inner), true, false) = (held(&left_ty).or_else(|| held(&right_ty)), matches!(op, BinOp::Eq | BinOp::Ne), has_null) {
+            let base = |ty: &Ty| held(ty).unwrap_or_else(|| ty.strip_borrow().clone());
+            let (a, b) = (base(&left_ty), base(&right_ty));
+            if a != b {
+                return Err(undefined().note(format!("a `{inner}?` is compared with a `{inner}?` or a `{inner}`")));
+            }
+            if !has(&inner, self.equatable, true) {
+                let diag = Diag::error(span, format!("`{}` compares the values, and `{inner}` is not `Equatable`", op.symbol()));
+                return Err(match lacking(&inner, self.equatable) {
+                    Some(name) => diag.hint(format!("add it to the definition: `{name} : Equatable`")),
+                    None => diag,
+                });
+            }
+            return Ok(Ty::Bool);
+        }
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
             let symbol = op.symbol();
@@ -12556,8 +12775,23 @@ impl<'a> Checker<'a> {
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) => Err(lacks(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`")), name, "Formattable")),
             Ty::Void => Err(Diag::error(span, "this call does not return a value, and one is needed here")),
-            Ty::Nullable(_) => Err(Diag::error(span, format!("this is `{ty}` and may be `null`; there is no text for `null`"))
-                .hint("give a fallback with `??`, or test with `is null`")),
+            // Inside a list or a struct a missing value is written `null` (`[90, null, 75]`);
+            // a `T?` alone is opened first, so that a missing value is not printed by mistake.
+            Ty::Nullable(_) => {
+                let text = &self.src[span.start..span.end];
+                // A borrow of a `T?` that is copied is named as the `T?`, as elsewhere.
+                let shown = match ty {
+                    Ty::Read(held) | Ty::Ref(held) if held.is_copyable(self.copyable) => (**held).clone(),
+                    _ => ty.clone(),
+                };
+                let test = match text.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    true => format!("test it first: `if {text} is not null {{ ... }}`"),
+                    false => format!("keep it in a variable and test that: `var value = {text}`, then `if value is not null {{ ... }}`"),
+                };
+                Err(Diag::error(span, format!("this is `{shown}` and may be `null`; a `T?` alone is not written as text"))
+                    .note("inside a list or a struct a missing value is written `null`")
+                    .hint(format!("give a fallback, `{text} ?? ...`, or {test}")))
+            }
             // A `Result<void, E>` has no value to give instead, so `??` is not offered (#45).
             Ty::Result(ok, _) if **ok == Ty::Void => Err(Diag::error(span, format!("this is `{ty}`: success with nothing, or an error"))
                 .hint("open it first with `try` or `match`")),

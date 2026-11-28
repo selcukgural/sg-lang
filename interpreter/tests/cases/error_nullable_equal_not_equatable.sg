@@ -1,0 +1,10 @@
+// `==` on a `T?` compares the values, so `T` is `Equatable`.
+struct Box {
+    int n
+}
+
+void main() {
+    Box? a = Box { n = 1 }
+    Box? b = Box { n = 1 }
+    print(a == b)
+}

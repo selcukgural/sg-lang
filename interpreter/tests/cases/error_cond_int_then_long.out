@@ -1,0 +1,6 @@
+error: expected `int`, found `long`
+  both arms of `?:` give one type, and the other arm gives `int`
+  --> error_cond_int_then_long.sg:6:34
+ 6 |     var either = exact ? small : big
+   |                                  ^^^
+  hint: the first arm gives the type of both: widen it, `exact ? (long)small : big`, or give the result the type `long` where it goes

@@ -1,0 +1,5 @@
+error: expected `string?`, found `read string?`
+  --> error_null_conditional_borrowed_type.sg:8:20
+ 8 |     string? name = p?.name
+   |                    ^^^^^^^
+  hint: `read string?` only borrows the text; to own a copy write `p?.name.clone()`

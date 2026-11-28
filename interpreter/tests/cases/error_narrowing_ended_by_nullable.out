@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `int?` and `int`
+  `count` may be `null`
+  --> error_narrowing_ended_by_nullable.sg:13:15
+ 13 |         print(count + 1)
+    |               ^^^^^^^^^
+  hint: test it first: `if count is not null { ... }`; or give a fallback with `??`

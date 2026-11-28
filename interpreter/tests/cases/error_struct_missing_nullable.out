@@ -1,0 +1,6 @@
+error: `User` is missing `age`
+  every field gets a value; there is no uninitialized memory
+  --> error_struct_missing_nullable.sg:8:13
+ 8 |     var u = User { name = "Ada" }
+   |             ^^^^^^^^^^^^^^^^^^^^^
+  hint: give it here, `age = null`, or give the field a default where `User` is written: `int? age = null`

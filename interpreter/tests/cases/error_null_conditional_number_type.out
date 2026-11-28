@@ -1,0 +1,5 @@
+error: expected `int?`, found `nint?`
+  --> error_null_conditional_number_type.sg:4:14
+ 4 |     int? n = name?.length()
+   |              ^^^^^^^^^^^^^^
+  hint: keep the type it gives, `nint?`; or test `name` first with `is not null` and convert the value with a cast

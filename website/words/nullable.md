@@ -31,12 +31,14 @@ A `T?` is not a `T`. Its value is used only after a test, and the compiler follo
 null`, in the block, `x` is a `T`. The same holds on the right of `&&`, in `else` after `if x is null`, after an
 `if x is null` whose block always leaves, and after `while x is null`. Only local variables and parameters are
 narrowed this way, never a field, which a call in between could change; a field is lent to a variable, and the
-variable tested. An assignment to the variable, or `take()`, ends what the test said.
+variable tested. An assignment of a `T?` or of `null`, or `take()`, ends what the test said; an assignment of a
+`T` keeps it.
 
 `??` gives a fallback in one step, and on its right a `return` or a `panic` leaves instead. `?.` reads through a
 `T?`: `user?.name` is `null` when `user` is, and one `?.` covers the rest of the chain, so there is never a
-`T??`. A `T?` cannot be printed or written into text as it is, since `null` has no text there; inside a list or
-a struct that is printed, it is written `null`.
+`T??`. `==` compares a `T?` with a `T?` or a `T`: equal when both are `null` or both hold equal values. A `T?` is
+not a condition (`if name is not null` is the test), and it cannot be printed or written into text alone; inside a
+list or a struct that is printed, it is written `null`.
 
 A `T?` costs a flag. An `int?` is the number and a `bool` beside it, 8 bytes where an `int` takes 4. A `T*?`
 takes nothing more: it is the pointer of a `T*`, with `null` as the address zero. A `read T?` is a pointer too
@@ -160,6 +162,28 @@ class 5xx
 ```
 
 Below the arm `null`, `other` is an `int`. Every other arm tests the number, as on an `int`.
+
+### Comparing two that may be missing
+
+```sg
+void main() {
+    int? saved = 3
+    int? typed = 3
+    int? none = null
+    print(saved == typed)
+    print(saved == none)
+    print(saved == 3)
+}
+```
+
+```text
+true
+false
+true
+```
+
+Two `T?` are equal when both hold equal values or both are `null`, as a `T?` field compares in a struct. A `T`
+on one side is compared as a value that is there. `x == null` is not written: the test is `x is null`.
 
 ### A field that may be missing
 
@@ -329,11 +353,12 @@ void main() {
 ```
 
 ```text
-error: this is `read int?` and may be `null`; there is no text for `null`
+error: this is `int?` and may be `null`; a `T?` alone is not written as text
+  inside a list or a struct a missing value is written `null`
   --> example.sg:4:11
  4 |     print(age)
    |           ^^^
-  hint: give a fallback with `??`, or test with `is null`
+  hint: give a fallback, `age ?? ...`, or test it first: `if age is not null { ... }`
 ```
 
 ### A field after its test
@@ -360,13 +385,13 @@ error: this is `string?` and may be `null`; `.length()` needs a value
   hint: a field is not narrowed: lend it to a variable and test that: `var nickname = read user.nickname`, then `if nickname is not null { ... }`
 ```
 
-### A variable assigned after its test
+### A variable given `null` after its test
 
 ```sg error
 void main() {
     int? count = 5
     if count is not null {
-        count = 9
+        count = null
         print(count + 1)
     }
 }
@@ -380,7 +405,27 @@ error: operator `+` is not defined for `int?` and `int`
    |               ^^^^^^^^^
 ```
 
-Any assignment ends what the test said, even of a value that is not `null`: `count` is an `int?` again.
+An assignment of `null`, or of any `T?`, ends what the test said: `count` is an `int?` again. One of a `T` keeps
+it: after `count = 9`, `count + 1` is taken.
+
+### A `T?` as a condition
+
+```sg error
+void main() {
+    string? name = null
+    if name {
+        print("named")
+    }
+}
+```
+
+```text
+error: expected `bool`, found `string?`
+  --> example.sg:3:8
+ 3 |     if name {
+   |        ^^^^
+  hint: `name is not null` tells whether it holds a value; in a condition it also makes `name` a `string` where the test holds
+```
 
 ### A `match` with no arm for `null`
 
@@ -429,4 +474,5 @@ error: `MaybeInt` is `int?` already, and a value is either there or `null`
   hint: `MaybeInt`
 ```
 
-A value is there or it is not; a second `?` would say nothing more.
+A value is there or it is not; a second `?` would say nothing more. Written out, `int?? count = null` gets the
+same message, with a hint that writes one `?`: `int?`.

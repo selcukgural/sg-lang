@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `int?` and `int`
+  `age` may be `null`
+  --> error_nullable_operator_lent_copy.sg:5:11
+ 5 |     print(age + 1)
+   |           ^^^^^^^
+  hint: test it first: `if age is not null { ... }`; or give a fallback with `??`

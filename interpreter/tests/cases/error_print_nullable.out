@@ -1,5 +1,6 @@
-error: this is `int?` and may be `null`; there is no text for `null`
+error: this is `int?` and may be `null`; a `T?` alone is not written as text
+  inside a list or a struct a missing value is written `null`
   --> error_print_nullable.sg:3:11
  3 |     print(n)
    |           ^
-  hint: give a fallback with `??`, or test with `is null`
+  hint: give a fallback, `n ?? ...`, or test it first: `if n is not null { ... }`

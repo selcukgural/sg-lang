@@ -1,0 +1,5 @@
+error: `break` cannot stand on the right of `??`: only `return` leaves from there
+  --> error_coalesce_break.sg:5:36
+ 5 |         var n = int.parse(text) ?? break
+   |                                    ^^^^^
+  hint: test it with `is`: on a `Result`, `if int.parse(text) is not Ok(n) { break }`; on a `T?`, `var n = int.parse(text)`, then `if n is null { break }`

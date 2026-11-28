@@ -1,0 +1,46 @@
+// A value that is never `null`, assigned to a narrowed `T?`, keeps the narrowing (2130); a `T?`
+// or `null` ends it, and the block of the test ends it as before.
+struct Node {
+    int value
+    Node*? next
+}
+
+int? find(int n) {
+    if n > 0 {
+        return n
+    }
+    return null
+}
+
+void main() {
+    int? count = 5
+    if count is not null {
+        count = 9
+        print(count + 1)
+        count = count * 2
+        print(count + 1)
+    }
+    print(count ?? 0)
+
+    string? name = "Ada".clone()
+    if name is not null {
+        name = $"{name} Lovelace".toString()
+        print(name.length())
+    }
+    print(name ?? "nobody")
+
+    Node*? list = new Node { value = 1, next = null }
+    if list is null {
+        return
+    }
+    list = new Node { value = 2, next = null }
+    print(list.value)
+
+    int? other = 3
+    if other is not null {
+        other = find(0)
+        print(other ?? -1)
+        other = find(4)
+        print(other ?? -1)
+    }
+}

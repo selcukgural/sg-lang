@@ -1,0 +1,5 @@
+error: expected `string`, found `read string?`
+  --> error_borrowed_nullable_to_owned.sg:5:19
+ 5 |     string kept = first
+   |                   ^^^^^
+  hint: it may be `null`, and `read string?` only borrows the value: test it with `is not null` and copy it with `.clone()`, or give a fallback to a copy: `first?.clone() ?? ...`

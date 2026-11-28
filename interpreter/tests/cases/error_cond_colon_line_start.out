@@ -1,0 +1,5 @@
+error: a line cannot start with `:`
+  --> error_cond_colon_line_start.sg:5:9
+ 5 |         : 2
+   |         ^
+  hint: the statement ended on the previous line; to continue it, put `:` at the end of that line

@@ -1,0 +1,9 @@
+// Only `return` leaves from the right of `??`; the hint tests with `is`, for both kinds of value.
+void main() {
+    var total = 0
+    for text in "1 x 3".splitWhitespace() {
+        var n = int.parse(text) ?? break
+        total += n
+    }
+    print(total)
+}

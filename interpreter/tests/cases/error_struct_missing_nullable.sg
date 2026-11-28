@@ -1,0 +1,9 @@
+// A `T?` field is not `null` on its own: it is given, or has a default.
+struct User {
+    string name
+    int? age
+}
+
+void main() {
+    var u = User { name = "Ada" }
+}

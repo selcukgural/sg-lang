@@ -1,0 +1,6 @@
+error: expected `int`, found `bool`
+  `??` binds more loosely than `==`: this reads `n ?? (0 == 4)`
+  --> error_coalesce_comparison_on_right.sg:4:16
+ 4 |     print(n ?? 0 == 4)
+   |                ^^^^^^
+  hint: to compare the value, write `(n ?? 0) == 4`

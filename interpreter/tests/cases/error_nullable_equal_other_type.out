@@ -1,0 +1,5 @@
+error: operator `==` is not defined for `int?` and `long?`
+  an `int?` is compared with an `int?` or an `int`
+  --> error_nullable_equal_other_type.sg:5:11
+ 5 |     print(a == b)
+   |           ^^^^^^

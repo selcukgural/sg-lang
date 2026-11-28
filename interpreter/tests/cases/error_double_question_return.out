@@ -1,0 +1,5 @@
+error: `??` is not a type: a value is either there or `null`
+  --> error_double_question_return.sg:1:4
+ 1 | int?? find() {
+   |    ^^
+  hint: one `?`: `int?`
