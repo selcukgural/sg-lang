@@ -1,6 +1,6 @@
 error: expected a type name, found `interface`
-  `interface` is not in the interpreter yet
+  an `interface` of your own is not in the language yet: it was put off with generics; the built-in ones are written after the name of a struct or an enum: `struct Label : Formattable`
   --> error_not_yet.sg:1:1
  1 | interface Shape {
    | ^^^^^^^^^
-  hint: only structs, enums, consts, statics, functions and tests are written at the top level: `void main() { ... }`
+  hint: only `use` lines, structs, enums, aliases, consts, statics, functions, `extern` blocks and tests are written at the top level: `void main() { ... }`

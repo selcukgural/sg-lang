@@ -1,0 +1,5 @@
+error: `Grid` is `int[3]`, which is not built this way
+  --> error_alias_array_built.sg:5:16
+ 5 |     var grid = Grid(0)
+   |                ^^^^^^^
+  hint: `int[3](0)`

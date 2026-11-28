@@ -1,0 +1,4 @@
+error: a value is cast to a number type or to `char`, and `Spot` is neither
+  --> error_cast_to_struct_alias.sg:10:16
+ 10 |     var spot = (Spot)n
+    |                ^^^^^^

@@ -1,0 +1,6 @@
+error: `with` makes a new value of a struct from another, and this is a `Label*`
+  the struct a `T*` points at stays with its owner; `with` takes a copy of it
+  --> error_with_pointer.sg:9:18
+ 9 |     var bigger = label with { size = 20 }
+   |                  ^^^^^
+  hint: make `Label` `Clonable` (`Label : Clonable`), then `label.clone() with { ... }`

@@ -1,0 +1,5 @@
+error: `spend` takes `this` by value and uses it up, but this value is only borrowed
+  --> error_this_value_from_ref_this.sg:10:9
+ 10 |         this.spend()
+    |         ^^^^
+  hint: make `spend` take `read this` if it only looks, or make `look` take `this` by value

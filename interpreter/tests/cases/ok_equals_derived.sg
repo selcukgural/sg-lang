@@ -1,0 +1,30 @@
+// The `equals` the language makes for `Equatable` is called by name too: `a.equals(read b)` is
+// `a == b` (choice 2213), through a `T*` as well.
+struct Point : Equatable, Hashable {
+    int x
+    string name
+}
+
+enum Shape : Equatable {
+    Circle(int radius)
+    Dot
+}
+
+bool alike(read Point a, read Point b) {
+    return a.equals(read b)
+}
+
+void main() {
+    var a = Point { x = 1, name = "a".clone() }
+    var b = Point { x = 1, name = "a".clone() }
+    var c = new Point { x = 2, name = "a".clone() }
+    print(a.equals(read b))
+    print(alike(read a, read b))
+    print(c.equals(read a))
+    print(a.equals(read c))
+    print(!a.equals(read c))
+    var s = Shape.Circle(2)
+    print(s.equals(read Shape.Circle(2)))
+    print(s.equals(read Shape.Dot))
+    print(3.equals(3))
+}

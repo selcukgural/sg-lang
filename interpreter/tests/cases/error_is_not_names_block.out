@@ -1,5 +1,5 @@
 error: there is no variable named `value`
-  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in the second arm of its `?:`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
   --> error_is_not_names_block.sg:6:15
  6 |         print(value)
    |               ^^^^^

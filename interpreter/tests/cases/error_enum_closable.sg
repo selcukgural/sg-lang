@@ -1,0 +1,9 @@
+// An enum cannot be `Closable`: the note names `close`.
+enum Light : Closable {
+    Off
+    On
+}
+
+void main() {
+    print(1)
+}

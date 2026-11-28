@@ -1,0 +1,11 @@
+// `with` takes a struct, not the `T*` that owns it (choice 2212).
+struct Label : Formattable {
+    string text
+    int size
+}
+
+void main() {
+    var label = new Label { text = "a".clone(), size = 1 }
+    var bigger = label with { size = 20 }
+    print(bigger)
+}

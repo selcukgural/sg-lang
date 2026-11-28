@@ -1,0 +1,11 @@
+// `with` takes a struct, not a `shared` one its other owners look at (choice 2212).
+struct Point : Formattable, Copyable {
+    int x
+    int y
+}
+
+void main() {
+    var origin = new shared Point { x = 1, y = 2 }
+    var moved = origin with { x = 20 }
+    print(moved)
+}

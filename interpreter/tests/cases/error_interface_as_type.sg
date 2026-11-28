@@ -1,0 +1,8 @@
+// An interface is not a type: it is written after the name of a struct or an enum.
+void show(read Formattable value) {
+    print(value)
+}
+
+void main() {
+    show(read 1)
+}

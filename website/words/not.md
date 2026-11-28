@@ -38,6 +38,9 @@ carries, and `ref` borrows when `x` is a `ref` borrow or the test is written `re
 
 `not` is not an operator. A `bool` is turned around with `!`: `!ready`.
 
+`not` is a word only right after `is`. Elsewhere it is a name like any other: `int not = 4` is a variable, and
+in `x is not not` the second `not` is read as the name of a variant.
+
 ## Examples
 
 ### `null`
@@ -252,7 +255,7 @@ void main() {
 
 ```text
 error: nothing here can use the names in this pattern
-  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in the second arm of its `?:`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
   this `if` has no `else`, and the code after it also runs when the block has run
   --> example.sg:8:17
  8 |     if s is not Circle(r) {
@@ -280,7 +283,7 @@ void main() {
 
 ```text
 error: `is not` holds when the value is another variant, so nothing here can use the names
-  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
+  the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in the second arm of its `?:`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends
   --> example.sg:8:17
  8 |     if s is not Circle(r) && r > 1 {
    |                 ^^^^^^^^^
@@ -346,9 +349,11 @@ void main() {
 
 ```text
 error: expected `=>`, found `Off`
+  `not` is written only right after `is`, as in `is not null`; a pattern of a `match` has no `not`
   --> example.sg:10:13
  10 |         not Off => print("lit")
     |             ^^^
+  hint: an arm for `Off` first, then one for the rest: `Off => ...` and `_ => ...`
 ```
 
 `not` is written only after `is`. In a `match`, the arm of `Off` goes first, and `_ => ...` takes the rest.
@@ -366,9 +371,11 @@ void main() {
 
 ```text
 error: expected `{`, found `ready`
+  `not` is written only right after `is`, as in `is not null`; a condition is turned around with `!`
   --> example.sg:3:12
  3 |     if not ready {
    |            ^^^^^
+  hint: `if !ready`
 ```
 
 `not` turns a test of `is` around, not a value. A `bool` is turned around with `!`: `if !ready`.

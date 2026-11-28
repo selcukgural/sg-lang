@@ -1,0 +1,13 @@
+// The names of `is not` are seen where its test failed; the note names the second arm of `?:`.
+enum Shape {
+    Circle(int r)
+    Rect(int w, int h)
+}
+
+bool big(read Shape s) {
+    return s is not Circle(r) && r > 1
+}
+
+void main() {
+    print(big(read Shape.Circle(3)))
+}

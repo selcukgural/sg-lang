@@ -1,0 +1,12 @@
+// A cast to an alias of a struct is no cast: only a number type or `char` is cast to.
+struct Point {
+    int x
+}
+
+alias Spot = Point
+
+void main() {
+    int n = 3
+    var spot = (Spot)n
+    print(spot.x)
+}

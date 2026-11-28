@@ -1,0 +1,6 @@
+// An alias names a type that is there.
+alias X = Nothing
+
+void main() {
+    print(1)
+}

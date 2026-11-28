@@ -1,0 +1,10 @@
+// `take` on a `readonly` field: the note says what `take` would change.
+struct Box {
+    readonly string? name
+}
+
+void main() {
+    var box = Box { name = "a".clone() }
+    var name = box.name.take()
+    print(name ?? "none")
+}

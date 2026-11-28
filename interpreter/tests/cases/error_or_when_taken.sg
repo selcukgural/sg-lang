@@ -1,0 +1,21 @@
+// A pattern of an `or` that the patterns before it take never runs, a `when` after it or not:
+// the condition runs with the names of the first pattern that fits (choice 2211).
+enum Pair {
+    Two(int left, int right)
+    One(int value)
+}
+
+bool noisy(int x) {
+    return x > 1
+}
+
+int pick(read Pair p) {
+    return match p {
+        Two(x, _) or Two(_, x) when noisy(x) => x
+        _ => 0
+    }
+}
+
+void main() {
+    print(pick(read Pair.Two(1, 2)))
+}

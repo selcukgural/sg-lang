@@ -1,0 +1,6 @@
+error: expected `=>`, found `Off`
+  `not` is written only right after `is`, as in `is not null`; a pattern of a `match` has no `not`
+  --> error_not_in_match_arm.sg:10:13
+ 10 |         not Off => print(1)
+    |             ^^^
+  hint: an arm for `Off` first, then one for the rest: `Off => ...` and `_ => ...`

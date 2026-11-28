@@ -1,0 +1,11 @@
+// An alias of a `T*` is not built by its name; the hint makes the `T` with `new`.
+struct Node {
+    int v
+}
+
+alias NodePtr = Node*
+
+void main() {
+    var node = new NodePtr { v = 1 }
+    print(node.v)
+}

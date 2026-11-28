@@ -1,0 +1,5 @@
+error: `name` is `readonly`: it is given when the value is built and not changed afterwards
+  `replace` puts the new value in its place
+  --> error_readonly_replace.sg:8:19
+ 8 |     var old = box.name.replace("b".clone())
+   |                   ^^^^

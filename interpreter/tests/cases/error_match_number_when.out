@@ -1,0 +1,6 @@
+error: this `match` does not handle every `int` value
+  an arm with `when` does not settle what it matches: the condition may be false
+  --> error_match_number_when.sg:4:19
+ 4 |     var k = match n {
+   |                   ^
+  hint: add `_ => ...` for everything else

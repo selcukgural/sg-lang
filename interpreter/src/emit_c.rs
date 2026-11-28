@@ -23593,6 +23593,10 @@ impl<'a> Emitter<'a> {
         self.flush_pre(&pad, out);
         let _ = writeln!(out, "{pad}{{");
         let _ = writeln!(out, "{inner}{ctype} {held} = {value};");
+        // Arms that are all `_`, with conditions, never read the subject.
+        if arms.iter().all(|arm| matches!(arm.pattern.kind, PatternKind::Wildcard)) {
+            let _ = writeln!(out, "{inner}(void){held};");
+        }
         // What the subject was made from stays until the arms are done, as Rust keeps the
         // temporaries of a `match`: the names of a borrowing `match` point into it, and so does
         // a value that carries a borrow of one of them (`match make().trim()`, choice 1397).

@@ -1,0 +1,5 @@
+error: there is no type named `Nothing`
+  an alias names a type that is there: a built-in one such as `int` or `string`, a struct, an enum, or another alias
+  --> error_alias_names_nothing.sg:2:11
+ 2 | alias X = Nothing
+   |           ^^^^^^^

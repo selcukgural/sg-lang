@@ -1,0 +1,13 @@
+// Writing a field through `read this`: the hint names the method to change.
+struct Team {
+    int size
+
+    void reset(read this) {
+        this.size = 0
+    }
+}
+
+void main() {
+    var team = Team { size = 1 }
+    team.reset()
+}

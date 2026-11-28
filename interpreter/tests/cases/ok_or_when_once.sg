@@ -1,0 +1,21 @@
+// The condition of an arm whose pattern is an `or` runs once, with the names of the first
+// pattern that fits; the next pattern is not tried (choice 2211).
+enum Pair {
+    Two(int left, int right)
+    One(int value)
+}
+
+string which(read Pair p) {
+    return match p {
+        Two(x, 1..=9) or Two(1..=9, x) when x > 5 => $"big {x}".toString()
+        Two(_, _) => "two".clone()
+        One(_) => "one".clone()
+    }
+}
+
+void main() {
+    print(which(read Pair.Two(2, 7)))
+    print(which(read Pair.Two(7, 2)))
+    print(which(read Pair.Two(20, 7)))
+    print(which(read Pair.One(1)))
+}

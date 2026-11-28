@@ -1,0 +1,10 @@
+// `clone` on a struct that is not `Clonable`: the hint adds the interface.
+struct Tag {
+    int x
+}
+
+void main() {
+    var tag = Tag { x = 1 }
+    var other = tag.clone()
+    print(other.x)
+}

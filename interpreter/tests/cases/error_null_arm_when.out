@@ -1,0 +1,6 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  the arm `null` above has a `when`, so it does not take `null` away: its condition may be false
+  --> error_null_arm_when.sg:5:21
+ 5 |         var text => text.length()
+   |                     ^^^^
+  hint: test it first: `if text is not null { ... }`

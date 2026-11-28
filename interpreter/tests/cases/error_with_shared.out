@@ -1,0 +1,6 @@
+error: `with` makes a new value of a struct from another, and this is a `shared Point`
+  the other owners of a `shared` value still look at it; `with` takes a copy of it, inside a block that opens it
+  --> error_with_shared.sg:9:17
+ 9 |     var moved = origin with { x = 20 }
+   |                 ^^^^^^
+  hint: `read origin as point { ... point with { ... } ... }`

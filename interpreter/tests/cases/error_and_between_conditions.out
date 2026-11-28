@@ -1,0 +1,6 @@
+error: expected `{`, found `and`
+  two conditions are joined with `&&`
+  --> error_and_between_conditions.sg:4:14
+ 4 |     if n > 0 and n < 5 {
+   |              ^^^
+  hint: `if n > 0 && n < 5`

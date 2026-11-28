@@ -1,0 +1,36 @@
+// A name in front of a dot that a variable declared before it has is the variable, which wins
+// over a module, so the folder of that name is not read (choice 2215): `x/` does not parse and
+// `total/` does not check, and neither is read for the variables `x` and `total`. `stats.mean`,
+// where no variable `stats` is open, is the module; the `stats` of `count` is a parameter. The
+// test command reads every folder, so its run meets `x/`.
+struct P {
+    int seconds
+}
+
+int count(int stats) {
+    return stats.abs()
+}
+
+int twice(read P p) {
+    for total in (List<int> { 1, 2 }) {
+        print(total.toString())
+    }
+    var x = P { seconds = p.seconds * 2 }
+    return x.seconds
+}
+
+void main() {
+    var x = P { seconds = 3 }
+    print(x.seconds)
+    print(twice(read x))
+    if x.seconds > 0 {
+        int total = -4
+        print(total.abs())
+    }
+    print(stats.mean(4, 8))
+    print(count(-5))
+    var held = new shared locked P { seconds = 7 }
+    lock held as total {
+        print(total.seconds)
+    }
+}

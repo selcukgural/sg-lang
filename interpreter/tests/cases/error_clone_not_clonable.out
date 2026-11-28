@@ -1,0 +1,5 @@
+error: type `Tag` has no method `clone`
+  --> error_clone_not_clonable.sg:8:21
+ 8 |     var other = tag.clone()
+   |                     ^^^^^
+  hint: add `Clonable` to the definition, and the language makes it: `Tag : Clonable`

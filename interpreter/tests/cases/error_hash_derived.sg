@@ -1,0 +1,9 @@
+// The `hash` the language makes for `Hashable` serves `HashMap` and `HashSet` only (choice 2213).
+struct Point : Equatable, Hashable {
+    int x
+}
+
+void main() {
+    var point = Point { x = 1 }
+    print(point.hash())
+}

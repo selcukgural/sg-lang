@@ -1,4 +1,4 @@
-error: `Iterator` is not in the interpreter yet
+error: `Iterator` is not in the language yet
   interfaces for now: `Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`
   --> error_interface_not_yet.sg:1:26
  1 | struct Point : Copyable, Iterator {

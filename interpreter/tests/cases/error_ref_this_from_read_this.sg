@@ -1,0 +1,17 @@
+// A `ref this` method called from a `read this` one: the hint names the method to change.
+struct Team {
+    int size
+
+    void grow(ref this) {
+        this.size += 1
+    }
+
+    void look(read this) {
+        this.grow()
+    }
+}
+
+void main() {
+    var team = Team { size = 1 }
+    team.look()
+}

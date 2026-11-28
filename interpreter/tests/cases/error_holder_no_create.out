@@ -1,0 +1,6 @@
+error: `grow` is called on a `shared Team`, and this is `Team`
+  it takes the value that holds the `Team`, so that it can write `share this` and `weak this`
+  --> error_holder_no_create.sg:12:5
+ 12 |     team.grow()
+    |     ^^^^
+  hint: make the `Team` with `new shared Team { ... }`

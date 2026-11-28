@@ -1,4 +1,4 @@
-error: an alias with type parameters is not in the interpreter yet
+error: an alias with type parameters is not in the language yet
   generics of your own are deferred: `alias Link<T> = ...` comes with them
   --> error_alias_generic.sg:1:11
  1 | alias Many<T> = List<T>

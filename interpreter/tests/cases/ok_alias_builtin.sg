@@ -1,0 +1,24 @@
+// An alias of a built-in type is that type (choice 2214): it casts, and its functions and
+// constants are reached through it, in the interpreter and in compiled code.
+alias Big = long
+alias Count = int
+alias Text = string
+alias Ratio = double
+alias Letter = char
+alias Small = byte
+
+void main() {
+    int n = 5
+    Big b = (Big)n
+    print(b)
+    print((Big)n * 3)
+    print(Count.parse("12") ?? 0)
+    print(Big.MaxValue)
+    print(Count.MinValue)
+    var parts = List<string> { "a", "b" }
+    print(Text.join(", ", read parts))
+    print(Ratio.Pi)
+    print((Letter)65)
+    print((Small)n)
+    print((Ratio)n / 2.0)
+}

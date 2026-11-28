@@ -1,0 +1,7 @@
+// `or` between two values, where a value has just ended.
+void main() {
+    bool ready = true
+    bool late = false
+    var either = ready or late
+    print(either)
+}

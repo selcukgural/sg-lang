@@ -36,7 +36,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `'outer: for ... { break 'outer; }` | `outer: for ... { break outer }` | built | Also `continue outer` and `outer: while`; C2y's and Go's notation, with no `'`. A name not used is an error. `loop { }` is `while true { }` |
 | `for i in (0..n).rev()` | `for i in (0..n).reversed()` | built | Only at the head of a `for`; `step_by` is not there |
 | the `unused_assignments` lint (`x = 2` never read after) | nothing | not in SG | Not looked at yet: a value given after the last read, or written over before it is read, passes; noted for later |
-| `type Id = u64;` | `alias Id = ulong` | built | `public alias` from a module |
+| `type Id = u64;` | `alias Id = ulong` | built | `public alias` from a module; `Id::MAX`, `x as Id` and `Id::from_str` are `Id.MaxValue`, `(Id)x` and `Id.parse(text)` (2214) |
 | `const BLOCK: usize = 4096;` | `const nint BlockSize = 4096` | built | At the top of a file (`public const` from a module) or in a block. Numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers; the value is found when the program is compiled, an overflow there is a compile error. A name in PascalCase, as C#'s |
 | `const MASKS: [u32; 4] = [1, 3, 7, 15];` | `const uint[] Masks = { 1, 3, 7, 15 }` | built | The items are counted. Used where it lies, as a `read` borrow that lasts for the run; `var copy = Masks` copies it |
 | `const fn` called in a `const` | `static uint[256] Crc = crcTable()`, or the table written out | not planned | A const calls no function, as in C# and Go: the compiler runs none of the program's code (choice 1606; calls were in from the hundred-and-fourth slice to the hundred-and-forty-fifth). A value a function finds is a `static`, found the first time it is used (Rust's `LazyLock`); a table needed from the start is written out by a script, as zlib's `crc32.h` is |
@@ -181,7 +181,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `impl P { fn len(&self) -> i32 }` | `int len(read this)` in the struct body | built | Fields are `this.x` |
 | `struct Config { port: u16 = 80 }` (`default_field_values`, not stable yet), `Config { ..Default::default() }` | `struct Config { int port = 80 }`, `Config {}` | built | No `..` at the literal. A default is what a const can be (found when the program is compiled), `null`, an empty collection or a literal that gives no field |
 | `fn connect(host: &str, port: Option<u16>)` called with `None`, or a builder, or a second name (`connect_with_port`) | `void connect(read string host, int port = 80)`, `connect("a")`, `connect("a", 8080)` | built | Rust has no default values of parameters. The last parameters have them; a default is what the default of a field can be, or `CancellationToken.None`; no named arguments |
-| `Point { x: 3, ..p }` | `p with { x = 3 }` | built | C#'s notation. `p` is moved, or copied when it is `Copyable`; what the fields written held is dropped there. A struct with a field another module does not see is not copied with `with` there, as in Rust |
+| `Point { x: 3, ..p }` | `p with { x = 3 }` | built | C#'s notation. `p` is moved, or copied when it is `Copyable`; what the fields written held is dropped there. A struct with a field another module does not see is not copied with `with` there, as in Rust. `..*b` of a `Box` is `b.clone() with { ... }`: `with` takes a struct, not a `T*` or a `shared T` (2212) |
 | `&mut self`, `self` | `ref this`, `this` | built | |
 | `P::new(1)` | `P.create(1)`, or `P(1)` for short | built | A function without `this` is called on the type |
 | `enum Shape { Circle(i32) }` | `enum Shape { Circle(int radius) }` | built | What a variant carries has a name |
@@ -192,11 +192,11 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `Shape::Circle(2)` | `Shape.Circle(2)` | built | |
 | `#[derive(Clone, Copy)]` | `struct P : Copyable` | built | |
 | `#[derive(Clone)]` | `struct Config : Clonable` | built | `.clone()` copies field by field, calling a field's own `clone`; `impl Clone` by hand is a `clone(read this)` of the type's own (1818) |
-| `#[derive(PartialEq)]` | `: Equatable` | built | Or its own `bool equals(read this, read P other)` |
-| `#[derive(Hash)]` | `: Hashable` | built | Can be a key of a `HashMap` |
+| `#[derive(PartialEq)]` | `: Equatable` | built | Or its own `bool equals(read this, read P other)`; `a.equals(read b)` is `a == b`, the generated one too, as `a.eq(&b)` is in Rust (2213) |
+| `#[derive(Hash)]` | `: Hashable` | built | Can be a key of a `HashMap`; the generated hash is not called by name, where Rust's `Hash::hash` feeds a `Hasher` (2213) |
 | `impl Ord` | `: Comparable` with `int compare(read this, read P other)` | built | Gives `<` and `sort` |
 | `#[derive(Debug)]` | `: Formattable` | built | Written from the fields |
-| `trait`, `impl Trait for T` | `interface` | designed | Interfaces of your own are put off; the seven built-in ones are there |
+| `trait`, `impl Trait for T` | `interface` | designed | Interfaces of your own are put off; the eight built-in ones are there (`Copyable`, `Clonable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable`, `Closable`), and `unsafe Sendable` |
 | generics of your own (`struct Stack<T>`) | none | designed | Put off; `List`, `HashMap`, `HashSet`, `Result`, `Func`, `Task` are generic |
 | `impl Drop for T { fn drop(&mut self) }` | `struct T : Disposable` with `void dispose(ref this)` | built | Runs once where the last owner ends, then the fields end; not on a panic or `exit`. Only on a struct for now |
 | `drop(x)`, `x.drop()` | none: hand it to a function that takes it by value | built | `x.dispose()` is an error; it runs by itself |

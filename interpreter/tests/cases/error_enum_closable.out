@@ -1,0 +1,5 @@
+error: an enum cannot be `Closable` for now: a struct can
+  a struct that holds the enum can be, and its `close` sees the enum whole
+  --> error_enum_closable.sg:2:14
+ 2 | enum Light : Closable {
+   |              ^^^^^^^^

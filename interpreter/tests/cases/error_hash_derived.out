@@ -1,0 +1,6 @@
+error: the `hash` of `Point` is made by the language for `HashMap` and `HashSet`, and is not called by name
+  the number it gives is not part of the language: it may change from one build to the next
+  --> error_hash_derived.sg:8:17
+ 8 |     print(point.hash())
+   |                 ^^^^
+  hint: to tell two values apart, compare them: `point == ...`

@@ -1,0 +1,7 @@
+// `MaybeInt?` with an alias of `int?`: nobody wrote `??`.
+alias MaybeInt = int?
+
+void main() {
+    MaybeInt? b = null
+    print(b ?? 0)
+}

@@ -42,8 +42,14 @@ DESCRIPTION
      errors whose hint is or. Since the words differ, a pattern and a value
      read apart: x is A or B || ready.
 
-     A when after an or is on the whole arm. x is not A or B tests the whole
-     or: it is true when neither A nor B fits.
+     A when after an or is on the whole arm, and it is computed once, with the
+     names of the first pattern that fits; the patterns after it are not tried
+     when it fails. A pattern the ones before it take is an error with a when
+     too. x is not A or B tests the whole or: it is true when neither A nor B
+     fits.
+
+     or is a keyword everywhere: no variable is named or. when and not are
+     words only in their places, and names elsewhere.
 
 EXAMPLES
    The variants of an enum
@@ -311,9 +317,11 @@ WHAT THE COMPILER REFUSES
          }
 
          error: expected `{`, found `or`
+           `or` joins patterns, after `is` and in an arm of a `match`; two conditions are joined with `||`
            --> example.sg:4:14
           4 |     if ready or forced {
             |              ^^
+           hint: `if ready || forced`
 
      or joins patterns only; two conditions are joined with ||: if ready ||
      forced.

@@ -1,0 +1,5 @@
+// `readonly` is written on a field; a value that does not change is a `const`.
+void main() {
+    readonly int limit = 3
+    print(limit)
+}

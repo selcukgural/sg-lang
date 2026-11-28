@@ -1,0 +1,7 @@
+// An alias of a `shared int` is not built by its name; the hint is `new shared` and the value.
+alias Cell = shared int
+
+void main() {
+    var cell = new Cell(3)
+    print(cell)
+}

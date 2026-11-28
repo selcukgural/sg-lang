@@ -229,13 +229,20 @@ fn missing_use(sources: &Sources, diag: &Diag) -> Option<String> {
     }
     let all = sources.with_every_module()?;
     let unread = &all.files[sources.files.len()..];
-    let files: Vec<parser::FileIn> = unread.iter().map(|file| (file.start, file.end, file.module.clone(), file.map.clone())).collect();
-    let prog = parser::parse_files(&all.text, &files).ok()?;
-    let types = prog.structs.iter().map(|decl| (&decl.name, decl.public)).chain(prog.enums.iter().map(|decl| (&decl.name, decl.public)));
-    let funcs = prog.funcs.iter().map(|func| (&func.name, func.public));
-    let mut modules: Vec<&str> = types.chain(funcs).filter(|(full, public)| *public && ast::short_name(full) == name).map(|(full, _)| ast::module_of(full)).collect();
+    // Each module is read apart, so that a folder whose files do not parse takes nothing from the
+    // others.
+    let mut modules: Vec<String> = Vec::new();
+    let mut names: Vec<&str> = unread.iter().map(|file| file.module.as_str()).collect();
+    names.dedup();
+    for module in names {
+        let files: Vec<parser::FileIn> = unread.iter().filter(|file| file.module == module).map(|file| (file.start, file.end, file.module.clone(), file.map.clone())).collect();
+        let Ok(prog) = parser::parse_files(&all.text, &files) else { continue };
+        let types = prog.structs.iter().map(|decl| (&decl.name, decl.public)).chain(prog.enums.iter().map(|decl| (&decl.name, decl.public)));
+        let funcs = prog.funcs.iter().map(|func| (&func.name, func.public));
+        modules.extend(types.chain(funcs).filter(|(full, public)| *public && ast::short_name(full) == name).map(|(full, _)| ast::module_of(full).to_string()));
+    }
     modules.sort();
-    modules.first().map(|module| module.to_string())
+    modules.into_iter().next()
 }
 
 /// Whether the standard error, a terminal, shows the colours `Log` gives its levels (choice
