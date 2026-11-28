@@ -1,0 +1,6 @@
+void main() {
+    var count = 3
+    var line = $"count = {count}"
+    count = 4
+    print(line)
+}

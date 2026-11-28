@@ -1,0 +1,5 @@
+error: an `int` value cannot be converted to `bool`
+  --> error_cast_to_bool.sg:3:15
+ 3 |     var any = (bool)count
+   |               ^^^^^^^^^^^
+  hint: a number is not a condition; compare it: `count != 0`

@@ -1,0 +1,5 @@
+error: `&=` needs an integer on the left, found `bool`
+  --> error_bool_and_assign.sg:4:5
+ 4 |     ready &= ok
+   |     ^^^^^^^^^^^
+  hint: for two `bool`s write `ready = ready && ok`

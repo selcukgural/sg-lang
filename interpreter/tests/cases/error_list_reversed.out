@@ -1,0 +1,5 @@
+error: `int[]` has no method `reversed`
+  --> error_list_reversed.sg:3:22
+ 3 |     for x in xs[1..].reversed() {
+   |                      ^^^^^^^^
+  hint: `reversed` goes over a range from its end: `for i in (0..xs[1..].length()).reversed()`; `xs[1..].reverse()` turns the items round in place

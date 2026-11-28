@@ -1,0 +1,5 @@
+error: operator `==` is not defined for `formatted text` and `string`
+  --> error_formatted_compare.sg:3:11
+ 3 |     print($"{n}" == "1")
+   |           ^^^^^^^^^^^^^
+  hint: make it a `string` first: `$"{n}".toString()`

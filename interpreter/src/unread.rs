@@ -53,11 +53,13 @@ struct Pass<'p> {
     seen: &'p Seen,
     kinds: HashMap<usize, Kind<'p>>,
     usage: HashMap<usize, Usage>,
+    /// The plain texts written in the body (`"{n} items"`), for a name written in braces in one.
+    texts: Vec<&'p str>,
 }
 
 /// Checks one body: the first local variable in it whose value is never read is the error.
 pub fn check(body: &Block, seen: &Seen, disposes: &dyn Fn(&Ty) -> bool, src: &str) -> Res<()> {
-    let mut pass = Pass { seen, kinds: HashMap::new(), usage: HashMap::new() };
+    let mut pass = Pass { seen, kinds: HashMap::new(), usage: HashMap::new(), texts: Vec::new() };
     pass.block(body);
     let mut locals: Vec<&(String, Ty, Span)> = seen.locals.values().collect();
     locals.sort_by_key(|(_, _, span)| span.start);
@@ -86,6 +88,12 @@ pub fn check(body: &Block, seen: &Seen, disposes: &dyn Fn(&Ty) -> bool, src: &st
             return Err(diag.hint(format!("read `{name}` where it is needed, or take it away with the lines that write it")));
         }
         let diag = Diag::error(*span, format!("`{name}` is never used"));
+        // `print("{n} items")`: the `$` is left out, and the braces are written as they are.
+        let braced = |text: &&&str| ["}", ":", ","].iter().any(|after| text.contains(&format!("{{{name}{after}")));
+        if let Some(text) = pass.texts.iter().find(braced) {
+            let written = text.escape_debug();
+            return Err(diag.note(format!("`\"{written}\"` is written as it is; a value goes into a text with `$`: `$\"{written}\"`")));
+        }
         return Err(match kind {
             Some(Kind::Let(_)) | None => diag.hint("take the line away; to run what it is given and drop the value on purpose, write `_ = ...`"),
             Some(Kind::Loop(over)) => diag.hint(format!("when the loop needs no name: `for _ in {}`", &src[over.start..over.end])),
@@ -275,7 +283,8 @@ impl<'p> Pass<'p> {
     fn expr(&mut self, expr: &'p Expr) {
         match &expr.kind {
             ExprKind::Var(name) => self.read(expr.span.start, name),
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::SizeOf { .. } | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::End => {}
+            ExprKind::Str(text) => self.texts.push(text),
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::SizeOf { .. } | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::End => {}
             ExprKind::Interp(parts) => {
                 for part in parts {
                     if let InterpPart::Expr(value, _) = part {

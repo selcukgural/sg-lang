@@ -1,0 +1,10 @@
+void main() {
+    var n = 0
+    while 1 {
+        n += 1
+        if n == 3 {
+            break
+        }
+    }
+    print(n)
+}

@@ -36,6 +36,12 @@ A `$"..."` is not a `string`. `print`, `panic`, a text's `write`, a `Formatter`'
 files take it as it is and write it without making one. Where a `string` is needed, `.toString()` makes it, and
 that is where the allocation shows. Texts are joined this way too: `a + b` is refused, `$"{a}{b}"` is the join.
 
+A `$"..."` borrows its values until it is written. Kept in a variable, `var line = $"hi {name}"`, it is a borrow
+like `read name`: until the last use of `line`, `name` is not moved or changed, and a value with no name, as
+`{n + 1}` or `{make()}`, cannot be kept, since it is gone when the line ends. A number or a text written in the
+braces is kept as it is. `.toString()` writes the text out at once, and keeps no borrow. `sg build` does not
+compile a `$"..."` kept in a variable yet.
+
 A width follows a comma: `{x,8}` takes at least eight characters, with spaces in front; `{x,-8}` puts the spaces
 after. It counts characters, not bytes, and a longer value is not cut. The width is a number written in the
 text, at most 999.
@@ -265,6 +271,52 @@ error: expected `string`; `$"..."` does not become a `string` on its own
  2 |     return $"{count} items"
    |            ^^^^^^^^^^^^^^^^
   hint: add `.toString()` at the end; that is where the allocation shows
+```
+
+A `read string` parameter is given `read $"...".toString()`. A `$"..."` has no other method, and is compared
+with `==` once it is a `string` too.
+
+### A value moved while a kept `$"..."` looks at it
+
+```sg error
+void main() {
+    var name = "Ada".clone()
+    var line = $"hi {name}"
+    var taken = name
+    print(taken)
+    print(line)
+}
+```
+
+```text
+error: `name` cannot be moved here: `line` borrows from it and is used again later
+  --> example.sg:4:17
+ 4 |     var taken = name
+   |                 ^^^^
+  `line` borrowed it here:
+  --> example.sg:3:22
+ 3 |     var line = $"hi {name}"
+   |                      ^^^^
+  hint: finish with `line` before this line: a borrow ends at its last use
+```
+
+`print(line)` before the move, or `$"hi {name}".toString()`, which keeps no borrow, is what works.
+
+### A text without `$`
+
+```sg error
+void main() {
+    var count = 3
+    print("{count} items")
+}
+```
+
+```text
+error: `count` is never used
+  `"{count} items"` is written as it is; a value goes into a text with `$`: `$"{count} items"`
+  --> example.sg:2:9
+ 2 |     var count = 3
+   |         ^^^^^
 ```
 
 ### `?:` without parentheses

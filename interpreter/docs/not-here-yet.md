@@ -188,7 +188,9 @@
 - **Found writing the site (1402), in compiled code**: three things the interpreter runs and `sg build`
   refuses with "not in the C back end yet" and a hint to name the value first: `try` inside a larger
   expression (`print((try command.output()).trim())`), a text and then a value that lends with `ref` in one
-  `$"..."` (`$"{pause} {path} {random.nextInt(1, 7)}"`), and a `$"..."` inside another. Since the
+  `$"..."` (`$"{pause} {path} {random.nextInt(1, 7)}"`), and a `$"..."` inside another. A `$"..."` kept in a
+  variable (`var line = $"hi {name}"`, whose borrows the checker follows since choice 2110) is refused by
+  `sg build` too: "the type `formatted text` is not in the C back end yet". Since the
   hundred-and-sixty-sixth slice (choice 1817) a `try` reached through calls and methods with only reads
   before it is computed first (`args.add(try f())`, `b.put(2, try word(i))`); one after an index, a call or
   a value moved is still refused, as running it first would change what happens.

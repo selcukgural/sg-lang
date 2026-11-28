@@ -1,0 +1,5 @@
+panic: index ^1 is out of range: the length is 0
+  --> panic_from_end_empty.sg:4:11
+ 4 |     print(xs[^k])
+   |           ^^^^^^
+  hint: it is empty, so there is nothing to count from the end

@@ -1,0 +1,5 @@
+error: `count` is never used
+  `"{count} items"` is written as it is; a value goes into a text with `$`: `$"{count} items"`
+  --> error_text_without_dollar.sg:2:9
+ 2 |     var count = 3
+   |         ^^^^^

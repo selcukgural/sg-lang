@@ -243,9 +243,10 @@ error: a `bool` value cannot be converted to `int`
   --> example.sg:3:17
  3 |     int score = (int)done
    |                 ^^^^^^^^^
+  hint: a `bool` is not a number: `done ? 1 : 0`
 ```
 
-`done ? 1 : 0` says which number each value is.
+`done ? 1 : 0` says which number each value is. The other way, `(bool)n` is refused too, with the hint `n != 0`.
 
 ### A `bool` compared with a number
 
@@ -263,6 +264,7 @@ error: operator `==` is not defined for `bool` and `int`
   --> example.sg:3:8
  3 |     if done == 1 {
    |        ^^^^^^^^^
+  hint: a `bool` is a test by itself: `done`
 ```
 
 `if done` is the whole test.
@@ -285,7 +287,8 @@ error: operator `&` is not defined for `bool` and `bool`
   hint: for two `bool`s write `&&`
 ```
 
-`|` is refused the same way, with `||` as the hint, and `^` with `!=`.
+`|` is refused the same way, with `||` as the hint, and `^` with `!=`. `ready &= ok` is refused with the hint
+`ready = ready && ok`, and there is no `&&=` or `||=`: the assignment is written out.
 
 ### Two comparisons in a row
 
@@ -303,6 +306,7 @@ error: operator `<` is not defined for `bool` and `int`
   --> example.sg:3:8
  3 |     if 18 <= age < 65 {
    |        ^^^^^^^^^^^^^^
+  hint: compare twice: `18 <= age && age < 65`
 ```
 
 `18 <= age` is a `bool`, which is then compared with 65. Two tests are joined with `&&`:
@@ -344,6 +348,26 @@ error: there is no variable named `True`
   --> example.sg:2:18
  2 |     bool ready = True
    |                  ^^^^
+  hint: a `bool` is written in lower case: `true`
 ```
 
 The two values are written `true` and `false`.
+
+### `bool.parse`
+
+```sg error
+void main() {
+    var answer = "true"
+    print(bool.parse(answer))
+}
+```
+
+```text
+error: `bool` has no function `parse`
+  --> example.sg:3:16
+ 3 |     print(bool.parse(answer))
+   |                ^^^^^
+  hint: compare the text: `answer == "true"`
+```
+
+A comparison says exactly which texts count as `true`.

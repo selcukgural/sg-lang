@@ -2,3 +2,4 @@ error: the value of `Past` is found when the program is compiled, and this stops
   --> error_from_end_const.sg:2:19
  2 | const byte Past = Name[^9]
    |                   ^^^^^^^^
+  hint: from the end, `^1` is the last and `^5` the first

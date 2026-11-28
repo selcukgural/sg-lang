@@ -1,0 +1,5 @@
+error: expected `bool`, found `int`
+  --> error_not_number.sg:3:9
+ 3 |     if !count {
+   |         ^^^^^
+  hint: a number is not a condition; compare it: `count == 0`, in place of `!count`

@@ -1,0 +1,6 @@
+void main() {
+    var age = 30
+    if 18 <= age < 65 {
+        print("working age")
+    }
+}

@@ -1,0 +1,7 @@
+void read(read string text) {
+    print(text)
+}
+
+void main() {
+    read("a")
+}

@@ -1,0 +1,4 @@
+void main() {
+    var side = 2.0
+    print(Math.sqrt(side * side))
+}

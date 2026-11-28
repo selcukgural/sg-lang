@@ -1,0 +1,5 @@
+error: an index cannot be negative
+  --> error_negative_index.sg:3:14
+ 3 |     print(xs[-1])
+   |              ^^
+  hint: count from the end with `^`: `^1`

@@ -1,0 +1,9 @@
+error: `name` cannot be moved here: `line` borrows from it and is used again later
+  --> error_formatted_kept_moved.sg:4:17
+ 4 |     var taken = name
+   |                 ^^^^
+  `line` borrowed it here:
+  --> error_formatted_kept_moved.sg:3:22
+ 3 |     var line = $"hi {name}"
+   |                      ^^^^
+  hint: finish with `line` before this line: a borrow ends at its last use

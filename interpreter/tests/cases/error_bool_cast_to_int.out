@@ -1,0 +1,5 @@
+error: a `bool` value cannot be converted to `int`
+  --> error_bool_cast_to_int.sg:3:11
+ 3 |     print((int)done)
+   |           ^^^^^^^^^
+  hint: a `bool` is not a number: `done ? 1 : 0`

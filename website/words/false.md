@@ -227,9 +227,8 @@ error: expected `bool`, found `int`
   --> example.sg:2:18
  2 |     bool found = 0
    |                  ^
+  hint: a `bool` is `true` or `false`: write `false`
 ```
-
-The value is written `false`.
 
 ### `!` on a number
 
@@ -247,7 +246,7 @@ error: expected `bool`, found `nint`
   --> example.sg:3:9
  3 |     if !items.length() {
    |         ^^^^^^^^^^^^^^
-  hint: a number is not a condition; compare it: `items.length() != 0`
+  hint: a number is not a condition; compare it: `items.length() == 0`, in place of `!items.length()`
 ```
 
-`!` turns a `bool` around and nothing else. An empty list is `items.length() == 0`.
+`!` turns a `bool` around and nothing else. C's `!n` is `n == 0`, so the hint compares with `==`.

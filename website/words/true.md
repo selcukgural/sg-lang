@@ -198,6 +198,7 @@ error: a `bool` value cannot be converted to `int`
   --> example.sg:2:11
  2 |     print((int)true + 1)
    |           ^^^^^^^^^
+  hint: a `bool` is not a number: `true ? 1 : 0`
 ```
 
 `(true ? 1 : 0) + 1` is `2`.
@@ -222,6 +223,7 @@ error: expected `bool`, found `int`
   --> example.sg:3:11
  3 |     while 1 {
    |           ^
+  hint: a `bool` is `true` or `false`: write `true`
 ```
 
 `while true` is the loop that runs until a `break`.
@@ -239,9 +241,11 @@ void main() {
 
 ```text
 error: operator `==` is not defined for `bool?` and `bool`
+  `answer` may be `null`
   --> example.sg:3:8
  3 |     if answer == true {
    |        ^^^^^^^^^^^^^^
+  hint: `null` counts as `false` with `??`: `answer ?? false`
 ```
 
 `answer ?? false` is `true` only when `answer` holds `true`.

@@ -160,6 +160,37 @@ impl Tok {
         )
     }
 
+    /// A word of the language that has a token of its own (`read`, `match`), not a name.
+    pub fn is_word(&self) -> bool {
+        matches!(
+            self,
+            Tok::Var
+                | Tok::If
+                | Tok::Else
+                | Tok::While
+                | Tok::For
+                | Tok::In
+                | Tok::Return
+                | Tok::Break
+                | Tok::Continue
+                | Tok::True
+                | Tok::False
+                | Tok::Null
+                | Tok::Is
+                | Tok::Or
+                | Tok::New
+                | Tok::Read
+                | Tok::Ref
+                | Tok::Public
+                | Tok::Readonly
+                | Tok::Use
+                | Tok::Struct
+                | Tok::Enum
+                | Tok::Match
+                | Tok::Try
+        )
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Tok::Int(v) => format!("`{v}`"),

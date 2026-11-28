@@ -1,0 +1,5 @@
+error: `bool` has no function `parse`
+  --> error_bool_parse.sg:3:16
+ 3 |     print(bool.parse(answer))
+   |                ^^^^^
+  hint: compare the text: `answer == "true"`

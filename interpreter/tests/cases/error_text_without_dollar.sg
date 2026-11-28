@@ -1,0 +1,4 @@
+void main() {
+    var count = 3
+    print("{count} items")
+}

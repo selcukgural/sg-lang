@@ -1,0 +1,9 @@
+error: `count` cannot be changed here: `line` borrows from it and is used again later
+  --> error_formatted_kept_written.sg:4:5
+ 4 |     count = 4
+   |     ^^^^^
+  `line` borrowed it here:
+  --> error_formatted_kept_written.sg:3:27
+ 3 |     var line = $"count = {count}"
+   |                           ^^^^^
+  hint: finish with `line` before this line: a borrow ends at its last use

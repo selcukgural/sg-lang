@@ -204,8 +204,7 @@ WHAT THE COMPILER REFUSES
            --> example.sg:2:18
           2 |     bool found = 0
             |                  ^
-
-     The value is written false.
+           hint: a `bool` is `true` or `false`: write `false`
 
    ! on a number
          void main() {
@@ -219,10 +218,10 @@ WHAT THE COMPILER REFUSES
            --> example.sg:3:9
           3 |     if !items.length() {
             |         ^^^^^^^^^^^^^^
-           hint: a number is not a condition; compare it: `items.length() != 0`
+           hint: a number is not a condition; compare it: `items.length() == 0`, in place of `!items.length()`
 
-     ! turns a bool around and nothing else. An empty list is items.length()
-     == 0.
+     ! turns a bool around and nothing else. C's !n is n == 0, so the hint
+     compares with ==.
 
 SEE ALSO
      sg help bool, sg help true, sg help if, sg help while, sg help match, sg
