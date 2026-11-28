@@ -3495,7 +3495,12 @@ fn help_from_sg_itself() {
     assert_eq!(ran(&sg(&dir, &["help", "list"])).1, ran(&sg(&dir, &["help", "List"])).1);
     let (code, out, _) = ran(&sg(&dir, &["help", "build"]));
     assert_eq!(code, 0);
-    assert!(out.starts_with("NAME\n     sg build - ") && out.contains("https://sg-lang.org/reference/#"), "{out}");
+    assert!(out.starts_with("NAME\n     sg build - ") && out.contains("\nSYNOPSIS\n") && out.contains("https://sg-lang.org/reference/sg-build.html"), "{out}");
+    // A command by the name of its manual page, and by its name with `sg` (choice 2087); a word keeps its own name.
+    assert_eq!(ran(&sg(&dir, &["help", "sg-build"])).1, out);
+    assert_eq!(ran(&sg(&dir, &["help", "sg build"])).1, out);
+    assert!(ran(&sg(&dir, &["help", "test"])).1.starts_with("NAME\n     test - "));
+    assert!(ran(&sg(&dir, &["help", "sg-test"])).1.starts_with("NAME\n     sg test - "));
     let (code, out, _) = ran(&sg(&dir, &["help", "x ?? y"]));
     assert_eq!(code, 0);
     assert!(out.starts_with("NAME\n     x ?? y - "), "{out}");
@@ -3521,6 +3526,71 @@ fn help_from_sg_itself() {
     assert!(err.starts_with("usage: sg ") && err.contains("sg help [name | index]"), "{err}");
 }
 
+/// `sg --help` and `sg <command> --help` (or `-h`) print the page of the command (choice 2088), as `sg help` does;
+/// `--help` after `--` is the C compiler's, and after a program the program's own.
+#[test]
+fn every_command_answers_help() {
+    let dir = work("every_command_answers_help");
+    for (words, page) in [
+        (&["--help"][..], "sg"),
+        (&["-h"][..], "sg"),
+        (&["-L", ".", "--help"][..], "sg"),
+        (&["test", "--help"][..], "sg-test"),
+        (&["build", "main.sg", "--release", "-h"][..], "sg-build"),
+        (&["emit-c", "--help"][..], "sg-emit-c"),
+        (&["lsp", "--help"][..], "sg-lsp"),
+        (&["help", "--help"][..], "sg-help"),
+        (&["add", "--help"][..], "sg-add"),
+        (&["lock", "-h"][..], "sg-add"),
+    ] {
+        let (code, out, err) = ran(&sg(&dir, words));
+        assert_eq!((code, err.as_str()), (0, ""), "{words:?}");
+        assert_eq!(out, ran(&sg(&dir, &["help", page])).1, "{words:?}");
+        assert!(out.starts_with("NAME\n     sg"), "{words:?}: {out}");
+    }
+    std::fs::write(dir.join("main.sg"), "void main(List<string> args) {\n    print(args)\n}\n").unwrap();
+    assert_eq!(ran(&sg(&dir, &["main.sg", "--help"])), (0, "[\"--help\"]\n".into(), String::new()));
+    // After `--` the word is C's: `emit-c` takes no flags of C, so this is the usage, not the page.
+    let (code, out, err) = ran(&sg(&dir, &["emit-c", "main.sg", "--", "-h"]));
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with("usage: sg "), "{err}");
+}
+
+/// What a build writes never replaces a source (choice 2089): the program's own file, a file of SG or of C, or a
+/// header `sg build` did not write is refused before anything is compiled; a program or a header the last build
+/// wrote is written again.
+#[test]
+fn a_build_never_writes_over_a_source() {
+    let dir = work("a_build_never_writes_over_a_source");
+    let program = "void main() {\n    print(\"hi\")\n}\n";
+    std::fs::write(dir.join("self.sg"), program).unwrap();
+    std::fs::write(dir.join("other.sg"), program).unwrap();
+    std::fs::write(dir.join("glue.c"), "int glue(void) { return 1; }\n").unwrap();
+    for (out, what) in [("self.sg", "the program itself"), ("other.sg", "a file of SG"), ("glue.c", "a file of C")] {
+        let (code, said, err) = ran(&sg(&dir, &["build", "self.sg", "-o", out]));
+        assert_eq!((code, said.as_str()), (2, ""), "{out}");
+        assert_eq!(err, format!("error: cannot write {out}: it is {what}, which the build would replace; name the output with -o\n"));
+    }
+    assert_eq!(std::fs::read_to_string(dir.join("self.sg")).unwrap(), program);
+    assert_eq!(std::fs::read_to_string(dir.join("glue.c")).unwrap(), "int glue(void) { return 1; }\n");
+    // A library writes its header beside it: one of the program's own is kept.
+    std::fs::create_dir_all(dir.join("one")).unwrap();
+    std::fs::write(dir.join("one/main.sg"), "export int one() {\n    return 1\n}\n").unwrap();
+    std::fs::write(dir.join("one.h"), "// mine\n").unwrap();
+    let (code, _, err) = ran(&sg(&dir, &["build", "one", "--library", "-o", "libone.a"]));
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("cannot write one.h: it is a header that `sg build` did not write"), "{err}");
+    std::fs::remove_file(dir.join("one.h")).unwrap();
+    for _ in 0..2 {
+        let (code, _, err) = ran(&sg(&dir, &["build", "one", "--library", "-o", "libone.a"]));
+        assert_eq!(code, 0, "{err}");
+    }
+    for _ in 0..2 {
+        let (code, _, err) = ran(&sg(&dir, &["build", "self.sg", "-o", "hello"]));
+        assert_eq!(code, 0, "{err}");
+    }
+}
+
 /// Every page of a word on the site is a page of `sg help`, with the line its Markdown gives it: the files of
 /// `src/help/` were made from the words as they are (`npm run build` in `website/plain` makes them again).
 #[test]
@@ -3539,7 +3609,11 @@ fn help_has_every_page_of_the_site() {
         let summary = summary.strip_suffix('.').unwrap_or(&summary);
         let mut chars = summary.chars();
         let first = chars.next().unwrap();
-        let line = if chars.clone().next().is_some_and(|c| c.is_lowercase() || c == ' ') { format!("{}{}", first.to_lowercase(), chars.as_str()) } else { summary.to_string() };
+        // A small first letter where the first word is an ordinary one, never in a name such as `CommandLine`.
+        let rest = chars.as_str();
+        let word_ends = rest.trim_start_matches(|c: char| c.is_ascii_lowercase());
+        let ordinary = first.is_ascii_uppercase() && word_ends.chars().next().is_none_or(|c| !c.is_alphabetic() && c != '<');
+        let line = if ordinary { format!("{}{}", first.to_lowercase(), rest) } else { summary.to_string() };
         let stem = path.file_stem().unwrap().to_str().unwrap();
         let (code, out, err) = ran(&sg(&dir, &["help", stem]));
         assert_eq!((code, err.as_str()), (0, ""), "{stem}");

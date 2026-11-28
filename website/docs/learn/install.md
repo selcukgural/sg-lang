@@ -34,6 +34,7 @@ sg build hello.sg --release      # optimised; overflow wraps
 sg test hello.sg                 # runs its tests; --compiled runs them compiled
 sg emit-c hello.sg               # prints the C
 sg help read                     # the page of a word, with no network
+sg build --help                  # the page of a command
 ```
 
 A folder is a program too (`sg shop`): every `.sg` file in it, with the folders beside it as its modules.

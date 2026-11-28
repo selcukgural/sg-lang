@@ -7,7 +7,8 @@
 //   its section beside it;
 // - the Reference: the index of every name (`../words/index.txt`, the pages of `../words/`, and the types and
 //   modules of the library, taken from the headings of `../docs/library/`), and a page for each word;
-// - from each word's page, its manual page as `man` reads it (`man/man7/sg-read.7`) and as the site shows it;
+// - from each word's page, its manual page as `man` reads it (`man/man7/sg-read.7`, a command's `man/man1/sg-build.1`)
+//   and as the site shows it;
 // - in every program on every page, each word of the language and each type of the library as a link to its
 //   page, with what it is in one line;
 // - the list the search looks in (`search-index.js`), and the headers Cloudflare gives each page.
@@ -173,7 +174,9 @@ for (const file of readdirSync(wordsDir).filter((f) => f.endsWith('.md')).sort()
     body,
     kind: 'word',
     meta,
-    manName: `sg-${slug}`,
+    // A command is a page of section 1, named as it is called (`sg-build`); a word one of section 7 (choice 2087).
+    manName: meta.kind === 'command' ? slug : `sg-${slug}`,
+    manSection: meta.kind === 'command' ? 1 : 7,
   };
   pages.push(page);
   bySource.set(src, page);
@@ -374,6 +377,7 @@ const NAV = [
   ['Manual', 'manual/index.html', 'manual'],
   ['Benchmarks', 'benchmarks/index.html', 'benchmarks'],
   ['Status', 'status.html', 'status'],
+  ['About', 'about/index.html', 'about'],
 ];
 
 function frame({ url, title, description, section, main, wide = false, side = '', onPage = '' }) {
@@ -430,7 +434,7 @@ ${main}
 ${onPage}</div>
 <footer class="foot">
   <p>SG is free software under the MIT or Apache 2.0 license.</p>
-  <p><a href="${to('about/why.html')}">Why SG</a> <a href="${to('about/community.html')}">Community</a> <a href="${github}">Source</a> <a href="${github}/blob/main/SECURITY.md">Security</a></p>
+  <p class="links"><a href="${to('about/why.html')}">Why SG</a> <a href="${to('about/community.html')}">Community</a> <a href="${github}">Source</a> <a href="${github}/blob/main/SECURITY.md">Security</a></p>
 </footer>
 </body>
 </html>
@@ -527,15 +531,21 @@ const roffInline = (md) =>
     .map((p) => (p.code ? `\\fB${roffText(p.text).replaceAll('-', '\\-')}\\fR` : roffText(plainText(p.text))))
     .join('')
     .replace(/\n/g, ' ');
+// A summary as the line after a name: no full stop, and a small first letter where the first word is an ordinary
+// one (`The`, `A`), never in a name such as `CommandLine` or `List`'s own.
+const asLine = (summary) => summary.replace(/\.$/, '').replace(/^[A-Z](?=[a-z]*(?:[^A-Za-z<]|$))/, (c) => c.toLowerCase());
 const SECTION_NAME = { Forms: 'SYNOPSIS', 'What it means': 'DESCRIPTION', Examples: 'EXAMPLES' };
+// The name of a manual page with its section, `sg-build(1)`, and the title in the middle of its top line.
+const manRef = (page) => `${page.manName}(${page.manSection})`;
+const manTitle = (page) => (page.manSection === 1 ? 'SG commands' : 'SG reference');
 
 function roffOf(page) {
   const name = page.manName.toUpperCase();
   const lines = [
     `.\\" Made by website/plain/build.mjs from website/words/${posix.basename(page.src)}; change that file.`,
-    `.TH ${name} 7 ${today} "SG" "SG reference"`,
+    `.TH ${name} ${page.manSection} ${today} "SG" "${manTitle(page)}"`,
     '.SH NAME',
-    `${roffText(page.meta.name)} \\- ${roffText(page.meta.summary.replace(/\.$/, '').replace(/^./, (c) => c.toLowerCase()))}`,
+    `${roffText(page.meta.name)} \\- ${roffText(asLine(page.meta.summary))}`,
   ];
   for (const block of blocksOf(page.body)) {
     if (block.type === 'h2') {
@@ -554,7 +564,7 @@ function roffOf(page) {
   const see = (page.meta.see || '').split(',').map((s) => s.trim()).filter(Boolean);
   lines.push('.SH "SEE ALSO"');
   const seePages = see.map((s) => wordPages.find((p) => p.meta.name === s)).filter(Boolean);
-  lines.push(seePages.map((w, i) => `.BR ${w.manName} (7)${i === seePages.length - 1 ? '' : ','}`).join('\n') || '.BR sg-index (7)');
+  lines.push(seePages.map((w, i) => `.BR ${w.manName} (${w.manSection})${i === seePages.length - 1 ? '' : ','}`).join('\n') || '.BR sg-index (7)');
   lines.push('.PP', `https://sg\\-lang.org/${page.url}`);
   // A paragraph macro right after a heading is one too many: man starts a paragraph there anyway.
   // A paragraph macro next to a heading, or with nothing after it, is one too many.
@@ -583,11 +593,12 @@ function wrap(text, indent, width = 78) {
 const textInline = (md) => inlineParts(md).map((p) => (p.code ? `\u0001${p.text}\u0002` : plainText(p.text))).join('').replace(/\n/g, ' ');
 
 function manText(page) {
-  const head = `${page.manName.toUpperCase()}(7)`;
-  const middle = 'SG reference';
-  const gap = Math.max(1, Math.floor((78 - head.length * 2 - middle.length) / 2));
+  const head = `${page.manName.toUpperCase()}(${page.manSection})`;
+  const middle = manTitle(page);
+  // mandoc puts the odd space on the left of the title.
+  const gap = Math.max(1, Math.ceil((78 - head.length * 2 - middle.length) / 2));
   const out = [`${head}${' '.repeat(gap)}${middle}${' '.repeat(78 - head.length * 2 - middle.length - gap)}${head}`, ''];
-  out.push('\u0001NAME\u0002', wrap(`\u0001${page.meta.name}\u0002 - ${page.meta.summary.replace(/\.$/, '').replace(/^./, (c) => c.toLowerCase())}`, 5), '');
+  out.push('\u0001NAME\u0002', wrap(`\u0001${page.meta.name}\u0002 - ${asLine(page.meta.summary)}`, 5), '');
   for (const block of blocksOf(page.body)) {
     if (block.type === 'h2') out.push(`\u0001${SECTION_NAME[block.text] || block.text.toUpperCase()}\u0002`);
     else if (block.type === 'h3') out.push(`   \u0001${block.text}\u0002`);
@@ -601,7 +612,7 @@ function manText(page) {
     } else if (block.type === 'code') out.push(block.text.split('\n').map((l) => (l ? `         ${l}` : '')).join('\n'), '');
   }
   const see = (page.meta.see || '').split(',').map((s) => s.trim()).filter(Boolean);
-  out.push('\u0001SEE ALSO\u0002', wrap(see.map((s) => wordPages.find((p) => p.meta.name === s)).filter(Boolean).map((p) => `\u0001${p.manName}\u0002(7)`).join(', ') || 'sg-index(7)', 5), '', wrap(`https://sg-lang.org/${page.url}`, 5), '');
+  out.push('\u0001SEE ALSO\u0002', wrap(see.map((s) => wordPages.find((p) => p.meta.name === s)).filter(Boolean).map((p) => `\u0001${p.manName}\u0002(${p.manSection})`).join(', ') || 'sg-index(7)', 5), '', wrap(`https://sg-lang.org/${page.url}`, 5), '');
   // The date in the middle of the line, as mandoc puts it.
   const foot = `SG${' '.repeat(Math.floor((78 - today.length) / 2) - 2)}${today}`;
   out.push(`${foot}${' '.repeat(Math.max(1, 78 - foot.length - head.length))}${head}`);
@@ -613,7 +624,7 @@ const manPlain = (text) => text.replace(/\u0001|\u0002/g, '');
 // with the date at its foot, so that it changes only when the page does.
 // The pages it names are pages of `sg help` too; `sg help for` is longer than `sg-for(7)`, so the list
 // under SEE ALSO is wrapped again, and stays within 78 columns.
-const helpPages = (text) => text.replace(/\bsg-([a-z0-9-]+)\(7\)/g, 'sg help $1');
+const helpPages = (text) => text.replace(/\b(sg(?:-[a-z0-9-]+)?)\(([17])\)/g, (_, name, section) => `sg help ${section === '7' ? name.slice(3) : name}`);
 const helpText = (page) =>
   helpPages(
     manPlain(manText(page)).split('\n').slice(2, -2).join('\n').replace(/\n+$/, '')
@@ -667,6 +678,11 @@ for (const section of SECTIONS) {
   write(url, frame({ url, title: section.title, description: section.description, section: section.id, main: `<h1>${escape(section.title)}</h1>\n<p class="lead">${escape(section.description)}</p>\n${items}`, side: sideNav(page) }));
 }
 
+// What to type for a page in a terminal: `man sg-read`, or with its section where a page of the other section has
+// the same name (`man 7 sg-test` for the word, `man 1 sg-test` for the command).
+const manCommand = (page) =>
+  `man ${wordPages.some((q) => q !== page && q.manName === page.manName) ? `${page.manSection} ` : ''}${page.manName}`;
+
 // The pages of the words.
 sectionPages.reference = [{ url: 'reference/index.html', title: 'The index', navTitle: 'The index' }, ...wordPages];
 sectionPages.reference[0].section = 'reference';
@@ -681,7 +697,7 @@ for (const page of wordPages) {
   const main = `<p class="trail"><a href="index.html">Reference</a> <span aria-hidden="true">/</span> ${escape(kind.title)}</p>
 <h1 class="word"><code>${escape(page.title)}</code></h1>
 <p class="lead">${escape(page.meta.summary)}</p>
-<p class="note">In a terminal: <code>man ${escape(page.manName)}</code>. <a href="../manual/${escape(page.manName)}.7.html">The manual page</a></p>
+<p class="note">In a terminal: <code>${escape(manCommand(page))}</code>. <a href="../manual/${escape(page.manName)}.${page.manSection}.html">The manual page</a></p>
 ${body}
 <h2 id="see-also"><a class="here" href="#see-also" aria-hidden="true" tabindex="-1">#</a>See also</h2>
 <ul class="see">
@@ -716,21 +732,22 @@ ${groups.map((g) => `<h2 id="${g.kind}">${escape(g.info.title)}</h2>\n<div class
 }
 
 // The manual pages: roff, the text man shows, and the list of them.
-sectionPages.manual = [{ url: 'manual/index.html', title: 'The manual pages', section: 'manual' }, ...wordPages.map((p) => ({ url: `manual/${p.manName}.7.html`, title: `${p.manName}(7)`, section: 'manual', word: p }))];
+sectionPages.manual = [{ url: 'manual/index.html', title: 'The manual pages', section: 'manual' }, ...[...wordPages].sort((a, b) => a.manSection - b.manSection).map((p) => ({ url: `manual/${p.manName}.${p.manSection}.html`, title: manRef(p), section: 'manual', word: p }))];
 for (const entry of sectionPages.manual.slice(1)) {
   const page = entry.word;
   const roff = roffOf(page);
-  mkdirSync(join(out, 'man/man7'), { recursive: true });
-  writeFileSync(join(out, `man/man7/${page.manName}.7`), roff);
+  const file = `man/man${page.manSection}/${page.manName}.${page.manSection}`;
+  mkdirSync(join(out, posix.dirname(file)), { recursive: true });
+  writeFileSync(join(out, file), roff);
   const text = manText(page);
   mkdirSync(join(out, 'help'), { recursive: true });
   // Named by the file of the page, as in src/help/: the name of a sign (`T?`) is no name for a file.
   writeFileSync(join(out, `help/${posix.basename(page.src, '.md')}.txt`), helpText(page));
   const main = `<p class="trail"><a href="index.html">Manual</a></p>
-<h1>${escape(page.manName)}(7)</h1>
-<p class="note">What <code>man ${escape(page.manName)}</code> shows. The same page on the site: <a href="${link(entry.url, page.url)}"><code>${escape(page.title)}</code></a>. The file: <a href="../man/man7/${escape(page.manName)}.7">${escape(page.manName)}.7</a></p>
+<h1>${escape(manRef(page))}</h1>
+<p class="note">What <code>${escape(manCommand(page))}</code> shows. The same page on the site: <a href="${link(entry.url, page.url)}"><code>${escape(page.title)}</code></a>. The file: <a href="../${file}">${escape(posix.basename(file))}</a></p>
 <pre class="term"><code>${manHtml(text)}</code></pre>`;
-  write(entry.url, frame({ url: entry.url, title: `${page.manName}(7)`, description: page.meta.summary, section: 'manual', main, side: sideNav(entry) }));
+  write(entry.url, frame({ url: entry.url, title: manRef(page), description: page.meta.summary, section: 'manual', main, side: sideNav(entry) }));
 }
 {
   // sg-index(7): every name, as the index page lists them.
@@ -739,27 +756,31 @@ for (const entry of sectionPages.manual.slice(1)) {
     lines.push(`.SS "${info.title}"`);
     for (const n of names.filter((x) => x.kind === kind).sort((a, b) => a.name.localeCompare(b.name))) lines.push('.TP', `\\fB${roffText(n.name).replaceAll('-', '\\-')}\\fR`, roffText(n.summary));
   }
-  lines.push('.SH "SEE ALSO"', wordPages.map((p, i) => `.BR ${p.manName} (7)${i < wordPages.length - 1 ? ',' : ''}`).join('\n'));
+  const listed = sectionPages.manual.slice(1).map((entry) => entry.word);
+  lines.push('.SH "SEE ALSO"', listed.map((p, i) => `.BR ${p.manName} (${p.manSection})${i < listed.length - 1 ? ',' : ''}`).join('\n'));
   writeFileSync(join(out, 'man/man7/sg-index.7'), lines.join('\n') + '\n');
   const url = 'manual/index.html';
   const main = `<h1>The manual pages</h1>
-<p class="lead">The page of each word of SG, as <code>man</code> shows it in a terminal. It is made from the same file as
-the page on the site, so the two never differ.</p>
-<h2 id="pages">The pages</h2>
-<div class="scroll"><table class="idx">
-${wordPages.map((p) => `<tr><td><a href="${p.manName}.7.html">${escape(p.manName)}(7)</a></td><td>${escape(p.meta.summary)}</td></tr>`).join('\n')}
-<tr><td><a href="../man/man7/sg-index.7">sg-index(7)</a></td><td>every name in SG, as <a href="../reference/index.html">the index</a> lists them</td></tr>
-</table></div>
+<p class="lead">The page of each command and each word of SG, as <code>man</code> shows it in a terminal. It is made from
+the same file as the page on the site, so the two never differ.</p>
+${[[1, 'commands', 'The commands, section 1'], [7, 'pages', 'The words, section 7']].map(([section, id, title]) => {
+  const rows = listed.filter((p) => p.manSection === section).map((p) => `<tr><td><a href="${p.manName}.${section}.html">${escape(manRef(p))}</a></td><td>${escape(p.meta.summary)}</td></tr>`);
+  if (section === 7) rows.push('<tr><td><a href="../man/man7/sg-index.7">sg-index(7)</a></td><td>every name in SG, as <a href="../reference/index.html">the index</a> lists them</td></tr>');
+  return rows.length ? `<h2 id="${id}">${title}</h2>\n<div class="scroll"><table class="idx">\n${rows.join('\n')}\n</table></div>` : '';
+}).join('\n')}
 <h2 id="in-a-terminal">In a terminal</h2>
-<pre class="plain"><code>man sg-read              # the page of a word
+<pre class="plain"><code>man sg-build             # the page of a command
+man sg-read              # the page of a word
+man 7 sg-test            # the word test; man sg-test is the command
 man sg-index             # every name
-man -k sg-               # the pages of SG</code></pre>
+man -k sg                # the pages of SG</code></pre>
 <p>The pages are installed with SG. From a copy of the repository, after <code>npm run build</code> in
 <code>website/plain</code>: <code>man -M "$PWD/build/man" sg-read</code>.</p>
 <h2 id="sg-help">From sg itself</h2>
 <pre class="plain"><code>sg help read             # the page of a word, with no network
+sg help sg-build         # the page of a command; sg build --help prints it too
 sg help index            # every name, with what it is in one line
-sg help                  # the words with a page</code></pre>
+sg help                  # the words and the commands with a page</code></pre>
 <p><code>sg</code> carries the same pages in itself, so they work on Windows too, and for a build from source where
 nothing installs the manual pages. What it prints for <code>read</code>: <a href="../help/read.txt">help/read.txt</a>.</p>`;
   write(url, frame({ url, title: 'Manual', description: SECTIONS[3].description, section: 'manual', main, side: sideNav(sectionPages.manual[0]) }));
@@ -786,7 +807,7 @@ nothing installs the manual pages. What it prints for <code>read</code>: <a href
     for (const n of names.filter((x) => x.kind === kind).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))) {
       // A line of the index begins small and has no full stop; the summary of a page is a sentence: as man's
       // NAME line, the sentence is made a line too.
-      const summary = n.summary.replace(/\.$/, '').replace(/^[A-Z](?=[a-z ])/, (c) => c.toLowerCase());
+      const summary = asLine(n.summary);
       const fields = [n.name, KIND[kind].label, KIND[kind].title, summary, n.page ? posix.basename(n.page.src, '.md') : '', address(n.url)];
       if (fields.some((f) => /[\t\n]/.test(f))) problems.push(`the name \`${n.name}\`: a tab or a line break in its line for sg help`);
       rows.push(fields.join('\t'));

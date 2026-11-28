@@ -1,0 +1,341 @@
+---
+name: sg test
+kind: command
+summary: Runs the tests of a file, or of every module in a folder, in the interpreter or compiled.
+see: test, assert, sg build, sg, public, extern
+learn: ../docs/learn/book/13-testing.md#test-and-assert
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `sg test file.sg` | runs the tests of the file and of the modules it uses |
+| `sg test folder` | runs the tests of the folder and of every module under it |
+| `sg test path --compiled` | the same tests, built through C as a debug build and run, each in a process of its own |
+| `sg test path -L folder`, `-Lfolder` | looks for the libraries of `extern` blocks in that folder first; given once for each folder |
+| `sg test --help` | prints this page |
+
+## What it means
+
+`sg test` reads a program the way `sg` does, a file or a folder, but with its `test` blocks, which `sg` and
+`sg build` leave out. It checks all of it, `main` included, and then runs each test, one after the other, each
+with variables of its own. `main` is not run, and a file that holds only tests needs none. With a file, the
+tests of the modules it uses run too; with a folder, the tests of every module under it, used or not. A file
+of a module given alone is a program of its own: the other files of its folder are not part of it, so a
+module's tests are run through its folder.
+
+The report goes to the standard output: one line for each test, `ok` or `FAIL` and the name, then a count.
+The tests of the root come first, then those of each module, with the name of the module in front
+(`stock: `, `stock.count: `). What a test prints comes before its line, and under a `FAIL` line comes what
+stopped it: a false `assert` with both sides, a panic with its place, the error a `try` met, or the report of
+`shared` values the test left alive. Raw memory a test keeps is its own business and is not counted. Integer
+overflow is checked, as in a debug build. A test cannot end the program: `exit` in a test fails that test.
+
+Without `--compiled` the tests run in the interpreter, which needs no C compiler unless the program calls C.
+With it, `sg test` builds the program of tests as a debug build, in a folder of the temporary folder made new
+for it and removed at the end, with the C compiler `CC` names (`cc` when it names none), and runs it. Each test
+then runs in a process of its own, so a test that crashes cannot take the others with it. The report is the
+same, except for a stack overflow, which compiled code tells without the call it was making. `sg build path
+--test` keeps that program ([sg build](sg-build.md)).
+
+`-L folder` is for a program whose `extern` blocks name a library that is not where the C compiler looks; the
+interpreter and the compiled tests both look there first. It may come before or after the path.
+
+The exit code is 0 when every test passed, a program with no tests too (`0 test(s) passed`); 1 when a test
+failed, or when the checker refused the program, whose error goes to the standard error; 2 when the command
+line is not one of the forms, or a path or a folder of `-L` is not there.
+
+## Examples
+
+### The tests of a file
+
+```sg file title="prices/prices.sg"
+long withTax(long cents, int percent) {
+    return cents + cents * percent / 100
+}
+
+test "no tax leaves the price" {
+    assert(withTax(1000, 0) == 1000)
+}
+
+test "twenty percent" {
+    assert(withTax(1000, 20) == 1200)
+}
+
+void main() {
+    print(withTax(2500, 20))
+}
+```
+
+```text
+$ cd prices
+$ sg test prices.sg
+ok    no tax leaves the price
+ok    twenty percent
+2 test(s) passed
+$ sg prices.sg
+3000
+```
+
+`sg test` runs the two tests and not `main`; `sg` runs `main` and not the tests.
+
+### A failing test, and the exit code
+
+```sg file title="tax/tax.sg"
+long withTax(long cents, int percent) {
+    return cents + cents * percent / 100
+}
+
+test "twenty percent" {
+    assert(withTax(1000, 20) == 1200)
+}
+
+test "a third" {
+    print("checking a third")
+    assert(withTax(999, 33) == 1329)
+}
+
+test "the largest price" {
+    assert(withTax(long.MaxValue, 1) > 0)
+}
+```
+
+```text
+$ cd tax
+$ sg test tax.sg
+ok    twenty percent
+checking a third
+FAIL  a third
+panic: assert failed: withTax(999, 33) == 1329
+  left: 1328
+  right: 1329
+  --> tax.sg:11:5
+ 11 |     assert(withTax(999, 33) == 1329)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FAIL  the largest price
+panic: overflow: 9223372036854775807 + 92233720368547758 does not fit in long
+  --> tax.sg:2:12
+ 2 |     return cents + cents * percent / 100
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+2 of 3 test(s) failed
+$ sg test tax.sg > report.txt; echo $?
+1
+$ grep -c FAIL report.txt
+2
+```
+
+Integer division rounds down, so a third of 999 adds 329, not 330. The third test overflows, which fails it as
+a debug build would. The whole report, failures too, is on the standard output, and the exit code 1 is what a
+script or a CI job looks at.
+
+### A folder of modules
+
+```sg file title="shop/stock/shelf.sg"
+public struct Shelf {
+    List<int> counts
+
+    public Shelf create(int places) {
+        return Shelf { counts = List<int>.repeat(0, places) }
+    }
+
+    public void put(ref this, int place, int count) {
+        this.counts[place] += count
+    }
+
+    public int total(read this) {
+        return sum(read this.counts)
+    }
+}
+
+int sum(read List<int> xs) {
+    var total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+```
+
+```sg file title="shop/stock/tests.sg"
+test "the sum of nothing is 0" {
+    assert(sum(read List<int>()) == 0)
+}
+
+test "a new shelf is empty" {
+    var shelf = Shelf(3)
+    assert(shelf.counts == List<int> { 0, 0, 0 })
+}
+```
+
+```sg file title="shop/main.sg"
+use stock
+
+void main() {
+    var shelf = Shelf(2)
+    shelf.put(0, 5)
+    shelf.put(1, 7)
+    print(shelf.total())
+}
+
+test "what is put is counted" {
+    var shelf = Shelf(2)
+    shelf.put(1, 4)
+    shelf.put(1, 4)
+    assert(shelf.total() == 8)
+}
+```
+
+```text
+$ sg test shop
+ok    what is put is counted
+ok    stock: the sum of nothing is 0
+ok    stock: a new shelf is empty
+3 test(s) passed
+$ sg test shop/stock
+ok    the sum of nothing is 0
+ok    a new shelf is empty
+2 test(s) passed
+$ sg test shop/stock/tests.sg
+error: there is no function named `sum`
+  --> shop/stock/tests.sg:2:12
+ 2 |     assert(sum(read List<int>()) == 0)
+   |            ^^^
+```
+
+The tests in `stock` reach `sum` and the field `counts`, which are not public, since they are in its module;
+the test in `main.sg` sees what is public. `sg test shop/main.sg` runs the same three tests, the module's
+because `main.sg` uses it. `tests.sg` given alone is a program of one file, without `shelf.sg` beside it.
+
+### Compiled, and a leak
+
+```sg file title="friends/friends.sg"
+struct Person {
+    string name
+    List<shared checked Person> friends
+}
+
+shared checked Person person(string name) {
+    return new shared checked Person { name = name, friends = List<shared checked Person>() }
+}
+
+test "friends one way" {
+    var ada = person("ada".clone())
+    var grace = person("grace".clone())
+    ada.friends.add(share grace)
+    assert(ada.friends.length() == 1)
+}
+
+test "friends both ways" {
+    var ada = person("ada".clone())
+    var grace = person("grace".clone())
+    ada.friends.add(share grace)
+    grace.friends.add(share ada)
+    assert(grace.friends[0].name == "ada")
+}
+
+test "raw memory is the test's own" {
+    var cells = Memory.allocate<int>(4)
+    unsafe {
+        cells[0] = 7
+    }
+    assert(unsafe cells[0] == 7)
+}
+```
+
+```text
+$ cd friends
+$ sg test friends.sg --compiled
+ok    friends one way
+FAIL  friends both ways
+leak: the test ended with 2 `shared` values still alive, which hold each other through `Person.friends`
+  2 x `Person`, made here:
+  --> friends.sg:7:12
+ 7 |     return new shared checked Person { name = name, friends = List<shared checked Person>() }
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `List<weak checked Person>`
+ok    raw memory is the test's own
+1 of 3 test(s) failed
+$ sg test friends.sg > interpreted.txt; sg test friends.sg --compiled > compiled.txt; cmp interpreted.txt compiled.txt && echo same
+same
+```
+
+The second test passes its `assert` and still fails: Ada and Grace own each other, so neither is ever freed.
+The third keeps four integers of raw memory, which is not counted. The interpreter and the compiled tests write
+the same report, byte for byte.
+
+### A library of C, with `-L`
+
+```c title="scale/grams.c"
+#include <stdint.h>
+
+int64_t ounces_to_centigrams(int64_t ounces) {
+    return ounces * 2835;
+}
+```
+
+```sg file title="scale/main.sg"
+extern "grams" {
+    long ounces_to_centigrams(long ounces)
+}
+
+long grams(long ounces) {
+    return unsafe ounces_to_centigrams(ounces) / 100
+}
+
+test "a pound is 453 grams" {
+    assert(grams(16) == 453)
+}
+
+test "no ounces weigh nothing" {
+    assert(grams(0) == 0)
+}
+
+void main() {
+    print(grams(8))
+}
+```
+
+```text
+$ cd scale
+$ mkdir -p vendor && cc -c -fPIC -o grams.o grams.c && ar rcs vendor/libgrams.a grams.o
+$ sg test main.sg -L vendor
+ok    a pound is 453 grams
+ok    no ounces weigh nothing
+2 test(s) passed
+$ sg test main.sg --compiled -L vendor
+ok    a pound is 453 grams
+ok    no ounces weigh nothing
+2 test(s) passed
+```
+
+`extern "grams"` is linked as `-lgrams`. Without `-L vendor` the library is not found, and the error names the
+`extern` block, with the hint of `-L folder`.
+
+## Mistakes it tells
+
+### A path that is not there
+
+```text
+$ sg test nothere.sg; echo $?
+error: cannot read nothere.sg: No such file or directory (os error 2)
+2
+```
+
+### A folder of `-L` that is not there
+
+```sg file title="lone/lone.sg"
+test "one" {
+    assert(1 + 1 == 2)
+}
+```
+
+```text
+$ sg test lone/lone.sg -L lone/vendor; echo $?
+error: -L lone/vendor: no such folder
+2
+```
+
+`-L` with nothing after it is told too: `` error: -L names a folder: `-L folder` ``. A second path, or a word
+the command does not know, is not one of the forms: `sg test` then writes its usage and ends with 2.

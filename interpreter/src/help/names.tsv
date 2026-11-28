@@ -69,7 +69,7 @@ this	value	Values with a name	the value a method was called on; read this looks,
 true	value	Values with a name	the bool that is not false; what a comparison gives when it holds	true	https://sg-lang.org/reference/true
 $"{x}"	sign	Signs	text with values written into it, checked when the program is compiled; .toString() makes it a string	interpolation	https://sg-lang.org/reference/interpolation
 a..b	sign	Signs	a range: the numbers from a up to b, without b; in a pattern, a..=b takes b too	range	https://sg-lang.org/reference/range
-c ? a : b	sign	Signs	a when c is true, b when it is false		https://sg-lang.org/reference/#n-c-203f20-a-203a20-b
+c ? a : b	sign	Signs	a value picked by a condition: a when c is true, b when it is false; only that arm runs	conditional	https://sg-lang.org/reference/conditional
 T?	sign	Signs	a T that may be null; it is tested before it is used as a T	nullable	https://sg-lang.org/reference/nullable
 T[]	sign	Signs	a slice: a window onto items that something else owns	slice	https://sg-lang.org/reference/slice
 T*	sign	Signs	a pointer that owns a value on the heap	pointer	https://sg-lang.org/reference/pointer
@@ -115,7 +115,7 @@ Compression	module	Modules of the library	deflate, Zlib and Gzip, both ways, at 
 CRC-32 and Adler-32	module	Modules of the library	crc32, the checksum of gzip, PNG and ZIP, and Adler32, the checksum of zlib, at once or piece by piece		https://sg-lang.org/library/checksum
 Files and folders	module	Modules of the library	file, StreamReader and StreamWriter, the standard streams, Directory and watching a folder, Path, FileInfo and IoError		https://sg-lang.org/library/files
 Hex, Base64 and percent	module	Modules of the library	hex, Base64 and the percent-encoding of URLs, bytes written as text and read back, strictly		https://sg-lang.org/library/encoding
-HTTP	module	Modules of the library	httpConnection, the server's side of HTTP/1.1, a request pulled and answered at a time, read where it lies, with the limits a server on the internet needs on from the start		https://sg-lang.org/library/http
+HTTP	module	Modules of the library	HttpConnection, the server's side of HTTP/1.1, a request pulled and answered at a time, read where it lies, with the limits a server on the internet needs on from the start		https://sg-lang.org/library/http
 JSON	module	Modules of the library	json, JsonValue and JsonObject, JSON read strictly into values, looked into, built, changed and written back		https://sg-lang.org/library/json
 Log	module	Modules of the library	log and LogLevel, lines of a log written to the standard error, a level that is off costing almost nothing, and a message never read for anything in it		https://sg-lang.org/library/log
 Numbers	module	Modules of the library	the integer and fractional types, their constants, conversions, arithmetic that cannot panic, bits, math and parsing		https://sg-lang.org/library/numbers
@@ -125,13 +125,13 @@ Regular expressions	module	Modules of the library	regex, Match and Captures, pat
 SHA-256 and HMAC	module	Modules of the library	sha256, Hmac.sha256 and Bytes.equalInConstantTime, the hash and the keyed tag of the standards		https://sg-lang.org/library/hash
 Tasks	module	Modules of the library	task, TaskGroup, Channel and Sender, shared locked values, atomics and cancellation, with their signatures		https://sg-lang.org/library/tasks
 Text	module	Modules of the library	string, read string and char, with every method they have		https://sg-lang.org/library/string
-The command line	module	Modules of the library	commandLine and Arguments, the flags, options and words a program takes, read the GNU way		https://sg-lang.org/library/command-line
+The command line	module	Modules of the library	CommandLine and Arguments, the flags, options and words a program takes, read the GNU way		https://sg-lang.org/library/command-line
 Time	module	Modules of the library	duration, Instant, DateTime and DateTimeOffset, and the clocks under them		https://sg-lang.org/library/time
-Zip archives	module	Modules of the library	zipReader and ZipWriter, archives read and written as Go reads and writes them, checked for Zip Slip and bombs before anything is read		https://sg-lang.org/library/zip
-sg	command	Commands	runs a program: sg hello.sg, or a folder		https://sg-lang.org/reference/#n-sg
-sg add	command	Commands	adds a package to sg.project; with update, remove and lock		https://sg-lang.org/reference/#n-sg-20-add
-sg build	command	Commands	compiles through C: a program, a library, or an object without an operating system		https://sg-lang.org/reference/#n-sg-20-build
-sg emit-c	command	Commands	prints the C		https://sg-lang.org/reference/#n-sg-20-emit-2d-c
-sg help	command	Commands	the page of a word of SG in the terminal, with no network: sg help read		https://sg-lang.org/reference/#n-sg-20-help
-sg lsp	command	Commands	the language server an editor starts		https://sg-lang.org/reference/#n-sg-20-lsp
-sg test	command	Commands	runs the tests of a file or of every module in a folder		https://sg-lang.org/reference/#n-sg-20-test
+Zip archives	module	Modules of the library	ZipReader and ZipWriter, archives read and written as Go reads and writes them, checked for Zip Slip and bombs before anything is read		https://sg-lang.org/library/zip
+sg	command	Commands	runs a program in the interpreter, from a file or a folder; the words after it are the program's own	sg	https://sg-lang.org/reference/sg
+sg add	command	Commands	adds a package to sg.project and fetches it; with sg update, sg remove and sg lock, which keep sg.lock	sg-add	https://sg-lang.org/reference/sg-add
+sg build	command	Commands	compiles through C: a program, the program of its tests, a library C calls, or an object without an operating system	sg-build	https://sg-lang.org/reference/sg-build
+sg emit-c	command	Commands	prints the C that sg build compiles, for reading, for a sanitizer, or for a build of your own	sg-emit-c	https://sg-lang.org/reference/sg-emit-c
+sg help	command	Commands	prints the page of a word, a sign or a command of SG in the terminal, from sg itself, with no network	sg-help	https://sg-lang.org/reference/sg-help
+sg lsp	command	Commands	the language server an editor starts: the first error as you type, and fixes applied with one click	sg-lsp	https://sg-lang.org/reference/sg-lsp
+sg test	command	Commands	runs the tests of a file, or of every module in a folder, in the interpreter or compiled	sg-test	https://sg-lang.org/reference/sg-test

@@ -14,7 +14,8 @@ What it makes, and from what:
 
 - **Pages.** Every Markdown page of `../docs/` becomes a page, with the pages of its part (Learn, Library,
   Benchmarks, About) beside it and its headings on the right. A link to another `.md` page becomes a link to its
-  page; `build.mjs` fails on a link to a page, or to a place on a page, that is not there.
+  page; `build.mjs` fails on a link to a page, or to a place on a page, that is not there. Every part has its
+  place in the menu at the top, About too; the foot of each page, centred, has the license and four links.
 - **Words.** `../words/` holds one Markdown file for each word that has a page of its own (`read.md`,
   `atomic.md`, `list.md`): its forms, what it means, examples from the simplest to the hardest, and what the
   compiler refuses. `../words/index.txt` gives the line of every other name of the index. The types and modules
@@ -31,10 +32,12 @@ What it makes, and from what:
   is a link to its page (or to its line of the index), with what it is in one line; so is a name written alone
   in `code` in the text.
 - **Manual pages.** Each word's file also becomes its manual page, `build/man/man7/sg-read.7`, and the text `man`
-  shows for it, on the site under Manual. `npm run check` reads them with mandoc's lint, and compares the text the site
+  shows for it, on the site under Manual. A command's file (`sg-build.md`, `kind: command`) becomes a page of
+  section 1, `build/man/man1/sg-build.1` (choice 2087). `npm run check` reads them with mandoc's lint, and compares the text the site
   shows (and `sg help` prints) with the text mandoc lays out, line for line.
 - **`sg help`** (choice 2082). The same text, without man's top and foot lines, and with the pages under SEE
-  ALSO named `sg help ref` and wrapped again to 78 columns, is what `sg help read` prints:
+  ALSO named `sg help ref` (`sg help sg-build` for a command) and wrapped again to 78 columns, is what
+  `sg help read` prints, and `sg build --help` for a command (choice 2088):
   the build writes it into `../../interpreter/src/help/` (`read.txt`, and `names.tsv`, a line for every name of
   the index), which `sg` carries in itself. Commit those files with the change of a word; `cargo test` fails
   when a word has no page there, or its first line differs from its Markdown.

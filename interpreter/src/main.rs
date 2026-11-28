@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sg::Stop;
 
@@ -423,12 +423,62 @@ fn bytes(word: std::ffi::OsString) -> Vec<u8> {
     word.into_encoded_bytes()
 }
 
+/// Whether writing `target` would replace a source of the program at `program` (choice 2089): the program's
+/// file itself, a file of SG or of C that is there, or a header there that `sg build` did not write. A program or
+/// a header the last build wrote is written again.
+fn writes_over_source(program: &Path, target: &Path) -> Option<&'static str> {
+    if !target.is_file() {
+        return None;
+    }
+    let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if program.is_file() && same(program, target) {
+        return Some("the program itself");
+    }
+    match target.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("sg") => Some("a file of SG"),
+        Some("c") => Some("a file of C"),
+        Some("h") => {
+            let mut head = [0u8; 512];
+            let read = std::fs::File::open(target).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+            (!String::from_utf8_lossy(&head[..read]).contains("Written by `sg build`")).then_some("a header that `sg build` did not write")
+        }
+        _ => None,
+    }
+}
+
+/// The command whose page `--help` or `-h` asks for: `Some(None)` for `sg` itself, `Some(Some("build"))` for
+/// `sg build ... --help`; `None` when no help is asked for, or when the word belongs to a program.
+fn help_asked(args: &[String]) -> Option<Option<&str>> {
+    let asks = |word: &String| word == "--help" || word == "-h";
+    // The folders `-L` names may come before the program, or before `--help`.
+    let mut lead = 0;
+    while let Some(word) = args.get(lead) {
+        match word.as_str() {
+            "-L" => lead += 2,
+            _ if word.starts_with("-L") => lead += 1,
+            _ => break,
+        }
+    }
+    let first = args.get(lead)?;
+    if lead > 0 {
+        return asks(first).then_some(None);
+    }
+    if asks(first) {
+        return Some(None);
+    }
+    let command = first.as_str();
+    if !matches!(command, "test" | "build" | "emit-c" | "lsp" | "help" | "add" | "update" | "remove" | "lock") {
+        return None;
+    }
+    args[1..].iter().take_while(|word| *word != "--").any(asks).then_some(Some(command))
+}
+
 fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     // sg's own words as names of the system made text (choice 1956), and back to paths by `path`.
     let args: Vec<String> = words.iter().map(|word| sg::names::text_of_os(word)).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg help [name | index]                                     the page of a word of SG, with no network\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build ... -- C flags...                                 gives the C compiler these flags too, after sg's own\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C\n       sg lsp                                                     the language server an editor starts\n       sg help [name | index]                                     the page of a word of SG, with no network\n       sg <command> --help                                        the page of the command (sg --help: of sg)\n       sg add <address>[@1.4] | sg update [name] | sg remove <name>\n                                                                  the packages of the `sg.project` here, and its `sg.lock`\n       sg lock                                                    writes `sg.lock` for what `sg.project` says, raising no version";
     let usage = || {
         tell!("{USAGE}");
         ExitCode::from(2)
@@ -441,6 +491,12 @@ fn main() -> ExitCode {
             _ if word.starts_with("-L") => lead += 1,
             _ => break,
         }
+    }
+    // `sg --help` and `sg <command> --help` (or `-h`) print the page of the command (choice 2088); what follows
+    // `--` is C's, and the words after a program are the program's own.
+    if let Some(command) = help_asked(&args) {
+        told(std::io::stdout().lock().write_all(sg::help::of_command(command).as_bytes()));
+        return ExitCode::SUCCESS;
     }
     // The commands of packages, on the `sg.project` of the current folder (choices 1564, 1580).
     if args.first().is_some_and(|word| matches!(word.as_str(), "add" | "update" | "remove" | "lock")) {
@@ -593,6 +649,16 @@ fn main() -> ExitCode {
                         false => tell!("error: `{file}` is a folder; name the program with -o"),
                     }
                     return ExitCode::from(2);
+                }
+                // What the build writes never replaces a source of the program (choice 2089), as a C compiler
+                // refuses an output that is one of its inputs: the program's own file, a file of SG or of C, or
+                // a header that `sg build` did not write. A library writes its header beside it.
+                let header = matches!(made, Made::Static | Made::Shared).then(|| os_path(out).with_file_name(format!("{name}.h")));
+                for target in std::iter::once(os_path(&file).to_path_buf()).chain(header) {
+                    if let Some(what) = writes_over_source(&os_path(path), &target) {
+                        tell!("error: cannot write {}: it is {what}, which the build would replace; name the output with -o", target.display());
+                        return ExitCode::from(2);
+                    }
                 }
             }
             return build(path, out, release, made, &machine, &dirs);

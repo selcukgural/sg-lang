@@ -279,6 +279,6 @@ WHAT THE COMPILER REFUSES
      Without packed, three bytes of padding keep length at a multiple of four.
 
 SEE ALSO
-     sg help test, sg help const, sg help is
+     sg help test, sg help sg-test, sg help const, sg help is
 
      https://sg-lang.org/reference/assert.html

@@ -276,8 +276,10 @@ dl.pages dd { margin: 0.15rem 0 0; color: var(--soft); font-size: 0.94rem; }
   padding-left: max(20px, env(safe-area-inset-left, 0px));
   padding-right: max(20px, env(safe-area-inset-right, 0px));
 }
+.foot { text-align: center; }
 .foot p { margin: 0.3rem 0; }
-.foot a { color: var(--soft); text-decoration: none; margin-right: 1.2rem; }
+.foot .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem 1.6rem; }
+.foot a { color: var(--soft); text-decoration: none; }
 .foot a:hover { color: var(--fg); }
 
 @media (max-width: 40rem) {

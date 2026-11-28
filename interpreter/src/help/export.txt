@@ -625,6 +625,6 @@ WHAT THE COMPILER REFUSES
 
 SEE ALSO
      sg help extern, sg help unsafe, sg help raw, sg help struct, sg help
-     pointer
+     pointer, sg help sg-build
 
      https://sg-lang.org/reference/export.html

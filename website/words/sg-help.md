@@ -1,0 +1,154 @@
+---
+name: sg help
+kind: command
+summary: Prints the page of a word, a sign or a command of SG in the terminal, from sg itself, with no network.
+see: sg, sg build, sg test, test, x ?? y
+learn: ../docs/learn/book/14-building.md#help
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `sg help name` | the page of a word (`sg help read`), or the line of any other name of the index |
+| `sg help` | the commands and the words that have a page, each with its line |
+| `sg help index` | every name of SG, by kind, with what it is in one line |
+| `sg help build`, `sg help sg-build`, `sg help "sg build"` | the page of a command |
+| `sg help '??'` | a sign, by its marks alone |
+| `sg build --help`, `sg -h` | the page of a command, asked of the command itself |
+| `sg help --help` | prints this page |
+
+## What it means
+
+`sg help` prints a page of the reference to the output. The pages are carried in `sg` itself, so it needs no
+network and nothing installed beside it, and it prints the same on every system. A page is the text `man` shows
+for the manual page of the same name (`sg-read(7)`, `sg-build(1)`), without man's top and foot lines, and with
+the pages under SEE ALSO named as `sg help` finds them; the site has the same page. It is plain text, with no
+colour and no pager: `sg help read | less` pages it, and `grep` searches it.
+
+The name is looked for as it is written, then in any case, then as a command (`build` is `sg build`), then as
+the name of a page's file (`sg-build`, `null-coalescing`), then, for a sign, by its marks alone: `??` is
+`x ?? y`, `[^]` is `xs[^1]`. A name of the index with no page yet, such as a type of the library, gives its line
+and the address of the site that says more. The keyword `test` is found before the command, so `sg help test`
+is the keyword and `sg help sg-test` the command.
+
+A command prints its own page too: `--help` or `-h` among the words of `sg build`, `sg test`, `sg emit-c`,
+`sg lsp`, `sg help` or `sg add` (before a `--`) prints what `sg help sg-build` prints, and `sg --help` prints
+the page of `sg`. After a program the words are the program's, so `sg main.sg --help` gives `--help` to `main`.
+
+It ends with code 0 when it printed a page or a line. A name it does not know is an error on the standard
+error, which names the names that start like it, and ends with code 2; so does more than one name.
+
+The pages are as new as the `sg` that carries them: they are built from the same files as the site, when `sg`
+is built.
+
+## Examples
+
+### The page of a word
+
+```text
+$ sg help break | head -2
+NAME
+     break - leaves the loop it is in, or the loop it names, at once
+$ sg help break | grep '^[A-Z]'
+NAME
+SYNOPSIS
+DESCRIPTION
+EXAMPLES
+WHAT THE COMPILER REFUSES
+SEE ALSO
+```
+
+A page has the parts of a manual page: what the word is, its forms, what it means, the examples, and what the
+compiler refuses. The text is wrapped at 78 columns; the lines of programs and of what they print are kept
+whole.
+
+### What there is to read
+
+```text
+$ sg help | head -4
+SG HELP
+     sg help <name>     the page of a word, or the line of any other name
+     sg help index      every name of SG, with what it is in one line
+     sg build --help    the page of a command; so does sg help sg-build
+$ sg help index | grep '^[A-Z]'
+KEYWORDS
+PRIMITIVE TYPES
+VALUES WITH A NAME
+SIGNS
+TYPES OF THE LIBRARY
+MODULES OF THE LIBRARY
+COMMANDS
+```
+
+`sg help` goes on with the commands and the words that have a page; `sg help index` lists every name under
+these headings, each with its line.
+
+### One page, several names
+
+```text
+$ sg help read > read.txt
+$ sg help READ | cmp - read.txt && echo same
+same
+$ sg help build > build.txt
+$ sg help sg-build | cmp - build.txt && sg help "sg build" | cmp - build.txt && echo same
+same
+$ sg build --help | cmp - build.txt && echo same
+same
+$ sg help '??' | head -2
+NAME
+     x ?? y - the value of x, or y when x is null or an error
+$ sg help test | head -3
+NAME
+     test - a block of checks written next to the code, which only sg test
+     compiles and runs
+```
+
+`READ` is found in any case, `build` as the command `sg build`, and `??` as the sign `x ?? y`. `test` is the
+keyword; the command's page is `sg help sg-test`.
+
+### A name with no page yet
+
+```text
+$ sg help Duration
+NAME
+     Duration - a type of the library, in Time
+
+     A library type of SG. sg help has no page for it yet; the site says more:
+
+     https://sg-lang.org/library/time#duration
+```
+
+The types and the modules of the library are names of the index; their methods are on the pages of the library,
+on the site.
+
+### A name it does not know
+
+```text
+$ sg help whil; echo "exit code $?"
+error: SG has no name `whil` that `sg help` knows; names that start like it: `while`
+exit code 2
+$ sg help zebra; echo "exit code $?"
+error: SG has no name `zebra` that `sg help` knows; `sg help index` lists every name
+exit code 2
+$ sg help read write 2>/dev/null; echo "exit code $?"
+exit code 2
+```
+
+Two names are not a usage: `sg help` writes how `sg` is used, to the standard error.
+
+## Mistakes it tells
+
+### A sign the shell reads first
+
+```text
+$ touch zz
+$ sg help ??
+error: SG has no name `zz` that `sg help` knows; `sg help index` lists every name
+$ sg help '??' | head -2
+NAME
+     x ?? y - the value of x, or y when x is null or an error
+```
+
+`?`, `*` and `[` are patterns of file names to the shell, so `??` became the file `zz` before `sg` saw it. In
+quotes, the shell gives the sign as it is.

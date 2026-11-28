@@ -1,0 +1,354 @@
+---
+name: sg add
+kind: command
+summary: Adds a package to sg.project and fetches it; with sg update, sg remove and sg lock, which keep sg.lock.
+see: use, public, unsafe, extern, sg, sg build
+learn: ../docs/learn/book/09-modules.md#packages
+---
+
+## Forms
+
+| Form | What it is |
+|---|---|
+| `sg add example.com/ada/xml` | the newest version of the package, on a `require` line of its own, fetched |
+| `sg add example.com/ada/xml@1`, `@1.4`, `@1.4.2` | the newest version whose numbers start so |
+| `sg update` | each package the program names, to the newest version of the same major version |
+| `sg update xml` | the one package with that name |
+| `sg remove xml` | takes its `require` line and its `local` line away |
+| `sg lock` | writes `sg.lock` for what `sg.project` says, raising no version |
+| `require xml example.com/ada/xml 1.4.2` | a line of `sg.project`: the name `use` writes, the address, the version |
+| `require ... unsafe` | the same, allowing the package `unsafe` and `extern` |
+| `local xml ../xml` | the package of that `require` line taken from a folder |
+| `package example.com/ada/shop` | the project's own address, for a project that is a package |
+| `SG_CACHE=folder` | where the packages fetched are kept |
+| `SG_MIRROR=folder` | packages taken from a folder of bare repositories in place of the network |
+| `sg add --help`, `sg update --help`, `sg remove --help`, `sg lock --help` | prints this page |
+
+## What it means
+
+A package is a library kept in its own repository. Its address, a host and a path, names the repository at
+`https://` and that address, and a version is a tag of it, `v1.4.2`; there is no registry. A program names the
+packages it uses in `sg.project`, read beside the program (the folder given, or the file's folder), a line
+each. `sg.lock`, beside it, holds the SHA-256 of each package's files, so the program builds from the same files
+on every machine. `//` starts a comment in both.
+
+The four commands work on the `sg.project` and `sg.lock` of the current folder. `sg add` makes `sg.project` when
+there is none and appends a line, `require name address version`, the name being the last part of the address, made
+one that can be written (`utf_8` for `example.com/bob/utf-8`). It looks for the newest tag that fits what is
+written after `@`, and with nothing written, the newest of all. `sg update` raises each package the program names,
+or the one named, to the newest version of its major version: a new major version is another package, added with a
+name of its own. `sg remove` takes a package's lines away. `sg lock` makes the lock fit `sg.project` without
+raising a version, after `sg.project` was changed by hand. Each writes the lock again, fetching what it needs, and
+writes a line for what changed, `added`, the version before, `other files than before` or `taken away`, and
+says when a package uses `unsafe` or links libraries of C. A lock left with nothing is taken away. The files are
+written whole into a new file put in the old one's place, never through a link, and nothing is written when a
+command fails.
+
+A package used by a package is fetched too, and the program need not name it; it cannot `use` it either. The
+versions are chosen as the least each `require` line asks for, so a new release changes no build until `sg
+update`. Running or building a program never changes the lock: one that does not fit `sg.project` stops the
+program, with exit code 2 and the line, and says to run `sg lock`.
+
+A package with `unsafe` or `extern` in it is built only when its own `require` line ends in `unsafe`, also for
+a package used through another. `sg add` says so when it adds one; `sg update` to a version that starts to use
+`unsafe` stops and writes nothing until the line allows it.
+
+A package is fetched by the system's `git` alone, over `https://` or what the user's git setting puts in its
+place, and no code of it runs while it is fetched or built. git runs in an empty folder of `sg`'s own, with no
+`GIT_` variable of the user's. A package may have at most 64 MB, 16 MB in a file and 10,000 files; a link, a
+submodule, a name that not every system can hold and two names that differ only in case are refused. The files
+are kept once for the user, read only, under the address and the version: in `SG_CACHE`, else in
+`~/Library/Caches/sg` on macOS, `$XDG_CACHE_HOME/sg` or `~/.cache/sg` on Linux, and `%LOCALAPPDATA%\sg` on
+Windows. To remove the cache, it is made writable first (`chmod -R u+w`). A program whose lock names a package
+the cache has not fetches it when it runs; a tag moved to other files is refused, since its SHA-256 is not the
+lock's. `SG_MIRROR` names a folder of bare repositories, one at the path of each address, from which the
+packages are taken in place of the network.
+
+The exit code is 0 when the files were written, 1 for an error, and 2 for a command line that is not a usage.
+
+## Examples
+
+### A mirror, in place of the network
+
+```text title="publish.sh"
+# publish.sh folder address version: the files of the folder as that version of the package,
+# a commit tagged v<version> in the bare repository mirror/<address>.
+set -e
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+repository=mirror/$2
+[ -d "$repository" ] || git -c init.defaultBranch=main init -q --bare "$repository"
+git="git --git-dir=$repository --work-tree=$1 -c user.name=Ada -c user.email=ada@example.com"
+$git add -A
+$git commit -q --allow-empty -m "$3"
+$git tag "v$3"
+```
+
+```text title="letters/sg.project"
+package example.com/bob/letters
+```
+
+```sg file title="letters/letters.sg"
+public string shout(read string text) {
+    return text.toUpper()
+}
+```
+
+```text title="xml/sg.project"
+package example.com/ada/xml
+
+require letters example.com/bob/letters 1.0.0
+```
+
+```sg file title="xml/xml.sg"
+use letters
+
+public string tag(read string name) {
+    return $"<{letters.shout(name)}/>".toString()
+}
+```
+
+```text
+$ sh publish.sh letters example.com/bob/letters 1.0.0
+$ sh publish.sh letters example.com/bob/letters 1.1.0
+$ sh publish.sh xml example.com/ada/xml 1.4.0
+$ sh publish.sh xml example.com/ada/xml 1.4.2
+$ sh publish.sh xml example.com/ada/xml 1.5.0
+$ sh publish.sh xml example.com/ada/xml 2.0.0
+```
+
+The examples on this page need no network. `publish.sh` makes the repositories of two packages, as their
+authors would push them: `example.com/bob/letters` at the versions 1.0.0 and 1.1.0, and `example.com/ada/xml`,
+which uses `letters`, at four. Each package has an `sg.project` whose `package` line is its address. The
+commands below are given `SG_MIRROR=../mirror`, so they read these repositories in place of `https://`, and
+`SG_CACHE=../cache`, so they keep what they fetch beside them. Without the two, the same commands reach
+the network.
+
+### Adding a package
+
+```sg file title="shop/main.sg"
+use xml
+
+void main() {
+    print(xml.tag("item"))
+}
+```
+
+```text
+$ cd shop
+$ sg main.sg
+error: there is no module named `xml`
+  a module is a folder with source files, next to the files of the program: `xml/`
+  --> main.sg:1:5
+ 1 | use xml
+   |     ^^^
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@1.4
+example.com/ada/xml 1.4.2 (added)
+example.com/bob/letters 1.0.0 (added)
+$ cat sg.project
+require xml example.com/ada/xml 1.4.2
+$ cat sg.lock
+// Written by `sg`; `sg lock` writes it again from `sg.project`.
+example.com/ada/xml 1.4.2 sha256-8adbb6675ac1b1f16b50ef5d1c676d20d34dc0fbd13836e2718eea9872910c25
+example.com/bob/letters 1.0.0 sha256-5ab0d7b94c153128e2afdf1725d60855027f097ddb32274fda997e7492fcb300
+$ SG_CACHE=../cache sg main.sg
+<ITEM/>
+$ SG_CACHE=../cache sg build main.sg -o shop
+$ ./shop
+<ITEM/>
+```
+
+`@1.4` chose 1.4.2, the newest 1.4 version, and `letters` came with it at the version `xml` asks for. The
+line's name, `xml`, is what `main.sg` writes after `use`. The program then runs and builds from the cache with
+no fetch; compiled, the package's modules are modules, and nothing of it is looked for when the program runs.
+
+### Updating
+
+```text
+$ cd shop
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg update
+example.com/ada/xml 1.5.0 (1.4.2 before)
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg update
+every package is at its newest version
+$ cat sg.project
+require xml example.com/ada/xml 1.5.0
+$ grep letters sg.lock
+example.com/bob/letters 1.0.0 sha256-5ab0d7b94c153128e2afdf1725d60855027f097ddb32274fda997e7492fcb300
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/bob/letters
+example.com/bob/letters 1.1.0 (1.0.0 before)
+$ cat sg.project
+require xml example.com/ada/xml 1.5.0
+require letters example.com/bob/letters 1.1.0
+```
+
+`sg update` raised `xml` to 1.5.0 and not to 2.0.0, another major version. It left `letters` at 1.0.0, though
+1.1.0 is out: the program does not name it, and `xml` asks for 1.0.0. Named on a line of its own, it is 1.1.0,
+which `xml` takes too, since a version of the same major version keeps what the older one had.
+
+### Removing
+
+```text
+$ cd shop
+$ SG_CACHE=../cache sg remove xml
+example.com/ada/xml 1.5.0 (taken away)
+$ SG_CACHE=../cache sg remove letters
+example.com/bob/letters 1.1.0 (taken away)
+$ test -e sg.lock || echo "no sg.lock"
+no sg.lock
+```
+
+The lock is taken away with its last package; `sg.project` stays, empty. A package no line names any more is
+left in the cache, where another program may use it.
+
+### A line written by hand, and a local folder
+
+```sg file title="notes/main.sg"
+use letters
+
+void main() {
+    print(letters.shout("quiet please"))
+}
+```
+
+```text
+$ cd notes
+$ echo 'require letters example.com/bob/letters 1.0.0' > sg.project
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg main.sg
+error: ./sg.project:1: ./sg.lock has no example.com/bob/letters 1.0.0: `sg lock` writes it again from `sg.project`
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg lock
+example.com/bob/letters 1.0.0 (added)
+$ SG_CACHE=../cache sg main.sg
+QUIET PLEASE
+$ echo 'local letters ../letters' >> sg.project
+$ SG_CACHE=../cache sg lock
+example.com/bob/letters 1.0.0 (taken away)
+$ sg main.sg
+QUIET PLEASE
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg update letters
+error: `letters` is taken from a folder by its `local` line, and has no version to update
+```
+
+A program never writes the lock itself: the line added by hand stops it, and `sg lock` fetches what the line
+asks for. A `local` line takes the package of a `require` line from a folder, written from the folder of
+`sg.project`, while one works on both; the lock has nothing of it then, and its files are read as they are on
+the disk.
+
+### A package with `unsafe`
+
+```text title="digits/sg.project"
+package example.com/ada/digits
+```
+
+```sg file title="digits/digits.sg"
+extern {
+    int abs(int value)
+}
+
+public int distance(int a, int b) {
+    return unsafe abs(a - b)
+}
+```
+
+```sg file title="trip/main.sg"
+use digits
+
+void main() {
+    print(digits.distance(3, 10))
+}
+```
+
+```text
+$ sh publish.sh digits example.com/ada/digits 1.0.0
+$ cd trip
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/digits
+example.com/ada/digits 1.0.0 (added, uses `unsafe`)
+    the program builds with it once a `require` line of it ends in `unsafe`: `require digits example.com/ada/digits 1.0.0 unsafe`
+$ SG_CACHE=../cache sg main.sg 2>&1 | head -n 1
+error: `extern` is in the package example.com/ada/digits, and the program's `sg.project` does not allow it
+$ echo 'require digits example.com/ada/digits 1.0.0 unsafe' > sg.project
+$ SG_CACHE=../cache sg main.sg
+7
+$ grep digits sg.lock | cut -d ' ' -f 1,2,4
+example.com/ada/digits 1.0.0 unsafe
+```
+
+`unsafe` and `extern` are found in the source of every package read, and allowed only by the word at the end of
+the package's line, so a program sees which of its packages leave the checks of the language. The lock keeps
+`unsafe` beside the SHA-256 too, and `c=` and the libraries of C when the package links some.
+
+## Mistakes it tells
+
+### No `sg.project`
+
+```text
+$ mkdir -p empty
+$ cd empty
+$ sg update; echo $?
+error: there is no `sg.project` in this folder
+1
+$ sg remove xml
+error: there is no `sg.project` in this folder
+$ sg lock
+error: there is no `sg.project` in this folder
+```
+
+The commands work on the folder they run in: they are run beside the program's `sg.project`. Only `sg add` makes
+one.
+
+### An address that is not one
+
+```text
+$ mkdir -p empty
+$ cd empty
+$ sg add https://example.com/ada/xml
+error: `https://example.com/ada/xml` is not the address of a package: the address is written without a scheme or a user; it is written as `github.com/ada/xml`
+$ sg add xml
+error: `xml` is not the address of a package: it starts with the name of a host, then a path; it is written as `github.com/ada/xml`
+$ sg add example.com/ada/xml@v1.4
+error: `v1.4` is not a version to look for: it is `1`, `1.4` or `1.4.2`
+$ test -e sg.project || echo "no sg.project"
+no sg.project
+```
+
+An address has a host with a dot in it and a path of names, with no scheme; a version after `@` is one to three
+numbers, without the `v` of the tag.
+
+### No version that fits
+
+```text
+$ cd shop
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@1.9
+error: example.com/ada/xml has no version that fits `example.com/ada/xml@1.9`: its versions are 1.4.0, 1.4.2, 1.5.0, 2.0.0
+```
+
+### A name taken
+
+```text
+$ cd shop
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@1.4
+example.com/ada/xml 1.4.2 (added)
+example.com/bob/letters 1.0.0 (added)
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@1.5
+error: sg.project:1: example.com/ada/xml 1 is required there already; `sg update xml` takes a newer version
+$ SG_MIRROR=../mirror SG_CACHE=../cache sg add example.com/ada/xml@2
+error: sg.project:1: `xml` is the name of another package; write the line with a name of your own, `require xml2 example.com/ada/xml 2.0.0`, and run `sg lock`
+$ SG_CACHE=../cache sg remove letters
+error: there is no package `letters` in sg.project
+```
+
+A major version is added once; a newer one of it comes by `sg update`. Another major version is another package,
+which needs a name of its own, written by hand. `sg remove` takes a name, the one `use` writes, and `letters`
+here is only used through `xml`.
+
+### Not a usage
+
+```text
+$ sg add > /dev/null 2>&1; echo $?
+2
+$ sg add example.com/ada/xml example.com/bob/letters > /dev/null 2>&1; echo $?
+2
+$ sg lock now > /dev/null 2>&1; echo $?
+2
+```
+
+`sg add` takes one address, `sg remove` one name, `sg update` one name or none, and `sg lock` nothing. Anything
+else prints the usage of every command, and changes nothing.

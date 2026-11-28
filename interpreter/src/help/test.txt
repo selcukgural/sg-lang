@@ -360,6 +360,6 @@ WHAT THE COMPILER REFUSES
      caller).
 
 SEE ALSO
-     sg help assert, sg help try, sg help public, sg help use
+     sg help assert, sg help sg-test, sg help try, sg help public, sg help use
 
      https://sg-lang.org/reference/test.html

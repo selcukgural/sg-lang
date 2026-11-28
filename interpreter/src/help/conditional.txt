@@ -1,0 +1,444 @@
+NAME
+     c ? a : b - a value picked by a condition: a when c is true, b when it is
+     false; only that arm runs
+
+SYNOPSIS
+     c ? a : b
+            a when c is true, b when it is false
+
+     c ? 1 : 2.5, c ? name : null
+            an arm that is only a number or null takes the type of the other
+            one; null makes it a T?
+
+     a ? 1 : b ? 2 : 3
+            a chain: it groups to the right and reads as else if
+
+     x is Circle(r) ? r : 0, p is not null ? p.x : 0
+            the first arm sees the names of an is and what it narrows
+
+     r is not Ok(v) ? -1 : v
+            the second arm sees the names of an is not
+
+     f ?? false ? a : b, x > 0 || y > 0 ? a : b
+            it binds more loosely than every other operator, ?? too
+
+     $"{(c ? a : b)}"
+            inside { } of a formatted text it is put in parentheses
+
+     c ? or c ? a : at the end of a line
+            the expression goes on in the next line
+
+DESCRIPTION
+     c ? a : b is a value. When c is true it is a, and when c is false it is
+     b. Only the arm chosen is computed: the other one never runs, so an arm
+     may hold a call, an index or a division that would be wrong on the other
+     way. The condition must be a bool, as the condition of an if.
+
+     Both arms have one type, as the arms of a match. The first arm sets it,
+     and the second must fit it the way a value fits a variable of that type:
+     after a long, an int arm is taken, but not a long after an int. When the
+     type is written where the result goes (long sum = c ? small : big), both
+     arms are checked against it. An arm that is only a number takes the type
+     of the other arm, so c ? 1 : 2.5 is a double. An arm that is only null
+     does too, and makes the result a T?: c ? "Pasha" : null is a string?. Two
+     arms that are only null and a number need the type written where the
+     result goes: int? limit = c ? null : 10.
+
+     ?: binds more loosely than any other operator, ??, && and || too: verbose
+     ?? false ? a : b is (verbose ?? false) ? a : b, and 1 + (c ? 10 : 20)
+     needs its parentheses. It groups to the right, so n > 0 ? 1 : n < 0 ? -1
+     : 0 is n > 0 ? 1 : (n < 0 ? -1 : 0), which reads as an if with else if. A
+     line that ends with ? or : goes on in the next one; a line cannot start
+     with either. Inside { } of $"..." a : starts the format, so a ?: there is
+     written in parentheses: $"{(c ? a : b)}".
+
+     The arms see what the condition tells, as the blocks of an if do. After x
+     is Circle(r), the first arm has r; after name is not null, name is a
+     string in the first arm. The second arm sees the names of an is not and
+     what a failed test narrows. A name of an is is never seen in the other
+     arm.
+
+     An owned value in an arm is moved, as var y = x would move it. The
+     compiler does not know which arm runs, so a name moved in either arm can
+     no longer be used after the line. read x in an arm looks without moving;
+     while the result is used, the names of both arms stay lent, whichever arm
+     ran, and so does what an is in the condition looked into (after var t = r
+     is Ok(s) ? s : "none", r cannot be moved while t is used).
+
+     ?: is not a statement: its value must be used. An arm that gives nothing
+     (a call of a void function) is an error, and an arm cannot return, break
+     or continue. To do one thing or the other, write an if; to leave when a
+     value is missing, ?? return. An arm may stop the program with panic(...),
+     and it then gives no value to what comes after.
+
+     It costs nothing at run time: compiled, it is written as the if it is,
+     and the interpreter and compiled code compute the same things in the same
+     order.
+
+EXAMPLES
+   A value picked by a condition
+         int larger(int a, int b) {
+             return a > b ? a : b
+         }
+
+         void main() {
+             var count = 1
+             var word = count == 1 ? "file" : "files"
+             print(word)
+             print(larger(3, 8))
+             var temperature = -4
+             print(temperature < 0 ? "freezing" : "above zero")
+         }
+
+         file
+         8
+         freezing
+
+     ?: goes wherever a value goes: in a declaration, after return, as an
+     argument.
+
+   Only the arm chosen runs
+         int loud(int n) {
+             print($"computing {n}")
+             return n
+         }
+
+         void main() {
+             var ready = true
+             var x = ready ? loud(1) : loud(2)
+             print(x)
+             var scores = List<int> { 7, 9 }
+             nint i = 5
+             print(i < scores.length() ? scores[i] : -1)
+             var divisor = 0
+             print(divisor != 0 ? 100 / divisor : 0)
+         }
+
+         computing 1
+         1
+         -1
+         0
+
+     loud(2) is never called. scores[5] is never read and 100 / 0 never
+     computed, so neither stops the program.
+
+   The type of the two arms
+         void main() {
+             var exact = false
+             var half = exact ? 1 : 2.5
+             print(half / 2)
+             int small = 4
+             long big = 5000000000
+             var either = exact ? big : small
+             print(either)
+             long sum = exact ? small : big
+             print(sum)
+             string? nickname = exact ? "Pasha" : null
+             print(nickname ?? "no nickname")
+             int? limit = exact ? null : 10
+             print(limit ?? 0)
+         }
+
+         1.25
+         4
+         5000000000
+         no nickname
+         10
+
+     1 takes the type of 2.5, so half is a double. either is a long, set by
+     its first arm; with the int first, the type is written where the result
+     goes, as in long sum. An arm that is null makes a T?.
+
+   Chains, other operators and formatted text
+         int sign(int n) {
+             return n > 0 ? 1 : n < 0 ? -1 : 0
+         }
+
+         string sizeOf(int bytes) {
+             return bytes < 1024 ? "small" :
+                 bytes < 1024 * 1024 ? "medium" :
+                 "large"
+         }
+
+         void main() {
+             print(sign(-8))
+             print(sizeOf(4096))
+             var age = 70
+             print(age < 12 || age >= 65 ? "reduced price" : "full price")
+             print(1 + (age > 18 ? 10 : 20))
+             bool? verbose = null
+             print(verbose ?? false ? "loud" : "quiet")
+             var count = 3
+             print($"{count} {(count == 1 ? "file" : "files")}")
+             print($"{(count > 2 ? 255 : 0):X4}")
+         }
+
+         -1
+         medium
+         reduced price
+         11
+         quiet
+         3 files
+         00FF
+
+     A chain is tried from the left, and the first condition that holds picks
+     its value. Each line of sizeOf ends with :, so the return goes on. || and
+     ?? are computed before the ?, and + needs the parentheses. In the last
+     line the parentheses end the ?:, and :X4 after them is the format.
+
+   With is
+         enum Shape {
+             Circle(double r)
+             Square(double side)
+         }
+
+         double area(read Shape shape) {
+             return shape is Circle(r) ? 3.0 * r * r : shape is Square(side) ? side * side : 0
+         }
+
+         int parsedOr(read string text) {
+             var parsed = int.parse(text)
+             return parsed is not Ok(n) ? -1 : n
+         }
+
+         void main() {
+             print(area(read Shape.Circle(2.0)))
+             print(area(read Shape.Square(1.5)))
+             print(parsedOr("42"))
+             print(parsedOr("4x"))
+             string? name = null
+             print(name is not null ? name.length() : 0)
+             name = "Ada"
+             print(name is null ? 0 : name.length())
+         }
+
+         12
+         2.25
+         42
+         -1
+         0
+         3
+
+     r is seen in the first arm of its ?:, side in the first arm of the inner
+     one, and n of an is not in the second arm. Where name is not null holds,
+     name is a string and has a length().
+
+   Owned values and borrows
+         read string longer(read string a, read string b) from a, b {
+             return a.length() >= b.length() ? a : b
+         }
+
+         void main() {
+             var cat = "Pasha".clone()
+             var other = "Tekir".clone()
+             var shown = cat.length() > 9 ? read cat : read other
+             print(shown)
+             print(cat)
+             print(longer(read cat, read other))
+             var first = true
+             var kept = first ? cat : other
+             print(kept)
+         }
+
+         Tekir
+         Pasha
+         Pasha
+         Pasha
+
+     read cat and read other only look, so both names are used again. longer
+     gives a borrow of one of its parameters, so it says from a, b. The last
+     ?: moves: kept owns the text of cat, and after it both cat and other
+     count as moved.
+
+WHAT STOPS THE PROGRAM
+   A panic in an arm
+         void main() {
+             var stock = List<int> { 3, 0 }
+             for left in stock {
+                 var each = left > 0 ? 12 / left : panic("nothing left")
+                 print(each)
+             }
+         }
+
+         4
+         panic: nothing left
+           --> example.sg:4:43
+          4 |         var each = left > 0 ? 12 / left : panic("nothing left")
+            |                                           ^^^^^^^^^^^^^^^^^^^^^
+
+     panic(...) gives no value, so the other arm sets the type: each is an
+     int.
+
+WHAT THE COMPILER REFUSES
+   ?: as a statement
+         void start() {
+             print("start")
+         }
+
+         void stop() {
+             print("stop")
+         }
+
+         void main() {
+             var ready = true
+             ready ? start() : stop()
+         }
+
+         error: `?:` gives a value; it is not a statement
+           --> example.sg:11:5
+          11 |     ready ? start() : stop()
+             |     ^^^^^^^^^^^^^^^^^^^^^^^^
+           hint: to do one thing or the other, write an `if`: `if ready { ... } else { ... }`
+
+   An arm that gives nothing
+         void log(read string text) {
+             print(text)
+         }
+
+         void main() {
+             var count = 3
+             var done = count > 2 ? log("many") : log("few")
+         }
+
+         error: this arm of `?:` gives no value
+           --> example.sg:7:28
+          7 |     var done = count > 2 ? log("many") : log("few")
+            |                            ^^^^^^^^^^^
+           hint: to do one thing or the other, write an `if`: `if count > 2 { ... } else { ... }`
+
+   return in an arm
+         int firstOr(read List<int> numbers) {
+             var first = numbers.length() > 0 ? numbers[0] : return -1
+             return first
+         }
+
+         void main() {
+             print(firstOr(read List<int> { 4 }))
+         }
+
+         error: an arm of `?:` gives a value; it cannot leave the function
+           --> example.sg:2:53
+          2 |     var first = numbers.length() > 0 ? numbers[0] : return -1
+            |                                                     ^^^^^^
+           hint: leave with an `if`, or with `?? return` on a value that may be `null`
+
+     numbers.get(0) ?? return -1 is the line that leaves.
+
+   A number as the condition
+         void main() {
+             var count = 3
+             print(count ? "some" : "none")
+         }
+
+         error: expected `bool`, found `int`
+           --> example.sg:3:11
+          3 |     print(count ? "some" : "none")
+            |           ^^^^^
+           hint: a number is not a condition; compare it: `count != 0`
+
+   Arms of two types
+         void main() {
+             int small = 4
+             long big = 5000000000
+             var exact = true
+             var either = exact ? small : big
+             print(either)
+         }
+
+         error: expected `int`, found `long`
+           both arms of `?:` give one type, and the other arm gives `int`
+           --> example.sg:5:34
+          5 |     var either = exact ? small : big
+            |                                  ^^^
+
+     The first arm made it an int. long either = exact ? small : big gives
+     both arms the type long.
+
+   null and a number, with no type written
+         void main() {
+             var exact = true
+             var limit = exact ? null : 10
+             print(limit ?? 0)
+         }
+
+         error: the type of this `?:` cannot be found from `null` alone
+           --> example.sg:3:25
+          3 |     var limit = exact ? null : 10
+            |                         ^^^^
+
+     Each arm waits for the type of the other. int? limit = exact ? null : 10
+     writes it.
+
+   Inside { } without parentheses
+         void main() {
+             var count = 3
+             print($"{count} {count == 1 ? "file" : "files"}")
+         }
+
+         error: `c ? a : b` inside `{ }` is written in parentheses
+           a `:` there starts the format, as in `{x:X}`
+           --> example.sg:3:33
+          3 |     print($"{count} {count == 1 ? "file" : "files"}")
+            |                                 ^^^^^^^^^^
+           hint: write `{(c ? a : b)}`
+
+   A name of is in the second arm
+         enum Shape {
+             Circle(double r)
+             Square(double side)
+         }
+
+         void main() {
+             var shape = Shape.Square(2.0)
+             var size = shape is Circle(r) ? r * 2.0 : r
+             print(size)
+         }
+
+         error: there is no variable named `r`
+           the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, in the first arm of its `?:`, and after an `if` whose `else` leaves
+           --> example.sg:8:47
+          8 |     var size = shape is Circle(r) ? r * 2.0 : r
+            |                                               ^
+
+   A name moved in the arm that did not run
+         void main() {
+             var cat = "Pasha".clone()
+             var other = "Tekir".clone()
+             var first = true
+             var kept = first ? cat : other
+             print(kept)
+             print(other)
+         }
+
+         error: `other` was moved and can no longer be used
+           --> example.sg:7:11
+          7 |     print(other)
+            |           ^^^^^
+           it was moved here:
+           --> example.sg:5:30
+          5 |     var kept = first ? cat : other
+            |                              ^^^^^
+
+     The compiler does not know which arm runs. first ? read cat : read other
+     looks without moving.
+
+   A line that starts with ?
+         void main() {
+             var count = 3
+             var word = count == 1
+                 ? "file" : "files"
+             print(word)
+         }
+
+         error: a line cannot start with `?`
+           --> example.sg:4:9
+          4 |         ? "file" : "files"
+            |         ^
+           hint: the statement ended on the previous line; to continue it, put `?` at the end of that line
+
+SEE ALSO
+     sg help if, sg help else, sg help bool, sg help is, sg help
+     null-coalescing, sg help interpolation, sg help null, sg help nullable,
+     sg help match
+
+     https://sg-lang.org/reference/conditional.html

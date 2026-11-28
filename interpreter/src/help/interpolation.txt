@@ -336,6 +336,6 @@ WHAT THE COMPILER REFUSES
 
 SEE ALSO
      sg help string, sg help char, sg help double, sg help bool, sg help
-     null-coalescing, sg help interface
+     conditional, sg help null-coalescing, sg help interface
 
      https://sg-lang.org/reference/interpolation.html

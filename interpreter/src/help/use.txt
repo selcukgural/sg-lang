@@ -309,6 +309,7 @@ WHAT THE COMPILER REFUSES
            hint: write the module in front: `units.format`
 
 SEE ALSO
-     sg help public, sg help alias
+     sg help public, sg help alias, sg help sg, sg help sg-build, sg help
+     sg-add
 
      https://sg-lang.org/reference/use.html

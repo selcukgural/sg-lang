@@ -238,4 +238,5 @@ in [Install](../install.md).
 `sg help read` prints the page of a word in the terminal: its forms, what it means, examples from the simplest
 to the hardest, and what the compiler refuses. It is carried in `sg` itself, so it needs no network, and it is
 the same text as the page on the site and the manual page. `sg help index` lists every name of SG with what it
-is in one line, and `sg help` the words that have a page. A sign is found by its marks alone: `sg help ??`.
+is in one line, and `sg help` the commands and the words that have a page. A sign is found by its marks alone:
+`sg help ??`. Each command prints its own page with `--help`: `sg build --help` is `sg help sg-build`.

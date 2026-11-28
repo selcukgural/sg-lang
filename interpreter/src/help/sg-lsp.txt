@@ -1,0 +1,174 @@
+NAME
+     sg lsp - the language server an editor starts: the first error as you
+     type, and fixes applied with one click
+
+SYNOPSIS
+     sg lsp the language server, talking to the editor on its standard input
+            and output
+
+     "sg.path": "/path/to/sg"
+            the setting of the VS Code extension that names the sg it starts;
+            empty, sg on the PATH
+
+     sg lsp --help
+            prints this page
+
+DESCRIPTION
+     sg lsp is the language server of SG, in sg itself. An editor starts it
+     with no other word and talks to it in the Language Server Protocol:
+     messages of JSON-RPC, each after a header Content-Length: n and an empty
+     line, on the server's standard input and output. A person does not run
+     it; the editor does, for the files that end in .sg. The extension for VS
+     Code in the repository (editors/vscode) starts it, with the colours of
+     SG; any editor that speaks the protocol can start it the same way.
+
+     As a file is written, the server shows the first error of the program the
+     file belongs to, with its notes and its hint, and a link to a second
+     place when the error names one. It checks only; the program is not run.
+     It checks 300 ms after the last change, so a burst of typing is checked
+     once, and it reads what the editor holds and has not saved in place of
+     the file on the disk. A file belongs to the program of the nearest folder
+     above it that has a main.sg, looked for up to 32 folders; without one,
+     the file is a program of its own with its modules in the folders beside
+     it, as sg file.sg reads it. The test blocks are checked too, so a file of
+     tests needs no main. A file that has no path yet, one the editor calls
+     untitled:, is not checked. One error is shown at a time, since the
+     checker stops at the first; an error in another file of the program is
+     shown in that file.
+
+     A hint whose code is certain is a fix: the editor offers it as a quick
+     fix, and one click writes it. Those are a conversion, (int)seats;
+     .clone() of a text that is only borrowed; _ =  before a value dropped on
+     purpose; and a missing use. There is no hover, no going to a definition
+     and no completion: such a request gets the error -32601 and its name.
+
+     The packages of the program are read from the cache, as sg add and the
+     lock left them. The server fetches nothing: a package that is not in the
+     cache is an error in the editor, and running the program, sg main.sg,
+     fetches it.
+
+     It says it counts the columns of a line in UTF-16, as the protocol does
+     by default; that each change sends the whole text; that it wants to know
+     when a file is opened, closed and saved; and that it gives quick fixes. A
+     header line takes at most 8 KB and a message at most 64 MB. The exit code
+     is 0 when the editor asked to shutdown and then to exit, and 1 when the
+     input ends before that or a message cannot be read, which is written on
+     the standard error after sg lsp:.
+
+EXAMPLES
+   In VS Code
+     The file settings.json:
+
+         {
+             "sg.path": "/home/ada/sg-lang/interpreter/target/release/sg"
+         }
+
+     The extension starts sg lsp from the sg on the PATH; sg.path names
+     another, such as one built from the repository. A folder that VS Code
+     does not trust cannot set it, so a folder cannot choose the program the
+     editor runs. How to install the extension is in Install. Another editor
+     is told the same three things: the command sg lsp, the files *.sg, and
+     the language sg.
+
+   A session, as an editor holds it
+     The file talk/frame.sh:
+
+         # Sends each line of the file as a message, with the header the protocol puts before it.
+         # An empty line waits a second, so that the server checks what it was given.
+         while IFS= read -r line; do
+             if [ -z "$line" ]; then
+                 sleep 1
+             else
+                 printf 'Content-Length: %d\r\n\r\n%s' "${#line}" "$line"
+             fi
+         done < "$1"
+
+     The file talk/session.txt:
+
+         {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+         {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///home/ada/seats/main.sg","languageId":"sg","version":1,"text":"int half(int value) {\n    return value / 2\n}\n\nvoid main() {\n    long seats = 120\n    print(half(seats))\n}\n"}}}
+
+         {"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///home/ada/seats/main.sg"},"range":{"start":{"line":6,"character":0},"end":{"line":6,"character":0}},"context":{"diagnostics":[]}}}
+         {"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///home/ada/seats/main.sg","version":2},"contentChanges":[{"text":"int half(int value) {\n    return value / 2\n}\n\nvoid main() {\n    long seats = 120\n    print(half((int)seats))\n}\n"}]}}
+
+         {"jsonrpc":"2.0","id":3,"method":"shutdown"}
+         {"jsonrpc":"2.0","method":"exit"}
+
+         $ cd talk
+         $ sh frame.sh session.txt | sg lsp > replies.txt; echo $?
+         0
+         $ grep -o '"capabilities":{[^}]*{[^}]*}[^}]*{[^}]*}}' replies.txt
+         "capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":1,"save":true},"codeActionProvider":{"codeActionKinds":["quickfix"]}}
+         $ tr -d '\r' < replies.txt | sed 's/Content-Length: [0-9]*$//' | grep . | grep -v '"id":1,'
+         {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///home/ada/seats/main.sg","diagnostics":[{"range":{"start":{"line":6,"character":15},"end":{"line":6,"character":20}},"severity":1,"source":"sg","message":"expected `int`, found `long`\nhint: convert with `(int)`; it panics if the value does not fit"}]}}
+         {"jsonrpc":"2.0","id":2,"result":[{"title":"sg: convert with `(int)`; it panics if the value does not fit","kind":"quickfix","diagnostics":[{"range":{"start":{"line":6,"character":15},"end":{"line":6,"character":20}},"severity":1,"source":"sg","message":"expected `int`, found `long`\nhint: convert with `(int)`; it panics if the value does not fit"}],"isPreferred":true,"edit":{"changes":{"file:///home/ada/seats/main.sg":[{"range":{"start":{"line":6,"character":15},"end":{"line":6,"character":20}},"newText":"(int)seats"}]}}}]}
+         {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///home/ada/seats/main.sg","diagnostics":[]}}
+         {"jsonrpc":"2.0","id":3,"result":null}
+
+     This is what an editor and the server say while a file is opened, fixed
+     and checked again. frame.sh writes the messages of session.txt as the
+     editor sends them, and the server's replies go to replies.txt; the last
+     command puts each reply on a line of its own, without its header. The
+     file need not be on the disk: the server reads the text the editor sent.
+
+     The reply to initialize (left out above, since it also names the version
+     of sg) gives what the server does. A second after the file is opened, it
+     is checked, and the error comes as a diagnostic: lines and columns count
+     from 0, so line 6, columns 15 to 20, is seats on the seventh line. Asked
+     for the actions on that line, the server gives the hint as a quick fix
+     whose edit writes (int)seats there; the editor applies it and sends the
+     new text, which is checked again and has no error, so the list of
+     diagnostics is empty. After shutdown and exit the server ends with 0.
+
+   What it does not serve
+     The file talk/ask.txt:
+
+         {"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///home/ada/seats/main.sg"},"position":{"line":6,"character":15}}}
+         {"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///home/ada/seats/main.sg"},"position":{"line":6,"character":15}}}
+         {"jsonrpc":"2.0","method":"$/setTrace","params":{"value":"off"}}
+         this is not JSON
+         {"jsonrpc":"2.0","id":3,"method":"shutdown"}
+         {"jsonrpc":"2.0","method":"exit"}
+
+         $ cd talk
+         $ sh frame.sh ask.txt | sg lsp | tr -d '\r' | sed 's/Content-Length: [0-9]*$//' | grep .
+         {"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"`textDocument/hover` is not served"}}
+         {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"`textDocument/completion` is not served"}}
+         {"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"the message is not JSON"}}
+         {"jsonrpc":"2.0","id":3,"result":null}
+
+     A request the server does not serve is answered with an error, so the
+     editor does not wait for it; a notification it does not know, such as
+     $/setTrace, gets no answer, as the protocol has it. A body that is not
+     JSON is answered with -32700, and the server goes on reading.
+
+MISTAKES IT TELLS
+   A message without its header
+         $ printf '{"jsonrpc":"2.0","id":1,"method":"initialize"}\r\n\r\n' | sg lsp; echo $?
+         sg lsp: a message without a Content-Length
+         1
+         $ cd talk
+         $ head -n 1 session.txt > first.txt
+         $ sh frame.sh first.txt | sg lsp > /dev/null; echo $?
+         1
+
+     The first line is read as a header, and a message has no body without
+     Content-Length. A message that cannot be read ends the server with 1, and
+     what was wrong is written on the standard error. The input ending before
+     shutdown and exit, as when an editor is killed, ends it with 1 too, and
+     says nothing.
+
+   A word after lsp
+         $ sg lsp --stdio > /dev/null 2>&1; echo $?
+         2
+
+     sg lsp takes no other word, and always talks on its standard input and
+     output. Any word after it is a usage error: the usage of every command is
+     printed, and the server does not start. An editor that adds --stdio on
+     its own is told to start sg with the one word lsp.
+
+SEE ALSO
+     sg help sg, sg help sg-help, sg help sg-emit-c, sg help sg-test, sg help
+     use
+
+     https://sg-lang.org/reference/sg-lsp.html

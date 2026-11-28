@@ -66,6 +66,17 @@ pub fn text(words: &[String]) -> Result<String, Refusal> {
     }
 }
 
+/// What `sg <command> --help` prints (choice 2088): the page of the command, as `sg help sg-build` prints it.
+/// `None` is `sg` itself; `update`, `remove` and `lock` are on the page of `sg add`.
+pub fn of_command(command: Option<&str>) -> String {
+    let name = match command {
+        None => "sg".to_string(),
+        Some("update" | "remove" | "lock") => "sg add".to_string(),
+        Some(command) => format!("sg {command}"),
+    };
+    text(&[name]).unwrap_or_else(|_| unreachable!("every command is a name of the index"))
+}
+
 /// The marks of a sign, without the names standing for its parts (choice 2086): `x ?? y` is `??`, `T[]` is `[]`,
 /// `xs[^1]` is `[^]`, so `sg help ??` finds it.
 fn marks(name: &str) -> String {
@@ -84,12 +95,18 @@ fn overview() -> String {
     let all: Vec<Name> = names().collect();
     let mut out = String::from("SG HELP\n");
     out.push_str("     sg help <name>     the page of a word, or the line of any other name\n");
-    out.push_str("     sg help index      every name of SG, with what it is in one line\n\n");
-    out.push_str("THE WORDS WITH A PAGE\n");
-    let with_page: Vec<&Name> = all.iter().filter(|n| !n.page.is_empty()).collect();
-    out.push_str(&rows(&with_page));
-    out.push('\n');
-    out.push_str(&wrap("The same pages are on the site, https://sg-lang.org/reference/, and are man(1)'s sg-read(7) and the others where they are installed.", 0));
+    out.push_str("     sg help index      every name of SG, with what it is in one line\n");
+    out.push_str("     sg build --help    the page of a command; so does sg help sg-build\n\n");
+    for (title, commands) in [("THE COMMANDS", true), ("THE WORDS WITH A PAGE", false)] {
+        let with_page: Vec<&Name> = all.iter().filter(|n| !n.page.is_empty() && (n.kind == "command") == commands).collect();
+        if !with_page.is_empty() {
+            out.push_str(title);
+            out.push('\n');
+            out.push_str(&rows(&with_page));
+            out.push('\n');
+        }
+    }
+    out.push_str(&wrap("The same pages are on the site, https://sg-lang.org/reference/, and are man(1)'s sg-build(1), sg-read(7) and the others where they are installed.", 0));
     out.push('\n');
     out
 }
@@ -205,6 +222,23 @@ mod tests {
             assert!(text(&[word.to_string()]).is_ok(), "{word}");
         }
         assert!(text(&["+".to_string()]).is_err());
+    }
+
+    /// Each command has a page, or a line until its page is written; `update`, `remove` and `lock` are `sg add`'s.
+    #[test]
+    fn every_command_has_its_help() {
+        let commands: Vec<Name> = names().filter(|n| n.kind == "command").collect();
+        assert!(commands.len() >= 7);
+        for n in &commands {
+            let command = n.name.strip_prefix("sg ");
+            assert_eq!(of_command(command), text(&[n.name.to_string()]).unwrap(), "{}", n.name);
+            assert!(of_command(command).starts_with("NAME\n"), "{}", n.name);
+        }
+        for command in ["update", "remove", "lock"] {
+            assert_eq!(of_command(Some(command)), of_command(Some("add")));
+        }
+        // A word keeps its name: `sg help test` is the word, `sg help sg-test` the command.
+        assert_ne!(text(&["test".to_string()]).unwrap(), of_command(Some("test")));
     }
 
     #[test]

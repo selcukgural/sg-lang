@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const plain = dirname(fileURLToPath(import.meta.url));
@@ -129,27 +129,29 @@ parts.forEach((part, i) => {
 
 // The manual pages, read by mandoc.
 let manuals = 0;
-const man = join(plain, 'build', 'man', 'man7');
+const manRoot = join(plain, 'build', 'man');
 let mandoc = null;
 for (const candidate of ['/usr/bin/mandoc', '/usr/local/bin/mandoc', '/opt/homebrew/bin/mandoc']) if (existsSync(candidate)) mandoc = candidate;
-if (!existsSync(man)) {
+const manFiles = ['man1', 'man7'].flatMap((dir) => (existsSync(join(manRoot, dir)) ? readdirSync(join(manRoot, dir)).map((file) => join(manRoot, dir, file)) : []));
+if (!existsSync(join(manRoot, 'man7'))) {
   console.error('build/man is not there: run `npm run build` first');
   failures += 1;
 } else if (mandoc) {
-  for (const file of readdirSync(man)) {
+  for (const path of manFiles) {
+    const file = basename(path);
     manuals += 1;
     try {
-      execFileSync(mandoc, ['-T', 'lint', '-W', 'warning', join(man, file)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync(mandoc, ['-T', 'lint', '-W', 'warning', path], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       failures += 1;
-      console.error(`${relative(plain, join(man, file))}: mandoc says\n${error.stdout ?? ''}${error.stderr ?? ''}`);
+      console.error(`${relative(plain, path)}: mandoc says\n${error.stdout ?? ''}${error.stderr ?? ''}`);
       continue;
     }
     // The text the site shows for the page (and `sg help` prints) is the text mandoc lays out, line for line.
     const page = join(plain, 'build', 'manual', `${file}.html`);
     if (!existsSync(page)) continue;
     const plainLines = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').trim();
-    const laid = execFileSync(mandoc, ['-T', 'utf8', '-O', 'width=78', join(man, file)], { encoding: 'utf8' }).replace(/.\u0008/gu, '');
+    const laid = execFileSync(mandoc, ['-T', 'utf8', '-O', 'width=78', path], { encoding: 'utf8' }).replace(/.\u0008/gu, '');
     const shownHtml = readFileSync(page, 'utf8').match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1];
     const shown = decode(shownHtml.replace(/<[^>]+>/g, '').replaceAll('&quot;', '"').replaceAll('&#39;', "'"));
     if (plainLines(laid) !== plainLines(shown)) {
