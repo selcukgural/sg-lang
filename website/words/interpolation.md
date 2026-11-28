@@ -424,5 +424,5 @@ error: `N` is not a format here
   --> example.sg:3:20
  3 |     print($"{total:N2}")
    |                    ^^
-  hint: `F2` writes the digits after the point
+  hint: an integer is written as it is: `{total}`; a fractional number with so many digits after the point: `{total:F2}`
 ```

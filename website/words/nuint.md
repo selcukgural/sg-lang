@@ -274,7 +274,7 @@ error: expected `nint`, found `nuint`
   --> example.sg:4:14
  4 |     print(xs[at])
    |              ^^
-  hint: convert with `(nint)`; it panics if the value does not fit
+  hint: convert with `(nint)at`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A `nuint` and an `int`
@@ -292,7 +292,7 @@ error: `nuint` and `int` do not mix: neither holds every value of the other
   --> example.sg:4:11
  4 |     print(size + extra)
    |           ^^^^^^^^^^^^
-  hint: convert one side to the type of the other: `(nuint)extra`; it panics if the value does not fit
+  hint: convert one side to the type of the other: `(nuint)extra`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A length as a `nuint`
@@ -310,7 +310,7 @@ error: expected `nuint`, found `nint`
   --> example.sg:3:19
  3 |     nuint count = xs.length()
    |                   ^^^^^^^^^^^
-  hint: convert with `(nuint)`; it panics if the value does not fit
+  hint: convert with `(nuint)xs.length()`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A negative `nuint`

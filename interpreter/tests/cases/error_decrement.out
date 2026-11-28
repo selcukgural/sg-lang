@@ -1,0 +1,5 @@
+error: the value of this expression is not used
+  --> error_decrement.sg:3:5
+ 3 |     count--
+   |     ^^^^^^^
+  hint: there is no `--`: `count -= 1`

@@ -2,3 +2,4 @@ error: `0xffff_ffff` is 4294967295, which does not fit in int
   --> error_number_hex_int.sg:2:16
  2 |     int mask = 0xffff_ffff
    |                ^^^^^^^^^^^
+  hint: a `uint` holds it: `uint mask = 0xffff_ffff`

@@ -3,3 +3,4 @@ panic: division by zero: 7 / 0
   --> panic_compiled_division.sg:2:12
  2 |     return total / parts
    |            ^^^^^^^^^^^^^
+  hint: `tryDivide` gives `null` instead

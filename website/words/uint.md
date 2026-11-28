@@ -257,26 +257,23 @@ real case, `trySubtract` says so in every build.
 
 ```sg panic
 void main() {
-    uint n = 3
-    uint steps = 0
-    while n >= 0 {
-        steps += 1
-        n -= 1
+    uint left = 2
+    for _ in 0..3 {
+        left -= 1
     }
-    print(steps)
+    print(left)
 }
 ```
 
 ```text
 panic: overflow: 0 - 1 does not fit in uint
-  --> example.sg:6:9
- 6 |         n -= 1
-   |         ^^^^^^
+  --> example.sg:4:9
+ 4 |         left -= 1
+   |         ^^^^^^^^^
   hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
 ```
 
-A `uint` is never below 0, so `n >= 0` is always true. In a release build `n` wraps to the top and the loop never
-ends. `while n > 0` stops at 0.
+On the third round `left` would go below 0. In a release build it wraps to the top, 4294967295.
 
 ### A negative value cast
 
@@ -319,6 +316,7 @@ panic: shift by 32 is out of range: uint has 32 bits
   --> example.sg:2:26
  2 |     return value << by | value >> (32 - by)
    |                          ^^^^^^^^^^^^^^^^^^
+  hint: `& 31` on the count keeps it in range; `rotateLeft` and `rotateRight` turn the bits instead
 ```
 
 With `by` 0 the right half shifts by 32, past the last bit. A release build cuts the count to 0 to 31 and the
@@ -336,14 +334,35 @@ void main() {
 ```
 
 ```text
-error: -1 does not fit in uint
+error: `-1` does not fit in uint
   a `uint` is never negative
   --> example.sg:3:15
  3 |     print(n > -1)
    |               ^^
 ```
 
-The number takes the type of the other side, and no `uint` is -1. `n >= 0`, which is always true, is taken.
+The number takes the type of the other side, and no `uint` is -1.
+
+### A test that is always true
+
+```sg error
+void main() {
+    uint n = 3
+    while n >= 0 {
+        n -= 1
+    }
+}
+```
+
+```text
+error: `n >= 0` is always true: a `uint` is never negative
+  --> example.sg:3:11
+ 3 |     while n >= 0 {
+   |           ^^^^^^
+```
+
+The loop would never end: below 0 a debug build panics, and a release build wraps to the top and goes on.
+`while n > 0` stops at 0. `n < 0`, which is always false, is refused the same way.
 
 ### A minus
 
@@ -399,7 +418,7 @@ error: expected `int`, found `uint`
   --> example.sg:3:16
  3 |     int half = size / 2
    |                ^^^^^^^^
-  hint: convert with `(int)`; it panics if the value does not fit
+  hint: convert with `(int)(size / 2)`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A number past the top

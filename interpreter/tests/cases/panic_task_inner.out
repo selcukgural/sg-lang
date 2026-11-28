@@ -6,3 +6,4 @@ panic: division by zero: 10 / 0
   --> panic_task_inner.sg:7:17
  7 |     var inner = Task.run(divide, x)
    |                 ^^^^^^^^^^^^^^^^^^^
+  hint: `tryDivide` gives `null` instead

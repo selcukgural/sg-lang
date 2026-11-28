@@ -1,0 +1,5 @@
+error: division by zero: 7 / 0
+  both numbers are known when the program is compiled
+  --> error_known_divide_by_zero.sg:2:11
+ 2 |     print(7 / 0)
+   |           ^^^^^

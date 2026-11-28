@@ -2,3 +2,4 @@ panic: division by zero: 10 / 0
   --> panic_divide_by_zero.sg:2:12
  2 |     return a / b
    |            ^^^^^
+  hint: `tryDivide` gives `null` instead

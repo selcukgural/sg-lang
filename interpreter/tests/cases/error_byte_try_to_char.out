@@ -1,0 +1,5 @@
+error: every `byte` is the code of a character: there is nothing to test
+  --> error_byte_try_to_char.sg:3:13
+ 3 |     print(b.tryToChar())
+   |             ^^^^^^^^^
+  hint: `(char)b` never fails

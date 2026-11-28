@@ -22,7 +22,9 @@ void main() {
     print($"{double.MinValue} {double.MaxValue} {float.MinValue} {float.MaxValue}")
     print($"{double.NaN} {double.Infinity} {-double.Infinity} {float.NaN} {float.Infinity}")
     print($"{double.Pi} {double.E} {float.Pi} {float.E}")
-    print(double.NaN == double.NaN)
+    // `double.NaN == double.NaN` written out is an error: it is always false.
+    var nan = double.NaN
+    print(nan == nan)
     print(double.NaN.equals(double.NaN))
     print(double.MaxValue * 2 == double.Infinity)
     double radius = 2

@@ -1,0 +1,5 @@
+// A number that does not fit is shown as it is written, and the hint names the variable.
+void main() {
+    int population = 8_100_000_000
+    print(population)
+}

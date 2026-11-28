@@ -466,5 +466,5 @@ error: `int` and `nuint` do not mix: neither holds every value of the other
   --> example.sg:4:14
  4 |     for i in from..to {
    |              ^^^^^^^^
-  hint: convert one side to the type of the other: `(int)to`; it panics if the value does not fit
+  hint: convert one side to the type of the other: `(int)to`; a value that does not fit panics, or is cut to size in a release build
 ```

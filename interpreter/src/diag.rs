@@ -175,6 +175,8 @@ fn with_article(before: &str, code: &str) -> String {
         'a' | 'e' | 'i' | 'o' => true,
         // `unsafe`, `unchecked`, but `union`, `uint`, `ulong`, `Utf8`, `UdpSocket`.
         'u' => second == 'n' && third != 'i',
+        // `sbyte`, said "ess-byte".
+        's' => second == 'b',
         _ => false,
     };
     let capital = word.starts_with('A');

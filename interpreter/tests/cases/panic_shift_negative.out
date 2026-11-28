@@ -3,3 +3,4 @@ panic: shift by -1 is out of range: long has 64 bits
   --> panic_shift_negative.sg:6:11
  6 |     print(value >> by)
    |           ^^^^^^^^^^^
+  hint: `& 63` on the count keeps it in range; `rotateLeft` and `rotateRight` turn the bits instead

@@ -232,7 +232,7 @@ panic: overflow: 30000 + 10000 does not fit in short
   --> example.sg:4:17
  4 |     int total = a + b
    |                 ^^^^^
-  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+  hint: the result goes into an `int`; compute in `int` from the start: `(int)a + b`
 ```
 
 The sum is a `short`, since both sides are, and becomes an `int` only after it is found. `(int)a + b` adds in an
@@ -250,7 +250,7 @@ void main() {
 ```
 
 ```text
-error: 40000 does not fit in short
+error: `40_000` does not fit in short
   --> example.sg:2:20
  2 |     short sample = 40_000
    |                    ^^^^^^
@@ -274,7 +274,7 @@ error: expected `short`, found `int`
   --> example.sg:4:15
  4 |     sample += step
    |               ^^^^
-  hint: convert with `(short)`; it panics if the value does not fit
+  hint: convert with `(short)step`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A `short` and a `ushort`

@@ -3,4 +3,4 @@ panic: value -1.5 does not fit in uint
   --> panic_float_cast_negative.sg:5:11
  5 |     print((uint)less)
    |           ^^^^^^^^^^
-  hint: `tryToUint()` gives `null` when the value does not fit
+  hint: `tryToUint()` gives `null` when the value does not fit, and `saturatingToUint()` the nearest end

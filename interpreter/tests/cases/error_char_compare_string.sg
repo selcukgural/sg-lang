@@ -1,0 +1,6 @@
+void main() {
+    var c = 'a'
+    if c == "é" {
+        print(1)
+    }
+}

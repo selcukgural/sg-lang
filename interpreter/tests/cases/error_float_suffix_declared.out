@@ -1,0 +1,5 @@
+error: a number has no `f` at its end; it takes the type it is used as
+  --> error_float_suffix_declared.sg:2:18
+ 2 |     float half = 0.5f
+   |                  ^^^^
+  hint: drop the `f`: `float half = 0.5`

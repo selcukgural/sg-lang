@@ -1,0 +1,20 @@
+// A `float` read from memory keeps its bits, a signalling NaN too: a union and raw memory
+// hold bytes, as in C.
+union F {
+    uint whole
+    float number
+}
+
+void main() {
+    var f = F { whole = 0x7f800001 }
+    var m = unsafe f.number
+    print($"{m.toBits():x8}")
+    var g = F { number = float.fromBits(0x7f800001) }
+    print($"{unsafe g.whole:x8}")
+    var cells = Memory.allocate<float>(1)
+    unsafe { cells[0] = float.fromBits(0x7f800002) }
+    var words = unsafe (raw uint)cells
+    print($"{unsafe words[0]:x8}")
+    print($"{(unsafe cells[0]).toBits():x8}")
+    unsafe Memory.free(cells)
+}

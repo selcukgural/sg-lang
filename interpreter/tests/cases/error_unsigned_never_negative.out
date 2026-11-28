@@ -1,0 +1,4 @@
+error: `n >= 0` is always true: a `uint` is never negative
+  --> error_unsigned_never_negative.sg:3:11
+ 3 |     while n >= 0 {
+   |           ^^^^^^

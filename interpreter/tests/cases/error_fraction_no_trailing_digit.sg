@@ -1,0 +1,5 @@
+// `5.` at the end of a line would call a method of 5 named on the next line.
+void main() {
+    double x = 5.
+    print(x)
+}

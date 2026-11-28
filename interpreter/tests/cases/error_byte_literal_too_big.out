@@ -1,4 +1,4 @@
-error: 300 does not fit in byte
+error: `300` does not fit in byte
   --> error_byte_literal_too_big.sg:2:14
  2 |     byte b = 300
    |              ^^^

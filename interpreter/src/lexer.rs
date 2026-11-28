@@ -455,6 +455,11 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
             self.digits();
             fractional = true;
+        } else if self.at(0) == Some(b'.') && self.at(1).is_none_or(|c| c.is_ascii_whitespace() || matches!(c, b';' | b')' | b']' | b'}' | b',')) {
+            // `5.` at the end of a line would call a method on 5 with the name on the next line.
+            let written = &self.src[start..self.pos];
+            return Err(Diag::error(Span::new(start, self.pos + 1), "a fractional number has a digit after its point")
+                .hint(format!("`{written}.0`")));
         }
         let exponent = |c: Option<u8>| c.is_some_and(|c| c.is_ascii_digit());
         if matches!(self.at(0), Some(b'e' | b'E'))
@@ -490,7 +495,7 @@ impl<'a> Lexer<'a> {
             let suffix = &self.src[end..self.pos];
             if fractional && matches!(suffix, "f" | "d" | "F" | "D" | "m" | "M") {
                 return Err(Diag::error(span, format!("a number has no `{suffix}` at its end; it takes the type it is used as"))
-                    .hint(format!("`float x = {text}`")));
+                    .hint(self.without_suffix(start, suffix, text)));
             }
             return Err(Diag::error(span, "a number cannot be followed by a letter"));
         }
@@ -925,15 +930,29 @@ impl<'a> Lexer<'a> {
                 .hint("write `{{` for a literal brace"));
         }
         let letter = match colon {
-            Some(at) => Some(self.format_letter(Span::new(at + 1, close))?),
+            Some(at) => Some(self.format_letter(Span::new(at + 1, close), self.src[code.start..code.end].trim())?),
             None => None,
         };
         let spec = spec_start.map(|start| Spec { width, letter, span: Span::new(start, close) });
         Ok((code, spec))
     }
 
+    /// The hint for `0.5f`: the number without its letter, in the declaration it is written in
+    /// when there is one (`float half = 0.5`).
+    fn without_suffix(&self, start: usize, suffix: &str, text: &str) -> String {
+        let line = &self.src[self.src[..start].rfind('\n').map_or(0, |at| at + 1)..start];
+        let words: Vec<&str> = line.trim_end().strip_suffix('=').unwrap_or("").split_whitespace().collect();
+        let float = matches!(suffix, "f" | "F");
+        match words[..] {
+            [.., ty @ ("float" | "double"), name] => format!("drop the `{suffix}`: `{ty} {name} = {text}`"),
+            [.., "var", name] if float => format!("`float {name} = {text}`"),
+            [.., "var", name] => format!("drop the `{suffix}`: `var {name} = {text}`"),
+            _ => format!("drop the `{suffix}`: `{text}`"),
+        }
+    }
+
     /// What follows `:` inside `{ }`: one letter and the number of digits, as in C#.
-    fn format_letter(&self, span: Span) -> Result<(Letter, Option<u32>), Diag> {
+    fn format_letter(&self, span: Span, code: &str) -> Result<(Letter, Option<u32>), Diag> {
         const KNOWN: &str = "formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point), `e` and `E` (C's `%e`), `g` and `G` (C's `%g`)";
         let written = &self.src[span.start..span.end];
         let Some(first) = written.chars().next() else {
@@ -953,7 +972,7 @@ impl<'a> Lexer<'a> {
             'n' | 'N' => {
                 return Err(Diag::error(span, format!("`{first}` is not a format here"))
                     .note("`N` would put separators between groups of digits, which change from one country to another")
-                    .hint(format!("`F{digits}` writes the digits after the point")))
+                    .hint(format!("an integer is written as it is: `{{{code}}}`; a fractional number with so many digits after the point: `{{{code}:F{}}}`", if digits.is_empty() { "2" } else { digits })))
             }
             _ => return Err(Diag::error(span, format!("`{written}` is not a format")).note(KNOWN)),
         };

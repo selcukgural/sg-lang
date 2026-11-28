@@ -1,0 +1,5 @@
+error: `0x100_0001` is 16777217, which is not held exactly by a `float`
+  a `float` holds every whole number up to 2^24
+  --> error_float_inexact_hex.sg:2:19
+ 2 |     float count = 0x100_0001
+   |                   ^^^^^^^^^^

@@ -1,0 +1,6 @@
+void main() {
+    ushort a = 60000
+    ushort b = 6000
+    int total = a + b
+    print(total)
+}

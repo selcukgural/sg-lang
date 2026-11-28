@@ -279,7 +279,7 @@ void main() {
 
 ```text
 A
-panic: 55296 is not the code of a character
+panic: 0xD800 is not the code of a character
   --> example.sg:4:15
  4 |         print((char)n)
    |               ^^^^^^^
@@ -304,7 +304,7 @@ panic: value 8364 does not fit in byte
   --> example.sg:3:14
  3 |     byte b = (byte)sign
    |              ^^^^^^^^^^
-  hint: `(int)c` holds the code of every character
+  hint: `(int)` in place of `(byte)` holds the code of every character
 ```
 
 `(byte)c` gives the code, not the bytes of UTF-8, and follows the rule of the integers: a release build keeps
@@ -345,7 +345,7 @@ error: expected `string`, found `char`
   --> example.sg:2:19
  2 |     string name = 'P'
    |                   ^^^
-  hint: a text of one character: `'P'.toString()`
+  hint: a text is written in double quotes: `"P"`
 ```
 
 `"P"` is the same text, written in the program.
@@ -402,7 +402,7 @@ error: expected `char`, found `byte`
   --> example.sg:3:18
  3 |     char first = text[0]
    |                  ^^^^^^^
-  hint: `(char)text[0]` panics if no character has this code; `text[0].tryToChar()` gives `null` instead
+  hint: a byte of a text is a character only below 128, as UTF-8 writes the others in more bytes; the characters are `text.chars()`
 ```
 
 `text[0]` is a byte of UTF-8, which is a character alone only in ASCII. The first character is
@@ -457,7 +457,7 @@ void main() {
 ```
 
 ```text
-error: 55296 is not the code of a character
+error: `0xD800` is not the code of a character
   a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF
   --> example.sg:2:13
  2 |     var c = (char)0xD800

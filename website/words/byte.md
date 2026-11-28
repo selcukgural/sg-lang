@@ -295,7 +295,7 @@ void main() {
 ```
 
 ```text
-error: 256 does not fit in byte
+error: `256` does not fit in byte
   --> example.sg:2:14
  2 |     byte b = 256
    |              ^^^
@@ -335,7 +335,7 @@ error: expected `byte`, found `int`
   --> example.sg:3:14
  3 |     byte b = count
    |              ^^^^^
-  hint: convert with `(byte)`; it panics if the value does not fit
+  hint: convert with `(byte)count`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A sum that is meant to be an `int`
@@ -349,10 +349,11 @@ void main() {
 ```
 
 ```text
-error: 1000 does not fit in byte
+error: `1000` does not fit in byte
   --> example.sg:3:21
  3 |     int total = b + 1000
    |                     ^^^^
+  hint: compute in `int`: `(int)b + 1000`
 ```
 
 The sum is a `byte`, since `b` is one, and is widened after it is found. `(int)b + 1000` adds in an `int`.
@@ -372,7 +373,7 @@ error: operator `==` is not defined for `byte` and `char`
   --> example.sg:4:11
  4 |     print(text[0] == first)
    |           ^^^^^^^^^^^^^^^^
-  hint: a `char` is not a number; compare its code, `(int)c`, or make the `byte` a `char` with `(char)`
+  hint: a `char` is not a number; compare its code: `text[0] == (int)first`
 ```
 
 `first` is a `char`, since nothing said otherwise. `text[0] == 'a'` is fine: the constant becomes a `byte` there.
@@ -391,7 +392,7 @@ error: `é` does not fit in one byte: it takes 2 bytes in UTF-8
   --> example.sg:3:22
  3 |     print(text[3] == 'é')
    |                      ^^^
-  hint: the type for any character is `char`: `char c = 'é'`
+  hint: look for the character where the byte is: `text[3..].startsWith('é')`
 ```
 
 `text[3..].startsWith('é')` asks the question of the text, by characters.

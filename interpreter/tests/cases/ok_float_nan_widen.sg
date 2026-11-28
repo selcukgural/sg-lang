@@ -1,0 +1,18 @@
+// A conversion between `float` and `double` makes a signalling NaN quiet, as the machine does,
+// in the interpreter and in every build (choice 2091). `toBits` and `fromBits` keep the bits.
+void main() {
+    float signalling = float.fromBits(0x7f800001)
+    print($"{signalling.toBits():x8}")
+    double wide = signalling
+    print($"{wide.toBits():x16}")
+    float back = (float)wide
+    print($"{back.toBits():x8}")
+    double cast = (double)float.fromBits(0xff800003)
+    print($"{cast.toBits():x16}")
+    double narrow = double.fromBits(0x7ff0000000000001)
+    float small = (float)narrow
+    print($"{small.toBits():x8}")
+    float quiet = float.fromBits(0x7fc00005)
+    double kept = quiet
+    print($"{kept.toBits():x16}")
+}

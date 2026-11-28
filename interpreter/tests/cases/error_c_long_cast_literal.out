@@ -1,6 +1,6 @@
-error: 5000000000 does not fit in CULong
+error: `5000000000` does not fit in CULong
   C's `unsigned long` is 32 bits on Windows, so a number written for it fits in 32 bits on every system
   --> error_c_long_cast_literal.sg:3:11
  3 |     print((CULong)5000000000)
    |           ^^^^^^^^^^^^^^^^^^
-  hint: a larger value is converted where the program runs, and panics where it does not fit: `ulong n = 5000000000` and then `(CULong)n`
+  hint: a larger value is converted where the program runs, as any narrowing conversion: `ulong n = 5000000000` and then `(CULong)n`

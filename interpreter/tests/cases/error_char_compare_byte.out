@@ -1,0 +1,5 @@
+error: operator `==` is not defined for `byte` and `char`
+  --> error_char_compare_byte.sg:4:11
+ 4 |     print(text[0] == first)
+   |           ^^^^^^^^^^^^^^^^
+  hint: a `char` is not a number; compare its code: `text[0] == (int)first`

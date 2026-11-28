@@ -1,0 +1,9 @@
+// An `int` product on its way into a `long`: the panic names the wider type.
+long bytesOf(int megabytes) {
+    return megabytes * 1024 * 1024
+}
+
+void main() {
+    print(bytesOf(2))
+    print(bytesOf(5000))
+}

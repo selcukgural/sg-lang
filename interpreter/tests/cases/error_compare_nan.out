@@ -1,0 +1,5 @@
+error: `x == double.NaN` is always false: `NaN` is equal to no number, not even to itself
+  --> error_compare_nan.sg:3:11
+ 3 |     print(x == double.NaN)
+   |           ^^^^^^^^^^^^^^^
+  hint: `x.isNaN()`

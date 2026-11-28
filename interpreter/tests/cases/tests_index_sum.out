@@ -28,13 +28,13 @@ panic: overflow: 2147483647 + 1 does not fit in int
   --> tests_index_sum.sg:64:13
  64 |     print(a[at + 1])
     |             ^^^^^^
-  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+  hint: the result goes into a `nint`; compute in `nint` from the start: `(nint)at + 1`
 FAIL  an sbyte index of a slice
 panic: overflow: 127 + 1 does not fit in sbyte
   --> tests_index_sum.sg:70:18
  70 |     print(xs[..][at + 1])
     |                  ^^^^^^
-  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+  hint: the result goes into a `nint`; compute in `nint` from the start: `(nint)at + 1`
 FAIL  an index of a text
 panic: overflow: 9223372036854775807 + 1 does not fit in nint
   --> tests_index_sum.sg:76:16

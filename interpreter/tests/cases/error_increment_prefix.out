@@ -1,0 +1,5 @@
+error: a line cannot start with `+`
+  --> error_increment_prefix.sg:3:5
+ 3 |     ++count
+   |     ^
+  hint: there is no `++`: `count += 1`

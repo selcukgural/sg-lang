@@ -1,0 +1,5 @@
+error: expected an expression, found `.`
+  --> error_fraction_no_leading_digit.sg:2:19
+ 2 |     double half = .5
+   |                   ^
+  hint: a fractional number has a digit before its point: `0.5`

@@ -3,4 +3,4 @@ error: `N` is not a format here
   --> error_format_letter_group.sg:4:20
  4 |     print($"{price:N2}")
    |                    ^^
-  hint: `F2` writes the digits after the point
+  hint: an integer is written as it is: `{price}`; a fractional number with so many digits after the point: `{price:F2}`

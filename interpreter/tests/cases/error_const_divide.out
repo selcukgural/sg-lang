@@ -2,3 +2,4 @@ error: the value of `Half` is found when the program is compiled, and this stops
   --> error_const_divide.sg:1:18
  1 | const int Half = 1 / 0
    |                  ^^^^^
+  hint: `tryDivide` gives `null` instead

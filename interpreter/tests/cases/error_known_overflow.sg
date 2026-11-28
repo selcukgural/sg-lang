@@ -1,0 +1,5 @@
+// Every number is known when the program is compiled, so the overflow is found then.
+void main() {
+    var month = 30 * 24 * 60 * 60 * 1000
+    print(month)
+}

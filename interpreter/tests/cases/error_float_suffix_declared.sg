@@ -1,0 +1,4 @@
+void main() {
+    float half = 0.5f
+    print(half)
+}

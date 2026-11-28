@@ -1,0 +1,5 @@
+error: expected an expression, found `}`
+  --> error_decrement_last.sg:5:5
+ 5 |     }
+   |     ^
+  hint: there is no `--`: `count -= 1`

@@ -2123,7 +2123,7 @@ fn load(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span) -> Res
         Ok(match ty {
             Ty::Atomic(inner) => return load(addr, inner, plain, span),
             Ty::Int(int) => Value::Int(*int, raw::read_int(addr, *int)),
-            Ty::Float(FloatTy::Float) => Value::Float(FloatTy::Float, at.cast::<f32>().read_unaligned() as f64),
+            Ty::Float(FloatTy::Float) => Value::Float(FloatTy::Float, float_from_bits(at.cast::<u32>().read_unaligned())),
             Ty::Float(FloatTy::Double) => Value::Float(FloatTy::Double, at.cast::<f64>().read_unaligned()),
             Ty::Bool => Value::Bool(at.read() != 0),
             Ty::Char => {
@@ -2176,7 +2176,7 @@ fn store(addr: usize, ty: &Ty, value: &Value, plain: &crate::raw::PlainTypes) {
         match (ty, &value) {
             (Ty::Atomic(inner), _) => store(addr, inner, &value, plain),
             (Ty::Int(int), Value::Int(_, number)) => raw::write_int(addr, *int, *number),
-            (Ty::Float(FloatTy::Float), Value::Float(_, number)) => at.cast::<f32>().write_unaligned(*number as f32),
+            (Ty::Float(FloatTy::Float), Value::Float(_, number)) => at.cast::<u32>().write_unaligned(float_to_bits(*number)),
             (Ty::Float(FloatTy::Double), Value::Float(_, number)) => at.cast::<f64>().write_unaligned(*number),
             (Ty::Bool, Value::Bool(truth)) => at.write(u8::from(*truth)),
             (Ty::Char, Value::Char(found)) => at.cast::<u32>().write_unaligned(*found as u32),
@@ -5498,7 +5498,21 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
                 Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))
             }
-            ExprKind::Widen(ty, inner) => Ok(convert(strip(self.expr(inner, frame)?), ty)),
+            ExprKind::Widen(ty, inner) => match self.expr(inner, frame) {
+                Ok(value) => Ok(convert(strip(value), ty)),
+                // An overflow before the widening names the wider type as the way out.
+                Err(Unwind::Stop(mut stop)) => {
+                    if let Stop::Diag(diag) = &mut *stop {
+                        if diag.kind == crate::diag::Kind::Panic && diag.msg.starts_with("overflow: ") && diag.hint.is_some() {
+                            if let Some((_, hint)) = crate::check::widened_arithmetic(self.src, ty, inner).filter(|(spans, _)| spans.contains(&diag.span)) {
+                                diag.hint = Some(hint);
+                            }
+                        }
+                    }
+                    Err(Unwind::Stop(stop))
+                }
+                Err(other) => Err(other),
+            },
             ExprKind::Load(inner) => Ok(fresh(&owned(self.expr(inner, frame)?))),
             ExprKind::SizeOf { align, of, .. } => {
                 let (size, alignment) = raw::layout(of, self.plain);
@@ -5765,7 +5779,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // a panic, as in compiled code, not an abort. Each item is a cell of its own here.
             let mut cells = Vec::new();
             if cells.try_reserve_exact(*length).is_err() {
-                return Err(Diag::panic(expr.span, format!("there is no memory for an array of {} items", group_digits(*length as u64))).into());
+                return Err(Diag::panic(expr.span, format!("there is no memory for an array of {length} items")).into());
             }
             match (items, args.first()) {
                 (Some(items), _) => {
@@ -5861,20 +5875,20 @@ impl<'a, 'e> Interp<'a, 'e> {
             (Value::Float(_, value), Ty::Int(to)) if float_fits(value, *to) => Ok(Value::Int(*to, value.trunc() as i128)),
             (Value::Float(from, value), Ty::Int(to)) => {
                 Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name()))
-                    .hint(format!("`tryTo{}()` gives `null` when the value does not fit", to.title()))
+                    .hint(format!("`tryTo{0}()` gives `null` when the value does not fit, and `saturatingTo{0}()` the nearest end", to.title()))
                     .into())
             }
             // A code that is no character panics in every build: a text holds characters only.
             (Value::Int(_, value), Ty::Char) => match crate::check::char_of(value) {
                 Some(found) => Ok(Value::Char(found)),
-                None => Err(Diag::panic(expr.span, format!("{value} is not the code of a character"))
+                None => Err(Diag::panic(expr.span, format!("{} is not the code of a character", code_shown(value)))
                     .hint("`tryToChar()` gives `null` when no character has the code")
                     .into()),
             },
             (Value::Char(value), Ty::Char) => Ok(Value::Char(value)),
             (Value::Char(value), Ty::Int(to)) if to.fits(value as i128) => Ok(Value::Int(*to, value as i128)),
             (Value::Char(value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {} does not fit in {}", value as u32, to.name()))
-                .hint("`(int)c` holds the code of every character")
+                .hint(format!("`(int)` in place of `({})` holds the code of every character", to.name()))
                 .into()),
             (value, to) => Ok(convert(value, to)),
         }
@@ -6388,7 +6402,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 let mut cells = Vec::new();
                 if cells.try_reserve_exact(count).is_err() {
-                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {count} items")).into());
                 }
                 cells.extend((0..count).map(|_| cell(fresh(&value))));
                 Ok(Value::List(Rc::new(RefCell::new(cells))))
@@ -6401,7 +6415,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 let mut cells: Vec<Cell> = Vec::new();
                 if cells.try_reserve_exact(count).is_err() {
-                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {} items", group_digits(count as u64))).into());
+                    return Err(Diag::panic(expr.span, format!("there is no memory for a list of {count} items")).into());
                 }
                 Ok(Value::List(Rc::new(RefCell::new(cells))))
             }
@@ -10274,9 +10288,26 @@ fn convert(value: Value, to: &Ty) -> Value {
         (Value::Int(_, value), Ty::Float(FloatTy::Float)) => Value::Float(FloatTy::Float, value as f32 as f64),
         (Value::Int(_, value), Ty::Float(FloatTy::Double)) => Value::Float(FloatTy::Double, value as f64),
         (Value::Float(_, value), Ty::Float(FloatTy::Float)) => Value::Float(FloatTy::Float, value as f32 as f64),
+        // A `float` that is a signalling `NaN` (kept by hand, see `float_from_bits`) becomes a quiet
+        // one, as the machine makes it (choice 2091).
+        (Value::Float(FloatTy::Float, value), Ty::Float(FloatTy::Double)) if value.is_nan() => Value::Float(FloatTy::Double, f64::from_bits(value.to_bits() | 1 << 51)),
         (Value::Float(_, value), Ty::Float(FloatTy::Double)) => Value::Float(FloatTy::Double, value),
         _ => unreachable!("the checker only converts numbers"),
     }
+}
+
+/// A number that is no character, as the panic shows it: in hex, as the codes of characters
+/// are written (`0xD800`), and a negative one as it is.
+fn code_shown(value: i128) -> String {
+    match value < 0 {
+        true => value.to_string(),
+        false => format!("0x{value:X}"),
+    }
+}
+
+/// The way out a shift by a count past the bits names; compiled code writes the same.
+fn shift_hint(ty: IntTy) -> String {
+    format!("`& {}` on the count keeps it in range; `rotateLeft` and `rotateRight` turn the bits instead", ty.bits() - 1)
 }
 
 /// Overflow panics in every build; `wrappingAdd` is written to wrap on purpose. A shift
@@ -10284,7 +10315,7 @@ fn convert(value: Value, to: &Ty) -> Value {
 /// are gone without a word, since that is what a shift is for.
 fn arithmetic(op: BinOp, ty: IntTy, a: i128, b: i128, span: Span) -> Result<Value, Diag> {
     if op.is_shift() && !(0..ty.bits() as i128).contains(&b) {
-        return Err(Diag::panic(span, format!("shift by {b} is out of range: {} has {} bits", ty.name(), ty.bits())));
+        return Err(Diag::panic(span, format!("shift by {b} is out of range: {} has {} bits", ty.name(), ty.bits())).hint(shift_hint(ty)));
     }
     // A number is kept as its value, so the bits above the type agree on both sides: an
     // unsigned value has zeros there, and `>>` brings down zeros; a signed one carries its
@@ -10300,7 +10331,11 @@ fn arithmetic(op: BinOp, ty: IntTy, a: i128, b: i128, span: Span) -> Result<Valu
         // Two `ulong`s can multiply past what `i128` holds; that does not fit the type either.
         BinOp::Mul => a.checked_mul(b),
         BinOp::Div | BinOp::Rem if b == 0 => {
-            return Err(Diag::panic(span, format!("division by zero: {a} {} 0", op.symbol())));
+            let diag = Diag::panic(span, format!("division by zero: {a} {} 0", op.symbol()));
+            return Err(match op {
+                BinOp::Div => diag.hint("`tryDivide` gives `null` instead"),
+                _ => diag,
+            });
         }
         BinOp::Div => Some(a / b),
         BinOp::Rem => Some(a % b),

@@ -1,0 +1,5 @@
+panic: overflow: 60000 + 6000 does not fit in ushort
+  --> panic_overflow_widened_ushort.sg:4:17
+ 4 |     int total = a + b
+   |                 ^^^^^
+  hint: the result goes into an `int`; compute in `int` from the start: `(int)a + b`

@@ -2,4 +2,4 @@ error: operator `==` is not defined for `char` and `int`
   --> error_char_compare_int.sg:3:11
  3 |     print(c == 65)
    |           ^^^^^^^
-  hint: a `char` is not a number; compare its code, `(int)c`, or make the `int` a `char` with `(char)`
+  hint: a `char` is not a number; compare its code: `(int)c == 65`

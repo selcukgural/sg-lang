@@ -1,4 +1,4 @@
-error: -1 does not fit in uint
+error: `-1` does not fit in uint
   a `uint` is never negative
   --> error_cast_negative_unsigned.sg:2:11
  2 |     print((uint)-1)
