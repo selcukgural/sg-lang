@@ -4,14 +4,16 @@ The design rules the checker, the interpreter and compiled code already hold a p
 behind them is in [`design/decisions/`](../../design/decisions/README.md).
 
 - Integer overflow panics in the interpreter, in tests and in a debug build; a release build wraps (Rust's
-  way). `wrappingAdd` wraps in every build, `tryAdd` is checked in every build.
+  way). `wrappingAdd` wraps in every build, `tryAdd` is checked in every build. An operation on numbers all
+  known when the program is compiled that overflows or divides by zero is a compile error.
 - A shift count follows the same rule: below zero, or not below the bits of the type, it is a compile
   error where it is known, a panic in the interpreter, in tests and in a debug build, and cut to the bits
   of the type in a release build. The bits that `<<` pushes out are gone in every build.
 - An integer type widens to another on its own only when the other holds every one of its values on every
   machine: `int` to `long`, `byte` to `ushort`, `uint` to `long` and `ulong`, never a signed type to an
   unsigned one. `int + uint` is a compile error whose hint names a type that holds both (`long`).
-  Narrowing is written `(int)x` and panics if the value does not fit.
+  Narrowing is written `(int)x`; a value that does not fit panics in the interpreter, in tests and in a debug
+  build, and is cut to size in a release build.
 - `float` and `double` (`1.5`, `1e9`) take the type they are used as. A number becomes fractional on its own
   only when the type holds it exactly (`int` to `double`, not `long`); the arithmetic is the hardware's and
   never panics, and nothing is fused. `==` and `<` are the hardware's, `equals`, `compare`, `sort` and `==`

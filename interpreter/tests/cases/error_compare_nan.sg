@@ -1,0 +1,4 @@
+void main() {
+    double x = 0.0 / 0.0
+    print(x == double.NaN)
+}

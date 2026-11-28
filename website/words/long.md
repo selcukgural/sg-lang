@@ -252,7 +252,7 @@ panic: overflow: 4194304 * 1024 does not fit in int
   --> example.sg:2:12
  2 |     return megabytes * 1024 * 1024
    |            ^^^^^^^^^^^^^^^^^^^^^^^
-  hint: `tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around
+  hint: the result goes into a `long`; compute in `long` from the start: `(long)megabytes * 1024 * 1024`
 ```
 
 `megabytes` is an `int`, so the product is one, and becomes a `long` only when it is returned.
@@ -320,7 +320,7 @@ error: expected `int`, found `long`
   --> example.sg:7:16
  7 |     print(half(size))
    |                ^^^^
-  hint: convert with `(int)`; it panics if the value does not fit
+  hint: convert with `(int)size`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A `long` and a `ulong`
@@ -338,7 +338,7 @@ error: `long` and `ulong` do not mix: neither holds every value of the other
   --> example.sg:4:11
  4 |     print(a + b)
    |           ^^^^^
-  hint: convert one side to the type of the other: `(long)b`; it panics if the value does not fit
+  hint: convert one side to the type of the other: `(long)b`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A `long` where a `double` goes
@@ -376,7 +376,7 @@ error: expected `nint`, found `long`
   --> example.sg:4:17
  4 |     print(names[at])
    |                 ^^
-  hint: convert with `(nint)`; it panics if the value does not fit
+  hint: convert with `(nint)at`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A number past every `long`
@@ -388,11 +388,11 @@ void main() {
 ```
 
 ```text
-error: 18_446_744_073_709_551_615 does not fit in long
+error: `18_446_744_073_709_551_615` does not fit in long
   --> example.sg:2:11
  2 |     print(18_446_744_073_709_551_615)
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  hint: write the type where it goes: `ulong x = 18_446_744_073_709_551_615`
+  hint: write the type where it goes: `ulong value = 18_446_744_073_709_551_615`
 ```
 
 A number is never unsigned on its own; a `ulong` is written.

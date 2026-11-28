@@ -1,0 +1,5 @@
+error: expected an expression, found `+`
+  --> error_increment.sg:3:11
+ 3 |     count++
+   |           ^
+  hint: there is no `++`: `count += 1`

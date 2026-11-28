@@ -188,6 +188,48 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// No expression starts at the next token. `x++` and `++x` are written `x += 1`, and a
+    /// fractional number has digits before its point: `.5` is `0.5`.
+    fn no_expression(&self) -> Diag {
+        let diag = self.unexpected("an expression");
+        let span = self.span();
+        let bytes = self.src.as_bytes();
+        let name_at = |range: std::ops::Range<usize>| {
+            let text = &self.src[range];
+            Some(text).filter(|text| !text.is_empty() && text.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.'))
+        };
+        // `x++` stops at its second `+`, `x--` at what follows it (the second `-` is a sign).
+        let before = match self.peek() {
+            Tok::Plus if self.src[..span.start].ends_with('+') => &self.src[..span.start + 1],
+            _ => self.src[..span.start].trim_end(),
+        };
+        if let Some(sign) = ["++", "--"].into_iter().find(|sign| before.ends_with(sign)) {
+            let end = before.len() - 2;
+            let start = self.src[..end].rfind(['\n', ' ', '\t', '(', '{', ';']).map_or(0, |at| at + 1);
+            if let Some(name) = name_at(start..end) {
+                return diag.hint(format!("there is no `{sign}`: `{name} {}= 1`", &sign[..1]));
+            }
+        }
+        match self.peek() {
+            Tok::Plus | Tok::Minus => {
+                let sign = bytes[span.start];
+                // `++x`
+                if bytes.get(span.end) == Some(&sign) {
+                    let end = self.src[span.end + 1..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')).map_or(self.src.len(), |at| span.end + 1 + at);
+                    if let Some(name) = name_at(span.end + 1..end) {
+                        return diag.hint(format!("there is no `{0}{0}`: `{name} {0}= 1`", sign as char));
+                    }
+                }
+                diag
+            }
+            Tok::Dot if bytes.get(span.end).is_some_and(u8::is_ascii_digit) => {
+                let end = self.src[span.end..].find(|c: char| !(c.is_ascii_digit() || c == '_')).map_or(self.src.len(), |at| span.end + at);
+                diag.hint(format!("a fractional number has a digit before its point: `0.{}`", &self.src[span.end..end]))
+            }
+            _ => diag,
+        }
+    }
+
     /// Whether the next token is the word `word` (one of `WORDS`).
     fn at_word(&self, word: &str) -> bool {
         matches!(self.peek(), Tok::Ident(name) if name == word)
@@ -1522,6 +1564,12 @@ impl<'a> Parser<'a> {
             Tok::AndAnd | Tok::OrOr | Tok::Plus | Tok::Star | Tok::Slash | Tok::Percent | Tok::Eq | Tok::Ne
             | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::QuestionQuestion | Tok::Question | Tok::Colon | Tok::Amp | Tok::Pipe | Tok::Caret | Tok::Shl => {
                 let text = self.peek().describe();
+                // `++count`
+                if *self.peek() == Tok::Plus && *self.peek_at(1) == Tok::Plus {
+                    if let Tok::Ident(name) = self.peek_at(2) {
+                        return Err(Diag::error(start, format!("a line cannot start with {text}")).hint(format!("there is no `++`: `{name} += 1`")));
+                    }
+                }
                 return Err(Diag::error(start, format!("a line cannot start with {text}"))
                     .hint(format!("the statement ended on the previous line; to continue it, put {text} at the end of that line")));
             }
@@ -1575,8 +1623,15 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(expr.span, "`?:` gives a value; it is not a statement")
                         .hint(format!("to do one thing or the other, write an `if`: `if {text} {{ ... }} else {{ ... }}`")));
                 } else {
-                    return Err(Diag::error(expr.span, "the value of this expression is not used")
-                        .hint("only a call, an assignment or a declaration can be a statement"));
+                    let diag = Diag::error(expr.span, "the value of this expression is not used");
+                    // `count--` with a call on the next line reads as `count - -call()`.
+                    if let ExprKind::Binary(BinOp::Sub, left, right) = &expr.kind {
+                        if matches!(right.kind, ExprKind::Unary(UnOp::Neg, _)) && self.src[left.span.end..].trim_start().starts_with("--") {
+                            let name = &self.src[left.span.start..left.span.end];
+                            return Err(diag.hint(format!("there is no `--`: `{name} -= 1`")));
+                        }
+                    }
+                    return Err(diag.hint("only a call, an assignment or a declaration can be a statement"));
                 }
             }
         };
@@ -2704,7 +2759,7 @@ impl<'a> Parser<'a> {
             Tok::Return => {
                 return Err(self.unexpected("an expression").note("inside an expression `return` is written only on the right side of `??` or as an arm of a `match`"))
             }
-            _ => return Err(self.unexpected("an expression")),
+            _ => return Err(self.no_expression()),
         };
         Ok(Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start.start, self.prev_end()) })
     }

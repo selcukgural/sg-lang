@@ -7,3 +7,4 @@ panic: division by zero: 10 / 0
   --> panic_async.sg:9:15
  9 |     var bad = divide(0)
    |               ^^^^^^^^^
+  hint: `tryDivide` gives `null` instead

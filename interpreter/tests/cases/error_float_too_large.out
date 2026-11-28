@@ -1,4 +1,4 @@
-error: 1e400 does not fit in double
+error: `1e400` does not fit in double
   --> error_float_too_large.sg:2:11
  2 |     print(1e400)
    |           ^^^^^

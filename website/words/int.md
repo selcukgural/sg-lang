@@ -336,10 +336,11 @@ void main() {
 ```
 
 ```text
-error: 8100000000 does not fit in int
+error: `8_100_000_000` does not fit in int
   --> example.sg:2:22
  2 |     int population = 8_100_000_000
    |                      ^^^^^^^^^^^^^
+  hint: a `long` holds it: `long population = 8_100_000_000`
 ```
 
 `long population` holds it.
@@ -359,7 +360,7 @@ error: expected `int`, found `long`
   --> example.sg:3:17
  3 |     int count = total
    |                 ^^^^^
-  hint: convert with `(int)`; it panics if the value does not fit
+  hint: convert with `(int)total`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A length as an `int`
@@ -377,7 +378,7 @@ error: expected `int`, found `nint`
   --> example.sg:3:17
  3 |     int count = names.length()
    |                 ^^^^^^^^^^^^^^
-  hint: convert with `(int)`; it panics if the value does not fit
+  hint: convert with `(int)names.length()`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 `var count = names.length()` keeps it an `nint`.

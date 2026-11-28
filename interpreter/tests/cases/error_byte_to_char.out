@@ -1,0 +1,5 @@
+error: expected `char`, found `byte`
+  --> error_byte_to_char.sg:3:19
+ 3 |     char letter = b
+   |                   ^
+  hint: `(char)b` is the character with this code; every byte is the code of one

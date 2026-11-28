@@ -1,0 +1,6 @@
+error: overflow: 86400000 * 1000 does not fit in int
+  every number here is known when the program is compiled
+  --> error_known_overflow_const_name.sg:3:18
+ 3 |     var micros = Day * 1000 * 1000
+   |                  ^^^^^^^^^^^^^^^^^
+  hint: compute in `long`: `(long)Day * 1000 * 1000`

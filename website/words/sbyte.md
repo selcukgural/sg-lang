@@ -290,7 +290,7 @@ void main() {
 ```
 
 ```text
-error: 130 does not fit in sbyte
+error: `130` does not fit in sbyte
   --> example.sg:2:25
  2 |     sbyte temperature = 130
    |                         ^^^
@@ -331,7 +331,7 @@ error: expected `sbyte`, found `byte`
   --> example.sg:3:15
  3 |     sbyte s = data[1]
    |               ^^^^^^^
-  hint: convert with `(sbyte)`; it panics if the value does not fit
+  hint: convert with `(sbyte)data[1]`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 Where the byte holds a signed value, `data[1].wrappingToSbyte()` reads its bits.
@@ -346,10 +346,11 @@ void main() {
 ```
 
 ```text
-error: 200 does not fit in sbyte
+error: `200` does not fit in sbyte
   --> example.sg:3:21
  3 |     print(reading < 200)
    |                     ^^^
+  hint: compare in `int`: `(int)reading < 200`
 ```
 
 The number takes the type of the other side, and 200 is not an `sbyte`. `(int)reading < 200` compares two

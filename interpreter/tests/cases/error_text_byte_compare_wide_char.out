@@ -1,0 +1,5 @@
+error: `é` does not fit in one byte: it takes 2 bytes in UTF-8
+  --> error_text_byte_compare_wide_char.sg:3:22
+ 3 |     print(text[3] == 'é')
+   |                      ^^^
+  hint: look for the character where the byte is: `text[3..].startsWith('é')`

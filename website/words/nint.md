@@ -278,7 +278,7 @@ error: expected `int`, found `nint`
   --> example.sg:3:17
  3 |     int count = names.length()
    |                 ^^^^^^^^^^^^^^
-  hint: convert with `(int)`; it panics if the value does not fit
+  hint: convert with `(int)names.length()`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 `var count = names.length()` keeps it an `nint`.
@@ -298,7 +298,7 @@ error: expected `nint`, found `long`
   --> example.sg:4:17
  4 |     print(names[at])
    |                 ^^
-  hint: convert with `(nint)`; it panics if the value does not fit
+  hint: convert with `(nint)at`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 A `uint`, a `ulong` and a `nuint` are refused the same way.
@@ -318,7 +318,7 @@ error: `nint` and `nuint` do not mix: neither holds every value of the other
   --> example.sg:4:11
  4 |     print(xs.length() + extra)
    |           ^^^^^^^^^^^^^^^^^^^
-  hint: convert one side to the type of the other: `(nint)extra`; it panics if the value does not fit
+  hint: convert one side to the type of the other: `(nint)extra`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A length in a fraction

@@ -1,4 +1,4 @@
-error: 300 does not fit in byte
+error: `300` does not fit in byte
   --> error_enum_number_too_large.sg:3:13
  3 |     Large = 300
    |             ^^^

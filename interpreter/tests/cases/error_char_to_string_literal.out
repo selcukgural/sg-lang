@@ -1,0 +1,5 @@
+error: expected `string`, found `char`
+  --> error_char_to_string_literal.sg:2:19
+ 2 |     string name = 'P'
+   |                   ^^^
+  hint: a text is written in double quotes: `"P"`

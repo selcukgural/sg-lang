@@ -1,0 +1,5 @@
+error: expected `char`, found `byte`
+  --> error_text_byte_to_char.sg:3:18
+ 3 |     char first = text[0]
+   |                  ^^^^^^^
+  hint: a byte of a text is a character only below 128, as UTF-8 writes the others in more bytes; the characters are `text.chars()`

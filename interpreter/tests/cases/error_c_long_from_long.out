@@ -2,4 +2,4 @@ error: expected `CLong`, found `long`
   --> error_c_long_from_long.sg:4:15
  4 |     CLong r = n
    |               ^
-  hint: convert with `(CLong)`; it panics if the value does not fit
+  hint: convert with `(CLong)n`; a value that does not fit panics, or is cut to size in a release build

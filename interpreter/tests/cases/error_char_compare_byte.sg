@@ -1,0 +1,5 @@
+void main() {
+    var text = "abc"
+    var first = 'a'
+    print(text[0] == first)
+}

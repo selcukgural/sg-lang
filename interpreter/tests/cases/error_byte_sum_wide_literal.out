@@ -1,0 +1,5 @@
+error: `1000` does not fit in byte
+  --> error_byte_sum_wide_literal.sg:3:21
+ 3 |     int total = b + 1000
+   |                     ^^^^
+  hint: compute in `int`: `(int)b + 1000`

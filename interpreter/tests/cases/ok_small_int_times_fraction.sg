@@ -1,0 +1,11 @@
+// A fractional number beside a small integer takes the type the result goes to.
+void main() {
+    byte k = 3
+    float scaled = k * 1.5
+    print(scaled)
+    float twice = 2.5 * k
+    print(twice)
+    short s = -4
+    float half = s * 0.5
+    print(half)
+}

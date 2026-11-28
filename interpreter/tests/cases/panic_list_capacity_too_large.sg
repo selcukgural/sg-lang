@@ -1,0 +1,5 @@
+// The count is written out in full, as every number of a panic.
+void main() {
+    var xs = List<long>.withCapacity(nint.MaxValue)
+    print(xs.length())
+}

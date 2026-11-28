@@ -413,7 +413,7 @@ error: expected `int`, found `double`
   --> example.sg:1:18
  1 | const int Size = 1.5
    |                  ^^^
-  hint: convert with `(int)`; it drops the fraction, and panics if the value does not fit
+  hint: convert with `(int)1.5`; it drops the fraction, and a value that does not fit panics, or becomes the nearest `int` in a release build
 ```
 
 ### A `List`

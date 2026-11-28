@@ -1951,9 +1951,12 @@ SG_COLD static void sg_err_int(__int128 v) {
 static bool sg_called(const char* loc) {
     return loc[strlen(loc) + 1] == 1;
 }
+/* A place whose byte after the terminating zero is 2 gives its own hint, written after that byte:
+   an overflow of arithmetic that is widened afterwards names the wider type. */
 SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     fputs(loc, stderr);
     sg_task_note();
+    if (loc[strlen(loc) + 1] == 2) hint = loc + strlen(loc) + 2;
     if (!sg_called(loc)) fprintf(stderr, "  hint: %s\n", hint);
     SG_PANIC_END();
 }
@@ -2141,14 +2144,28 @@ SG_COLD static _Noreturn void sg_shift_fail(__int128 n, const char* ty, int bits
     fputs("panic: shift by ", stderr);
     sg_err_int(n);
     fprintf(stderr, " is out of range: %s has %d bits\n", ty, bits);
-    sg_die(loc);
+    char hint[112];
+    snprintf(hint, sizeof hint, "`& %d` on the count keeps it in range; `rotateLeft` and `rotateRight` turn the bits instead", bits - 1);
+    sg_die_hint(loc, hint);
 }
 SG_COLD static _Noreturn void sg_div_zero(__int128 a, const char* op, const char* loc) {
     SG_PANIC_START();
     fputs("panic: division by zero: ", stderr);
     sg_err_int(a);
     fprintf(stderr, " %s 0\n", op);
+    if (op[0] == '/') sg_die_hint(loc, "`tryDivide` gives `null` instead");
     sg_die(loc);
+}
+/* A conversion between `float` and `double` makes a signalling `NaN` quiet, as the machine
+   does; written out, so that a C compiler that folds `(float)(double)x` into `x` makes it quiet
+   too and every build gives the same bits. */
+static inline float sg_quiet_f(float f) {
+    if (__builtin_expect(f != f, 0)) { uint32_t b; __builtin_memcpy(&b, &f, 4); b |= 0x400000u; __builtin_memcpy(&f, &b, 4); }
+    return f;
+}
+static inline double sg_quiet_d(double d) {
+    if (__builtin_expect(d != d, 0)) { uint64_t b; __builtin_memcpy(&b, &d, 8); b |= 0x8000000000000ull; __builtin_memcpy(&d, &b, 8); }
+    return d;
 }
 /* The first letter of a type's name in the name of a method: `Int` in `tryToInt`; `CLong` stays. */
 static char sg_title(char c) { return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c; }
@@ -2255,7 +2272,7 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
     sg_task_note();
-    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", sg_title(ty[0]), ty + 1);
+    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `saturatingTo%c%s()` the nearest end\n", sg_title(ty[0]), ty + 1, sg_title(ty[0]), ty + 1);
     SG_PANIC_END();
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
@@ -3551,14 +3568,17 @@ SG_COLD static _Noreturn void sg_assert_fail_c(const char* text, uint32_t l, uin
 SG_COLD static _Noreturn void sg_char_fail(__int128 v, const char* loc) {
     SG_PANIC_START();
     fputs("panic: ", stderr);
-    sg_err_int(v);
+    if (v < 0) sg_err_int(v);
+    else fprintf(stderr, "0x%llX", (unsigned long long)v);
     fputs(" is not the code of a character\n", stderr);
     sg_die_hint(loc, "`tryToChar()` gives `null` when no character has the code");
 }
 SG_COLD static _Noreturn void sg_code_fail(uint32_t c, const char* ty, const char* loc) {
     SG_PANIC_START();
     fprintf(stderr, "panic: value %u does not fit in %s\n", (unsigned)c, ty);
-    sg_die_hint(loc, "`(int)c` holds the code of every character");
+    char hint[80];
+    snprintf(hint, sizeof hint, "`(int)` in place of `(%s)` holds the code of every character", ty);
+    sg_die_hint(loc, hint);
 }
 /* A text holds characters only, so a code that is not one stops the program in every build. */
 static inline bool sg_is_char(__int128 v) { return v >= 0 && v <= 0x10FFFF && !(v >= 0xD800 && v <= 0xDFFF); }
@@ -17057,6 +17077,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         aliases: prog.aliases.iter().map(|alias| (alias.name.as_str(), alias)).collect(),
         checked,
         locs: Vec::new(),
+        loc_hints: HashMap::new(),
+        widened: Vec::new(),
         sums: Vec::new(),
         temps: 0,
         layouts: &prog.value_layouts,
@@ -17489,7 +17511,14 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&emitter.glue);
     // The byte after the terminating zero says whether the place is a call of the module (see `sg_called`).
     for (number, (text, called)) in emitter.locs.iter().enumerate() {
-        let _ = writeln!(out, "static const char sg_loc_{number}[] = {} \"\\0\\{}\";", c_string(text), *called as u8);
+        match emitter.loc_hints.get(&number) {
+            Some(hint) => {
+                let _ = writeln!(out, "static const char sg_loc_{number}[] = {} \"\\0\\2\" {};", c_string(text), c_string(hint));
+            }
+            None => {
+                let _ = writeln!(out, "static const char sg_loc_{number}[] = {} \"\\0\\{}\";", c_string(text), *called as u8);
+            }
+        }
     }
     for (number, sum) in emitter.sums.iter().enumerate() {
         let _ = writeln!(out, "static const sg_sum sg_sum_{number} = {sum};");
@@ -18699,6 +18728,11 @@ struct Emitter<'a> {
     /// The place of each line that can panic, as it is printed under the message.
     /// The places panics are shown at, and whether each is a call of the language's own module.
     locs: Vec<(String, bool)>,
+    /// The hint a place gives in place of the one its panic names (see `sg_die_hint`), by its number.
+    loc_hints: HashMap<usize, String>,
+    /// The arithmetic being written that is widened afterwards: its operations and the hint an
+    /// overflow there gives (see `check::widened_arithmetic`).
+    widened: Vec<(Vec<Span>, String)>,
     /// An index or an end of a range written `a + c` in a checked build: what the place's
     /// check needs to tell an overflow of the sum (see `sg_sum`), one `static` each.
     sums: Vec<String>,
@@ -18854,6 +18888,9 @@ impl<'a> Emitter<'a> {
             return "sg_caller".to_string();
         }
         self.locs.push((self.sources.snippet(span), false));
+        if let Some((_, hint)) = self.widened.iter().rev().find(|(spans, _)| spans.contains(&span)) {
+            self.loc_hints.insert(self.locs.len() - 1, hint.clone());
+        }
         format!("sg_loc_{}", self.locs.len() - 1)
     }
 
@@ -18882,6 +18919,10 @@ impl<'a> Emitter<'a> {
             wrapped = format!("(({}){wrapped})", self.ctype(widened, end.span)?);
         }
         let loc = self.loc(sum.span);
+        // A sum of a narrower type names the wider one, as a widened sum does elsewhere.
+        if let Some((_, hint)) = widened.and_then(|widened| crate::check::widened_arithmetic(&self.sources.text, widened, sum)) {
+            self.loc_hints.insert(self.locs.len() - 1, hint);
+        }
         self.sums.push(format!("{{ {c}LL, \"{}\", {}, {}, {loc} }}", ty.name(), ty.bits(), first as u8));
         Ok(Some((wrapped, format!("sg_sum_{}", self.sums.len() - 1))))
     }
@@ -27528,7 +27569,17 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Widen(ty, inner) => {
                 let ctype = self.ctype(ty, expr.span)?;
-                Ok(format!("(({ctype}){})", self.first(inner, head)?))
+                let widened = self.checked.then(|| crate::check::widened_arithmetic(&self.sources.text, ty, inner)).flatten();
+                let pushed = widened.is_some();
+                self.widened.extend(widened);
+                let value = self.first(inner, head);
+                if pushed {
+                    self.widened.pop();
+                }
+                match (ty, inner.ty.strip_borrow()) {
+                    (Ty::Float(FloatTy::Double), Ty::Float(FloatTy::Float)) => Ok(format!("sg_quiet_d((double)({}))", value?)),
+                    _ => Ok(format!("(({ctype}){})", value?)),
+                }
             }
             // `read limit` with `int? limit`: the flag is tested here, and what is lent is a
             // pointer to the number or no pointer.
@@ -27762,6 +27813,8 @@ impl<'a> Emitter<'a> {
                 let inner = self.first(inner, head)?;
                 match (ty, from) {
                     // `(nuint)p`: the address as a number.
+                    (Ty::Float(FloatTy::Float), Ty::Float(FloatTy::Double)) => Ok(format!("sg_quiet_f((float)({inner}))")),
+                    (Ty::Float(FloatTy::Double), Ty::Float(FloatTy::Float)) => Ok(format!("sg_quiet_d((double)({inner}))")),
                     (Ty::Int(to), Ty::Raw(_) | Ty::Null) => Ok(format!("(({})(uintptr_t)({inner}))", int_ctype(*to))),
                     (Ty::Int(to), Ty::Float(from)) => {
                         if !self.checked {

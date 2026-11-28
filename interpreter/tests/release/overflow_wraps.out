@@ -11,3 +11,4 @@ panic: division by zero: 2147483647 / 0
   --> overflow_wraps.sg:30:11
  30 |     print(max / zero)
     |           ^^^^^^^^^^
+  hint: `tryDivide` gives `null` instead

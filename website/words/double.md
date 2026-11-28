@@ -391,7 +391,7 @@ error: expected `int`, found `double`
   --> example.sg:3:19
  3 |     int percent = ratio * 100
    |                   ^^^^^^^^^^^
-  hint: convert with `(int)`; it drops the fraction, and panics if the value does not fit
+  hint: convert with `(int)(ratio * 100)`; it drops the fraction, and a value that does not fit panics, or becomes the nearest `int` in a release build
 ```
 
 ### A `double` where a `float` goes
@@ -440,7 +440,7 @@ void main() {
 ```
 
 ```text
-error: 1e-400 is too small for double: it would be 0
+error: `1e-400` is too small for double: it would be 0
   --> example.sg:2:19
  2 |     double tiny = 1e-400
    |                   ^^^^^^

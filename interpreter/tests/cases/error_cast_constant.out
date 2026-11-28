@@ -1,4 +1,4 @@
-error: 300 does not fit in byte
+error: `300` does not fit in byte
   --> error_cast_constant.sg:2:13
  2 |     var b = (byte)300
    |             ^^^^^^^^^

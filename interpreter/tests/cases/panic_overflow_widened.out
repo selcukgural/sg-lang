@@ -1,0 +1,6 @@
+2097152
+panic: overflow: 5120000 * 1024 does not fit in int
+  --> panic_overflow_widened.sg:3:12
+ 3 |     return megabytes * 1024 * 1024
+   |            ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the result goes into a `long`; compute in `long` from the start: `(long)megabytes * 1024 * 1024`

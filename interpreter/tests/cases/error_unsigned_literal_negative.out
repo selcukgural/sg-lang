@@ -1,4 +1,4 @@
-error: -1 does not fit in ushort
+error: `-1` does not fit in ushort
   a `ushort` is never negative
   --> error_unsigned_literal_negative.sg:2:19
  2 |     ushort port = -1

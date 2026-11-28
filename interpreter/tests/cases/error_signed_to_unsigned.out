@@ -2,4 +2,4 @@ error: expected `uint`, found `sbyte`
   --> error_signed_to_unsigned.sg:4:18
  4 |     uint count = small
    |                  ^^^^^
-  hint: convert with `(uint)`; it panics if the value does not fit
+  hint: convert with `(uint)small`; a value that does not fit panics, or is cut to size in a release build

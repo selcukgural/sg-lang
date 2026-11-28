@@ -3,4 +3,4 @@ error: expected `byte`, found `int`
   --> error_exit_int_code.sg:4:10
  4 |     exit(code)
    |          ^^^^
-  hint: convert with `(byte)`; it panics if the value does not fit
+  hint: convert with `(byte)code`; a value that does not fit panics, or is cut to size in a release build

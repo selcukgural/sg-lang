@@ -1,0 +1,5 @@
+error: an `sbyte` is one byte, and one byte has no order to be written in
+  --> error_endian_sbyte.sg:3:13
+ 3 |     print(s.toLittleEndian())
+   |             ^^^^^^^^^^^^^^
+  hint: an array of the one byte: `byte[1] { s.wrappingToByte() }`

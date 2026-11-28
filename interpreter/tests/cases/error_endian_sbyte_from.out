@@ -1,0 +1,5 @@
+error: an `sbyte` is one byte, and one byte has no order to be read in
+  --> error_endian_sbyte_from.sg:3:17
+ 3 |     print(sbyte.fromLittleEndian(data[..1]))
+   |                 ^^^^^^^^^^^^^^^^
+  hint: `data[i].wrappingToSbyte()`

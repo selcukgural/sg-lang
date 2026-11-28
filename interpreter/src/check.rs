@@ -347,7 +347,7 @@ fn cast_of(to: &str, expr: &Expr, text: &str) -> String {
 
 /// An expression a cast or a method call after it takes without parentheses.
 fn is_simple(expr: &Expr) -> bool {
-    matches!(peel_widen(expr).kind, ExprKind::Var(_) | ExprKind::Int(..) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Const(_) | ExprKind::Str(_))
+    matches!(peel_widen(expr).kind, ExprKind::Var(_) | ExprKind::Int(..) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Const(_) | ExprKind::Str(_) | ExprKind::Constant { .. } | ExprKind::Float(..))
 }
 
 fn peel_widen(expr: &Expr) -> &Expr {
@@ -3514,6 +3514,82 @@ fn known_int(expr: &Expr) -> Option<i128> {
     }
 }
 
+/// A number written in the program, as a message shows it: as it is written, with its value
+/// when it is written in hex, binary or octal ("`0xffff_ffff` is 4294967295, which").
+fn written_number(written: &str, value: i128) -> String {
+    let digits = written.trim_start_matches('-');
+    match () {
+        _ if digits.starts_with("0x") || digits.starts_with("0b") || digits.starts_with("0o") => format!("`{written}` is {value}, which"),
+        _ if written.replace('_', "").parse::<i128>().is_ok_and(|read| read == value) => format!("`{written}`"),
+        _ => value.to_string(),
+    }
+}
+
+/// A whole number written where a fractional one goes, which the type does not hold exactly:
+/// written with a point, it is rounded to the nearest the type holds.
+fn inexact(span: Span, written: &str, value: i128, to: FloatTy) -> Diag {
+    let diag = Diag::error(span, format!("{} is not held exactly by a `{}`", written_number(written, value), to.name()))
+        .note(format!("a `{}` holds every whole number up to 2^{}", to.name(), to.digits()));
+    let nearest = match to {
+        FloatTy::Float => value as f32 as f64,
+        FloatTy::Double => value as f64,
+    };
+    match written.trim_start_matches('-').bytes().all(|c| c.is_ascii_digit() || c == b'_') {
+        true => diag.hint(format!("written with a point it is rounded to the nearest, {nearest}: `{written}.0`")),
+        false => diag,
+    }
+}
+
+/// `+`, `-`, `*`, `/` and `%` on two known numbers, `None` past what `i128` holds or for a
+/// division by zero.
+fn known_op(op: BinOp, a: i128, b: i128) -> Option<i128> {
+    match op {
+        BinOp::Add => a.checked_add(b),
+        BinOp::Sub => a.checked_sub(b),
+        BinOp::Mul => a.checked_mul(b),
+        BinOp::Div => a.checked_div(b),
+        BinOp::Rem => a.checked_rem(b),
+        _ => None,
+    }
+}
+
+/// The source of an operation from `span`, its first operand cast to the type `to`, so that the
+/// whole of it is computed there: `(long)megabytes * 1024 * 1024`. `left` is the left side of
+/// the operation at `span`.
+pub fn cast_first(src: &str, span: Span, left: &Expr, to: &str) -> String {
+    let mut first = left;
+    loop {
+        match &first.kind {
+            ExprKind::Binary(op, inner, _) if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) => first = inner,
+            ExprKind::Widen(_, inner) => first = inner,
+            _ => break,
+        }
+    }
+    let text = &src[first.span.start..first.span.end];
+    format!("{}{}{}", &src[span.start..first.span.start], cast_of(to, first, text), &src[first.span.end..span.end])
+}
+
+/// An integer computed in its type and then widened, as `megabytes * 1024 * 1024` given to a
+/// `long` with an `int megabytes`: the operations that may overflow before the widening, and
+/// the hint their panic gives, which computes in the wider type from the start.
+pub fn widened_arithmetic(src: &str, to: &Ty, inner: &Expr) -> Option<(Vec<Span>, String)> {
+    fn chain(expr: &Expr, ty: &Ty, spans: &mut Vec<Span>) {
+        if let ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul, left, right) = &expr.kind {
+            if expr.ty == *ty {
+                spans.push(expr.span);
+                chain(left, ty, spans);
+                chain(right, ty, spans);
+            }
+        }
+    }
+    let (Ty::Int(to), Ty::Int(_)) = (to, &inner.ty) else { return None };
+    let ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul, left, _) = &inner.kind else { return None };
+    let mut spans = Vec::new();
+    chain(inner, &inner.ty, &mut spans);
+    // Worded here: compiled code writes the hint as it is.
+    Some((spans, crate::diag::worded(&format!("the result goes into a `{0}`; compute in `{0}` from the start: `{1}`", to.name(), cast_first(src, inner.span, left, to.name())))))
+}
+
 /// The expression under the widenings the checker put around it.
 fn unwidened(expr: &Expr) -> &Expr {
     match &expr.kind {
@@ -3674,10 +3750,10 @@ fn fractional_literal(text: &str, ty: FloatTy, span: Span) -> Res<()> {
     .expect("the lexer read it");
     let mantissa = text.split('e').next().unwrap_or(text);
     if infinite {
-        return Err(Diag::error(span, format!("{text} does not fit in {}", ty.name())));
+        return Err(Diag::error(span, format!("`{text}` does not fit in {}", ty.name())));
     }
     if zero && mantissa.bytes().any(|c| matches!(c, b'1'..=b'9')) {
-        return Err(Diag::error(span, format!("{text} is too small for {}: it would be 0", ty.name())));
+        return Err(Diag::error(span, format!("`{text}` is too small for {}: it would be 0", ty.name())));
     }
     Ok(())
 }
@@ -3709,7 +3785,7 @@ fn int_of(ty: &Ty) -> IntTy {
 fn c_too_large(diag: Diag, ty: IntTy, written: &str) -> Diag {
     let partner = c_partner(ty).name();
     diag.note(format!("C's `{}` is 32 bits on Windows, so a number written for it fits in 32 bits on every system", c_spelling(ty)))
-        .hint(format!("a larger value is converted where the program runs, and panics where it does not fit: `{partner} n = {written}` and then `({})n`", ty.name()))
+        .hint(format!("a larger value is converted where the program runs, as any narrowing conversion: `{partner} n = {written}` and then `({})n`", ty.name()))
 }
 
 /// How C writes `CLong` and `CULong`.
@@ -6761,10 +6837,10 @@ impl<'a> Checker<'a> {
                                 .hint(format!("let `var` find the type: `var {name} = ...`")));
                         }
                         let ty = resolve_type(written, self.names, false)?;
-                        self.typed(init, &ty)?;
+                        self.typed(init, &ty).map_err(|diag| self.declared_hint(diag, name, Some(&ty), init))?;
                         ty
                     }
-                    None => match self.expr(init, None)? {
+                    None => match self.expr(init, None).map_err(|diag| self.declared_hint(diag, name, None, init))? {
                         // A borrowed variable used as a value is the value behind it.
                         Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_) | ExprKind::Const(_) | ExprKind::Static(_)) && inner.is_copyable(self.copyable) => {
                             wrap(init, ExprKind::Load);
@@ -8216,7 +8292,7 @@ impl<'a> Checker<'a> {
             }
             (Ty::Int(_), Ty::Int(to)) => {
                 let cast = cast_of(to.name(), expr, text);
-                mismatch(Some(format!("convert with `({})`; it panics if the value does not fit", to.name()))).map_err(|diag| diag.fix(expr.span, cast))
+                mismatch(Some(format!("convert with `{cast}`; a value that does not fit panics, or is cut to size in a release build"))).map_err(|diag| diag.fix(expr.span, cast))
             }
             (Ty::Int(from), Ty::Float(to)) if to.holds(*from) => {
                 wrap(expr, |inner| ExprKind::Widen(expected.clone(), inner));
@@ -8237,12 +8313,35 @@ impl<'a> Checker<'a> {
             ))),
             (Ty::Float(_), Ty::Float(to)) => mismatch(Some(format!("convert with `({})`, which rounds", to.name()))),
             (Ty::Float(_), Ty::Int(to)) => {
-                mismatch(Some(format!("convert with `({})`; it drops the fraction, and panics if the value does not fit", to.name())))
+                mismatch(Some(format!("convert with `{}`; it drops the fraction, and a value that does not fit panics, or becomes the nearest `{}` in a release build", cast_of(to.name(), expr, text), to.name())))
             }
             // A `char` is not a number, and a number is not a `char`.
             (Ty::Char, Ty::Int(to)) => mismatch(Some(format!("the code of the character: `({}){text}`", to.name()))),
+            // A byte of a text is the character only below 128: `é` is two bytes in UTF-8.
+            (Ty::Int(IntTy::Byte), Ty::Char) => match &unwidened(expr).kind {
+                ExprKind::Index { recv, .. } if matches!(recv.ty.strip_borrow(), Ty::Str) => {
+                    let recv = &self.src[recv.span.start..recv.span.end];
+                    mismatch(Some(format!("a byte of a text is a character only below 128, as UTF-8 writes the others in more bytes; the characters are `{recv}.chars()`")))
+                }
+                _ => mismatch(Some(format!("`{}` is the character with this code; every byte is the code of one", cast_of("char", expr, text)))),
+            },
             (Ty::Int(_), Ty::Char) => {
-                mismatch(Some(format!("`(char){text}` panics if no character has this code; `{text}.tryToChar()` gives `null` instead")))
+                let tested = if is_simple(expr) { text.to_string() } else { format!("({text})") };
+                mismatch(Some(format!("`{}` panics if no character has this code; `{tested}.tryToChar()` gives `null` instead", cast_of("char", expr, text))))
+            }
+            // `'P'` written where a text goes is the text `"P"`, written in double quotes.
+            (Ty::Char, Ty::Str) if matches!(expr.kind, ExprKind::Char(_)) => {
+                let ExprKind::Char(found) = expr.kind else { unreachable!("tested above") };
+                let written = match found {
+                    '"' => "\\\"".to_string(),
+                    '\\' => "\\\\".to_string(),
+                    '\n' => "\\n".to_string(),
+                    '\t' => "\\t".to_string(),
+                    '\r' => "\\r".to_string(),
+                    '\0' => "\\0".to_string(),
+                    other => other.to_string(),
+                };
+                mismatch(Some(format!("a text is written in double quotes: `\"{written}\"`")))
             }
             (Ty::Char, Ty::Str) => mismatch(Some(format!("a text of one character: `{text}.toString()`"))),
             (Ty::Str, Ty::Char) if matches!(&expr.kind, ExprKind::Str(value) if value.chars().count() == 1) => {
@@ -8895,6 +8994,148 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `b + 1000` with a `byte b`: the number does not fit the type of the other side, so the
+    /// hint computes in a wider type: `(int)b + 1000`; `reading < 200` the same.
+    fn wider_for_number(&self, diag: Diag, op: BinOp, left: &Expr, right: &Expr, left_ty: &Ty, span: Span) -> Diag {
+        // `text[3] == 'é'`: a character of more than one byte is looked for where the byte is.
+        if let (ExprKind::Char(found), ExprKind::Index { recv, index, .. }) = (&right.kind, &left.kind) {
+            if matches!(op, BinOp::Eq | BinOp::Ne) && matches!(recv.ty.strip_borrow(), Ty::Str) && diag.msg.contains("does not fit in one byte") {
+                let (text, at) = (&self.src[recv.span.start..recv.span.end], &self.src[index.span.start..index.span.end]);
+                let not = if op == BinOp::Ne { "!" } else { "" };
+                // Only a character past ASCII gets here, so it needs no escape.
+                return diag.hint(format!("look for the character where the byte is: `{not}{text}[{at}..].startsWith('{found}')`"));
+            }
+        }
+        let (ExprKind::Int(value, _), Ty::Int(ty)) = (&right.kind, left_ty.strip_borrow()) else { return diag };
+        if diag.hint.is_some() || diag.msg != format!("`{}` does not fit in {}", &self.src[right.span.start..right.span.end], ty.name()) || (*value < 0 && !ty.signed()) {
+            return diag;
+        }
+        let Some(wide) = [IntTy::Int, IntTy::Long].into_iter().find(|wide| ty.widens_to(*wide) && wide.fits(*value)) else { return diag };
+        let what = if op.is_comparison() { "compare" } else { "compute" };
+        diag.hint(format!("{what} in `{}`: `{}`", wide.name(), cast_first(self.src, span, left, wide.name())))
+    }
+
+    /// The value of an integer expression made only of numbers, consts and the constants of the
+    /// number types, found when the program is compiled.
+    fn known_value(&self, expr: &Expr) -> Option<i128> {
+        match &expr.kind {
+            ExprKind::Int(value, _) => Some(*value),
+            ExprKind::Widen(_, inner) => self.known_value(inner),
+            ExprKind::Constant { ty: Ty::Int(ty), name } if !matches!(ty, IntTy::Nint | IntTy::Nuint) && !ty.is_c() => match name.as_str() {
+                "MaxValue" => Some(ty.max()),
+                "MinValue" => Some(ty.min()),
+                _ => None,
+            },
+            ExprKind::Const(full) => match self.consts.values.get(full) {
+                Some((_, ConstVal::Int(ty, value))) if !matches!(ty, IntTy::Nint | IntTy::Nuint) && !ty.is_c() => Some(*value),
+                _ => None,
+            },
+            ExprKind::Binary(op, left, right) => {
+                let Ty::Int(ty) = expr.ty else { return None };
+                known_op(*op, self.known_value(left)?, self.known_value(right)?).filter(|value| ty.fits(*value))
+            }
+            _ => None,
+        }
+    }
+
+    /// An integer operation on numbers that are all known when the program is compiled: one
+    /// that overflows or divides by zero is an error then, as in a `const` and as a shift by
+    /// a known count (choice 2090).
+    fn known_arithmetic(&self, op: BinOp, ty: IntTy, left: &Expr, right: &Expr, span: Span) -> Res<()> {
+        if self.in_const || !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) || matches!(ty, IntTy::Nint | IntTy::Nuint) {
+            return Ok(());
+        }
+        let (Some(a), Some(b)) = (self.known_value(left), self.known_value(right)) else { return Ok(()) };
+        if matches!(op, BinOp::Div | BinOp::Rem) && b == 0 {
+            return Err(Diag::error(span, format!("division by zero: {a} {} 0", op.symbol())).note("both numbers are known when the program is compiled"));
+        }
+        let found = known_op(op, a, b);
+        if found.is_some_and(|value| ty.fits(value)) {
+            return Ok(());
+        }
+        let diag = Diag::error(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name())).note("every number here is known when the program is compiled");
+        let wide = [IntTy::Long, IntTy::Ulong].into_iter().find(|wide| ty.widens_to(*wide) && found.is_some_and(|value| wide.fits(value)));
+        Err(match wide {
+            Some(wide) => diag.hint(format!("compute in `{}`: `{}`", wide.name(), cast_first(self.src, span, left, wide.name()))),
+            None => diag,
+        })
+    }
+
+    /// `n >= 0` on an unsigned `n` is always true, and `n < 0` always false.
+    fn never_negative(&self, op: BinOp, ty: IntTy, left: &Expr, right: &Expr, span: Span) -> Res<()> {
+        if ty.signed() || !op.is_comparison() {
+            return Ok(());
+        }
+        let zero = |side: &Expr| matches!(unwidened(side).kind, ExprKind::Int(0, _));
+        let always = match (zero(left), zero(right), op) {
+            (false, true, BinOp::Ge) | (true, false, BinOp::Le) => true,
+            (false, true, BinOp::Lt) | (true, false, BinOp::Gt) => false,
+            _ => return Ok(()),
+        };
+        let text = &self.src[span.start..span.end];
+        Err(Diag::error(span, format!("`{text}` is always {always}: a `{}` is never negative", ty.name())))
+    }
+
+    /// `x == double.NaN` is always false, as every comparison with `NaN` but `!=`.
+    fn not_with_nan(&self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Res<()> {
+        let nan = |side: &Expr| matches!(&side.kind, ExprKind::Constant { ty: Ty::Float(_), name } if name == "NaN");
+        if !op.is_comparison() || !(nan(left) || nan(right)) {
+            return Ok(());
+        }
+        let other = if nan(right) { left } else { right };
+        let text = &self.src[other.span.start..other.span.end];
+        let tested = if is_simple(other) { format!("{text}.isNaN()") } else { format!("({text}).isNaN()") };
+        let whole = &self.src[span.start..span.end];
+        let diag = Diag::error(span, format!("`{whole}` is always {}: `NaN` is equal to no number, not even to itself", op == BinOp::Ne));
+        Err(match op {
+            BinOp::Eq => diag.hint(format!("`{tested}`")),
+            BinOp::Ne => diag.hint(format!("`!{tested}`")),
+            _ => diag,
+        })
+    }
+
+    /// A hint that names the variable being declared, for an error about its value: `long
+    /// population = 8_100_000_000`, `long x = 1 << 40`.
+    fn declared_hint(&self, diag: Diag, name: &str, declared: Option<&Ty>, init: &Expr) -> Diag {
+        let text = &self.src[init.span.start..init.span.end];
+        // `byte b = 'é'`: a character of more than one byte.
+        if matches!(init.kind, ExprKind::Char(_)) && diag.msg.contains("does not fit in one byte") {
+            return diag.hint(format!("the type for any character is `char`: `char {name} = {text}`"));
+        }
+        let declared_int = match declared {
+            None => None,
+            Some(Ty::Int(ty)) => Some(*ty),
+            Some(_) => return diag,
+        };
+        match &init.kind {
+            // A number written in the program that does not fit where it goes.
+            ExprKind::Int(..) if diag.msg.ends_with(" does not fit in long") && declared_int.is_none() => {
+                diag.hint(format!("write the type where it goes: `ulong {name} = {text}`"))
+            }
+            ExprKind::Int(value, _) if diag.notes.is_empty() && matches!(declared_int, Some(IntTy::Int | IntTy::Uint)) && diag.msg.contains(" does not fit in ") => {
+                let ty = declared_int.expect("matched");
+                // A mask written in hex or binary is a pattern of bits: an unsigned type of the width.
+                let bits = text.starts_with("0x") || text.starts_with("0b");
+                let wide = match ty.signed() && IntTy::Long.fits(*value) {
+                    true if bits && IntTy::Uint.fits(*value) => IntTy::Uint,
+                    true => IntTy::Long,
+                    false if IntTy::Ulong.fits(*value) => IntTy::Ulong,
+                    false => return diag,
+                };
+                diag.hint(format!("a `{0}` holds it: `{0} {name} = {text}`", wide.name()))
+            }
+            // A shift past the bits of an `int` or a `uint`, which a 64-bit type holds.
+            ExprKind::Binary(BinOp::Shl, _, count) if diag.msg.starts_with("a shift by") && matches!(declared_int, None | Some(IntTy::Int | IntTy::Uint)) => {
+                let wide = if declared_int == Some(IntTy::Uint) { IntTy::Ulong } else { IntTy::Long };
+                match known_int(count).filter(|by| (32..64).contains(by)) {
+                    Some(_) => diag.hint(format!("the count goes from 0 to 31; a `{0}` has 64 bits: `{0} {name} = {text}`", wide.name())),
+                    None => diag,
+                }
+            }
+            _ => diag,
+        }
+    }
+
     /// The type two integers meet in: the one the other widens to. A number written in the
     /// program takes the type of the other side if it fits there (`1 + count` with a `uint
     /// count`). Two types that do not hold each other's values, like `int` and `uint`, meet
@@ -8931,7 +9172,7 @@ impl<'a> Checker<'a> {
         let text = if matches!(right.kind, ExprKind::Binary(..)) { format!("({text})") } else { text.to_string() };
         Err(match a.holding_both(b) {
             Some(both) => diag.hint(format!("`{0}` holds both: `({0}){text}`", both.name())),
-            None => diag.hint(format!("convert one side to the type of the other: `({}){text}`; it panics if the value does not fit", a.name())),
+            None => diag.hint(format!("convert one side to the type of the other: `({}){text}`; a value that does not fit panics, or is cut to size in a release build", a.name())),
         })
     }
 
@@ -8954,8 +9195,7 @@ impl<'a> Checker<'a> {
         for (side, at) in [(&mut *left, 0), (&mut *right, 1)] {
             if let ExprKind::Int(value, _) = side.kind {
                 if !common.exact(value) {
-                    return Err(Diag::error(side.span, format!("{value} is not held exactly by a `{}`", common.name()))
-                        .note(format!("a `{}` holds every whole number up to 2^{}", common.name(), common.digits())));
+                    return Err(inexact(side.span, &self.src[side.span.start..side.span.end], value, common));
                 }
                 side.kind = ExprKind::Float(value.to_string(), common);
                 side.ty = to.clone();
@@ -9336,8 +9576,7 @@ impl<'a> Checker<'a> {
         if let (ExprKind::Int(value, _), Some(FloatTy::Float | FloatTy::Double)) = (&expr.kind, expected.and_then(wanted_float)) {
             let (value, to) = (*value, expected.and_then(wanted_float).expect("tested above"));
             if !to.exact(value) {
-                return Err(Diag::error(span, format!("{value} is not held exactly by a `{}`", to.name()))
-                    .note(format!("a `{}` holds every whole number up to 2^{}", to.name(), to.digits())));
+                return Err(inexact(span, &self.src[span.start..span.end], value, to));
             }
             expr.kind = ExprKind::Float(value.to_string(), to);
         }
@@ -9469,10 +9708,8 @@ impl<'a> Checker<'a> {
                 *ty = match wanted {
                     Some(wanted) if wanted.fits_everywhere(*value) => wanted,
                     Some(wanted) => {
-                        // A number written in hex or in binary is shown as written, with its value.
                         let written = &self.src[span.start..span.end];
-                        let shown = if written.starts_with("0x") || written.starts_with("0b") { format!("`{written}` is {value}, which") } else { value.to_string() };
-                        let diag = Diag::error(span, format!("{shown} does not fit in {}", wanted.name()));
+                        let diag = Diag::error(span, format!("{} does not fit in {}", written_number(written, *value), wanted.name()));
                         return Err(match *value < 0 && !wanted.signed() {
                             true => diag.note(format!("a `{}` is never negative", wanted.name())),
                             false if wanted.is_c() => c_too_large(diag, wanted, written),
@@ -9484,8 +9721,8 @@ impl<'a> Checker<'a> {
                     // Only a number past every `long`: it is never taken as unsigned on its own.
                     None => {
                         let written = &self.src[span.start..span.end];
-                        return Err(Diag::error(span, format!("{written} does not fit in long"))
-                            .hint(format!("write the type where it goes: `ulong x = {written}`")));
+                        return Err(Diag::error(span, format!("{} does not fit in long", written_number(written, *value)))
+                            .hint(format!("write the type where it goes: `ulong value = {written}`")));
                     }
                 };
                 Ok(Ty::Int(*ty))
@@ -9716,7 +9953,7 @@ impl<'a> Checker<'a> {
                 self.coerce(operand, found, &from)?;
                 if let (ExprKind::Int(value, _), Ty::Char) = (&operand.kind, &*ty) {
                     if char_of(*value).is_none() {
-                        return Err(Diag::error(span, format!("{value} is not the code of a character"))
+                        return Err(Diag::error(span, format!("`{}` is not the code of a character", &self.src[operand.span.start..operand.span.end]))
                             .note("a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF"));
                     }
                 }
@@ -9724,7 +9961,7 @@ impl<'a> Checker<'a> {
                 if let (ExprKind::Int(value, _), Ty::Int(to)) = (&operand.kind, &*ty) {
                     let (value, to) = (*value, *to);
                     if !to.fits_everywhere(value) {
-                        let diag = Diag::error(span, format!("{value} does not fit in {}", to.name()));
+                        let diag = Diag::error(span, format!("{} does not fit in {}", written_number(&self.src[operand.span.start..operand.span.end], value), to.name()));
                         return Err(match value < 0 && !to.signed() {
                             true => diag.note(format!("a `{}` is never negative", to.name())),
                             false if to.is_c() => c_too_large(diag, to, &self.src[operand.span.start..operand.span.end]),
@@ -9735,7 +9972,7 @@ impl<'a> Checker<'a> {
                 if let (ExprKind::Float(text, _), Ty::Int(to)) = (&operand.kind, &*ty) {
                     let value: f64 = text.parse().expect("the lexer read it");
                     if !float_fits(value, *to) {
-                        return Err(Diag::error(span, format!("{text} does not fit in {}", to.name())));
+                        return Err(Diag::error(span, format!("`{text}` does not fit in {}", to.name())));
                     }
                 }
                 Ok(ty.clone())
@@ -11483,8 +11720,14 @@ impl<'a> Checker<'a> {
                 let left_ty = self.operand(left, wanted)?;
                 // `p + n` moves a raw pointer by a count of items, an `nint`.
                 let moved = matches!(left_ty.strip_borrow(), Ty::Raw(_)) && matches!(op, BinOp::Add | BinOp::Sub);
-                let side = if moved { Some(Ty::Int(IntTy::Nint)) } else { like(&left_ty) };
-                let right_ty = self.operand(right, side.as_ref().or(wanted))?;
+                let side = match (moved, left_ty.strip_borrow(), wanted) {
+                    (true, _, _) => Some(Ty::Int(IntTy::Nint)),
+                    // `float g = k * 1.5` with a `byte k`: the number takes the fractional type
+                    // the result goes to, which holds every value of the integer.
+                    (false, Ty::Int(int), Some(Ty::Float(float))) if float.holds(*int) && matches!(right.kind, ExprKind::Float(..)) => Some(Ty::Float(*float)),
+                    _ => like(&left_ty),
+                };
+                let right_ty = self.operand(right, side.as_ref().or(wanted)).map_err(|diag| self.wider_for_number(diag, op, left, right, &left_ty, span))?;
                 (left_ty, right_ty)
             }
         };
@@ -11577,6 +11820,8 @@ impl<'a> Checker<'a> {
                     let sides = [(&*left, int_of(&left_ty)), (&*right, int_of(&right_ty))];
                     return Err(c_arithmetic(self.src, op.symbol(), common, &sides, span));
                 }
+                self.known_arithmetic(op, common, left, right, span)?;
+                self.never_negative(op, common, left, right, span)?;
                 Ok(if op.is_comparison() { Ty::Bool } else { Ty::Int(common) })
             }
             (Ty::Int(_) | Ty::Float(_), Ty::Int(_) | Ty::Float(_)) => {
@@ -11590,6 +11835,7 @@ impl<'a> Checker<'a> {
                     }
                     return Err(diag);
                 }
+                self.not_with_nan(op, left, right, span)?;
                 let common = Ty::Float(self.common_float(left, left_ty.clone(), right, right_ty.clone())?);
                 Ok(if op.is_comparison() { Ty::Bool } else { common })
             }
@@ -11600,8 +11846,40 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Bool)
             }
             (Ty::Char, Ty::Int(_)) | (Ty::Int(_), Ty::Char) if op.is_comparison() => {
-                let int = if matches!(left_ty.strip_borrow(), Ty::Int(_)) { &left_ty } else { &right_ty };
-                Err(undefined().hint(format!("a `char` is not a number; compare its code, `(int)c`, or make the `{int}` a `char` with `(char)`")))
+                // The character side is cast where it is written: `text[0] == (int)first`.
+                let side = |side: &Expr| {
+                    let text = &self.src[side.span.start..side.span.end];
+                    match matches!(side.ty.strip_borrow(), Ty::Char) {
+                        true => cast_of("int", side, text),
+                        false => text.to_string(),
+                    }
+                };
+                Err(undefined().hint(format!("a `char` is not a number; compare its code: `{} {} {}`", side(left), op.symbol(), side(right))))
+            }
+            // `c == "é"`: a character is written in single quotes.
+            (Ty::Char, Ty::Str) | (Ty::Str, Ty::Char) if op.is_comparison() => {
+                let shown = |side: &Expr| match &side.kind {
+                    ExprKind::Str(value) if value.chars().count() == 1 => {
+                        let found = value.chars().next().expect("one character");
+                        let written = match found {
+                            '\'' => "\\'".to_string(),
+                            '\\' => "\\\\".to_string(),
+                            '\n' => "\\n".to_string(),
+                            '\t' => "\\t".to_string(),
+                            '\r' => "\\r".to_string(),
+                            '\0' => "\\0".to_string(),
+                            other => other.to_string(),
+                        };
+                        Some(format!("'{written}'"))
+                    }
+                    _ => None,
+                };
+                let text = |side: &Expr| self.src[side.span.start..side.span.end].to_string();
+                match (shown(left), shown(right)) {
+                    (Some(written), None) => Err(undefined().hint(format!("a character is written in single quotes: `{written} {} {}`", op.symbol(), text(right)))),
+                    (None, Some(written)) => Err(undefined().hint(format!("a character is written in single quotes: `{} {} {written}`", text(left), op.symbol()))),
+                    _ => Err(undefined()),
+                }
             }
             (Ty::Char, _) | (_, Ty::Char) if !op.is_comparison() => {
                 Err(undefined().note("a `char` is not a number: `(int)c` is its code, and `(char)n` the character of a code"))
@@ -12426,7 +12704,7 @@ impl<'a> Checker<'a> {
                     Some(ExprKind::Slice { recv, .. } | ExprKind::Borrow { expr: recv, .. }) if steady(recv) => &self.src[recv.span.start..recv.span.end],
                     _ => "bytes",
                 };
-                let read = if *int == IntTy::Byte { format!("the byte itself: `{bytes}[i]`") } else { format!("`(sbyte){bytes}[i]`") };
+                let read = if *int == IntTy::Byte { format!("the byte itself: `{bytes}[i]`") } else { format!("`{bytes}[i].wrappingToSbyte()`") };
                 return Err(Diag::error(name_span, format!("a `{ty}` is one byte, and one byte has no order to be read in")).hint(read));
             }
             Ty::Int(int) => {
@@ -15135,7 +15413,7 @@ impl<'a> Checker<'a> {
                 let text = &self.src[recv.span.start..recv.span.end];
                 match ty {
                     IntTy::Byte | IntTy::Sbyte => {
-                        let item = if *ty == IntTy::Byte { text.to_string() } else { format!("(byte){text}") };
+                        let item = if *ty == IntTy::Byte { text.to_string() } else { format!("{text}.wrappingToByte()") };
                         return Err(Diag::error(name_span, format!("a `{target}` is one byte, and one byte has no order to be written in"))
                             .hint(format!("an array of the one byte: `byte[1] {{ {item} }}`")));
                     }
@@ -15150,8 +15428,14 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Array(Box::new(Ty::Int(IntTy::Byte)), (ty.bits() / 8) as usize))
             }
             // `code.tryToChar()`: `null` if no character has this code.
-            (Ty::Int(_), "tryToChar") => {
+            (Ty::Int(ty), "tryToChar") => {
                 arity(0)?;
+                // Every byte is the code of a character, as `b.tryToInt()` cannot fail either.
+                if *ty == IntTy::Byte {
+                    let text = &self.src[recv.span.start..recv.span.end];
+                    return Err(Diag::error(name_span, "every `byte` is the code of a character: there is nothing to test")
+                        .hint(format!("`{}` never fails", cast_of("char", recv, text))));
+                }
                 self.coerce(recv, recv_ty.clone(), target)?;
                 Ok(Ty::Nullable(Box::new(Ty::Char)))
             }
@@ -16425,7 +16709,7 @@ fn byte_of(value: char, span: Span) -> Res<i128> {
         return Ok(value as i128);
     }
     Err(Diag::error(span, format!("`{value}` does not fit in one byte: it takes {} bytes in UTF-8", value.len_utf8()))
-        .hint(format!("the type for any character is `char`: `char c = '{value}'`")))
+        .hint("the type for any character is `char`"))
 }
 
 /// What the arms of a `match` on a value that is not an enum are written as. `Other` is a

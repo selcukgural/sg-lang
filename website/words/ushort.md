@@ -229,7 +229,7 @@ panic: overflow: 60000 + 10000 does not fit in ushort
   --> example.sg:4:17
  4 |     int total = a + b
    |                 ^^^^^
-  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+  hint: the result goes into an `int`; compute in `int` from the start: `(int)a + b`
 ```
 
 The sum is a `ushort`, since both sides are, and becomes an `int` only after it is found; a release build wraps
@@ -272,7 +272,7 @@ void main() {
 ```
 
 ```text
-error: -1 does not fit in ushort
+error: `-1` does not fit in ushort
   a `ushort` is never negative
   --> example.sg:2:19
  2 |     ushort port = -1
@@ -329,7 +329,7 @@ error: expected `ushort`, found `short`
   --> example.sg:3:19
  3 |     ushort port = offset
    |                   ^^^^^^
-  hint: convert with `(ushort)`; it panics if the value does not fit
+  hint: convert with `(ushort)offset`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 A `short` can be negative, so it never becomes a `ushort` on its own, even where its value is 10.
@@ -351,5 +351,5 @@ error: expected `ushort`, found `int`
   --> example.sg:2:12
  2 |     return n
    |            ^
-  hint: convert with `(ushort)`; it panics if the value does not fit
+  hint: convert with `(ushort)n`; a value that does not fit panics, or is cut to size in a release build
 ```

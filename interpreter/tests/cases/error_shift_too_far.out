@@ -2,4 +2,4 @@ error: a shift by 40 is out of range: `int` has 32 bits
   --> error_shift_too_far.sg:2:20
  2 |     var big = 1 << 40
    |                    ^^
-  hint: the count goes from 0 to 31
+  hint: the count goes from 0 to 31; a `long` has 64 bits: `long big = 1 << 40`

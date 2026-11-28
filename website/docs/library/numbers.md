@@ -243,8 +243,9 @@ Each is a method of the value and gives the same type, from C's `<math.h>`:
 - Tests: `isNaN`, `isInfinite`, `isFinite`, `isSignNegative`.
 - `min(y)`, `max(y)`, `clamp(low, high)`, and the conversions above.
 
-`==` and `<` are the hardware's, so `double.NaN == double.NaN` is `false`; `equals`, `compare`, `sort` and `==`
-on a struct use a total order, in which `NaN` equals itself.
+`==` and `<` are the hardware's, so a `NaN` is not `==` to itself; `equals`, `compare`, `sort` and `==` on a
+struct use a total order, in which `NaN` equals itself. A comparison with `NaN` written out, `x == double.NaN`,
+is always false and is refused; the hint is `x.isNaN()`.
 
 ```sg
 void main() {
@@ -253,7 +254,8 @@ void main() {
     print($"{2.0.sqrt()} {2.0.pow(10.0)} {3.0.hypot(4.0)} {100.0.log10()}")
     print($"{1.0.atan2(1.0)} {2.0.fusedMultiplyAdd(3.0, 1.0)} {5.0.ieeeRemainder(3.0)} {5.0 % 3.0}")
     print($"{8.0.exponent() ?? 0} {1.0.nextUp()} {5.0.gamma()}")
-    print($"{double.NaN == double.NaN} {double.NaN.equals(double.NaN)}")
+    double nan = double.NaN
+    print($"{nan == nan} {nan.equals(nan)}")
     print($"{0.1 + 0.2} {1e21}")
 }
 ```

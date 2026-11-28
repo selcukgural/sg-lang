@@ -2,4 +2,4 @@ error: expected `byte`, found `int`
   --> error_int_to_byte.sg:3:14
  3 |     byte b = n
    |              ^
-  hint: convert with `(byte)`; it panics if the value does not fit
+  hint: convert with `(byte)n`; a value that does not fit panics, or is cut to size in a release build

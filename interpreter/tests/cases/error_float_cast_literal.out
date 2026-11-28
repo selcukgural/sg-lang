@@ -1,4 +1,4 @@
-error: 1e10 does not fit in int
+error: `1e10` does not fit in int
   --> error_float_cast_literal.sg:2:11
  2 |     print((int)1e10)
    |           ^^^^^^^^^

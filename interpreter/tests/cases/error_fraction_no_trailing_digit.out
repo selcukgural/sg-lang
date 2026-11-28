@@ -1,0 +1,5 @@
+error: a fractional number has a digit after its point
+  --> error_fraction_no_trailing_digit.sg:3:16
+ 3 |     double x = 5.
+   |                ^^
+  hint: `5.0`

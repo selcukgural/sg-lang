@@ -1,0 +1,6 @@
+error: overflow: 2592000 * 1000 does not fit in int
+  every number here is known when the program is compiled
+  --> error_known_overflow.sg:3:17
+ 3 |     var month = 30 * 24 * 60 * 60 * 1000
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: compute in `long`: `(long)30 * 24 * 60 * 60 * 1000`

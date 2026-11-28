@@ -217,7 +217,7 @@ void main() {
 ```
 
 ```text
-error: 256 does not fit in byte
+error: `256` does not fit in byte
   an exit code is a `byte`: the system keeps eight bits, so 256 would end as 0
   --> example.sg:2:10
  2 |     exit(256)

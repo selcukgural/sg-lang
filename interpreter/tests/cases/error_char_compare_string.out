@@ -1,0 +1,5 @@
+error: operator `==` is not defined for `char` and `string`
+  --> error_char_compare_string.sg:3:8
+ 3 |     if c == "é" {
+   |        ^^^^^^^^
+  hint: a character is written in single quotes: `c == 'é'`

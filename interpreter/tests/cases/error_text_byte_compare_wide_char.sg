@@ -1,0 +1,4 @@
+void main() {
+    var text = "café"
+    print(text[3] == 'é')
+}

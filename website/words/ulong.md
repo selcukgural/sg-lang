@@ -317,7 +317,7 @@ error: expected `ulong`, found `int`
   --> example.sg:2:13
  2 |     hash ^= value
    |             ^^^^^
-  hint: convert with `(ulong)`; it panics if the value does not fit
+  hint: convert with `(ulong)value`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 `wrappingToUlong()` keeps the bits of a negative value; a `byte` or a `uint` widens on its own.
@@ -337,7 +337,7 @@ error: `ulong` and `long` do not mix: neither holds every value of the other
   --> example.sg:4:11
  4 |     print(hash ^ seed)
    |           ^^^^^^^^^^^
-  hint: convert one side to the type of the other: `(ulong)seed`; it panics if the value does not fit
+  hint: convert one side to the type of the other: `(ulong)seed`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A `ulong` where a `double` goes
@@ -373,7 +373,7 @@ error: expected `nint`, found `ulong`
   --> example.sg:4:17
  4 |     print(names[at])
    |                 ^^
-  hint: convert with `(nint)`; it panics if the value does not fit
+  hint: convert with `(nint)at`; a value that does not fit panics, or is cut to size in a release build
 ```
 
 ### A minus

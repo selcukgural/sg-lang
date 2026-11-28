@@ -1,5 +1,5 @@
-error: 0xffff_ffff_ffff_ffff does not fit in long
+error: `0xffff_ffff_ffff_ffff` is 18446744073709551615, which does not fit in long
   --> error_literal_past_long.sg:3:16
  3 |     var mask = 0xffff_ffff_ffff_ffff
    |                ^^^^^^^^^^^^^^^^^^^^^
-  hint: write the type where it goes: `ulong x = 0xffff_ffff_ffff_ffff`
+  hint: write the type where it goes: `ulong mask = 0xffff_ffff_ffff_ffff`

@@ -67,7 +67,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `isize`, `usize` | `nint`, `nuint` | built | An index and a length are `nint` |
 | `f32`, `f64` | `float`, `double` | built | |
 | `println!("{}", x)` on an `f64` | `print(x)` | built | The same fewest digits, laid out as JavaScript does (`1e+21`, `2` for `2.0`); in a tie between two numbers of the fewest digits Rust takes the larger, SG the even one (`160057272853489.62`, Rust `...63`). Compiled with Dragonbox, as the `ryu` crate is used for speed in Rust |
-| overflow: panic in debug, wrap in release | the same | built | Rust's rule, also for shifts and casts |
+| overflow: panic in debug, wrap in release | the same | built | Rust's rule, also for shifts and casts. An operation on numbers all known when the program is compiled that overflows or divides by zero is a compile error, as Rust's `arithmetic_overflow` and `unconditional_panic` lints deny it (2090) |
 | `x as i32` (cuts the bits) | `(int)x` (panics if it does not fit) | built | `wrappingToInt()` cuts the bits, `tryToInt()` gives `null` |
 | `i32::try_from(x).ok()` | `x.tryToInt()` | built | `int?` |
 | `a.wrapping_add(b)` | `a.wrappingAdd(b)` | built | |
@@ -96,7 +96,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `x.round_ties_even()` | `x.roundToEven()` | built | C's `rint`; the rounding mode is never changed |
 | `x.fract()` | `x.fraction()` | built | C's `modf`: `Infinity` gives 0, where Rust's `fract` gives `NaN` |
 | `x.next_up()`, `x.next_down()` | `x.nextUp()`, `x.nextDown()` | built | |
-| `x.to_bits()`, `f64::from_bits(b)`, `f32::from_bits(b)` | `x.toBits()`, `double.fromBits(b)`, `float.fromBits(b)` | built | A `ulong` for a `double`, a `uint` for a `float`; a `NaN` keeps its bits (choice 1891) |
+| `x.to_bits()`, `f64::from_bits(b)`, `f32::from_bits(b)` | `x.toBits()`, `double.fromBits(b)`, `float.fromBits(b)` | built | A `ulong` for a `double`, a `uint` for a `float`; a `NaN` keeps its bits (choice 1891). `x as f64` on an `f32` is `(double)x` or the widening, which makes a signalling `NaN` quiet in every build (2091) |
 | `libm::ilogb(x)`, `libm::ldexp(x, n)` | `x.exponent()`, `x.scaleByPowerOfTwo(n)` | built | `exponent` is an `int?`: `null` for 0, `NaN` and the infinities, where C gives a number of its own on each system |
 | `0xff`, `0b1010`, `1_000_000` | the same | built | |
 | `0o755` | the same | built | Octal, as in Rust; `010` is ten in both (1977) |

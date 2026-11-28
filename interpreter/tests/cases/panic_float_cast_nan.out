@@ -2,4 +2,4 @@ panic: value NaN does not fit in long
   --> panic_float_cast_nan.sg:4:11
  4 |     print((long)nan)
    |           ^^^^^^^^^
-  hint: `tryToLong()` gives `null` when the value does not fit
+  hint: `tryToLong()` gives `null` when the value does not fit, and `saturatingToLong()` the nearest end

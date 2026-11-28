@@ -1,0 +1,4 @@
+panic: there is no memory for a list of 9223372036854775807 items
+  --> panic_list_capacity_too_large.sg:3:14
+ 3 |     var xs = List<long>.withCapacity(nint.MaxValue)
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

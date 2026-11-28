@@ -315,11 +315,12 @@ WHAT THE COMPILER REFUSES
              print(count)
          }
 
-         error: 16777217 is not held exactly by a `float`
+         error: `16_777_217` is not held exactly by a `float`
            a `float` holds every whole number up to 2^24
            --> example.sg:2:19
           2 |     float count = 16_777_217
             |                   ^^^^^^^^^^
+           hint: written with a point it is rounded to the nearest, 16777216: `16_777_217.0`
 
      16_777_217.0, a fraction, rounds to the nearest float, as does
      (float)16_777_217.
@@ -330,7 +331,7 @@ WHAT THE COMPILER REFUSES
              print(big)
          }
 
-         error: 1e39 does not fit in float
+         error: `1e39` does not fit in float
            --> example.sg:2:17
           2 |     float big = 1e39
             |                 ^^^^
@@ -348,7 +349,7 @@ WHAT THE COMPILER REFUSES
            --> example.sg:2:16
           2 |     var half = 0.5f
             |                ^^^^
-           hint: `float x = 0.5`
+           hint: `float half = 0.5`
 
    A float after ...
          extern {

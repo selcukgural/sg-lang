@@ -1,0 +1,4 @@
+void main() {
+    sbyte s = -5
+    print(s.toLittleEndian())
+}

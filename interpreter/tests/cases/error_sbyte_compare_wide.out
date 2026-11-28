@@ -1,0 +1,5 @@
+error: `200` does not fit in sbyte
+  --> error_sbyte_compare_wide.sg:3:21
+ 3 |     print(reading < 200)
+   |                     ^^^
+  hint: compare in `int`: `(int)reading < 200`
