@@ -282,10 +282,11 @@ void main() {
 ```
 
 ```text
-error: expected end of line, found `5`
+error: `break` takes no value
   --> example.sg:3:15
  3 |         break 5
    |               ^
+  hint: set a variable before the `break`, or put the loop in a function of its own and `return` the value
 ```
 
 `break` gives nothing. To bring a value out of a loop, set a variable before the `break`, or put the loop in a

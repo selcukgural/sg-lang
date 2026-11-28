@@ -200,11 +200,15 @@ impl Names {
             return Ok(Some(own));
         }
         let mut found: Vec<String> = Vec::new();
+        let mut through = None;
         let mut closed = None;
-        for (used, _) in uses {
+        for (used, use_span) in uses {
             let full = format!("{used}.{written}");
             match self.known(&full) {
-                true if self.public.contains(&full) => found.push(full),
+                true if self.public.contains(&full) => {
+                    found.push(full);
+                    through = Some(use_span.start);
+                }
                 true => closed = Some((used, full)),
                 false => {}
             }
@@ -219,7 +223,12 @@ impl Names {
             }
         }
         match found.len() {
-            1 => Ok(found.pop()),
+            1 => {
+                if let Some(at) = through {
+                    USED.with(|used| used.borrow_mut().insert(at));
+                }
+                Ok(found.pop())
+            }
             0 => match closed {
                 Some((used, full)) => Err(hidden(written, used, &full)),
                 None => Ok(None),
@@ -243,7 +252,14 @@ impl Names {
         if module != STD_MODULE && self.kinds.contains_key(&own) {
             return Ok(Some(own));
         }
-        let found: Vec<String> = uses.iter().map(|(used, _)| format!("{used}.{written}")).filter(|full| self.kinds.contains_key(full) && self.public.contains(full)).collect();
+        let found: Vec<(String, usize)> = uses.iter().map(|(used, at)| (format!("{used}.{written}"), at.start)).filter(|(full, _)| self.kinds.contains_key(full) && self.public.contains(full)).collect();
+        let found: Vec<String> = match found.as_slice() {
+            [(full, at)] => {
+                USED.with(|used| used.borrow_mut().insert(*at));
+                vec![full.clone()]
+            }
+            _ => found.into_iter().map(|(full, _)| full).collect(),
+        };
         match found.len() {
             0 => Ok(None),
             1 => Ok(found.into_iter().next()),
@@ -266,6 +282,21 @@ impl Names {
         })?;
         Some(format!("`use {}` at the top of the file", file.map.written(module)))
     }
+}
+
+/// The `use` lines of the program's own files that brought no name, after `check` found no
+/// error on this thread: an editor shows them dimmed (choice 2256). A package's files and the
+/// language's own are left out.
+pub fn unused_uses(prog: &Program) -> Vec<Span> {
+    USED.with(|used| {
+        let used = used.borrow();
+        prog.files
+            .iter()
+            .filter(|file| file.module != STD_MODULE && file.map.prefix.is_empty())
+            .flat_map(|file| file.uses.iter().map(|(_, span)| *span))
+            .filter(|span| !used.contains(&span.start))
+            .collect()
+    })
 }
 
 /// A module in a folder `internal`, named from outside the folder that holds it (choice 1561).
@@ -959,6 +990,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
 /// test command compiles. A normal run leaves the tests out.
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     SIZES.with(|found| found.borrow_mut().clear());
+    USED.with(|found| found.borrow_mut().clear());
     LOCKED.with(|found| found.borrow_mut().clear());
     RAW.with(|found| found.borrow_mut().clear());
     CFUNCS.with(|found| found.borrow_mut().clear());
@@ -3481,6 +3513,9 @@ thread_local! {
     /// The count each `[Name]` in a type stood for, by where the name is written, and the full
     /// name of the const.
     static SIZES: std::cell::RefCell<std::collections::BTreeMap<usize, (usize, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Where each `use` that brought a name is written: the others are shown dimmed by the
+    /// editor (choice 2256).
+    static USED: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
     /// Each pattern written in the program and given to `Regex.compile` or `Regex.of`, and
     /// where: checked once every body is (choices 1463, 1469).
     static PATTERNS: std::cell::RefCell<std::collections::BTreeMap<usize, (Span, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
@@ -4442,6 +4477,18 @@ fn number_as_bool(expr: &Expr, text: &str, negated: bool) -> String {
     };
     let op = if negated { "==" } else { "!=" };
     format!("a number is not a condition; compare it: `{text} {op} 0`")
+}
+
+/// The hint for a `T?` where a `bool` goes (`text` is how it is written): it is tested for
+/// `null`, `s is not null`, or under a `!` (`negated`) `s is null`.
+fn nullable_as_bool(ty: &Ty, expr: &Expr, text: &str, negated: bool) -> String {
+    // A `bool?` is compared with `true`, which a missing value is not (choice 2131).
+    if matches!(ty.strip_borrow(), Ty::Nullable(inner) if *inner.strip_borrow() == Ty::Bool) {
+        let op = if negated { "!=" } else { "==" };
+        return format!("a `bool?` may be missing; compare it: `{} {op} true`", as_operand(expr, text));
+    }
+    let test = if negated { "is null" } else { "is not null" };
+    format!("a value that may be missing is not a condition; test it: `{} {test}`", as_operand(expr, text))
 }
 
 /// How an expression is written as one operand in a hint, say after `!` or before `.`: in
@@ -8788,6 +8835,15 @@ impl<'a> Checker<'a> {
                 let cast = cast_of(to.name(), expr, text);
                 mismatch(Some(format!("convert with `{cast}`; a value that does not fit panics, or is cut to size in a release build"))).map_err(|diag| diag.fix(expr.span, cast))
             }
+            // `double b = x / 8`: the division of two integers drops the fraction before the
+            // result becomes fractional (choice 2262).
+            (Ty::Int(from), Ty::Float(to)) if to.holds(*from) && matches!(unwidened(expr).kind, ExprKind::Binary(BinOp::Div, ..)) => {
+                let ExprKind::Binary(_, left, right) = &unwidened(expr).kind else { unreachable!("tested above") };
+                let (left_text, right_text) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+                let kept = format!("{} / {right_text}", cast_of(to.name(), left, left_text));
+                Err(Diag::error(expr.span, format!("this divides two integers, so the fraction is dropped before the result becomes a `{}`", to.name()))
+                    .hint(format!("to keep the fraction: `{kept}`; to drop it on purpose: `({})({text})`", to.name())))
+            }
             (Ty::Int(from), Ty::Float(to)) if to.holds(*from) => {
                 wrap(expr, |inner| ExprKind::Widen(expected.clone(), inner));
                 expr.ty = expected.clone();
@@ -10416,6 +10472,12 @@ impl<'a> Checker<'a> {
                     let whole = &self.src[span.start..span.end];
                     return Err(Diag::error(operand.span, format!("expected `bool`, found `{found}`"))
                         .hint(format!("{}, in place of `{whole}`", number_as_bool(operand, text, true))));
+                }
+                if matches!(found.strip_borrow(), Ty::Nullable(_)) {
+                    let text = &self.src[operand.span.start..operand.span.end];
+                    let whole = &self.src[span.start..span.end];
+                    return Err(Diag::error(operand.span, format!("expected `bool`, found `{found}`"))
+                        .hint(format!("{}, in place of `{whole}`", nullable_as_bool(&found, operand, text, true))));
                 }
                 self.coerce(operand, found, &Ty::Bool)?;
                 Ok(Ty::Bool)

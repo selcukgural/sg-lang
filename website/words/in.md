@@ -87,12 +87,14 @@ void main() {
 
 ```text
 error: expected `{`, found `in`
+  `in` is written only at the head of a `for`
   --> example.sg:3:10
  3 |     if 2 in xs {
    |          ^^
+  hint: whether a collection holds a value: `xs.contains(2)`
 ```
 
-The test is written `if xs.contains(2)`.
+The test is written `if xs.contains(2)`. `print(2 in xs)` is refused the same way.
 
 ### A `for` without `in`
 
@@ -124,10 +126,11 @@ void main() {
 ```
 
 ```text
-error: expected `in`, found `,`
+error: a `for` has one loop variable
   --> example.sg:3:10
  3 |     for i, x in read xs {
    |          ^
+  hint: with the positions: `for i in 0..xs.length()`, and the item is `xs[i]`
 ```
 
 A `for` has one name. For the positions too, go over `0..xs.length()` and read `xs[i]`.

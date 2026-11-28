@@ -255,17 +255,30 @@ fn check_open(state: &Arc<Mutex<State>>, out: &Out) {
         // the thread that checks, which would leave what it showed last for ever (1596).
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (diag, sources) = match crate::load_over(root, false, &open) {
-                Ok(sources) => (crate::check_sources(&sources).err()?, Some(sources)),
+                Ok(sources) => match crate::unused_uses(&sources) {
+                    // With no error, each `use` that brings no name is shown dimmed, in the files
+                    // open in the editor (choice 2256).
+                    Ok(unused) => {
+                        return unused
+                            .into_iter()
+                            .map(|span| place_of(span, Some(&sources), &fallback, &uri_of))
+                            .filter(|(uri, _)| files.iter().any(|file| uri_of(file) == *uri))
+                            .map(|(uri, range)| (uri, unused_use(range), None))
+                            .collect();
+                    }
+                    Err(diag) => (diag, Some(sources)),
+                },
                 Err(message) => (Diag::error(Span::new(0, 0), message), None),
             };
-            Some(diagnostic_of(&diag, sources.as_ref(), &fallback, &uri_of))
+            vec![diagnostic_of(&diag, sources.as_ref(), &fallback, &uri_of)]
         }));
-        let (uri, diagnostic, fix) = match outcome {
-            Ok(None) => continue,
-            Ok(Some(shown)) => shown,
-            Err(_) => diagnostic_of(&Diag::error(Span::new(0, 0), "the checker stopped: this is a mistake in sg").note("please report it, with the program it was checking"), None, &fallback, &uri_of),
+        let shown = match outcome {
+            Ok(shown) => shown,
+            Err(_) => vec![diagnostic_of(&Diag::error(Span::new(0, 0), "the checker stopped: this is a mistake in sg").note("please report it, with the program it was checking"), None, &fallback, &uri_of)],
         };
-        found.entry(uri).or_default().push((diagnostic, fix));
+        for (uri, diagnostic, fix) in shown {
+            found.entry(uri).or_default().push((diagnostic, fix));
+        }
     }
     let mut state = lock(state);
     let mut to_publish: Vec<String> = state.shown.iter().cloned().collect();
@@ -318,6 +331,18 @@ pub fn position(text: &str, offset: usize) -> (u64, u64) {
     let line = before.matches('\n').count() as u64;
     let line_start = before.rfind('\n').map_or(0, |at| at + 1);
     (line, before[line_start..].encode_utf16().count() as u64)
+}
+
+/// A `use` that brings no name: a hint the editor shows as dimmed text (the tag
+/// `Unnecessary`), not an error.
+fn unused_use(range: (u64, u64, u64, u64)) -> Json {
+    Json::obj(vec![
+        ("range", range_json(range)),
+        ("severity", Json::num(4)),
+        ("source", Json::str("sg")),
+        ("message", Json::str("this `use` brings no name the file uses".to_string())),
+        ("tags", Json::Arr(vec![Json::num(1)])),
+    ])
 }
 
 fn diagnostic_of(diag: &Diag, sources: Option<&Sources>, fallback: &str, uri_of: &dyn Fn(&Path) -> String) -> (String, Json, Option<Fixable>) {

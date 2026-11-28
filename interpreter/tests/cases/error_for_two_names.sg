@@ -1,0 +1,6 @@
+void main() {
+    var words = List<string> { "a", "b" }
+    for i, word in read words {
+        print(word)
+    }
+}

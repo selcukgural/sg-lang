@@ -228,6 +228,23 @@ error: `continue` can only be written inside a loop
 
 `work` can `return` early instead: the loop then goes on by itself.
 
+### `continue` with a value
+
+```sg error
+void main() {
+    for i in 0..3 {
+        continue "next"
+    }
+}
+```
+
+```text
+error: `continue` takes no value
+  --> example.sg:3:18
+ 3 |         continue "next"
+   |                  ^^^^^^
+```
+
 ### A name no loop has
 
 ```sg error

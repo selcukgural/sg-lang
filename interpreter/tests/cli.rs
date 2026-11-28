@@ -831,6 +831,26 @@ fn a_try_is_computed_first_only_after_reads() {
     }
 }
 
+/// `await` on the right of `??` is compiled at the head of a statement (choice 2261); inside a
+/// larger expression the message says why it is refused there, not what the back end compiles.
+#[test]
+fn await_on_the_right_of_coalesce_inside_an_expression_says_why() {
+    let dir = work("await_on_the_right_of_coalesce_inside_an_expression_says_why");
+    let head = "async int fallback() {\n    await Task.delay(1)\n    return 7\n}\n\nasync void main() {\n    int? cached = null\n";
+    write(&dir, "head.sg", &format!("{head}    var n = cached ?? await fallback()\n    print(n)\n}}\n"));
+    assert_eq!(ran(&sg(&dir, &["emit-c", "head.sg"])).0, 0);
+    // The first part of a larger expression is still where the statement starts.
+    write(&dir, "first.sg", &format!("{head}    print((cached ?? await fallback()) + 1)\n}}\n"));
+    assert_eq!(ran(&sg(&dir, &["emit-c", "first.sg"])).0, 0);
+    write(&dir, "inside.sg", "async string name() {\n    await Task.delay(1)\n    return \"s7\"\n}\n\nasync void main() {\n    string? c = null\n    if (c ?? await name()) == \"s7\" {\n        print(7)\n    }\n}\n");
+    let (code, _, err) = ran(&sg(&dir, &["emit-c", "inside.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.contains("`await` on the right of `??` inside a larger expression is not in the C back end yet"), "{err}");
+    assert!(err.contains("runs only when the left has no value"), "{err}");
+    assert!(!err.contains("the back end compiles"), "{err}");
+    assert!(err.contains("give the value a name first"), "{err}");
+}
+
 #[test]
 fn builds_a_library() {
     if !has_compiler() {

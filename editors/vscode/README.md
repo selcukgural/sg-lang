@@ -20,7 +20,8 @@ alone), with what the editor holds and has not saved, 300 ms after the last chan
 stops at the first error, so one error is shown at a time, with its notes and its hint; a second
 place the error names (where a value was moved) is a link. A hint whose code is certain comes as a
 quick fix (the light bulb, or Ctrl+. / Cmd+.): a conversion `(int)x`, `.clone()` of a text that is
-only borrowed, `_ = ` before a value dropped on purpose, and a missing `use` line.
+only borrowed, `_ = ` before a value dropped on purpose, and a missing `use` line. When the program
+has no error, a `use` line that brings no name the file uses is shown dimmed.
 
 `sg.path` in the settings names the `sg` program; without it, `sg` is looked for on the `PATH`. A
 workspace that is not trusted cannot set it.

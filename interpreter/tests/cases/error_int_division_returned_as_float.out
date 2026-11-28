@@ -1,0 +1,5 @@
+error: this divides two integers, so the fraction is dropped before the result becomes a `float`
+  --> error_int_division_returned_as_float.sg:2:12
+ 2 |     return n / 2
+   |            ^^^^^
+  hint: to keep the fraction: `(float)n / 2`; to drop it on purpose: `(float)(n / 2)`

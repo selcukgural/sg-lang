@@ -381,3 +381,37 @@ fn refuses_a_header_line_without_an_end() {
     assert_eq!(code, Some(1));
     assert!(err.contains("a line of a header longer than 8192 bytes"), "{err}");
 }
+
+#[test]
+fn shows_a_use_that_brings_no_name_dimmed() {
+    // Choice 2256: with no error, each `use` that brings no name is a hint with the tag
+    // `Unnecessary`, which the editor shows dimmed; a name written with its module in front
+    // needs no `use`.
+    let dir = folder("unused_use");
+    for (module, name) in [("tools", "twice"), ("other", "thrice"), ("third", "once")] {
+        std::fs::create_dir_all(dir.join(module)).unwrap();
+        std::fs::write(dir.join(module).join(format!("{module}.sg")), format!("public int {name}(int x) {{\n    return x\n}}\n")).unwrap();
+    }
+    let main = dir.join("main.sg");
+    let text = "use tools\nuse other\nuse third\n\nvoid main() {\n    print(twice(2))\n    print(third.once(1))\n}\n";
+    std::fs::write(&main, text).unwrap();
+    let uri = sg::lsp::path_to_uri(&main);
+    let mut client = Client::start();
+    client.open(&uri, text);
+    let found = client.diagnostics(&uri);
+    let lines: Vec<u64> = found.iter().map(|shown| shown.get("range").get("start").get("line").as_u64().unwrap()).collect();
+    assert_eq!(lines, [1, 2], "{found:?}");
+    for shown in &found {
+        assert_eq!(shown.get("severity").as_u64(), Some(4));
+        assert_eq!(shown.get("tags").as_array().iter().map(|tag| tag.as_u64()).collect::<Vec<_>>(), [Some(1)]);
+    }
+    // While there is an error, it alone is shown: which names are brought is not known then.
+    client.change(&uri, "use tools\nuse other\nuse third\n\nvoid main() {\n    print(twice(missing))\n}\n");
+    let found = client.diagnostics(&uri);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].get("severity").as_u64(), Some(1));
+    // Every `use` brings a name: nothing is shown.
+    client.change(&uri, "use tools\nuse other\nuse third\n\nvoid main() {\n    print(twice(2) + thrice(3) + once(1))\n}\n");
+    assert!(client.diagnostics(&uri).is_empty());
+    assert_eq!(client.finish(), 0);
+}

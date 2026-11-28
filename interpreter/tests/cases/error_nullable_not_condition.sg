@@ -1,0 +1,6 @@
+void main() {
+    string? name = null
+    if !name {
+        print("no name")
+    }
+}

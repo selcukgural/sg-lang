@@ -1,0 +1,6 @@
+error: expected `{`, found `in`
+  `in` is written only at the head of a `for`
+  --> error_in_outside_for.sg:3:10
+ 3 |     if 2 in xs {
+   |          ^^
+  hint: whether a collection holds a value: `xs.contains(2)`

@@ -34,8 +34,11 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `let _guard = ...;` | `var guard = ...` | built | A variable of a `Disposable` type is kept for its end without being read; SG has no `_name` |
 | `for _ in 0..n`, `Some(_)` | `for _ in 0..n`, `Ok(_)` | built | |
 | `'outer: for ... { break 'outer; }` | `outer: for ... { break outer }` | built | Also `continue outer` and `outer: while`; C2y's and Go's notation, with no `'`. A name not used is an error, and so is `break outer` in `outer` itself, where a plain `break` does the same (2193). `loop { }` is `while true { }` |
+| `break value` out of a `loop` | a variable set before the `break`, or the loop in a function that `return`s the value | built | A loop gives no value: `break 5` is "`break` takes no value", with that hint (2257) |
 | the `unreachable_code` lint (a warning) | nothing to write | built | A line after `return`, `break`, `continue`, `panic(...)` or `exit(...)`, or after an `if`, `match` or `while true` that always leaves, is a compile error (2191) |
 | `for i in (0..n).rev()` | `for i in (0..n).reversed()` | built | Only at the head of a `for`; `step_by` is not there |
+| `for (i, x) in xs.iter().enumerate()` | `for i in 0..xs.length()` and `xs[i]` | built | A `for` has one name; `for i, x in` says so, with this hint (2257) |
+| `for i in 3..0` | the same: no round | built | A `for` over a range that ends below its start runs no round, as in Rust; a slice that does is a panic (2258) |
 | the `unused_assignments` lint (`x = 2` never read after) | nothing | not in SG | Not looked at yet: a value given after the last read, or written over before it is read, passes; noted for later |
 | `type Id = u64;` | `alias Id = ulong` | built | `public alias` from a module; `Id::MAX`, `x as Id` and `Id::from_str` are `Id.MaxValue`, `(Id)x` and `Id.parse(text)` (2214) |
 | `const BLOCK: usize = 4096;` | `const nint BlockSize = 4096` | built | At the top of a file (`public const` from a module) or in a block. Numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers; the value is found when the program is compiled, an overflow there is a compile error. A name in PascalCase, as C#'s |
@@ -70,6 +73,7 @@ Last brought up to date: 27 November 2026, the hundred-and-sixty-sixth slice (`d
 | `println!("{}", x)` on an `f64` | `print(x)` | built | The same fewest digits, laid out as JavaScript does (`1e+21`, `2` for `2.0`); in a tie between two numbers of the fewest digits Rust takes the larger, SG the even one (`160057272853489.62`, Rust `...63`). Compiled with Dragonbox, as the `ryu` crate is used for speed in Rust |
 | overflow: panic in debug, wrap in release | the same | built | Rust's rule, also for shifts and casts. An operation on numbers all known when the program is compiled that overflows or divides by zero is a compile error, as Rust's `arithmetic_overflow` and `unconditional_panic` lints deny it (2090) |
 | `x as i32` (cuts the bits) | `(int)x` (panics if it does not fit) | built | `wrappingToInt()` cuts the bits, `tryToInt()` gives `null` |
+| `x as f64 / 8.0` (an `i32 x`) | `(double)x / 8` | built | Rust does not compile `let y: f64 = x / 8`; SG refuses it too, as "this divides two integers, so the fraction is dropped" with both casts in the hint: `(double)x / 8` keeps the fraction, `(double)(x / 8)` drops it (2262). `double a = 7 / 8`, numbers written out, is 0.875 |
 | `i32::try_from(x).ok()` | `x.tryToInt()` | built | `int?` |
 | `a.wrapping_add(b)` | `a.wrappingAdd(b)` | built | |
 | `a.checked_add(b)` | `a.tryAdd(b)` | built | `int?` |

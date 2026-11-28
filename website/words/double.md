@@ -41,9 +41,10 @@ in every build. To round first, write `(int)x.round()`.
 
 The arithmetic is the hardware's and never panics: a division by zero gives `Infinity`, or `NaN` for `0 / 0.0`,
 and `%` keeps the sign of the left side. Each operation is rounded on its own, nothing is fused, so the
-interpreter and compiled code give the same digits. A division of two integer variables is done as integers,
-before the result becomes a `double`: `double part = done / total` is 0 for 7 and 8. Numbers written out take the
-type they go to, so `double part = 7 / 8` is 0.875.
+interpreter and compiled code give the same digits. Numbers written out take the type they go to, so `double
+part = 7 / 8` is 0.875. A division of two integer variables would drop the fraction before the result became a
+`double`, so `double part = done / total` is refused: `(double)done / total` keeps the fraction, and
+`(double)(done / total)` drops it on purpose.
 
 `==` and `<` are the hardware's too: `NaN` equals nothing, itself included, and is found with `isNaN()`.
 `equals`, `compare`, `sort`, `contains` and `==` on a struct or a list use an order in which `NaN` equals itself
@@ -95,9 +96,9 @@ void main() {
     print($"{average(read temperatures):F2} degrees")
     int passed = 7
     int total = 8
-    double wrong = passed / total
-    double right = (double)passed / total
-    print($"{wrong} {right}")
+    double dropped = (double)(passed / total)
+    double kept = (double)passed / total
+    print($"{dropped} {kept}")
 }
 ```
 
@@ -106,8 +107,9 @@ void main() {
 0 0.875
 ```
 
-`length()` gives a `nint`, which needs `(double)`. `passed / total` divides two integers, and only the 0 it
-gives becomes a `double`; with `(double)passed` the division is a fractional one, and `total` follows.
+`length()` gives a `nint`, which needs `(double)`. `passed / total` divides two integers and gives 0; written
+alone where a `double` goes it is refused, so the cast says which is meant. With `(double)passed` the division
+is a fractional one, and `total` follows.
 
 ### Compound interest
 
@@ -334,6 +336,29 @@ panic: value NaN does not fit in int
 `0 / 0.0` is `NaN`, and no integer is `NaN`. A release build gives 0 and prints `0%`.
 
 ## What the compiler refuses
+
+### A division of two integers
+
+```sg error
+void main() {
+    int passed = 7
+    int total = 8
+    double part = passed / total
+    print(part)
+}
+```
+
+```text
+error: this divides two integers, so the fraction is dropped before the result becomes a `double`
+  --> example.sg:4:19
+ 4 |     double part = passed / total
+   |                   ^^^^^^^^^^^^^^
+  hint: to keep the fraction: `(double)passed / total`; to drop it on purpose: `(double)(passed / total)`
+```
+
+`7 / 8` written out is 0.875, since both numbers take the type `double`; with variables the division would be
+an `int`'s, 0, and the result would change with no word. The same holds where the division is passed, returned,
+or added to a fractional number.
 
 ### A length in a division
 

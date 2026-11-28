@@ -1,0 +1,11 @@
+int pick(int count) {
+    return if count > 2 {
+        1
+    } else {
+        2
+    }
+}
+
+void main() {
+    print(pick(3))
+}

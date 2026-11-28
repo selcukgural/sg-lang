@@ -1,0 +1,5 @@
+error: a struct built in a condition is written in brackets, since `{` here starts the block
+  --> error_struct_in_if_condition.sg:7:13
+ 7 |     if s == Size { width = 2 } {
+   |             ^^^^^^^^^^^^^^^^^^
+  hint: `if s == (Size { width = 2 })`

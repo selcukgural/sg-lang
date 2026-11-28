@@ -1,0 +1,5 @@
+error: this divides two integers, so the fraction is dropped before the result becomes a `double`
+  --> error_int_division_to_double.sg:4:16
+ 4 |     double b = x / 8
+   |                ^^^^^
+  hint: to keep the fraction: `(double)x / 8`; to drop it on purpose: `(double)(x / 8)`

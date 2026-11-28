@@ -221,6 +221,33 @@ error: expected `bool`, found `int`
   hint: a number is not a condition; compare it: `n != 0`
 ```
 
+### A struct built in the condition
+
+```sg error
+struct Point : Equatable {
+    int x
+    int y
+}
+
+void main() {
+    var p = Point { x = 0, y = 0 }
+    while p != Point { x = 3, y = 0 } {
+        p.x += 1
+    }
+}
+```
+
+```text
+error: a struct built in a condition is written in brackets, since `{` here starts the block
+  --> example.sg:8:16
+ 8 |     while p != Point { x = 3, y = 0 } {
+   |                ^^^^^^^^^^^^^^^^^^^^^^
+  hint: `while p != (Point { x = 3, y = 0 })`
+```
+
+The first `{` after the condition starts the body of the loop, so a struct built there goes in brackets. The
+same holds for `if`.
+
 ### `break` outside a loop
 
 ```sg error

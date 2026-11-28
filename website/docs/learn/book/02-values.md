@@ -325,7 +325,7 @@ void main() {
     var count = 3
     print($"{count} {(count == 1 ? "file" : "files")}")
     print(sign(-8))
-    double half = count % 2 == 0 ? count / 2 : 1.5
+    double half = count % 2 == 0 ? (double)count / 2 : 1.5
     print(half)
 }
 ```
@@ -389,7 +389,7 @@ buffer: 64 32 16
 ```
 
 A const calls no function: the compiler runs none of the program's code. A value a function finds is a
-`static`, found the first time the program uses it. An integer const can give the length of an array, and an
+[`static`](#statics), found the first time the program uses it. An integer const can give the length of an array, and an
 overflow while computing a const is an error when the program is compiled, not when it runs. A const cannot be
 assigned:
 
@@ -413,6 +413,115 @@ A const can also hold the bytes of a file that lies beside the source: `const by
 reads the file when the program is compiled and takes the count of the array from it, so a built program
 carries the bytes and needs the file no more. A text is made of such bytes where it is used, with
 `string.fromUtf8(Logo)`, which checks that they are UTF-8. The page of `embed` says where the file may lie.
+
+## Statics
+
+A `static` is one value for the whole program, written with its type: `static T Name = value`. It lives until
+the program ends and is never assigned. A value made of what a const may hold, numbers, texts, other consts and
+operators, lies in the program from the start. Any other value, one a function finds, is found the first time the program uses the static, and only once:
+
+```sg
+int[10] squares() {
+    print("making the squares")
+    var table = int[10]
+    for n in 0..10 {
+        table[n] = n * n
+    }
+    return table
+}
+
+static int[10] Squares = squares()
+
+void main() {
+    print("start")
+    print(Squares[3])
+    print(Squares[9])
+}
+```
+
+It prints:
+
+```text
+start
+making the squares
+9
+81
+```
+
+`squares` runs when `Squares[3]` is first read, after `start`, and not again for `Squares[9]`. Nothing is found
+before `main`, so a static the program never reads costs nothing.
+
+Every task can reach a static, so a plain one is only read: a number, a `bool` or a `char` is read as a value,
+anything else is lent as `read`. A static that changes is one of two kinds. A `static atomic` value changes
+through its atomic methods, each one step that no other task can split:
+
+```sg
+static atomic long Requests = atomic 0
+
+void serve(int times) {
+    for _ in 0..times {
+        _ = Requests.fetchAdd(1)
+    }
+}
+
+void main() {
+    var tasks = List<Task<void>>()
+    for _ in 0..4 {
+        tasks.add(Task.run(serve, 250))
+    }
+    Task.whenAll(tasks).wait()
+    print(Requests.load())
+}
+```
+
+It prints `1000`: four tasks add to the same counter, and no addition is lost. A `static locked` value is
+reached only inside a `lock` block, where one task at a time holds it:
+
+```sg
+struct Settings {
+    string host
+    int port
+}
+
+static locked Settings Current = Settings { host = "localhost", port = 80 }
+
+void usePort(int port) {
+    lock Current as s {
+        s.port = port
+    }
+}
+
+void main() {
+    Task.run(usePort, 8080).wait()
+    lock Current as s {
+        print($"{s.host}:{s.port}")
+    }
+}
+```
+
+It prints `localhost:8080`. Outside a `lock` block, `Current` cannot be reached at all.
+
+What finds the value of a static runs while other tasks may wait for it, so it cannot `wait`, `lock` or
+`await`, in any function it calls, and it cannot need the static itself; the compiler follows the calls to see
+both. What a static holds follows the rule of tasks: no borrow, no `Task`, and nothing that must be closed, such
+as a file, since a static is never dropped. A static written in a function is still one for the program; only
+its name is seen there alone:
+
+```sg
+int nextId() {
+    static atomic int Last = atomic 0
+    return Last.fetchAdd(1) + 1
+}
+
+void main() {
+    print(nextId())
+    print(nextId())
+}
+```
+
+It prints `1` and then `2`. There is no global variable that any task assigns freely, and none for each
+thread: a value that changes and that several tasks share is a `static atomic`, a `static locked`, or a value
+passed to the tasks that need it.
 
 ## Bits
 

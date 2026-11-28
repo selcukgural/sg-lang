@@ -1,0 +1,10 @@
+struct Size : Equatable {
+    int width
+}
+
+void main() {
+    var s = Size { width = 2 }
+    if s == Size { width = 2 } {
+        print("two")
+    }
+}

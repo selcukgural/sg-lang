@@ -349,6 +349,12 @@ pub fn check_sources(sources: &Sources) -> Result<(), Diag> {
     on_large_stack(|| check_all(sources, true).map(|_| ()))
 }
 
+/// Checks a program with its tests, as `check_sources` does, and gives the `use` lines that
+/// brought no name (choice 2256).
+pub fn unused_uses(sources: &Sources) -> Result<Vec<diag::Span>, Diag> {
+    on_large_stack(|| check_all(sources, true).map(|prog| check::unused_uses(&prog)))
+}
+
 /// The back end for a program that is one text. `path` names the source file in the panic
 /// messages of the compiled program.
 pub fn emit_c(src: &str, path: &str, checked: bool) -> Result<String, Diag> {

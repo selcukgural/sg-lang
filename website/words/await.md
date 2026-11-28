@@ -291,6 +291,35 @@ async void main() {
 `await lock ... when` lets the lock go and waits until `b.done` holds, then runs the block under the lock. The
 block itself waits for nothing.
 
+### `await` on the right of `??`
+
+```sg file title="fallback/main.sg"
+async int fallback() {
+    await Task.delay(5)
+    return 7
+}
+
+async void main() {
+    int? cached = null
+    var n = cached ?? await fallback()
+    print(n)
+}
+```
+
+```text
+$ cd fallback
+$ sg main.sg
+7
+$ sg build main.sg -o fallback
+$ ./fallback
+7
+```
+
+The right of `??` runs, and waits, only when the left has no value: compiled code puts it in an `if` of its own
+before the statement, as on the right of `&&` and `||`. Inside a larger expression that is not computed first,
+such as `if (c ?? await name()) == "s7"` with a text, the build says why it refuses it there, that the right of
+`??` runs only sometimes, and the hint is to give the value a name first.
+
 ## What stops the program
 
 ### A negative delay
@@ -424,34 +453,3 @@ error: a `lock` block does not await a task
    |         ^^^^^^^^^^^^^^^^^^^^
   hint: await the task before the block or after it
 ```
-
-### `await` on the right of `??`, compiled
-
-```sg file title="fallback/main.sg"
-async int fallback() {
-    await Task.delay(5)
-    return 7
-}
-
-async void main() {
-    int? cached = null
-    var n = cached ?? await fallback()
-    print(n)
-}
-```
-
-```text
-$ cd fallback
-$ sg main.sg
-7
-$ sg build main.sg -o fallback
-error: `await` in this part of a statement is not in the C back end yet
-  the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, the network, raw memory and calls of C, and `print`
-  --> main.sg:8:23
- 8 |     var n = cached ?? await fallback()
-   |                       ^^^^^^^^^^^^^^^^
-  hint: give the value a name first: `var x = await ...`
-```
-
-The interpreter runs it; the compiled program does not take `await` on the right of `??` yet. Written as
-`var later = await fallback()` before the line, it builds, though `fallback` then runs every time.

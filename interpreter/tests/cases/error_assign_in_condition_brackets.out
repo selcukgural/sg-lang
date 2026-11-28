@@ -1,0 +1,5 @@
+error: an assignment cannot be a condition
+  --> error_assign_in_condition_brackets.sg:3:31
+ 3 |     while count > 0 || (count = 3) {
+   |                               ^
+  hint: comparison is written `==`

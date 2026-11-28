@@ -27627,6 +27627,40 @@ impl<'a> Emitter<'a> {
                 (self.pre, self.post) = (pre, post);
                 self.open(&left.ty, &temp, value, exit?, left.span)
             }
+            // `cached ?? await fallback()`, `found ?? try load()` (choice 2261): a right side
+            // that can wait or leave the function runs in an `if` of its own before the
+            // statement, as on the right of `&&` and `||`.
+            ExprKind::Coalesce { left, right, on_result } if head && may_leave_or_wait(right) => {
+                let error = match (&left.ty, on_result) {
+                    (Ty::Result(_, error), true) => Some(&**error),
+                    (_, false) if self.held_in(&left.ty, "").is_some() => None,
+                    _ => return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty))),
+                };
+                let post = self.post.len();
+                let value = self.first(left, head)?;
+                if self.post.len() != post {
+                    return Err(not_yet(right.span, "`try` or `await` on the right of `??` after a value that needs a temporary")
+                        .hint("give the left side a name first"));
+                }
+                let (ctype, temp) = (self.ctype(&left.ty, left.span)?, self.temp());
+                let (holds, held) = self.held_in(&left.ty, &temp).expect("tested above");
+                let (result_ctype, result) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                self.pre.push(format!("{ctype} {temp} = {value};"));
+                self.pre.push(format!("{result_ctype} {result};"));
+                let before = (self.pre.len(), self.post.len());
+                self.maybe += 1;
+                let right_value = self.first(right, true);
+                self.maybe -= 1;
+                let right_value = right_value?;
+                let pre: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
+                let post: String = self.post.drain(before.1..).map(|line| format!(" {line}")).collect();
+                let dropped = match error.filter(|error| self.droppable(error)) {
+                    Some(error) => format!("{} ", self.drop_of(error, &format!("{temp}.u.v1.m_cause"))),
+                    None => String::new(),
+                };
+                self.pre.push(format!("if ({holds}) {{ {result} = {held}; }} else {{ {dropped}{pre}{result} = {right_value};{post} }}"));
+                Ok(result)
+            }
             // The right side runs only when there is no value. On a `Result` the error is dropped first.
             ExprKind::Coalesce { left, right, on_result } => {
                 let error = match (&left.ty, on_result) {
@@ -27634,6 +27668,12 @@ impl<'a> Emitter<'a> {
                     (_, false) if self.held_in(&left.ty, "").is_some() => None,
                     _ => return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty))),
                 };
+                if holds_await(right) {
+                    // The reason in place of the list of what the back end compiles (#28).
+                    return Err(Diag::error(right.span, "`await` on the right of `??` inside a larger expression is not in the C back end yet")
+                        .note("the right of `??` runs only when the left has no value, so it waits in a statement of its own")
+                        .hint("give the value a name first: `var x = ... ?? await ...`"));
+                }
                 let value = self.first(left, head)?;
                 let before = (self.pre.len(), self.post.len());
                 self.maybe += 1;
